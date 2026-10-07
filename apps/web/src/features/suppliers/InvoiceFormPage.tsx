@@ -1,4 +1,7 @@
 import { RowPhotoCell } from './RowPhotoCell'
+import { AiInvoiceLineMatch } from './AiInvoiceLineMatch'
+import { useAiInvoiceMatching } from './useAiInvoiceMatching'
+import { bindInvoiceCandidate, invoiceMatchProblems, type InvoiceCandidate } from './aiInvoiceMatching'
 import type { InvoiceFundSource, InvoiceImportField, InvoiceImportMapping, InvoicePaymentMethod, LineItem, SupplierPaymentFundSource, SupplyInvoiceDraftData, SupplyInvoiceLocalDraft } from './invoiceFormModel'
 import { EMPTY_INVOICE_IMPORT_MAPPING, InvoiceImportMatchError, INVOICE_IMPORT_FIELDS, supplyInvoiceDraftKey, buildInvoiceImportItems, cleanImportCell, clearSupplyInvoiceDraft, draftFromServerInvoice, duplicateProductMessage, findExactProductForQuery, guessInvoiceImport, hasSupplyInvoiceDraftContent, invoiceItemsToLineItems, isDuplicateProductError, kopecksForForm, loadSupplyInvoiceDraft, makeAutoSku, makeDraftItem, makeLineKey, newestSupplyInvoiceDraft, normalizeBarcodeValue, normalizeExactInvoiceProductName, normalizeInvoiceUnit, normalizeSkuValue, parseDecimalInput, parseMoneyToKopecks, parseQty, persistSupplyInvoiceDraft, retailFromLocalGrid } from './invoiceFormModel'
 import { useState, useEffect, useRef, useMemo } from 'react'
@@ -7,8 +10,10 @@ import { Trash2, Barcode } from 'lucide-react'
 import { read, utils } from 'xlsx'
 import Papa from 'papaparse'
 import { supplierApi } from './supplierApi'
+import { sourceForPaymentMethod, methodForPaymentSource } from './supplierPaymentSelection'
 import { invoiceProductBase } from './invoiceFormModel'
 import { isMissingInvoiceError } from './invoiceDraftStore'
+import { cancelStoredInvoiceDraft } from './invoiceDraftCancellation'
 import { InvoiceSupplierPicker } from './InvoiceSupplierPicker'
 import { InvoiceVersionConflict } from './InvoiceVersionConflict'
 import { InvoicePriceGuard } from './invoicePriceGuard'
@@ -145,6 +150,14 @@ export default function InvoiceFormPage() {
     }
   }, [supplierId, invoiceNumber, notes, items, paidAmount, cashboxPaidAmount, payFullNow, paymentMethod, fundSource, serverDraftId])
 
+  const aiMatching = useAiInvoiceMatching(items, setItems)
+  function chooseAiProduct(rowKey: string, product: InvoiceCandidate | null) {
+    setItems(current => current.map(item => {
+      if (item.client_key !== rowKey || !item.ai_review) return item
+      return product ? bindInvoiceCandidate(item, product)
+        : { ...item, product_id: undefined, product_base: undefined, is_new: true, ai_review: { ...item.ai_review, choice: 'new' } }
+    }))
+  }
   function applySupplyInvoiceDraft(draft: SupplyInvoiceLocalDraft, fallbackSupplier = preSelectedSupplier) {
     priceGuardRef.current.prune([])
     moneyOriginalRef.current = {}
@@ -715,6 +728,7 @@ export default function InvoiceFormPage() {
       } else {
         (item as any)[field] = value
       }
+      if (field === 'barcode' && item.ai_review) item.ai_review = { ...item.ai_review, source: { ...item.ai_review.source, barcode: value } }
       next[index] = item
       return next
     })
@@ -989,7 +1003,8 @@ export default function InvoiceFormPage() {
       setCategoryTargets(targets)
       return
     }
-    setItems(prev => prev.map(item => targets.includes(item.client_key) ? { ...item, category_id: value || null } : item))
+    if (value === '__ai_category__') return
+    setItems(prev => prev.map(item => targets.includes(item.client_key) ? { ...item, category_id: value || null, ai_category_name: undefined } : item))
   }
   async function createInvoiceCategory() {
     const name = newCategoryName.trim().replace(/\s+/g, ' ')
@@ -1019,7 +1034,7 @@ export default function InvoiceFormPage() {
     if (selectedLineKeys.length === 0) { toast.warning('Виберіть товари галочками'); return }
     if (!bulkCategoryId) { toast.warning('Виберіть категорію'); return }
     const selected = new Set(selectedLineKeys)
-    setItems((prev) => prev.map((item) => selected.has(item.client_key) ? { ...item, category_id: bulkCategoryId } : item))
+    setItems((prev) => prev.map((item) => selected.has(item.client_key) ? { ...item, category_id: bulkCategoryId, ai_category_name: undefined } : item))
     toast.success(`Категорію встановлено для ${selected.size} товарів`)
     setSelectedLineKeys([]) // галочки знімаються автоматично після застосування
   }
@@ -1087,12 +1102,14 @@ export default function InvoiceFormPage() {
     return shiftId
   }
   function bindExistingProductToItem(item: LineItem, product: Product): LineItem {
-    const purchase = item.purchase_price > 0 ? item.purchase_price : product.purchase_price
+    const purchase = item.ai_review || item.purchase_price > 0 ? item.purchase_price : product.purchase_price
     const retail = item.retail_price > 0 ? item.retail_price : product.retail_price
     return {
       ...item,
       product_id: product.id,
       product_base: invoiceProductBase(product),
+      ai_category_name: undefined,
+      ai_review: item.ai_review ? { ...item.ai_review, choice: product.id } : undefined,
       is_new: false,
       sku: product.sku,
       barcode: product.barcode || item.barcode || '',
@@ -1100,7 +1117,7 @@ export default function InvoiceFormPage() {
       category_id: item.product_id === product.id ? item.category_id ?? null : product.category_id ?? item.category_id ?? null,
       storage_bin: product.storage_bin ?? item.storage_bin ?? null,
       photo_url: product.photo_url ?? item.photo_url ?? null,
-      unit: normalizeInvoiceUnit(product.unit || item.unit),
+      unit: item.ai_review ? item.unit : normalizeInvoiceUnit(product.unit || item.unit),
       purchase_price: purchase,
       retail_price: retail,
       total: Math.round(item.qty * purchase),
@@ -1223,6 +1240,7 @@ export default function InvoiceFormPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (invoiceSubmitRef.current || resolvingImportedProducts) return
+    if (!aiMatching.ready) { toast.error(aiMatching.error || (aiMatching.pending ? 'Дочекайтеся перевірки товарів' : 'Перевірте червоні рядки накладної')); return }
     if (pendingPriceRef.current > 0) { toast.warning('Дочекайтеся розрахунку цін перед проведенням.'); return }
     // Desktop and mobile controls both exist in the DOM. Only the visible
     // quantity input is authoritative; never let its hidden twin overwrite it.
@@ -1326,13 +1344,11 @@ export default function InvoiceFormPage() {
         }
       }
       if (draftId) {
-        // Legacy drafts have no revision: compare first instead of deleting unseen edits.
-        if (desktopBridge() && !baseRevisionRef.current) {
-          const current = (await supplierApi.getInvoice(draftId)).data
+        const current = await cancelStoredInvoiceDraft(supplierApi, draftId, baseRevisionRef.current, Boolean(desktopBridge()))
+        if (current) {
           setVersionConflict(current)
           throw new Error('DOCUMENT_CONFLICT: Спочатку звірте актуальну накладну перед видаленням.')
         }
-        await supplierApi.deleteInvoice(draftId, baseRevisionRef.current)
       }
       clearSupplyInvoiceDraft(invoiceDraftKey, draftId)
       toast.success('Чернетку накладної видалено')
@@ -1592,7 +1608,7 @@ export default function InvoiceFormPage() {
                 const prices = item.product_id ? (supplierPrices[item.product_id] ?? []) : []
                 const best = prices[0]
                 const cheaperElsewhere = best && supplierId && best.supplier_id !== supplierId && best.price < item.purchase_price
-                const hasProblem = problemLineKey === item.client_key
+                const hasProblem = invoiceMatchProblems(item).length > 0 || problemLineKey === item.client_key
                 return (
                 <tr key={item.client_key} className={hasProblem ? 'border-b border-red-200 bg-red-50/80 ring-2 ring-red-200' : 'border-b border-gray-50 hover:bg-gray-50/50'}>
                   <td className="px-2 py-2 text-center">
@@ -1614,6 +1630,7 @@ export default function InvoiceFormPage() {
                     />
                   </td>
                   <td className="px-4 py-2 font-medium min-w-[200px]">
+                    <AiInvoiceLineMatch item={item} disabled={saving} choose={product => chooseAiProduct(item.client_key, product)} />
                     <input ref={(el) => { rowNameRefs.current[i] = el }} type="text" value={item.product_name}
                       onChange={(e) => updateItem(i, 'product_name', e.target.value)}
                       onKeyDown={(e) => handleRowFieldKeyDown(e, i, 'name')}
@@ -1644,12 +1661,13 @@ export default function InvoiceFormPage() {
                   </td>
                   <td className="px-2 py-2">
                     <select
-                      value={item.category_id ?? ''}
+                      value={item.category_id || (item.ai_category_name ? '__ai_category__' : '')}
                       onChange={(e) => selectInvoiceCategory(e.target.value, [item.client_key])}
 
                       title="Папка/категорія товару"
                       className="w-40 border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white"
                     >
+                      {item.ai_category_name && <option value="__ai_category__">{item.ai_category_name} (нова папка)</option>}
                       <option value="">Без папки</option>
                       {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                       <option value="__create_category__">+ Створити папку</option>
@@ -1690,11 +1708,12 @@ export default function InvoiceFormPage() {
                   </td>
                   <td className="px-2 py-2">
                     <select
-                      value={normalizeInvoiceUnit(item.unit)}
+                      value={item.ai_review ? item.unit || 'шт' : normalizeInvoiceUnit(item.unit)}
                       onChange={(e) => updateItem(i, 'unit', e.target.value)}
 
                       className="w-20 border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white"
                     >
+                      {item.ai_review && item.unit && !['шт','кг','л','м','компл'].includes(item.unit) && <option value={item.unit}>{item.unit}</option>}
                       <option value="шт">шт</option>
                       <option value="кг">кг</option>
                       <option value="компл">компл</option>
@@ -1792,7 +1811,7 @@ export default function InvoiceFormPage() {
           {/* Мобільний вигляд позицій — картки замість широкої таблиці */}
           <div className="md:hidden divide-y divide-gray-100">
             {items.map((item, i) => {
-              const hasProblem = problemLineKey === item.client_key
+              const hasProblem = invoiceMatchProblems(item).length > 0 || problemLineKey === item.client_key
               return (
               <div key={item.client_key} className={hasProblem ? 'p-3 space-y-3 bg-red-50 ring-2 ring-red-200' : 'p-3 space-y-3'}>
                 <div className="flex items-start gap-2">
@@ -1811,6 +1830,7 @@ export default function InvoiceFormPage() {
                     }}
                   />
                   <div className="min-w-0 flex-1">
+                    <AiInvoiceLineMatch item={item} disabled={saving} choose={product => chooseAiProduct(item.client_key, product)} />
                     <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Назва</label>
                     <input type="text" value={item.product_name}
                       onChange={(e) => updateItem(i, 'product_name', e.target.value)}
@@ -1841,11 +1861,12 @@ export default function InvoiceFormPage() {
                   <div>
                     <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Папка</label>
                     <select
-                      value={item.category_id ?? ''}
+                      value={item.category_id || (item.ai_category_name ? '__ai_category__' : '')}
                       onChange={(e) => selectInvoiceCategory(e.target.value, [item.client_key])}
 
                       className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white"
                     >
+                      {item.ai_category_name && <option value="__ai_category__">{item.ai_category_name} (нова папка)</option>}
                       <option value="">Без папки</option>
                       {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                       <option value="__create_category__">+ Створити папку</option>
@@ -1854,11 +1875,12 @@ export default function InvoiceFormPage() {
                   <div>
                     <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Од. виміру</label>
                     <select
-                      value={normalizeInvoiceUnit(item.unit)}
+                      value={item.ai_review ? item.unit || 'шт' : normalizeInvoiceUnit(item.unit)}
                       onChange={(e) => updateItem(i, 'unit', e.target.value)}
 
                       className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white"
                     >
+                      {item.ai_review && item.unit && !['шт','кг','л','м','компл'].includes(item.unit) && <option value={item.unit}>{item.unit}</option>}
                       <option value="шт">шт</option>
                       <option value="кг">кг</option>
                       <option value="компл">компл</option>
@@ -2006,7 +2028,11 @@ export default function InvoiceFormPage() {
               </div>
               <div className="w-36">
                 <label className="block text-xs font-medium text-gray-500 mb-1">Спосіб</label>
-                <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value as InvoicePaymentMethod)}
+                <select value={paymentMethod} onChange={(e) => {
+                    const next = e.target.value as InvoicePaymentMethod
+                    setPaymentMethod(next)
+                    setFundSource(sourceForPaymentMethod(next, fundSource))
+                  }}
                   className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400">
                   <option value="cash">Готівка</option>
                   <option value="card">Картка</option>
@@ -2018,7 +2044,7 @@ export default function InvoiceFormPage() {
                 <select value={fundSource} onChange={(e) => {
                     const next = e.target.value as InvoiceFundSource
                     setFundSource(next)
-                    if (next === 'split_cashbox_owner') setPaymentMethod('cash')
+                    setPaymentMethod(methodForPaymentSource(next, paymentMethod))
                   }}
                   className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400">
                   <option value="cashbox">З каси магазину</option>
@@ -2075,7 +2101,10 @@ export default function InvoiceFormPage() {
         )}
 
         <div className="flex flex-wrap items-center gap-3">
-          <Button type="submit" disabled={saving || resolvingImportedProducts || recalculatingPrices}>
+          {aiMatching.pending && <span role="status" className="text-sm text-gray-500">Перевіряю товари…</span>}
+          {aiMatching.error && <p role="alert" className="text-sm text-red-700">{aiMatching.error}</p>}
+          {aiMatching.problemCount > 0 && <span className="text-sm text-red-700">Перевірте червоні рядки: {aiMatching.problemCount}</span>}
+          <Button type="submit" disabled={saving || resolvingImportedProducts || recalculatingPrices || !aiMatching.ready}>
             {saving ? 'Проводимо...' : recalculatingPrices ? 'Розрахунок цін...' : 'Провести'}
           </Button>
           <Button type="button" variant="outline" onClick={() => void cancelInvoiceForm()}>Скасувати</Button>

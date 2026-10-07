@@ -30,27 +30,28 @@ export function buildFiscalSaleItems(
   items: FiscalSaleSourceItem[],
   totalReceiptDiscount: number,
 ): FiscalSaleItem[] {
-  const grossLines = items.map((item) =>
-    Math.max(0, Math.round(Number(item.unitPrice) * Number(item.qty))),
+  const grossLines = items.map((item) => Math.max(0, Math.round(item.unitPrice * item.qty)))
+  const lineDiscounts = items.map((item, index) =>
+    Math.min(grossLines[index], Math.max(0, Math.round(Number(item.discount) || 0))),
   )
-  const grossTotal = grossLines.reduce((sum, amount) => sum + amount, 0)
-  let remainingDiscount = Math.min(
-    Math.max(0, Math.round(Number(totalReceiptDiscount) || 0)),
-    grossTotal,
+  const netLines = grossLines.map((gross, index) => gross - lineDiscounts[index])
+  const lineDiscountTotal = lineDiscounts.reduce((sum, amount) => sum + amount, 0)
+  let remainingNet = netLines.reduce((sum, amount) => sum + amount, 0)
+  // Line discounts are already assigned to their products. Only the extra
+  // receipt discount/bonus is distributed, using the net product amounts.
+  let remainingDiscount = Math.min(remainingNet,
+    Math.max(0, Math.round(Number(totalReceiptDiscount) || 0) - lineDiscountTotal),
   )
-  let remainingGross = grossTotal
 
   return items.map((item, index) => {
     const gross = grossLines[index]
-    const isLast = index === items.length - 1
-    const share = remainingDiscount <= 0 || remainingGross <= 0
-      ? 0
-      : isLast
-        ? Math.min(gross, remainingDiscount)
-        : Math.min(gross, Math.round(remainingDiscount * gross / remainingGross))
+    const net = netLines[index]
+    const share = remainingDiscount <= 0 || remainingNet <= 0
+      ? 0 : Math.min(net, Math.round(remainingDiscount * net / remainingNet))
+    const discount = lineDiscounts[index] + share
 
     remainingDiscount -= share
-    remainingGross -= gross
+    remainingNet -= net
 
     return {
       name: item.name,
@@ -59,8 +60,8 @@ export function buildFiscalSaleItems(
       unit: item.unit ?? null,
       qty: item.qty,
       unit_price: item.unitPrice,
-      amount: gross - share,
-      discount: share,
+      amount: gross - discount,
+      discount,
       is_service: item.isService === true,
     }
   })

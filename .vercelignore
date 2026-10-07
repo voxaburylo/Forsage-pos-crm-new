@@ -42,6 +42,14 @@ test_*.js
 server/test_*.cjs
 server/test_*.js
 
-# Local configuration and credentials.
+# Local configuration and credentials, including operator API credentials.
 .env*
+*.local
+*service-account*
+*key.json
 .vercel/
+
+# Private operational reports are not website assets.
+docs/ELF_STOCK_REVIEW_*.md
+docs/AI_DUPLICATES_REVIEW_*.md
+docs/AI_DUPLICATES_FIX_*.md

@@ -72,3 +72,7 @@ Sales-mirror-repair-*.json
 /apps/desktop/scripts/filter-crosses-owner-2026-09-07.json
 /apps/desktop/scripts/research-filter-oe.py
 /apps/desktop/scripts/restore-four-belts.cjs
+/apps/desktop/scripts/confirmed-elf-recount.cjs
+/docs/ELF_STOCK_REVIEW_2026-09-29.md
+/docs/AI_DUPLICATES_REVIEW_2026-09-29.md
+/docs/AI_DUPLICATES_FIX_2026-09-29.md

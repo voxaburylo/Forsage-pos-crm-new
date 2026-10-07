@@ -85,6 +85,48 @@ describe('calendar-day local login', () => {
     expect(()=>access.remember(user)).toThrow('Windows unavailable')
     expect(stored).toBeNull()
   })
+  it('protects the server tokens with the same day lease, never in the public user/status', () => {
+    const tokens={access_token:'header.payload.signature',refresh_token:'server-refresh'}
+    open().remember(user); const expires=open().status()!.expiresAt
+    open().saveServerSession(user,tokens)
+    expect(open().serverSession(user)).toEqual(tokens)
+    expect(stored).not.toContain('server-refresh')
+    expect(open().restore()).not.toHaveProperty('server')
+    expect(open().status()).not.toHaveProperty('server')
+    now+=3600000
+    open().saveServerSession(user,{...tokens,refresh_token:'rotated-refresh'})
+    expect(open().status()!.expiresAt).toBe(expires)
+    expect(open().serverSession(user)?.refresh_token).toBe('rotated-refresh')
+    now=expires
+    expect(open().serverSession(user)).toBeNull()
+  })
+  it.each(['other-user','other-shop','logout','password-change'])('does not disclose or save server tokens after %s', reason => {
+    const tokens={access_token:'header.payload.signature',refresh_token:'private-refresh'}
+    open().remember(user);open().saveServerSession(user,tokens)
+    const identity={id:user.id,tenant_id:user.tenant_id}
+    if(reason==='other-user') identity.id='other'
+    if(reason==='other-shop') identity.tenant_id='other'
+    if(reason==='logout') open().forget()
+    if(reason==='password-change') user.password_hash='changed'
+    expect(open().serverSession(identity)).toBeNull()
+    expect(()=>open().saveServerSession(identity,tokens)).toThrow()
+  })
+  it('new password login drops the previous cloud session and corrupt cloud data cannot grant access', () => {
+    open().remember(user);open().saveServerSession(user,{access_token:'a.b.c',refresh_token:'refresh'})
+    open().remember(user)
+    expect(open().serverSession(user)).toBeNull()
+    const value=JSON.parse(Buffer.from(stored!,'base64').toString())
+    value.server={access_token:'local-desktop-user',refresh_token:'not-cloud'}
+    stored=Buffer.from(JSON.stringify(value)).toString('base64')
+    expect(open().serverSession(user)).toBeNull();expect(open().restore()?.id).toBe(user.id)
+  })
+  it('server session endpoints require existing main authorization and are not LAN-proxied login routes', () => {
+    for(const channel of ['desktop:auth:save-server-session','desktop:auth:restore-server-session']) {
+      expect(PUBLIC_DESKTOP_CHANNELS.has(channel)).toBe(false)
+      expect(isDesktopChannelAllowed(channel,'cashier')).toBe(true)
+      expect(isDesktopChannelAllowed(channel,'unknown')).toBe(false)
+    }
+  })
   it('exposes only validated restore, not save or PIN bypass endpoints', () => {
     expect(PUBLIC_DESKTOP_CHANNELS.has('desktop:auth:restore')).toBe(true)
     for(const name of ['remember','set-pin-required','unlock-remembered']) {

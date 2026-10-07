@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef } from 'react'
+import { parseClosingSnapshot, parseCountedCash } from './shiftCashData'
 import { shiftApi } from './shiftApi'
 import type { ShiftReport } from '@/types/shift'
 import type { ExpectedCash } from './shiftApi'
@@ -43,7 +44,7 @@ export function ShiftCloseModal({
   const [tireWorkers, setTireWorkers]   = useState<TireServiceReportRow[]>([])
   const [tireReportState, setTireReportState] = useState<'loading' | 'ready' | 'error'>('loading')
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return
     let cancelled = false
     setLoadedShiftId(null)
@@ -55,15 +56,12 @@ export function ShiftCloseModal({
     const desktopRuntime = desktopBridge()
     if (desktopRuntime && cashierId) {
       setLoading(true)
-      Promise.all([
-        desktopRuntime.pos.shiftReport(cashierId),
-        desktopRuntime.pos.expectedCash(cashierId),
-      ])
-        .then(([localReport, localCash]) => {
+      desktopRuntime.pos.shiftReport(cashierId)
+        .then((value) => {
           if (cancelled) return
-          if (!localReport || !localCash || localReport.shift.id !== shiftId) throw new Error('Зміна змінилася')
+          const localReport = parseClosingSnapshot(value, shiftId, cashierId)
           setReport(localReport)
-          setCashBreakdown(localCash)
+          setCashBreakdown(localReport.cash_breakdown)
           setLoadedShiftId(shiftId)
         })
         .catch(() => { if (!cancelled) { setLoadError(true); toast.error('Помилка завантаження локальних даних зміни') } })
@@ -75,15 +73,12 @@ export function ShiftCloseModal({
       return
     }
     setLoading(true)
-    Promise.all([
-      shiftApi.report(shiftId),
-      shiftApi.expectedCash(),
-    ])
-      .then(([reportRes, cashRes]) => {
+    shiftApi.report(shiftId)
+      .then((reportRes) => {
         if (cancelled) return
-        if (!reportRes.data || !cashRes.data) throw new Error('Дані зміни недоступні')
-        setReport(reportRes.data)
-        setCashBreakdown(cashRes.data)
+        const snapshot = parseClosingSnapshot(reportRes.data, shiftId, cashierId)
+        setReport(snapshot)
+        setCashBreakdown(snapshot.cash_breakdown)
         setLoadedShiftId(shiftId)
       })
       .catch(() => { if (!cancelled) { setLoadError(true); toast.error('Помилка завантаження даних зміни') } })
@@ -108,11 +103,12 @@ export function ShiftCloseModal({
   const tireWorkersDue = tireWorkers.reduce((sum, worker) => sum + Number(worker.payable_due ?? 0), 0)
   if (!open) return null
 
-  const cashReceived = Math.round(Number(cashInput.replace(',', '.')) * 100)
-  const validCash = /^\d+(?:[.,]\d{1,2})?$/.test(cashInput.trim()) && Number.isSafeInteger(cashReceived) && cashReceived >= 0
+  const countedCash = parseCountedCash(cashInput)
+  const cashReceived = countedCash ?? 0
+  const validCash = countedCash !== null && Number.isSafeInteger(cashReceived - (cashBreakdown?.expected_amount ?? 0))
   const canClose = !loading && !loadError && loadedShiftId === shiftId && report !== null && cashBreakdown !== null && validCash
   const expectedCash = cashBreakdown?.expected_amount ?? 0
-  const variance     = cashInput ? cashReceived - expectedCash : null
+  const variance     = validCash ? cashReceived - expectedCash : null
   const needsComment = isOwnerOrAdmin && variance !== null && Math.abs(variance) > VARIANCE_THRESHOLD
   const cashierAmountMismatch = !isOwnerOrAdmin && variance !== null && variance !== 0
 
@@ -229,13 +225,25 @@ export function ShiftCloseModal({
                   <span>{formatMoney(cashBreakdown?.opening_cash ?? 0)}</span>
                 </div>
                 <div className="flex justify-between text-gray-400">
-                  <span>Продажі готівкою:</span>
+                  <span>Надійшло готівкою:</span>
                   <span className="text-green-400">+{formatMoney(cashBreakdown?.cash_sales ?? 0)}</span>
                 </div>
                 <div className="flex justify-between text-gray-400">
                   <span>Оплати через термінал:</span>
                   <span className="text-blue-400">{formatMoney(report.by_method.card ?? 0)}</span>
                 </div>
+                {(report.by_method.transfer ?? 0) > 0 && (
+                  <div className="flex justify-between text-gray-400">
+                    <span>Оплати переказом:</span>
+                    <span className="text-blue-400">{formatMoney(report.by_method.transfer ?? 0)}</span>
+                  </div>
+                )}
+                {(report.refunds_by_method?.card ?? 0) > 0 && (
+                  <div className="flex justify-between text-gray-400">
+                    <span>Повернення через термінал:</span>
+                    <span className="text-red-400">−{formatMoney(report.refunds_by_method?.card ?? 0)}</span>
+                  </div>
+                )}
                 {(cashBreakdown?.cash_in ?? 0) > 0 && (
                   <div className="flex justify-between text-gray-400">
                     <span>Внесення в касу:</span>
@@ -258,19 +266,41 @@ export function ShiftCloseModal({
                   <span>Очікується в касі:</span>
                   <span>{formatMoney(expectedCash)}</span>
                 </div>
-                <div className="flex justify-between text-gray-300 text-xs">
-                  <span>Всього продажів: {report.total_sales} чек(ів)</span>
-                  <span>Виручка: {formatMoney(report.total_revenue)}</span>
+                <div className="flex justify-between gap-3 text-gray-300 text-xs">
+                  <span>Продано: {report.total_sales} чек(ів)</span>
+                  <span className="shrink-0">{formatMoney(report.gross_revenue ?? report.total_revenue)}</span>
                 </div>
+                {report.refund_total !== undefined && (
+                  <>
+                    <div className="flex justify-between gap-3 text-gray-300 text-xs">
+                      <span>{report.unassigned_refunds_count ? 'Підтверджені повернення цієї зміни:' : 'Повернення цієї зміни:'}</span>
+                      <span className="shrink-0">{formatMoney(report.refund_total)}</span>
+                    </div>
+                    <div className="flex justify-between gap-3 text-gray-300 text-xs">
+                      <span>Продажі мінус повернення:</span>
+                      <span className="shrink-0">{report.unassigned_refunds_count ? 'Неповні дані' : formatMoney(report.total_revenue)}</span>
+                    </div>
+                    <p className="text-[11px] leading-4 text-gray-500">
+                      Повернення враховані у зміні їх оформлення, навіть за старими чеками.
+                      Сума продажів не дорівнює готівці в касі.
+                    </p>
+                  </>
+                )}
                 <p className="border-t border-gray-700 pt-2 text-[11px] leading-4 text-gray-500">
                   У Z-звіті Кашалота це один звіт із окремими підсумками: готівка та безготівкова оплата.
                 </p>
               </div>
             )}
 
+            {(report.unassigned_refunds_count ?? 0) > 0 && (
+              <p role="alert" className="rounded-xl border border-yellow-500/40 p-3 text-xs text-yellow-200">
+                Для {report.unassigned_refunds_count} старих повернень не вдалося однозначно визначити зміну.
+                Підсумок продажів неповний. Готівку для закриття обчислено окремо за касовими операціями.
+              </p>
+            )}
             {isOwnerOrAdmin && (
               <div className="rounded-xl border border-cyan-700/50 bg-cyan-950/20 p-4 text-sm">
-                <div className="mb-3 flex items-center justify-between">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <span className="font-semibold text-cyan-100">Шиномонтаж за сьогодні</span>
                   {tireReportState === 'ready' && <strong className="text-cyan-300">Доступно до виплати: {formatMoney(tireWorkersDue)}</strong>}
                 </div>
@@ -307,7 +337,7 @@ export function ShiftCloseModal({
             <div>
               <label className="text-gray-400 text-xs mb-1 block">Фактична сума в касі (₴)</label>
               <input
-                type="number" min="0" step="0.01" autoFocus
+                type="text" inputMode="decimal" aria-label="Фактична сума в касі" autoFocus
                 value={cashInput}
                 disabled={closing}
                 onChange={(e) => setCashInput(e.target.value)}

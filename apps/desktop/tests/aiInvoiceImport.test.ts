@@ -26,6 +26,33 @@ describe('AI invoice import into local supply draft', () => {
     }
   })
 
+  it.each(['кг', 'упак', 'л'])('rejects source unit %s against a piece-count catalog card without changing stock', unit => {
+    catalog.upsertProduct({ id: 'unit-card', sku: 'UNIT-CARD', name: 'Товар', unit: 'шт', qty_on_hand: 12 })
+    expect(() => supply.createInvoiceFromAiRows({ rows: [{ name: 'Товар', sku: 'UNIT-CARD', qty: 2, unit, purchase_price_uah: 100 }] })).toThrow('одиниц')
+    expect(catalog.findBySku('UNIT-CARD')?.qty_on_hand).toBe(12)
+    expect(db.prepare('SELECT COUNT(*) n FROM supply_invoices').get()).toEqual({ n: 0 })
+  })
+  it('accepts equivalent unit spellings and preserves the catalog unit', () => {
+    catalog.upsertProduct({ id: 'unit-kg', sku: 'UNIT-KG', name: 'Мастило', unit: 'кг', qty_on_hand: 12 })
+    const result = supply.createInvoiceFromAiRows({ rows: [{ name: 'Мастило', sku: 'UNIT-KG', qty: 1.5, unit: 'KG', purchase_price_uah: 100 }] })
+    expect(result.draft_items[0]).toMatchObject({ unit: 'кг', qty: 1.5 })
+    expect(catalog.findBySku('UNIT-KG')?.qty_on_hand).toBe(12)
+  })
+  it('rolls all new cards and folders back if a later source unit conflicts', () => {
+    catalog.upsertProduct({ id: 'unit-card', sku: 'UNIT-CARD', name: 'Товар', unit: 'шт', qty_on_hand: 12 })
+    expect(() => supply.createInvoiceFromAiRows({ rows: [
+      { name: 'Новий', sku: 'NEW-UNIT', category_name: 'Нова папка', qty: 1, purchase_price_uah: 10 },
+      { name: 'Товар', sku: 'UNIT-CARD', qty: 2, unit: 'упак', purchase_price_uah: 100 },
+    ] })).toThrow('одиниц')
+    expect(catalog.findBySku('NEW-UNIT')).toBeNull()
+    expect(catalog.listCategories()).toHaveLength(0)
+    expect(db.prepare('SELECT COUNT(*) n FROM supply_invoices').get()).toEqual({ n: 0 })
+  })
+  it.each([{}, ['шт'], 1])('rejects a non-text source unit %j before creating any card', unit => {
+    expect(() => supply.createInvoiceFromAiRows({ rows: [{ name: 'Новий', sku: 'BAD-UNIT', qty: 1, unit, purchase_price_uah: 10 }] })).toThrow('одиниц')
+    expect(catalog.findBySku('BAD-UNIT')).toBeNull()
+  })
+
   it('indexes Unicode SKU fallbacks once per batch and sees cards created earlier in that batch', () => {
     catalog.upsertProduct({ id: 'unicode', sku: 'АрТ-１', name: 'Наш товар', qty_on_hand: 0 })
     const all = vi.spyOn(db, 'prepare')
@@ -153,7 +180,7 @@ describe('AI invoice import into local supply draft', () => {
     expect(result.created).toBe(1)
     expect(result.matched).toBe(19)
     expect(new Set(result.invoice.items.map((item: any) => item.product_id)).size).toBe(1)
-    expect(prepare.mock.calls.filter(([sql]) => /SELECT p.id,p.name,p.sku,p.barcode,b.name AS brand FROM products/.test(sql))).toHaveLength(1)
+    expect(prepare.mock.calls.filter(([sql]) => /SELECT p.id,p.name,p.sku,p.barcode,p.unit,p.retail_price,p.category_id,p.storage_bin,p.photo_url,b.name AS brand FROM products/.test(sql))).toHaveLength(1)
     prepare.mockRestore()
   })
 

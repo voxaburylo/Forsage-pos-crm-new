@@ -251,7 +251,7 @@ jobWorker.register('cleanup_suspended_sales', async (_payload, jobInfo) => {
 })
 
 const server = app.listen(PORT, () => {
-  logger.info(`Server running on http://localhost:${PORT}`)
+  logger.info({ port: Number(PORT) }, 'Server running on localhost')
   // Спочатку initMessengers — створює канал у БД, потім startBot щоб не було race condition
   initMessengers().then(() => startBot()).catch(() => startBot())
   processOrderDeadlines()

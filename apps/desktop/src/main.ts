@@ -2,6 +2,7 @@ import { localAnalytics } from './repositories/localAnalytics'
 import path from 'node:path'
 import { RendererRecovery } from './rendererRecovery'
 import { BlackBox } from './diagnostics/blackBox'
+import { safeDiagnosticDetails } from './diagnostics/blackBoxData'
 import { readBuildInfo } from './diagnostics/buildInfo'
 import { LOCAL_CRASH_OPTIONS } from './diagnostics/localCrashCapture'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -10,6 +11,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createHash, randomUUID } from 'node:crypto'
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, shell, safeStorage, powerMonitor, crashReporter, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from 'electron'
 import { RememberedAccess, type RememberedUser } from './security/rememberedAccess'
+import { DesktopSessionLifecycleError, serverSessionCacheResultForError } from './security/desktopSessionLifecycle'
+import { verifyAndRememberServerSession } from './security/serverSession'
 import { createMirrorSigner } from './security/mirrorIdentity'
 import { LocalDatabase, LocalDatabaseOpenError, OutdatedBuildError, type LocalDatabaseOpenResult } from './db/localDatabase'
 import { startBackupScheduler } from './db/backupScheduler'
@@ -164,6 +167,7 @@ let desktopAuthSession: { id: string; tenant_id: string; role: string } | null =
 let rememberedAccess: RememberedAccess | null = null
 let rememberedSessionRequired = false
 let desktopLoginGeneration = 0
+let serverSessionSaveGeneration = 0
 function rememberedUser(id: string, tenant: string): RememberedUser | null {
   return (localDatabase?.prepare('SELECT id,tenant_id,role,phone,full_name,password_hash,pin_hash,is_active,deleted_at FROM staff_users WHERE id=? AND tenant_id=?').get(id,tenant) as RememberedUser | undefined) ?? null
 }
@@ -307,13 +311,13 @@ function requireDesktopSession(): { id: string; tenant_id: string; role: string 
   const contextualSession = desktopSessionContext.getStore()
   if (contextualSession) {
     const current = activeSession(requireLocalDatabase(), contextualSession)
-    if (!current) throw new Error('Доступ працівника вимкнено. Увійдіть заново.')
+    if (!current) throw new DesktopSessionLifecycleError('local-session-ended', 'Доступ працівника вимкнено. Увійдіть заново.')
     return current
   }
-  if (rememberedSessionRequired && rememberedStatus().locked) throw Error('Збережений вхід завершено. Увійдіть із паролем')
-  if (!desktopAuthSession) throw new Error('Необхідно увійти в програму')
+  if (rememberedSessionRequired && rememberedStatus().locked) throw new DesktopSessionLifecycleError('local-session-ended', 'Збережений вхід завершено. Увійдіть із паролем')
+  if (!desktopAuthSession) throw new DesktopSessionLifecycleError('local-session-ended', 'Необхідно увійти в програму')
   desktopAuthSession = activeSession(requireLocalDatabase(), desktopAuthSession)
-  if (!desktopAuthSession) throw new Error('Доступ працівника вимкнено. Увійдіть заново.')
+  if (!desktopAuthSession) throw new DesktopSessionLifecycleError('local-session-ended', 'Доступ працівника вимкнено. Увійдіть заново.')
   return desktopAuthSession
 }
 
@@ -521,7 +525,7 @@ function recordDesktopProblem(input: Parameters<LocalProblemRepository['record']
   try {
     localProblems?.record(input)
   } catch (error) {
-    console.error('[desktop] Problem log write failed', error)
+    console.error('[desktop] Problem log write failed', safeDiagnosticDetails(error))
   }
 }
 
@@ -548,6 +552,10 @@ function handleDesktopIpc(channel: string, listener: DesktopIpcListener): void {
       }
       return await executeDesktopCommand(channel, listener, event, args, session)
     } catch (error) {
+      // Midnight/logout may race an optional background cache request. Do not execute
+      // its listener or turn an expected denial into a recurring application fault.
+      const cacheResult = serverSessionCacheResultForError(channel, error)
+      if (cacheResult !== undefined) return cacheResult
       failed = true
       blackBox?.record('command-error', { channel, sequence, error })
       // Кожна кнопка каси проходить тут. Без цього запису збій бачив лише той,
@@ -1325,6 +1333,24 @@ app.whenReady().then(async () => {
     completeDesktopLogin(result.user)
     return result
   })
+  handleDesktopIpc('desktop:auth:save-server-session', async (_event, tokens: unknown) => {
+    const saveGeneration = ++serverSessionSaveGeneration
+    return verifyAndRememberServerSession(tokens, {
+      current: () => {
+        if (saveGeneration !== serverSessionSaveGeneration) throw new DesktopSessionLifecycleError('superseded', 'Сесію вже оновлено')
+        const session = requireDesktopSession()
+        // IPC's async context can outlive logout. Bind this cache to the live Windows day session.
+        if (!desktopAuthSession || desktopAuthSession.id !== session.id || desktopAuthSession.tenant_id !== session.tenant_id
+          || rememberedStatus().locked) throw new DesktopSessionLifecycleError('local-session-ended', 'Поточний вхід завершено')
+        return { ...session, generation: desktopLoginGeneration }
+      },
+      config: requireTrustedAuthConfig(),
+      fetch: net.fetch.bind(net),
+      save: (identity, checked) => getRememberedAccess().saveServerSession(identity, checked),
+    })
+  })
+  handleDesktopIpc('desktop:auth:restore-server-session', () =>
+    getRememberedAccess().serverSession(requireDesktopSession()))
   handleDesktopIpc('desktop:auth:remembered-status', () => rememberedStatus())
   handleDesktopIpc('desktop:auth:restore', () => {
     desktopLoginGeneration++
@@ -1386,7 +1412,7 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:staff:salary-summary', (_event, period?: string) => requireLocalStaff().salarySummary(period))
   handleDesktopIpc('desktop:staff:daily-summary', (_event, workDate?: string) => requireLocalStaff().dailySummary(workDate))
   handleDesktopIpc('desktop:staff:tire-service-report', (_event, workDate?: string) => requireLocalStaff().tireServiceReport(workDate))
-  handleDesktopIpc('desktop:staff:tire-cash-handover', (_event, input: any) => requireLocalStaff().tireCashHandover(input))
+  handleDesktopIpc('desktop:staff:tire-cash-handover', (_event, input: any) => requireLocalStaff().tireCashHandover({ ...input, user_id: requireDesktopSession().id }))
   handleDesktopIpc('desktop:staff:create-salary', (_event, input: any) => requireLocalStaff().createSalary({ ...input, user_id: requireDesktopSession().id }))
   handleDesktopIpc('desktop:staff:daily-payout', (_event, input: any) => requireLocalStaff().dailyPayout({ ...input, user_id: requireDesktopSession().id }))
   handleDesktopIpc('desktop:staff:delete-salary', (_event, id: string) => requireLocalStaff().deleteSalary(id))
@@ -1409,6 +1435,9 @@ app.whenReady().then(async () => {
   )
   handleDesktopIpc('desktop:warehouse:release-reserve', (_event, id: string, tenantId?: string) =>
     requireLocalWarehouse().releaseManualReserve(id, tenantId),
+  )
+  handleDesktopIpc('desktop:warehouse:writeoffs-summary', (_event, input) =>
+    requireLocalWarehouse().writeoffsSummary({ month: input?.month, tenant_id: requireDesktopSession().tenant_id }),
   )
   handleDesktopIpc('desktop:warehouse:list-writeoffs', (_event, input?: any) =>
     requireLocalWarehouse().listWriteoffs(input),
@@ -1541,9 +1570,7 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:orders:complete', (_event, orderId: string, input?: any) => {
     const actorId = requireDesktopSession().id
     const securedInput = { ...(input ?? {}), user_id: actorId }
-    const result = requireLocalOrders().completeOrder(orderId, securedInput)
-    requireLocalStaff().recordOrderCommissions(orderId, securedInput.tenant_id, actorId)
-    return result
+    return requireLocalOrders().completeOrder(orderId, securedInput)
   })
   handleDesktopIpc('desktop:supply:list-suppliers', (_event, input?: any) =>
     requireLocalSupply().listSuppliers(input),
@@ -1692,6 +1719,9 @@ app.whenReady().then(async () => {
   )
   handleDesktopIpc('desktop:pos:sold-items-report', (_event, input) =>
     requireLocalPos().soldItemsReport(input),
+  )
+  handleDesktopIpc('desktop:pos:sales-period-report', (_event, input) =>
+    requireLocalPos().salesPeriodReport({ ...input, tenant_id: requireDesktopSession().tenant_id }),
   )
   handleDesktopIpc('desktop:pos:list-returns', (_event, input) =>
     requireLocalPos().listReturns(input),
@@ -1861,7 +1891,7 @@ app.whenReady().then(async () => {
   await createWindow()
 }).catch((error: unknown) => {
   writeDesktopDiagnostic('startup-failed', error)
-  console.error('Forsage desktop startup failed', error)
+  console.error('Forsage desktop startup failed', safeDiagnosticDetails(error))
   dialog.showErrorBox(
     'Forsage не запустився',
     error instanceof LocalDatabaseOpenError

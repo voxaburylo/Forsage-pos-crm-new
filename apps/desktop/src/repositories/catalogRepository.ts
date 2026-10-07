@@ -310,6 +310,8 @@ export class LocalCatalogRepository {
     }
     const searchText = productSearchText(input)
     const stockBefore = this.findStoredProductById(input.id, tenantId)
+    const mergeTarget = this.mergedTargetId(input.id, tenantId)
+    if (mergeTarget) throw new Error('Цю картку об’єднано з основним товаром. Знайдіть його за старим штрихкодом; дубль не відновлено.')
     const previousTimestamp = Date.parse(stockBefore?.updated_at ?? '')
     const timestamp = new Date(Math.max(Date.now(), Number.isFinite(previousTimestamp) ? previousTimestamp + 1 : 0)).toISOString()
 
@@ -790,11 +792,21 @@ export class LocalCatalogRepository {
     return restored
   }
 
+  private mergedTargetId(id: string, tenantId: string): string | null {
+    const row = this.db.prepare('SELECT specs_json FROM products WHERE id=? AND tenant_id=?').get(id, tenantId) as {specs_json:string} | undefined
+    try {
+      const target = JSON.parse(row?.specs_json || '{}').merged_into_product_id
+      return typeof target === 'string' && target !== id ? target : null
+    } catch { return null }
+  }
+
   private findActiveReplacement(
     input: LocalProductUpsert,
     deletedProduct: LocalProduct & { deleted_at: string | null },
     tenantId: string,
   ): LocalProduct | null {
+    const merged = this.mergedTargetId(deletedProduct.id, tenantId)
+    if (merged) return this.findById(merged, tenantId)
     for (const barcode of [input.barcode, deletedProduct.barcode]) {
       const normalized = String(barcode ?? '').trim()
       if (!normalized) continue

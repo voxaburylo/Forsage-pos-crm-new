@@ -9,10 +9,13 @@
 import { DEFAULT_TENANT_ID } from '../../db/localTypes'
 import { businessDateKey, nowIso } from './posShared'
 import { LocalPosFiscal } from './fiscal'
-import { soldItemSuppliers } from './soldItemSuppliers'
-import { allocateReceiptRevenue } from '../../lib/receiptRevenue'
+import { readSoldItems } from './soldItemsReport'
+import { readPeriodReport } from './periodReport'
 
 export class LocalPosReports extends LocalPosFiscal {
+  salesPeriodReport(input: { tenant_id?: string; date_from: string; date_to: string }) {
+    return readPeriodReport(this.db,input.tenant_id ?? DEFAULT_TENANT_ID,input.date_from,input.date_to)
+  }
   dashboardSummary(input: { tenant_id?: string; date_from: string; date_to: string }): any {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const dateFrom = String(input.date_from ?? '').trim()
@@ -180,129 +183,7 @@ export class LocalPosReports extends LocalPosFiscal {
     }
   }
 
-  soldItemsReport(input: { tenant_id?: string; date_from: string; date_to: string }): any[] {
-    const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
-    const dateFrom = String(input.date_from ?? '').trim()
-    const dateTo = String(input.date_to ?? '').trim()
-    if (!dateFrom || !dateTo) throw new Error('Analytics period is required')
-
-    const rows = this.db.prepare(`
-      WITH selected_sales AS (
-        SELECT id, tenant_id
-        FROM sales
-        WHERE tenant_id = ?
-          AND deleted_at IS NULL
-          AND status IN ('completed', 'returned')
-          AND COALESCE(completed_at, created_at) >= ?
-          AND COALESCE(completed_at, created_at) <= ?
-      ),
-      sold AS (
-        SELECT
-          si.product_id,
-          COALESCE(p.sku, si.sku, '') AS sku,
-          COALESCE(
-            NULLIF(p.barcode, ''),
-            (SELECT pb.barcode
-             FROM product_barcodes pb
-             WHERE pb.tenant_id = si.tenant_id
-               AND pb.product_id = si.product_id
-               AND pb.deleted_at IS NULL
-             ORDER BY pb.is_primary DESC, pb.created_at ASC
-             LIMIT 1),
-            ''
-          ) AS barcode,
-          COALESCE(p.name, si.description, '(товар видалено)') AS name,
-          COALESCE(p.unit, 'шт') AS unit,
-          COALESCE(p.qty_on_hand, 0) AS qty_on_hand,
-          p.storage_bin,
-          SUM(si.qty) AS qty_sold,
-          SUM(si.total) AS revenue
-        FROM selected_sales ss
-        JOIN sale_items si
-          ON si.sale_id = ss.id
-         AND si.tenant_id = ss.tenant_id
-         AND si.deleted_at IS NULL
-        LEFT JOIN products p
-          ON p.id = si.product_id
-         AND p.tenant_id = si.tenant_id
-        WHERE si.product_id IS NOT NULL
-          AND COALESCE(p.is_service, 0) = 0
-        GROUP BY
-          si.product_id, COALESCE(p.sku, si.sku, ''), p.barcode,
-          COALESCE(p.name, si.description, '(товар видалено)'),
-          COALESCE(p.unit, 'шт'), COALESCE(p.qty_on_hand, 0), p.storage_bin,
-          si.tenant_id
-      ),
-      returned AS (
-        SELECT
-          ri.product_id,
-          SUM(ri.quantity) AS qty_returned,
-          SUM(ri.total_kopecks) AS refund_total
-        FROM customer_return_items ri
-        JOIN customer_returns r
-          ON r.id = ri.return_id
-         AND r.tenant_id = ri.tenant_id
-         AND r.deleted_at IS NULL
-         AND r.status = 'completed'
-        JOIN selected_sales ss
-          ON ss.id = r.sale_id
-         AND ss.tenant_id = r.tenant_id
-        WHERE ri.tenant_id = ?
-          AND ri.deleted_at IS NULL
-        GROUP BY ri.product_id
-      )
-      SELECT
-        sold.product_id,
-        sold.sku,
-        NULLIF(sold.barcode, '') AS barcode,
-        sold.name,
-        sold.unit,
-        sold.qty_sold,
-        COALESCE(returned.qty_returned, 0) AS qty_returned,
-        MAX(sold.qty_sold - COALESCE(returned.qty_returned, 0), 0) AS qty_net,
-        sold.revenue,
-        COALESCE(returned.refund_total, 0) AS refund_total,
-        MAX(sold.revenue - COALESCE(returned.refund_total, 0), 0) AS net_revenue,
-        sold.qty_on_hand,
-        sold.storage_bin
-      FROM sold
-      LEFT JOIN returned ON returned.product_id = sold.product_id
-      ORDER BY qty_net DESC, sold.name COLLATE NOCASE ASC
-    `).all(tenantId, dateFrom, dateTo, tenantId) as any[]
-
-    // Allocate over all lines, including services and free-price lines, before filtering.
-    const receiptLines = this.db.prepare(`
-      SELECT s.id AS sale_id, s.total AS receipt_total, si.id, si.total, si.product_id,
-        CAST(ROUND(si.qty * si.core_deposit_amount) AS INTEGER) AS coreTotal
-      FROM sales s JOIN sale_items si ON si.sale_id=s.id AND si.tenant_id=s.tenant_id
-      WHERE s.tenant_id=? AND s.deleted_at IS NULL AND si.deleted_at IS NULL
-        AND s.status IN ('completed', 'returned')
-        AND COALESCE(s.completed_at,s.created_at)>=? AND COALESCE(s.completed_at,s.created_at)<=?
-    `).all(tenantId, dateFrom, dateTo) as { sale_id: string; receipt_total: number; id: string; total: number; coreTotal: number; product_id: string | null }[]
-    const receipts = new Map<string, typeof receiptLines>()
-    for (const line of receiptLines) {
-      const lines = receipts.get(line.sale_id) ?? []
-      lines.push(line)
-      receipts.set(line.sale_id, lines)
-    }
-    const revenues = new Map<string, number>()
-    for (const lines of receipts.values()) {
-      const allocated = allocateReceiptRevenue(Number(lines[0].receipt_total), lines)
-      for (const line of lines) if (line.product_id) {
-        revenues.set(line.product_id, (revenues.get(line.product_id) ?? 0) + allocated.get(line.id)!)
-      }
-    }
-    const suppliers = soldItemSuppliers(this.db, tenantId, rows.map(row => row.product_id))
-    return rows.map((row) => ({
-      ...row,
-      suppliers: suppliers.get(row.product_id) ?? [],
-      qty_sold: Number(row.qty_sold ?? 0),
-      qty_returned: Number(row.qty_returned ?? 0),
-      qty_net: Number(row.qty_net ?? 0),
-      revenue: revenues.get(row.product_id) ?? 0,
-      refund_total: Number(row.refund_total ?? 0),
-      net_revenue: Math.max(0, (revenues.get(row.product_id) ?? 0) - Number(row.refund_total ?? 0)),
-      qty_on_hand: Number(row.qty_on_hand ?? 0),
-    }))
+  soldItemsReport(input: { tenant_id?: string; date_from: string; date_to: string }) {
+    return readSoldItems(this.db, input.tenant_id ?? DEFAULT_TENANT_ID, input.date_from, input.date_to)
   }
 }

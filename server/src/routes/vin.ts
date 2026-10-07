@@ -1,19 +1,27 @@
 import { Router } from 'express'
-import { GoogleGenerativeAI } from '@google/generative-ai'
+import { GoogleGenerativeAI, type GenerativeModel } from '@google/generative-ai'
 import { requireAuth } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { getSettings } from '../services/adminService.js'
+import { withAiDataBoundary } from '../services/aiPromptSafety.js'
+import { aiResponseCompletionError, safeAiErrorInfo } from '../services/aiResponseSafety.js'
+import { withAiExecutionBudget } from '../services/aiExecutionBudget.js'
+import { VEHICLE_OCR_INSTRUCTION, vehicleOcrInput, inlineVehiclePhoto, parseVehicleOcr } from '../services/vehicleOcr.js'
+import { logger } from '../lib/logger.js'
 
 import { downloadProcessingUpload, removeProcessingUploads } from '../services/processingUploadService.js'
 const router = Router()
 router.use(requireAuth)
 
 // Gemini для розпізнавання VIN з фото (ліниво ініціалізуємо)
-let geminiModel: any = null
+let geminiModel: GenerativeModel | null = null
 function gemini() {
   const key = process.env.GEMINI_API_KEY
   if (!geminiModel && key) {
-    geminiModel = new GoogleGenerativeAI(key).getGenerativeModel({ model: 'gemini-2.5-flash' })
+    geminiModel = new GoogleGenerativeAI(key).getGenerativeModel({
+      model: 'gemini-2.5-flash', systemInstruction: withAiDataBoundary(VEHICLE_OCR_INSTRUCTION),
+      generationConfig: { temperature: 0, maxOutputTokens: 2048, responseMimeType: 'application/json' },
+    })
   }
   return geminiModel
 }
@@ -44,50 +52,6 @@ function extractVehicle(data: any): { make: string; model: string; year: string 
   }
 }
 
-
-type VehicleOcrData = {
-  document_type: 'vin' | 'registration_certificate' | 'other'
-  vin: string | null
-  make: string | null
-  model: string | null
-  year: number | null
-  registration_number: string | null
-}
-
-function cleanOcrText(value: unknown, maxLength: number): string | null {
-  if (typeof value !== 'string') return null
-  const clean = value.replace(/\s+/g, ' ').trim()
-  return clean ? clean.slice(0, maxLength) : null
-}
-
-function parseVehicleOcr(raw: string): VehicleOcrData {
-  const jsonText = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
-  let parsed: Record<string, unknown>
-  try {
-    parsed = JSON.parse(jsonText)
-  } catch {
-    const vinMatch = raw.toUpperCase().match(/[A-HJ-NPR-Z0-9]{17}/)
-    parsed = { vin: vinMatch?.[0] ?? null }
-  }
-
-  const vinCandidate = String(parsed.vin ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '')
-  const vin = /^[A-HJ-NPR-Z0-9]{17}$/.test(vinCandidate) ? vinCandidate : null
-  const numericYear = Number(parsed.year)
-  const maxYear = new Date().getFullYear() + 1
-  const year = Number.isInteger(numericYear) && numericYear >= 1900 && numericYear <= maxYear ? numericYear : null
-  const documentType = parsed.document_type === 'registration_certificate'
-    ? 'registration_certificate'
-    : parsed.document_type === 'vin' ? 'vin' : 'other'
-
-  return {
-    document_type: documentType,
-    vin,
-    make: cleanOcrText(parsed.make, 100),
-    model: cleanOcrText(parsed.model, 150),
-    year,
-    registration_number: cleanOcrText(parsed.registration_number, 30)?.toUpperCase() ?? null,
-  }
-}
 // GET /api/v1/vin/decode?vin=XXXX — декодування VIN через зовнішній API,
 // налаштований у shop_settings (vin_decoder_url / vin_decoder_api_key).
 router.get('/decode', async (req, res, next) => {
@@ -114,51 +78,45 @@ router.get('/decode', async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
-// POST /api/v1/vin/ocr — розпізнавання VIN з фото (base64) через Gemini
+// POST /api/v1/vin/ocr — private upload or bounded legacy base64, no database writes.
 router.post('/ocr', async (req, res, next) => {
-  const storagePath = typeof req.body?.storage_path === 'string' ? req.body.storage_path : null
+  let storagePath: string | null = null
   try {
-    const { image, mimeType } = req.body ?? {}
-    if (!image && !storagePath) throw new AppError('NO_IMAGE', 'Не передано зображення', 400)
-    const model = gemini()
-    if (!model) throw new AppError('OCR_NOT_AVAILABLE', 'Розпізнавання недоступне (не налаштовано GEMINI_API_KEY)', 503)
-
-    let base64: string
-    let resolvedMimeType = mimeType || 'image/jpeg'
-    if (storagePath) {
-      const uploaded = await downloadProcessingUpload({
-        path: storagePath,
-        userId: req.user!.id,
-        purpose: 'vin',
-        maxBytes: 6 * 1024 * 1024,
-        allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp'],
-      })
-      base64 = uploaded.buffer.toString('base64')
-      resolvedMimeType = uploaded.mimeType
-    } else {
-      base64 = String(image).replace(/^data:[^;]+;base64,/, '')
-    }
-    const prompt = `Ти розпізнаєш дані автомобіля з фото VIN-коду або свідоцтва про реєстрацію (техпаспорта).
-Поверни ТІЛЬКИ валідний JSON без markdown:
-{"document_type":"vin|registration_certificate|other","vin":null,"make":null,"model":null,"year":null,"registration_number":null}
-Правила:
-- використовуй лише чітко видимі на фото дані, нічого не вигадуй;
-- VIN має рівно 17 символів A-H, J-N, P, R-Z та 0-9, без I, O, Q;
-- make — марка/виробник, model — модель, year — чотиризначний рік випуску;
-- registration_number — державний номер автомобіля;
-- для невідомого або нерозбірливого поля повертай null.`
-    const result = await model.generateContent([
-      { inlineData: { mimeType: resolvedMimeType, data: base64 } },
-      { text: prompt },
-    ])
-    const raw = result?.response?.text?.() ?? ''
-    const vehicle = parseVehicleOcr(raw)
+    const parsed = vehicleOcrInput.safeParse(req.body)
+    if (!parsed.success) throw new AppError('INVALID_OCR_IMAGE', 'Невірні дані фото. Передайте одне зображення JPG, PNG або WebP.', 422)
+    const input = parsed.data
+    const inline = 'image' in input ? inlineVehiclePhoto(input.image, input.mimeType) : null
+    if ('storage_path' in input) storagePath = input.storage_path
+    const vehicle = await withAiExecutionBudget(90_000, async budget => {
+      const model = gemini()
+      if (!model) throw new AppError('OCR_NOT_AVAILABLE', 'Розпізнавання недоступне (не налаштовано GEMINI_API_KEY)', 503)
+      let photo = inline!
+      if (storagePath) {
+        const uploaded = await budget.run(() => downloadProcessingUpload({
+          path: storagePath!, userId: req.user!.id, purpose: 'vin',
+          maxBytes: 6 * 1024 * 1024,
+          allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp'],
+        }))
+        photo = { data: uploaded.buffer.toString('base64'), mimeType: uploaded.mimeType }
+      }
+      const result = await budget.run(signal => model.generateContent([
+        { inlineData: photo }, { text: 'Розпізнай лише дані автомобіля з цього фото.' },
+      ], { timeout: 90_000, signal }))
+      const incomplete = aiResponseCompletionError(result.response)
+      if (incomplete) throw incomplete
+      return parseVehicleOcr(result.response.text())
+    })
     if (!vehicle.vin && !vehicle.make && !vehicle.model && !vehicle.year) {
       throw new AppError('VEHICLE_NOT_FOUND', 'Не вдалося розпізнати VIN або дані автомобіля. Спробуйте чіткіше фото.', 422)
     }
     res.json({ data: vehicle })
-  } catch (err) { next(err) }
-  finally {
+  } catch (err) {
+    if (err instanceof AppError) next(err)
+    else {
+      logger.warn(safeAiErrorInfo(err), '[vin] photo recognition failed')
+      next(new AppError('OCR_FAILED', 'Не вдалося отримати відповідь розпізнавання авто. Нічого не збережено; повторіть спробу.', 502))
+    }
+  } finally {
     if (storagePath) await removeProcessingUploads([storagePath], req.user!.id).catch(() => {})
   }
 })

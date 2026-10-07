@@ -2,6 +2,7 @@ import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { LocalDatabase, type LocalDatabaseBackup } from '../src/db/localDatabase'
 import { backupsToPrune } from '../src/db/backupPolicy'
@@ -67,6 +68,35 @@ describe('verified local backups', () => {
     expect(database.deviceId).toBeTruthy()
     LocalDatabase.assertBackupIsUsable(good)
   })
+  it.each(['migration-gap', 'photo-checksum', 'photo-schema'])('worker refuses %s and retains the last valid backup', async damage => {
+    const database = create(), good = await database.backupNow()
+    if (damage === 'migration-gap') database.exec('DELETE FROM schema_migrations WHERE version=2')
+    else if (damage === 'photo-schema') database.exec('CREATE TABLE backup_assets(original_url TEXT, bytes BLOB)')
+    else {
+      database.exec('CREATE TABLE backup_assets(original_url TEXT PRIMARY KEY, sha256 TEXT, bytes BLOB, error TEXT)')
+      database.prepare('INSERT INTO backup_assets VALUES(?,?,?,NULL)').run('file:///photo.jpg',
+        createHash('sha256').update('original').digest('hex'), Buffer.from('changed'))
+    }
+    await expect(database.backupNow()).rejects.toThrow(
+      damage === 'migration-gap' ? 'LOCAL_BACKUP_INCOMPLETE_SCHEMA' : 'LOCAL_BACKUP_INVALID_ASSETS')
+    expect(database.listBackups().map(item => item.filePath)).toEqual([good])
+    LocalDatabase.assertBackupIsUsable(good)
+    expect(readdirSync(database.backupsPath).some(name => name.endsWith('.partial'))).toBe(false)
+  })
+
+  it('worker preserves valid embedded photos and permits explicitly unavailable photo records', async () => {
+    const database = create(), bytes = Buffer.from('verified photo')
+    database.exec('CREATE TABLE backup_assets(original_url TEXT PRIMARY KEY, sha256 TEXT, bytes BLOB, error TEXT)')
+    const insert = database.prepare('INSERT INTO backup_assets VALUES(?,?,?,?)')
+    insert.run('file:///photo.jpg', createHash('sha256').update(bytes).digest('hex'), bytes, null)
+    insert.run('file:///missing.jpg', null, null, 'Unavailable source')
+    const backup = await database.backupNow()
+    LocalDatabase.assertBackupIsUsable(backup)
+    const probe = new DatabaseSync(backup, { readOnly: true })
+    try { expect(probe.prepare('SELECT count(*) n FROM backup_assets').get()).toEqual({ n: 2 }) }
+    finally { probe.close() }
+  })
+
 })
 
 describe('backup schedule and retention', () => {

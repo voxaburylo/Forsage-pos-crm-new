@@ -29,13 +29,13 @@ describe('AI invoice identity and label names', () => {
     expect(result.invoice.items[0]).toMatchObject({ product_id: 'polo', qty: 4, purchase_price: 12000 })
     expect(catalog.findById('polo')).toMatchObject({ qty_on_hand: 3, barcode: '4260636978889' })
   })
-  it('does not substitute E-TEC 1 L for 4 L and requires review of similar products', () => {
+  it('does not suggest incompatible E-TEC 1 L for a new 4 L product', () => {
     add('etec1', 'E-TEC (metall) 10W40 ASM 1л (12)')
     const data = row({ name: '(метал) 10W40 ASM 4л (4)', brand: 'E-TEC', sku: '44397' })
     const preview = supply.previewInvoiceFromAiRows({ rows: [data] })[0]
-    expect(preview.status).toBe('review'); expect(preview.product_id).toBeNull()
-    expect(() => supply.createInvoiceFromAiRows({ rows: [data] })).toThrow('схожі')
-    const result = supply.createInvoiceFromAiRows({ rows: [{ ...data, match_choice: 'new' }] })
+    expect(preview.status).toBe('new'); expect(preview.product_id).toBeNull()
+    expect(preview.candidates).toEqual([])
+    const result = supply.createInvoiceFromAiRows({ rows: [data] })
     expect(result.created).toBe(1)
     expect(catalog.findBySku('44397')).toMatchObject({ name: 'Олива E-TEC 10W40 4л ASM (4) (метал)', barcode: null, qty_on_hand: 0 })
     expect(catalog.findById('etec1')?.qty_on_hand).toBe(3)
@@ -97,8 +97,8 @@ describe('AI invoice identity and label names', () => {
     expect(() => supply.createInvoiceFromAiRows({ rows: [row({ name: 'Прихований', match_choice: 'archived' })] })).toThrow('видалено')
   })
   it('rolls back a preceding new product if a later row needs a choice', () => {
-    add('oil', 'E-TEC (metal) 10W40 ASM 1л (12)')
-    expect(() => supply.createInvoiceFromAiRows({ rows: [row({ name: 'Абсолютно новий', sku: 'NEW' }), row({ name: '(метал) 10W40 ASM 4л (4)', brand: 'E-TEC' })] })).toThrow('схожі')
+    add('one', 'Підшипник передній 2108 SSD'); add('two', 'Підшипник передній 2108 SSD')
+    expect(() => supply.createInvoiceFromAiRows({ rows: [row({ name: 'Абсолютно новий', sku: 'NEW' }), row({ name: 'Підшипник передній 2108 SSD' })] })).toThrow('кільком карткам')
     expect(catalog.findBySku('NEW')).toBeNull()
     expect(db.prepare('SELECT COUNT(*) n FROM supply_invoices').get()).toEqual({ n: 0 })
   })

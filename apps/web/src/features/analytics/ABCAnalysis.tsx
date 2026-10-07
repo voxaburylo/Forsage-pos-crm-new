@@ -8,26 +8,17 @@ import { AnalyticsLayout as Layout } from '@/features/analytics/AnalyticsLayout'
 import { Card, Badge, Table } from '@/components/ui'
 import { kopecksToHryvnia } from '@/types/product'
 
-interface ABCItem {
-  id: string
-  sku: string
-  name: string
-  currentStock: number
-  soldQty: number
-  profit: number
-  abc_class: string
-  cumulative_pct: number
-}
+import { parseAbcRows, type ABCItem } from './abcData'
 
 const CLASS_COLORS: Record<string, 'green' | 'yellow' | 'orange' | 'red'> = {
   A: 'green', B: 'yellow', C: 'orange', Z: 'red',
 }
 const CLASS_LABELS: Record<string, string> = {
-  A: 'A (80%)', B: 'B (15%)', C: 'C (5%)', Z: 'Z (Мертвий)',
+  A: 'A (80%)', B: 'B (15%)', C: 'C (5%)', Z: 'Z (без додатного результату)',
 }
 
 export default function ABCAnalysis() {
-  const { rows: items, loading, error, retry } = useReportRows<ABCItem>('/api/v1/analytics/abc?days=90')
+  const { rows: items, loading, error, retry } = useReportRows<ABCItem>('/api/v1/analytics/abc?days=90', true, parseAbcRows)
   const [filter, setFilter] = useState<string | null>(null)
   const [showDeficit, setShowDeficit] = useState(false)
 
@@ -88,20 +79,21 @@ export default function ABCAnalysis() {
     { key: 'name', header: 'Товар', render: (i: ABCItem) => (
       <div>
         <span className="font-medium text-gray-900">{i.name}</span>
-        <span className="text-xs text-gray-400 ml-2">Stock: {i.currentStock}</span>
+        <span className="text-xs text-gray-400 ml-2">Залишок: {i.currentStock}</span>
       </div>
     )},
     { key: 'sold', header: 'Продано', className: 'w-24 text-right', render: (i: ABCItem) => (
       <span className="font-medium">{i.soldQty} шт</span>
     )},
     { key: 'profit', header: 'Прибуток', className: 'w-28 text-right', render: (i: ABCItem) => (
-      <span className="font-semibold text-green-700">{kopecksToHryvnia(i.profit)} ₴</span>
+      <span className={i.profit < 0 ? 'font-semibold text-red-700' : 'font-semibold text-green-700'}>{kopecksToHryvnia(i.profit)} ₴</span>
     )},
   ]
 
   return (
     <Layout title="ABC-аналіз товарів">
       <div className="max-w-5xl space-y-4">
+        <p className="text-sm text-gray-500">За останні 90 календарних днів, включно із сьогодні. Продажі за мінусом повернень; закупівельна ціна — з чека.</p>
         <ReportError message={error} retry={retry} />
         {/* Кнопка дефіциту */}
         {deficitCount > 0 && (
@@ -134,12 +126,12 @@ export default function ABCAnalysis() {
           </div>
           <div className="flex items-center gap-4 ml-auto">
             <span className="text-xs text-gray-400">
-              {items.length} товарів · {filtered.length} показано
+              {loading ? 'Завантаження…' : error ? 'Звіт недоступний' : `${items.length} товарів · ${filtered.length} показано`}
             </span>
             <button
               onClick={exportToExcel}
               className="flex items-center gap-2 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-semibold hover:bg-emerald-700 transition-colors shadow-sm"
-              disabled={loading || filtered.length === 0}
+              disabled={loading || Boolean(error) || filtered.length === 0}
             >
               <Download size={14} />
               Експорт в Excel

@@ -1,6 +1,8 @@
 import pino from 'pino'
+import { privateLogOptions, protectLoggerChildren } from './logSafety.js'
 
-export const logger = pino({
+export const logger = protectLoggerChildren(pino({
+  ...privateLogOptions,
   level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
   redact: {
     paths: [
@@ -13,4 +15,4 @@ export const logger = pino({
   transport: process.env.NODE_ENV !== 'production'
     ? { target: 'pino-pretty', options: { colorize: true } }
     : undefined,
-})
+}))

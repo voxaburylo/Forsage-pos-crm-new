@@ -5,7 +5,8 @@ import { LocalCatalogRepository } from './catalogRepository'
 import { LocalSupplyRepository } from './supplyRepository'
 import { assertDocumentRevision, requireDocumentRevision } from './documentRevision'
 import { idempotentMutation } from './idempotentMutation'
-import { checkedSupplyMoney, normalizeSupplyItem } from './supplyValidation'
+import { checkedSupplyMoney, normalizeSupplyItem, checkedAiSupplyUnit } from './supplyValidation'
+import { AiInvoiceMatcher, invoiceBrand, rememberInvoiceProductName } from './aiInvoiceIdentity'
 
 export interface ReceivingProductBase {
   name: string; sku: string; barcode: string | null; category_id: string | null
@@ -17,6 +18,8 @@ export interface ReceivingLine {
   qty: number; purchase_price: number; retail_price: number; total?: number
   category_id?: string | null; storage_bin?: string | null; photo_url?: string | null
   product_base?: ReceivingProductBase
+  ai_review?: { source: Record<string, unknown>; choice?: string }
+  ai_category_name?: string
 }
 export interface ReceivingCommitInput {
   operation_id: string; invoice_id: string; expected_revision?: string
@@ -68,6 +71,26 @@ export function commitReceiving(db: LocalDatabase, input: ReceivingCommitInput):
       assertDocumentRevision(invoice.edit_revision, requireDocumentRevision(input.expected_revision), 'Накладна')
       if (invoice.status !== 'draft') throw new Error('DOCUMENT_CONFLICT: Накладну вже проведено або скасовано. Звірте документ; повторного приходу немає.')
     } else if (input.expected_revision) throw new Error('DOCUMENT_CONFLICT: Накладну вже видалено. Правки не записано.')
+    // Never trust a green/red UI snapshot: recheck the current catalog within the transaction.
+    const aiLines = input.items.map((line,index) => ({ line,index })).filter(entry => entry.line.ai_review)
+    if (aiLines.length) {
+      const matcher = new AiInvoiceMatcher(db, tenant)
+      const raws = aiLines.map(({line}) => ({ ...line.ai_review!.source,
+        name: line.product_name, source_name: line.product_id ? line.ai_review!.source.source_name ?? line.ai_review!.source.name : line.product_name,
+        sku: line.sku, barcode: line.barcode || (line.product_id ? '' : line.ai_review!.source.barcode ?? ''), unit: line.unit, qty: line.qty,
+        purchase_price_uah: line.purchase_price / 100, match_choice: line.product_id || line.ai_review!.choice || '' }))
+      const previews = matcher.previewRows(raws)
+      aiLines.forEach(({line,index},i) => {
+        if (previews[i].validation_errors?.length) lineFailure(index, previews[i].validation_errors!.join(' '))
+        try {
+          const match = matcher.resolve(raws[i])
+          if (match.product_id && match.product_id !== line.product_id) lineFailure(index, 'Знайдено наявну картку. Дочекайтеся автоматичного зіставлення або відскануйте штрихкод.')
+        } catch (error) {
+          if ((error as Error).message.startsWith('RECEIVING_LINE:')) throw error
+          lineFailure(index, (error as Error).message)
+        }
+      })
+    }
     const keys = new Set<string>()
     input.items.forEach((line, i) => {
       if (!clean(line.client_key) || keys.has(line.client_key)) lineFailure(i, 'Некоректний ідентифікатор рядка')
@@ -131,9 +154,23 @@ export function commitReceiving(db: LocalDatabase, input: ReceivingCommitInput):
           const sku = clean(line.sku) || 'AUTO-' + randomUUID().replace(/-/g, '').toUpperCase()
           // An archived SKU is history, not permission to revive an unrelated card.
           if (archivedSkus.has(skuKey(sku))) lineFailure(i, 'Артикул зайнятий архівною карткою. Відновіть її або змініть артикул.')
+          let categoryId = nullable(line.category_id), brandId: string | null = null
+          if (line.ai_review) {
+            const brand = invoiceBrand(line.ai_review.source)
+            if (brand) {
+              const existing = db.prepare('SELECT id FROM brands WHERE tenant_id=? AND deleted_at IS NULL AND forsage_lower(trim(name))=forsage_lower(?)').get(tenant, brand) as {id:string} | undefined
+              brandId = existing?.id ?? catalog.createBrand(brand, null, tenant).id
+            }
+            const category = clean(line.ai_category_name)
+            if (!categoryId && category) {
+              if (category.length > 120) lineFailure(i, 'Назва папки надто довга')
+              const existing = db.prepare('SELECT id FROM categories WHERE tenant_id=? AND deleted_at IS NULL AND forsage_lower(trim(name))=forsage_lower(?)').get(tenant, category) as {id:string} | undefined
+              categoryId = existing?.id ?? catalog.createCategory(category, 0, tenant).id
+            }
+          }
           saved = catalog.saveProduct({ id: randomUUID(), tenant_id: tenant, sku, name: clean(line.product_name),
-            barcode: nullable(line.barcode), unit: clean(line.unit) || 'шт', purchase_price: line.purchase_price,
-            retail_price: line.retail_price, category_id: nullable(line.category_id), storage_bin: nullable(line.storage_bin),
+            barcode: nullable(line.barcode), unit: line.ai_review ? checkedAiSupplyUnit(line.unit, undefined, 'Рядок') ?? 'шт' : clean(line.unit) || 'шт', purchase_price: line.purchase_price,
+            retail_price: line.retail_price, category_id: categoryId, brand_id: brandId, storage_bin: nullable(line.storage_bin),
             photo_url: nullable(line.photo_url), qty_on_hand: 0, is_active: true, is_service: false })
         }
         // Keep indexes fresh for repeated rows in this transaction, retaining genuine extra barcodes.
@@ -144,6 +181,9 @@ export function commitReceiving(db: LocalDatabase, input: ReceivingCommitInput):
         }
         const stored = db.prepare('SELECT * FROM products WHERE id = ? AND tenant_id = ?').get(saved.id, tenant)
         add(stored)
+        if (line.ai_review && line.product_id && line.ai_review.choice === line.product_id) {
+          rememberInvoiceProductName(db, tenant, saved.id, line.ai_review.source)
+        }
         return { product_id: saved.id, qty: line.qty, purchase_price: line.purchase_price, total: line.total }
       } catch (error) {
         const message = (error as Error).message

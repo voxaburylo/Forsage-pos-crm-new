@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from 'express'
 import { logger } from '../lib/logger.js'
+import { safeUnhandledErrorInfo } from '../lib/safeErrorInfo.js'
 
 export class AppError extends Error {
   constructor(
@@ -31,21 +32,17 @@ export function errorHandler(
     return
   }
 
-  // Визначаємо тип помилки для кращої діагностики
-  const errMsg = err instanceof Error ? err.message : String(err)
+  const diagnostic = safeUnhandledErrorInfo(err)
 
-  // Supabase / мережева недоступність
-  const isNetworkErr = errMsg.includes('fetch failed') || errMsg.includes('ENOTFOUND')
-    || errMsg.includes('ECONNREFUSED') || errMsg.includes('network')
-  if (isNetworkErr) {
-    logger.error({ error: errMsg }, 'Supabase / DB недоступний')
+  if (diagnostic.category === 'network') {
+    logger.error(diagnostic, 'Supabase / DB недоступний')
     res.status(503).json({
       error: { code: 'SERVICE_UNAVAILABLE', message: 'База даних недоступна. Перевірте статус Supabase проекту.', status: 503 },
     })
     return
   }
 
-  logger.error(err, 'Unhandled error')
+  logger.error(diagnostic, 'Unhandled error')
   res.status(500).json({
     error: {
       code: 'INTERNAL_ERROR',

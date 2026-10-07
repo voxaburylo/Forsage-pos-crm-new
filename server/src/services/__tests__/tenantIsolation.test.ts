@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { requireAuth } from '../../middleware/auth.js'
 import { listSuppliers } from '../supplierService.js'
 import { listCustomers, getCustomer } from '../customerService.js'
@@ -303,13 +304,14 @@ describe('Multi-Tenant Data Isolation Tests', () => {
       expect((global as any).__mockEq).toHaveBeenCalledWith('tenant_id', tenantId)
     })
 
-    it('should apply tenant_id query filter when getting a shift report', async () => {
+    it('should bind tenant_id and shift_id in the single shift report snapshot', async () => {
       const tenantId = 'store-abc-tenant-id'
       try {
         await getShiftReport('shift-uuid', tenantId)
       } catch {}
-      expect(db.from).toHaveBeenCalledWith('shifts')
-      expect((global as any).__mockEq).toHaveBeenCalledWith('tenant_id', tenantId)
+      const call = vi.mocked(pool.query).mock.calls.at(-1) as unknown as [string,unknown[]]
+      expect(call[1]).toEqual([tenantId,'shift-uuid'])
+      expect(call[0]).toContain('tenant_id=$1 AND id=$2')
     })
 
     it('should apply tenant_id query filter when listing sales', async () => {
@@ -365,14 +367,13 @@ describe('Multi-Tenant Data Isolation Tests', () => {
 
     it('should apply tenant_id query filter to daily sales reports', async () => {
       const tenantId = 'store-abc-tenant-id'
+      vi.mocked(pool.query).mockResolvedValueOnce({rows:[{sales:[],lines:[],returns:[],refundLines:[],orders:[],payments:[]}]} as any)
       await getSalesToday(tenantId)
-      expect(db.from).toHaveBeenCalledWith('sales')
-      expect((global as any).__mockEq).toHaveBeenCalledWith('tenant_id', tenantId)
-      const salesBuilder = (db.from as any).mock.results
-        .find((_: unknown, index: number) => (db.from as any).mock.calls[index]?.[0] === 'sales')
-        ?.value
-      expect(salesBuilder?.select).toHaveBeenCalled()
-      expect(String(salesBuilder?.select.mock.calls[0]?.[0] ?? '')).not.toContain('debt_amount')
+      const call = vi.mocked(pool.query).mock.calls.at(-1) as unknown as [string,unknown[]]
+      expect(call[1][0]).toBe(tenantId)
+      expect(call[0]).toContain('s.debt_amount')
+      const migration=readFileSync(new URL('../../../../supabase/migrations/20261004174013_sale_copy_payment_integrity.sql',import.meta.url),'utf8')
+      expect(migration).toContain('ALTER TABLE public.sales ADD COLUMN IF NOT EXISTS debt_amount INTEGER')
     })
 
     it('should apply tenant_id query filter to loyalty balances and transactions', async () => {

@@ -113,7 +113,7 @@ export class JobWorker {
 
       if (!handler) {
         const errorMsg = `No handler registered for job type: ${job.job_type}`
-        logger.error({ jobId: job.id, jobType: job.job_type }, errorMsg)
+        logger.error({ jobId: job.id, jobType: job.job_type }, 'No handler registered for job type')
         await this.handleFailure(job.id, new Error(errorMsg), job.attempts, job.max_attempts)
       } else {
         try {

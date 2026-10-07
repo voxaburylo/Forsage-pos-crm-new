@@ -2,12 +2,14 @@ import { Worker } from 'node:worker_threads'
 import path from 'node:path'
 import { existsSync, realpathSync, statSync } from 'node:fs'
 import { assertBackupContents } from './backupValidation'
+import { LOCAL_MIGRATIONS } from './schema'
 
 // Окреме read-only з'єднання: каса може писати під час копіювання.
 // quick_check також не блокує головний потік Electron на великій базі.
 const BACKUP_WORKER = `
 const { workerData, parentPort } = require('node:worker_threads');
 const { DatabaseSync, backup } = require('node:sqlite');
+const { createHash } = require('node:crypto');
 const assertBackupContents = (${assertBackupContents.toString()});
 (async () => {
   const source = new DatabaseSync(workerData.source, { readOnly: true, timeout: 5000 });
@@ -18,7 +20,7 @@ const assertBackupContents = (${assertBackupContents.toString()});
   const probe = new DatabaseSync(workerData.destination, { timeout: 5000 });
   try {
     probe.exec('PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;');
-    assertBackupContents(probe);
+    assertBackupContents(probe, workerData.knownVersions, bytes => createHash('sha256').update(bytes).digest('hex'));
   } finally { probe.close(); }
   parentPort.postMessage({ ok: true });
 })().catch(error => { parentPort.postMessage({ error: error.message }); });
@@ -40,7 +42,8 @@ export function createVerifiedBackup(source: string, destination: string): Promi
     }
   } catch (error) { return Promise.reject(error) }
   return new Promise((resolve, reject) => {
-    const worker = new Worker(BACKUP_WORKER, { eval: true, workerData: { source, destination } })
+    const worker = new Worker(BACKUP_WORKER, { eval: true,
+      workerData: { source, destination, knownVersions: LOCAL_MIGRATIONS.map(migration => migration.version) } })
     let verified = false
     let failure: Error | null = null
     const timeout = setTimeout(() => {

@@ -18,5 +18,6 @@ it('keeps a manually selected category when revalidating the same product', () =
 })
 it('clears the draft only after cancellation has succeeded', () => {
   const cancel = form.slice(form.indexOf('async function cancelInvoiceForm()'))
-  expect(cancel.indexOf('await supplierApi.deleteInvoice')).toBeLessThan(cancel.indexOf('clearSupplyInvoiceDraft'))
+  expect(cancel.indexOf('await cancelStoredInvoiceDraft')).toBeGreaterThanOrEqual(0)
+  expect(cancel.indexOf('await cancelStoredInvoiceDraft')).toBeLessThan(cancel.indexOf('clearSupplyInvoiceDraft'))
 })

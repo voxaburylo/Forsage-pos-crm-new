@@ -2,6 +2,7 @@ import { supabase } from './supabase'
 import type { Session } from '@supabase/supabase-js'
 import { desktopBridge, isDesktopRuntime } from './desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
+import { restoreDesktopServerSession } from './desktopServerSession'
 
 function phoneToEmail(phone: string): string {
   const digits = phone.replace(/\D/g, '')
@@ -256,12 +257,15 @@ export function restoreDesktopSession(): Promise<Session | null> {
       if (!user || generation !== desktopServerLoginGeneration) return null
       const session = createDesktopSession(user)
       useAuthStore.getState().setOfflineSession(session)
-      // Attach only an already existing matching online session. Passwords are
-      // never restored from storage, and local access does not wait for internet.
-      void supabase.auth.getSession().then(({ data }) => {
-        if (generation === desktopServerLoginGeneration && data.session?.user.id === user.id
-          && !isProgramAccessDenied(data.session.user) && useAuthStore.getState().session?.user.id === user.id) {
-          useAuthStore.getState().setSession(data.session)
+      // Local access stays immediate; main may restore the encrypted server tokens
+      // belonging to this same day permission. Passwords are never restored.
+      const stillCurrent = () => generation === desktopServerLoginGeneration && useAuthStore.getState().session?.user.id === user.id
+      void supabase.auth.getSession().then(async ({ data }) => {
+        if (!stillCurrent()) return
+        const online = data.session ?? await restoreDesktopServerSession(session, stillCurrent)
+        if (stillCurrent() && online?.user.id === user.id
+          && online.user.app_metadata?.tenant_id === user.tenant_id && !isProgramAccessDenied(online.user)) {
+          useAuthStore.getState().setSession(online)
         }
       }).catch(() => {})
       return session

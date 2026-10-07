@@ -29,6 +29,37 @@ describe('atomic receiving on isolated SQLite', () => {
       notes: 'Не стерти', specs: { size: '100мм' }, is_favorite: true })
     return line({ product_id: product.id, product_base: { name: product.name, sku: product.sku, barcode: null, retail_price: 1500, storage_bin: null, category_id: null, photo_url: null } })
   }
+  it('blocks disputed AI rows even if the renderer omits the warning snapshot', () => {
+    catalog.saveProduct({ id: randomUUID(), sku: 'ONE', name: 'Підшипник передній 2108 SSD', qty_on_hand: 0 })
+    catalog.saveProduct({ id: randomUUID(), sku: 'TWO', name: 'Підшипник передній 2108 SSD', qty_on_hand: 0 })
+    const item = line({ product_name: 'Підшипник передній 2108 SSD', sku: '', ai_review: { source: { name: 'Підшипник передній 2108 SSD' } } })
+    const before = snapshot()
+    expect(() => commitReceiving(db, body([item]))).toThrow('RECEIVING_LINE:0:')
+    expect(snapshot()).toEqual(before)
+  })
+  it('checks AI units again before stock writes and preserves the current edited quantity', () => {
+    const item = linked()
+    item.ai_review = { source: { name: item.product_name, qty: 46, purchase_price_uah: 10 } }
+    const before = snapshot()
+    expect(() => commitReceiving(db, body([{ ...item, unit: 'компл' }]))).toThrow('одиниця')
+    expect(snapshot()).toEqual(before)
+    const saved = commitReceiving(db, body([{ ...item, qty: 98, unit: 'шт' }]))
+    expect(saved.items[0].qty).toBe(98)
+    expect(catalog.findById(item.product_id!)?.qty_on_hand).toBe(101)
+  })
+  it('creates an AI new card, brand and folder only with final posting; a replay is harmless', () => {
+    const item = line({ sku: 'NEW-AI', product_name: 'Ключ NewBrand 20 дюймів', qty: 1, unit: 'pcs',
+      ai_category_name: 'Ключі нові', ai_review: { source: { name: 'Ключ 20 дюймів', brand: 'NewBrand' }, choice: 'new' } })
+    const input = body([item]), before = snapshot()
+    expect(() => commitReceiving(db, { ...input, payments: [{ amount: 100, payment_method: 'cash', fund_source: 'cashbox' }] })).toThrow()
+    expect(snapshot()).toEqual(before)
+    expect(db.prepare("SELECT id FROM brands WHERE name='NewBrand'").get()).toBeUndefined()
+    const saved = commitReceiving(db, input)
+    const product = catalog.findById(saved.items[0].product_id)!
+    expect(product).toMatchObject({ qty_on_hand: 1, unit: 'шт', barcode: null })
+    expect(product.brand_id).toBeTruthy(); expect(product.category_id).toBeTruthy()
+    const after = snapshot(); expect(commitReceiving(db, input).id).toBe(saved.id); expect(snapshot()).toEqual(after)
+  })
   it('creates products, posts 98 and split payments once, including after restart', () => {
     const pos = new LocalPosRepository(db), cashier = randomUUID()
     const shift = pos.openShift({ cashier_id: cashier, opening_cash: 60000 })

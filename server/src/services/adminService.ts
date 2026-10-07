@@ -598,6 +598,8 @@ export async function resetAllData(tenantId: string, currentUserId: string) {
     { name: 'inventory_receipt_items', query: 'DELETE FROM inventory_receipt_items WHERE tenant_id = $1' },
     { name: 'inventory_receipts', query: 'DELETE FROM inventory_receipts WHERE tenant_id = $1' },
 
+    { name: 'supplier_merge_receipts', query: 'DELETE FROM supplier_merge_receipts WHERE tenant_id = $1' },
+    { name: 'supplier_invoice_copy_receipts', query: 'DELETE FROM supplier_invoice_copy_receipts WHERE tenant_id = $1' },
     { name: 'supplier_payments', query: 'DELETE FROM supplier_payments WHERE tenant_id = $1' },
     { name: 'supply_invoice_items', query: 'DELETE FROM supply_invoice_items WHERE tenant_id = $1' },
     { name: 'supply_invoices', query: 'DELETE FROM supply_invoices WHERE tenant_id = $1' },

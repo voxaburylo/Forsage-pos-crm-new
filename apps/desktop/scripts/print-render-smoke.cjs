@@ -1,7 +1,7 @@
 // Isolated Chromium exercise. Never opens the shop database or a physical printer.
 const { app, BrowserWindow, session } = require('electron')
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), assert = require('node:assert/strict')
-const dist = path.resolve(__dirname, process.argv.includes('--packaged') ? '../release/win-unpacked/resources/app.asar/dist' : '../dist')
+const dist = path.resolve(__dirname, process.argv.includes('--staged') ? '../release/staged/win-unpacked/resources/app.asar/dist' : process.argv.includes('--packaged') ? '../release/win-unpacked/resources/app.asar/dist' : '../dist')
 const { loadPrintHtml } = require(path.join(dist, 'print/loadPrintHtml.js'))
 const { getPrintSession } = require(path.join(dist, 'print/printSession.js'))
 const { renderReceiptRaster } = require(path.join(dist, 'print/receiptRaster.js'))

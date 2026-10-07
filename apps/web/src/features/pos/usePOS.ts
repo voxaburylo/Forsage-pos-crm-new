@@ -7,6 +7,7 @@ import { cacheCurrentShift, getCachedCurrentShift } from '@/lib/offlineDB'
 import { useAuthStore } from '@/stores/authStore'
 import { desktopBridge, desktopCheckoutToSale, type DesktopCheckoutInput } from '@/lib/desktopBridge'
 import { buildFiscalSaleItems, parseFiscalIntentUnknown, type FiscalIntentUnknown } from './fiscalSale'
+import { posCoreTotal, posLineGross } from './posMoney'
 
 const PAYMENT_ATTEMPT_KEY = 'forsage_last_payment_attempt'
 type PaymentMethod = 'cash' | 'card' | 'debt' | 'mixed' | 'transfer'
@@ -217,7 +218,7 @@ export function usePOS() {
                 unit: item.unit,
                 qty: item.qty,
                 unit_price: deposit,
-                amount: deposit * item.qty,
+                amount: posCoreTotal(item),
                 discount: 0,
                 is_service: true,
               }]
@@ -260,7 +261,8 @@ export function usePOS() {
           qty: item.qty,
           unit_price: item.unitPrice,
           discount: item.discount,
-          total: item.unitPrice * item.qty - item.discount,
+          total: posLineGross(item.unitPrice, item.qty) - item.discount + posCoreTotal(item),
+          core_deposit_amount: item.requiresCoreReturn ? item.coreDepositAmount ?? 0 : 0,
           product: { id: item.productId, sku: item.sku, name: item.name, unit: item.unit },
         })))
 

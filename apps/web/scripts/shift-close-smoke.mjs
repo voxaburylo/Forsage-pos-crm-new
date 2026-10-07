@@ -25,7 +25,7 @@ const root=createRoot(document.getElementById('root'));
 const f=window.fixture={mode:'ok',id:'A',calls:[],errors:[],pending:[],closed:0,holdClose:false};
 function read(kind){
  const id=f.id;
- const value=kind==='report'?{shift:{id},by_method:{cash:10000,card:0},total_sales:0,sales:[]}:{expected_amount:10000};
+ const value=kind==='report'?{shift:{id},by_method:{cash:10000,card:0},total_sales:0,total_revenue:0,sales:[],...f.report}:{expected_amount:10000,...f.cash};
  if(f.mode==='error')return Promise.reject(Error('test failure'));
  if(f.mode==='defer')return new Promise(resolve=>f.pending.push(()=>resolve(value)));
  return Promise.resolve(value);
@@ -99,6 +99,26 @@ try {
   await page.evaluate(() => { fixture.role='owner'; fixture.tireError=true; fixture.render('E') })
   await page.getByText('Не вдалося завантажити нарахування.', {exact:false}).waitFor()
   assert.equal(await page.getByText('Доступно до виплати:',{exact:false}).count(), 0)
+  await page.evaluate(() => {
+    fixture.report={total_sales:1,gross_revenue:2000,refund_total:2000,total_revenue:0,refunds_by_method:{cash:1000,card:1000}};
+    fixture.cash={opening_cash:10000,cash_sales:1000,cash_returns:1000};
+    fixture.render('F');
+  })
+  await page.getByText('Продажі мінус повернення:',{exact:true}).waitFor()
+  assert.match(await page.getByText('Продано: 1 чек(ів)',{exact:true}).locator('..').innerText(), /20.00 грн/)
+  assert.match(await page.getByText('Повернення цієї зміни:',{exact:true}).locator('..').innerText(), /20.00 грн/)
+  assert.match(await page.getByText('Продажі мінус повернення:',{exact:true}).locator('..').innerText(), /0.00 грн/)
+  assert.match(await page.getByText('Очікується в касі:',{exact:true}).locator('..').innerText(), /100.00 грн/)
+  await page.getByText('Повернення через термінал:',{exact:true}).waitFor()
+  await page.evaluate(() => {fixture.report.unassigned_refunds_count=1;fixture.render('G')})
+  await page.getByText('Неповні дані',{exact:true}).waitFor()
+  await page.getByText('Для 1 старих повернень',{exact:false}).waitFor()
+  await input.fill('100')
+  assert.equal(await page.getByRole('button', {name:'Закрити зміну',exact:true}).isDisabled(), false)
+  await page.evaluate(() => {fixture.report={};fixture.render('H')})
+  await page.getByText('Продано: 0 чек(ів)',{exact:true}).waitFor()
+  assert.equal(await page.getByText('Продажі мінус повернення:',{exact:true}).count(),0)
+  assert.equal(await page.getByText('Неповні дані',{exact:true}).count(),0)
   assert.deepEqual(errors, [])
-  console.log('PASS: blank Enter, duplicate Enter, explicit shift ID, close lock, stale responses, load failure, clean reopen, salary error not shown as zero')
+  console.log('PASS: blank Enter, duplicate Enter, explicit shift ID, close lock, stale responses, load failure, clean reopen, salary error not shown as zero, gross/refund/net separation, incomplete legacy refunds, old report compatibility')
 } finally { await browser?.close(); await server.close() }

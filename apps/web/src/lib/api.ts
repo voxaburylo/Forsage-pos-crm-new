@@ -28,11 +28,17 @@ export interface RequestOptions extends Omit<RequestInit, 'headers'> {
 async function getAccessToken(): Promise<string | null> {
   try {
     const { supabase } = await import('./supabase')
-    const { data } = await supabase.auth.getSession()
+    let { data } = await supabase.auth.getSession()
     if (isDesktopRuntime()) {
       const { useAuthStore } = await import('@/stores/authStore')
       const local = useAuthStore.getState().session
-      if (!data.session || data.session.user.id !== local?.user.id || data.session.user.app_metadata?.tenant_id !== local?.user.app_metadata?.tenant_id) return null
+      if (!data.session && local?.user.app_metadata?.tenant_id) {
+        const { restoreDesktopServerSession } = await import('./desktopServerSession')
+        await restoreDesktopServerSession(local, () => useAuthStore.getState().session === local)
+        data = (await supabase.auth.getSession()).data
+      }
+      const current = useAuthStore.getState().session
+      if (!data.session || data.session.user.id !== current?.user.id || data.session.user.app_metadata?.tenant_id !== current?.user.app_metadata?.tenant_id) return null
     }
     return data.session?.access_token ?? null
   } catch {

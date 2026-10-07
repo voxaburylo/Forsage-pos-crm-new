@@ -12,12 +12,13 @@ describe('offline stock sync safety', () => {
     expect(productSource).toContain('$11::numeric, $12, $13')
   })
 
-  it('applies a writeoff as one idempotent atomic stock operation', () => {
-    expect(writeoffSource).toContain('ON CONFLICT (id) DO NOTHING')
-    expect(writeoffSource).toContain('RETURNING id')
+  it('copies writeoffs atomically without replaying stock or using current cost', () => {
+    expect(writeoffSource).toContain('runTransaction')
+    expect(writeoffSource).toContain('pg_advisory_xact_lock')
     expect(writeoffSource).toContain('FOR UPDATE')
-    expect(writeoffSource).toContain('SET qty_on_hand = qty_on_hand - $1')
-    expect(writeoffSource).toContain("throw new AppError('INSUFFICIENT_STOCK'")
+    expect(writeoffSource).toContain('cost_kopecks')
+    expect(writeoffSource).not.toContain('UPDATE products')
+    expect(writeoffSource).not.toContain('purchase_price')
   })
 
   it('serializes inventory completion and marks the session only after stock updates', () => {

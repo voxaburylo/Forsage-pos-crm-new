@@ -9,7 +9,7 @@ import * as XLSX from 'xlsx'
 import { reportApi } from './reportApi'
 import { REASON_LABEL } from '@/types/writeoff'
 import type { WriteoffReason } from '@/types/writeoff'
-import type { SalesPeriodReport, LowStockProduct, Debtor, SoldItem } from '@/types/report'
+import type { SalesPeriodReport, LowStockProduct, Debtor } from '@/types/report'
 import { AnalyticsLayout as Layout } from '@/features/analytics/AnalyticsLayout'
 import { Card, Table, Badge } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
@@ -22,7 +22,11 @@ import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { TireServiceDetails, tireOperationLabel } from './TireServiceDetails'
 import { shiftApi } from '@/features/pos/shiftApi'
 import { SoldItemsMobile } from './SoldItemsMobile'
-import { filterSoldBySupplier, soldSupplierOptions, soldSupplierNames, soldReorderExport, UNKNOWN_SUPPLIER, supplierReportNote } from './soldSupplierReport'
+import { soldSupplierOptions, soldSupplierNames, soldReorderExport, UNKNOWN_SUPPLIER, supplierReportNote } from './soldSupplierReport'
+import { filterSoldRows, soldSellerOptions, soldSellerNames, soldTotals, soldReportNote, soldCopyText } from './soldReportData'
+import { useSoldItemsReport } from './useSoldItemsReport'
+import { periodReportNote } from './periodReportData'
+import { writeoffReportDate, type WriteoffSummary } from './writeoffReportData'
 
 type Tab = 'today' | 'sold' | 'tire' | 'weekly' | 'period' | 'lowstock' | 'debtors' | 'writeoffs' | 'profit'
 
@@ -37,20 +41,11 @@ const PAYMENT_COLOR: Record<string, 'green' | 'blue' | 'red'> = {
   cash: 'green', card: 'blue', debt: 'red',
 }
 const PAYMENT_LABELS: Record<string, string> = {
-  cash: 'Готівка', card: 'Картка', transfer: 'Переказ', account: 'Рахунок клієнта', debt: 'Борг',
+  cash: 'Готівка', card: 'Картка', transfer: 'Переказ', account: 'Рахунок клієнта', debt: 'Борг', mixed: 'Змішана',
 }
 
-interface WeekDay { date: string; revenue: number; sales: number }
-interface WriteoffSummary {
-  count: number
-  total_cost: number
-  writeoffs: Array<{
-    id: string
-    reason: string
-    created_at: string
-    items: Array<{ cost_kopecks: number }>
-  }>
-}
+interface WeekDay { date: string; revenue: number; sales: number; gross_revenue: number; returns_total: number }
+
 
 function CustomTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ value: number }>; label?: string }) {
   if (!active || !payload?.length) return null
@@ -63,9 +58,9 @@ function CustomTooltip({ active, payload, label }: { active?: boolean; payload?:
 }
 
 function dateKeyDaysAgo(days: number): string {
-  const date = new Date()
-  date.setDate(date.getDate() - days)
-  return businessDateKey(date)
+  const date = new Date(businessDateKey() + 'T12:00:00Z')
+  date.setUTCDate(date.getUTCDate() - days)
+  return date.toISOString().slice(0, 10)
 }
 
 export default function DailyReport() {
@@ -76,30 +71,43 @@ export default function DailyReport() {
   const [tab, setTab]           = useState<Tab>(() => searchParams.get('tab') === 'tire' && canSeeTireReport ? 'tire' : canSeeFullReports ? 'today' : 'sold')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo]     = useState('')
-  const [report, setReport]     = useState<SalesPeriodReport | null>(null)
-  const [weekly, setWeekly]     = useState<WeekDay[]>([])
+  const reportScope = JSON.stringify([tab,dateFrom,dateTo,role,businessDateKey()])
+  const [reportState,setReportState] = useState<{key:string;data:SalesPeriodReport}|null>(null)
+  const [weeklyState,setWeeklyState] = useState<{key:string;data:WeekDay[]}|null>(null)
+  const [summaryError,setSummaryError] = useState<{key:string;message:string}|null>(null)
+  const report = reportState?.key===reportScope ? reportState.data : null
+  const weekly = weeklyState?.key===reportScope ? weeklyState.data : []
+  const reportError = summaryError?.key===reportScope ? summaryError.message : ''
   const [lowStock, setLowStock] = useState<LowStockProduct[]>([])
   const [debtors, setDebtors]   = useState<Debtor[]>([])
-  const [writeoffs, setWriteoffs] = useState<WriteoffSummary | null>(null)
+  const [writeoffState, setWriteoffState] = useState<{ key: string; data: WriteoffSummary } | null>(null)
+  const [writeoffErrorState, setWriteoffErrorState] = useState<{ key: string; message: string } | null>(null)
+  const writeoffs = writeoffState?.key === reportScope ? writeoffState.data : null
+  const writeoffError = writeoffErrorState?.key === reportScope ? writeoffErrorState.message : ''
   const [profit, setProfit]       = useState<ProfitReport | null>(null)
   const [loading, setLoading]   = useState(false)
 
 
   // Продані товари за період — один зведений список для дозамовлення.
   const todayKey = businessDateKey()
-  const [allSoldItems, setSoldItems] = useState<SoldItem[]>([])
   const [soldFrom, setSoldFrom] = useState(todayKey)
   const [soldTo, setSoldTo] = useState(todayKey)
-  const [soldLoading, setSoldLoading] = useState(false)
   const [soldSupplierId, setSoldSupplierId] = useState('')
+  const [soldSellerId, setSoldSellerId] = useState('')
+  const [soldSearch, setSoldSearch] = useState('')
+  const {rows: allSoldItems, loading: soldLoading, error: soldError} = useSoldItemsReport(
+    tab === 'today' ? todayKey : soldFrom, tab === 'today' ? todayKey : soldTo,
+    tab === 'today' || tab === 'sold', tab + ':' + role)
   const supplierOptions = useMemo(() => soldSupplierOptions(allSoldItems), [allSoldItems])
-  const supplierDataAvailable = allSoldItems.every(item => Array.isArray(item.suppliers))
-  const soldItems = useMemo(() => tab === 'sold' && supplierDataAvailable
-    ? filterSoldBySupplier(allSoldItems, soldSupplierId) : allSoldItems, [allSoldItems, tab, soldSupplierId, supplierDataAvailable])
-  const supplierLabel = !soldSupplierId || !supplierDataAvailable ? 'Усі постачальники'
+  const sellerOptions = useMemo(() => soldSellerOptions(allSoldItems), [allSoldItems])
+  const soldItems = useMemo(() => tab === 'sold'
+    ? filterSoldRows(allSoldItems,soldSupplierId,soldSellerId,soldSearch) : allSoldItems,
+    [allSoldItems,tab,soldSupplierId,soldSellerId,soldSearch])
+  const supplierLabel = !soldSupplierId ? 'Усі постачальники'
     : soldSupplierId === UNKNOWN_SUPPLIER ? 'Постачальника не визначено'
     : supplierOptions.find(item => item.id === soldSupplierId)?.name ?? 'Вибраний постачальник'
-  const [soldError, setSoldError] = useState(false)
+  const sellerLabel = !soldSellerId ? 'Усі продавці' : sellerOptions.find(item=>item.id===soldSellerId)?.name ?? 'Вибраний продавець'
+  const soldHeading = `Продані товари: ${soldFrom} — ${soldTo} | ${supplierLabel} | ${sellerLabel}${soldSearch.trim() ? ' | Пошук: '+soldSearch.trim() : ''}`
   const [tireDate, setTireDate] = useState(() => {
     const requested = searchParams.get('date') ?? ''
     return /^\d{4}-\d{2}-\d{2}$/.test(requested) && requested <= todayKey &&
@@ -111,16 +119,18 @@ export default function DailyReport() {
   const tireRows = useMemo(() => tireReport?.data.filter(row => !tireEmployeeId || row.employee_id === tireEmployeeId) ?? [], [tireReport, tireEmployeeId])
   const [tireLoading, setTireLoading] = useState(false)
   const tireAction = useScopedAction(JSON.stringify([tab, tireDate, tireEmployeeId, role]))
-  const reportRequests = useLatestRequest([tab, dateFrom, dateTo])
+  const reportRequests = useLatestRequest([tab, dateFrom, dateTo, role, todayKey])
   const tireRequests = useLatestRequest([tab, tireDate])
 
   // A changed filter is not a report: do not export previous rows under new dates.
   useEffect(() => {
-    setReport(null)
-    setWeekly([])
+    setReportState(null)
+    setWeeklyState(null)
+    setSummaryError(null)
     setLowStock([])
     setDebtors([])
-    setWriteoffs(null)
+    setWriteoffState(null)
+    setWriteoffErrorState(null)
     setProfit(null)
     setLoading(false)
   }, [tab, dateFrom, dateTo])
@@ -131,35 +141,15 @@ export default function DailyReport() {
     setTireLoading(false)
   }, [tab, tireDate])
 
-  useEffect(() => {
-    setSoldItems([])
-    setSoldLoading(false)
-    setSoldError(false)
-    if (tab !== 'sold' || !soldFrom || !soldTo || soldFrom > soldTo) return
-    let cancelled = false
-    setSoldLoading(true)
-    reportApi.soldItems(soldFrom, soldTo)
-      .then((r) => { if (!cancelled) setSoldItems(r.data ?? []) })
-      .catch(() => {
-        if (!cancelled) {
-          setSoldItems([])
-          setSoldError(true)
-          toast.error('Не вдалося сформувати список проданих товарів')
-        }
-      })
-      .finally(() => { if (!cancelled) setSoldLoading(false) })
-    return () => { cancelled = true }
-  }, [tab, soldFrom, soldTo])
+
 
   async function copySoldItems() {
-    if (soldLoading || !soldFrom || !soldTo || soldFrom > soldTo) return
+    if (soldLoading || soldError) return
     if (soldItems.length === 0) {
       toast.error('Немає товарів для копіювання')
       return
     }
-    const text = `Продані товари: ${soldFrom} — ${soldTo} | ${supplierLabel}\n` + soldItems.map((item, index) =>
-      `${index + 1}. ${item.name} | арт. ${item.sku || '—'} | продано ${item.qty_net} ${item.unit} | залишок ${item.qty_on_hand} ${item.unit} | ${soldSupplierNames(item)}`,
-    ).join('\n')
+    const text = soldCopyText(soldItems,soldHeading)
     try {
       await navigator.clipboard.writeText(text)
       toast.success('Список проданих товарів скопійовано')
@@ -169,14 +159,14 @@ export default function DailyReport() {
   }
 
   function printSoldItems() {
-    if (soldLoading || !soldFrom || !soldTo || soldFrom > soldTo) return
+    if (soldLoading || soldError || !soldItems.length) return
     const escapeHtml = (value: unknown) => String(value ?? '')
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     const period = soldFrom === soldTo ? soldFrom : `${soldFrom} — ${soldTo}`
     const rows = soldItems.map((it, i) =>
       `<tr><td>${i + 1}</td><td>${escapeHtml(it.sku)}</td><td>${escapeHtml(it.barcode || '—')}</td>` +
       `<td>${escapeHtml(it.name)}<br><small>${escapeHtml(soldSupplierNames(it))}</small></td><td style="text-align:right;font-weight:bold">${it.qty_net} ${escapeHtml(it.unit)}</td>` +
-      `<td style="text-align:right">${it.qty_on_hand} ${escapeHtml(it.unit)}</td></tr>`).join('')
+      `<td style="text-align:right">${it.qty_on_hand} ${escapeHtml(it.unit)}</td><td>${escapeHtml(soldSellerNames(it))}</td><td>${escapeHtml(formatMoney(it.net_revenue))}</td></tr>`).join('')
     const w = window.open('', '_blank', 'width=900,height=900')
     if (!w) return
     w.document.write(`<html><head><title>Продані товари ${period}</title><style>
@@ -186,8 +176,8 @@ export default function DailyReport() {
       th{background:#f3f3f3}
     </style></head><body>
       <h3>Продані товари за ${period} — для дозамовлення</h3>
-      <p>${escapeHtml(supplierLabel)}</p><p>${escapeHtml(supplierReportNote)}</p>
-      <table><tr><th>#</th><th>Артикул</th><th>Штрихкод</th><th>Назва</th><th>Продано</th><th>Залишок</th></tr>${rows}</table>
+      <p>${escapeHtml(soldHeading)}</p><p>${escapeHtml(supplierReportNote)}</p><p>${escapeHtml(soldReportNote)}</p>
+      <table><tr><th>#</th><th>Артикул</th><th>Штрихкод</th><th>Назва</th><th>Чисто продано</th><th>Залишок</th><th>Продавці</th><th>Сума</th></tr>${rows}</table><p>Разом: ${escapeHtml(formatMoney(soldTotals(soldItems).revenue))}</p>
     </body></html>`)
     w.document.close()
     w.focus()
@@ -195,38 +185,35 @@ export default function DailyReport() {
   }
 
   const loadToday = useCallback(async () => {
-    const isCurrent = reportRequests.begin()
-    setLoading(true)
+    const isCurrent=reportRequests.begin()
+    setLoading(true);setReportState(null);setSummaryError(null)
     try {
-      const [{ data: period }, { data: items }] = await Promise.all([
-        reportApi.salesPeriod(todayKey, todayKey),
-        reportApi.soldItems(todayKey, todayKey),
-      ])
-      if (!isCurrent()) return
-      setReport(period)
-      setSoldItems(items ?? [])
-    } catch { if (isCurrent()) toast.error('Помилка завантаження') } finally { if (isCurrent()) setLoading(false) }
-  }, [todayKey])
+      const {data}=await reportApi.salesPeriod(todayKey,todayKey)
+      if(isCurrent())setReportState({key:reportScope,data})
+    } catch(error) { if(isCurrent())setSummaryError({key:reportScope,message:error instanceof Error?error.message:'Не вдалося завантажити звіт'}) }
+    finally { if(isCurrent())setLoading(false) }
+  }, [todayKey,reportScope])
 
   const loadWeekly = useCallback(async () => {
-    const isCurrent = reportRequests.begin()
-    setLoading(true)
+    const isCurrent=reportRequests.begin()
+    setLoading(true);setWeeklyState(null);setSummaryError(null)
     try {
-      const { data } = await reportApi.weekly()
-      if (!isCurrent()) return
-      setWeekly(data)
-    } catch { if (isCurrent()) toast.error('Помилка завантаження') } finally { if (isCurrent()) setLoading(false) }
-  }, [])
+      const {data}=await reportApi.weekly()
+      if(isCurrent())setWeeklyState({key:reportScope,data})
+    } catch(error) { if(isCurrent())setSummaryError({key:reportScope,message:error instanceof Error?error.message:'Не вдалося завантажити звіт'}) }
+    finally { if(isCurrent())setLoading(false) }
+  }, [reportScope])
 
   const loadPeriod = useCallback(async () => {
-    const isCurrent = reportRequests.begin()
-    setLoading(true)
+    const isCurrent=reportRequests.begin()
+    setLoading(true);setReportState(null);setSummaryError(null)
     try {
-      const { data } = await reportApi.salesPeriod(dateFrom || undefined, dateTo || undefined)
-      if (!isCurrent()) return
-      setReport(data)
-    } catch { if (isCurrent()) toast.error('Помилка завантаження') } finally { if (isCurrent()) setLoading(false) }
-  }, [dateFrom, dateTo])
+      if(!dateFrom||!dateTo)throw Error('Виберіть дату початку й завершення')
+      const {data}=await reportApi.salesPeriod(dateFrom,dateTo)
+      if(isCurrent())setReportState({key:reportScope,data})
+    } catch(error) { if(isCurrent())setSummaryError({key:reportScope,message:error instanceof Error?error.message:'Не вдалося завантажити звіт'}) }
+    finally { if(isCurrent())setLoading(false) }
+  }, [dateFrom,dateTo,reportScope])
 
   const loadProfit = useCallback(async () => {
     const isCurrent = reportRequests.begin()
@@ -264,12 +251,18 @@ export default function DailyReport() {
   const loadWriteoffs = useCallback(async () => {
     const isCurrent = reportRequests.begin()
     setLoading(true)
+    setWriteoffState(null)
+    setWriteoffErrorState(null)
     try {
       const { data } = await reportApi.writeoffsSummary()
       if (!isCurrent()) return
-      setWriteoffs(data)
-    } catch { if (isCurrent()) toast.error('Помилка завантаження') } finally { if (isCurrent()) setLoading(false) }
-  }, [])
+      setWriteoffState({ key: reportScope, data })
+    } catch (error) {
+      if (!isCurrent()) return
+      const message = error instanceof Error ? error.message : 'Не вдалося завантажити звіт списань'
+      setWriteoffErrorState({ key: reportScope, message })
+    } finally { if (isCurrent()) setLoading(false) }
+  }, [reportScope])
 
   const loadTireReport = useCallback(async () => {
     if (!canSeeTireReport || !tireDate) return
@@ -338,7 +331,7 @@ export default function DailyReport() {
   }
 
   const exportToExcel = useCallback(() => {
-    if (loading || soldLoading || tireLoading || (tab === 'sold' && (!soldFrom || !soldTo || soldFrom > soldTo))) { toast.error('Дочекайтеся коректного звіту за обраний період'); return }
+    if (loading || soldLoading || tireLoading || ((tab === 'sold' || tab === 'today') && soldError)) { toast.error('Дочекайтеся коректного звіту за обраний період'); return }
     try {
       let dataToExport: any[] = []
       let fileName = 'zvit'
@@ -348,16 +341,10 @@ export default function DailyReport() {
           toast.error('Немає проданих товарів за сьогодні')
           return
         }
-        dataToExport = soldItems.map((item) => ({
-          'Назва товару': item.name,
-          'Артикул': item.sku,
-          'Продано': item.qty_net,
-          'Одиниця': item.unit,
-          'Сума (грн)': item.net_revenue / 100,
-        }))
+        dataToExport = soldReorderExport(soldItems, 'Усі постачальники').map(row => ({'Дата':todayKey,...row}))
         fileName = 'sold_items_today'
       } else if (tab === 'period') {
-        if (!report || !report.sales.length) {
+        if (!report) {
           toast.error('Немає даних для експорту')
           return
         }
@@ -376,7 +363,9 @@ export default function DailyReport() {
         dataToExport = weekly.map((d) => ({
           'Дата': formatDate(d.date),
           'Кількість продажів': d.sales,
-          'Виручка (грн)': d.revenue / 100,
+          'Сума чеків (грн)': d.gross_revenue / 100,
+          'Повернення (грн)': d.returns_total / 100,
+          'Після повернень (грн)': d.revenue / 100,
         }))
         fileName = 'weekly_sales'
       } else if (tab === 'sold') {
@@ -384,7 +373,7 @@ export default function DailyReport() {
           toast.error('Немає проданих товарів за вибраний період')
           return
         }
-        dataToExport = soldReorderExport(soldItems, supplierLabel)
+        dataToExport = soldReorderExport(soldItems, supplierLabel).map(row => ({'Від':soldFrom,'До':soldTo,'Продавець у звіті':sellerLabel,'Пошук':soldSearch.trim(),...row}))
         const supplierFile = supplierLabel.replace(/[<>:"/\\|?*]/g, '_').slice(0, 60)
         fileName = `sold_items_${soldFrom}_${soldTo}_${supplierFile}`
       } else if (tab === 'tire') {
@@ -459,15 +448,15 @@ export default function DailyReport() {
           return
         }
         dataToExport = writeoffs.writeoffs.map((w) => {
-          const cost = w.items.reduce((s, i) => s + i.cost_kopecks, 0)
+          const cost = w.total_cost
           return {
-            'Дата': formatDate(w.created_at),
+            'Дата': writeoffReportDate(w.created_at),
             'Причина': REASON_LABEL[w.reason as WriteoffReason] || w.reason,
             'Кількість позицій': w.items.length,
             'Собівартість (грн)': cost / 100,
           }
         })
-        fileName = 'writeoffs'
+        fileName = 'writeoffs_' + writeoffs.month
       } else if (tab === 'profit') {
         if (!profit) {
           toast.error('Немає даних для експорту')
@@ -486,13 +475,32 @@ export default function DailyReport() {
       const worksheet = XLSX.utils.json_to_sheet(dataToExport)
       const workbook = XLSX.utils.book_new()
       XLSX.utils.book_append_sheet(workbook, worksheet, 'Звіт')
+      if(tab==='period' && report) {
+        XLSX.utils.book_append_sheet(workbook,XLSX.utils.json_to_sheet([
+          {Показник:'Період',Значення:dateFrom+' — '+dateTo},
+          {Показник:'Сума чеків',Значення:report.total_revenue/100},
+          {Показник:'Повернення',Значення:report.returns_total/100},
+          {Показник:'Після повернень',Значення:report.net_revenue/100},
+          ...Object.entries(report.by_method).map(([method,amount])=>({Показник:PAYMENT_LABELS[method],Значення:amount/100})),
+          {Показник:'Примітка',Значення:periodReportNote},
+          {Показник:'Джерело',Значення:isDesktopRuntime()?'Локальна база':'Серверна копія; повнота на поточний час не підтверджена'},
+        ]),'Підсумок')
+      }
+      if (tab === 'writeoffs' && writeoffs) {
+        XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet([
+          { Показник: 'Місяць за київським часом', Значення: writeoffs.month },
+          { Показник: 'Актів', Значення: writeoffs.count },
+          { Показник: 'Собівартість (грн)', Значення: writeoffs.total_cost / 100 },
+          { Показник: 'Джерело', Значення: isDesktopRuntime() ? 'Локальна база' : 'Серверна копія; повнота на поточний час не підтверджена' },
+        ]), 'Підсумок')
+      }
       const exportName = tab === 'sold' ? `${fileName}.xlsx` : `${fileName}_${businessDateKey()}.xlsx`
       XLSX.writeFile(workbook, exportName)
       toast.success('Звіт успішно експортовано в Excel')
     } catch (err) {
       toast.error(`Помилка експорту: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [tab, report, weekly, lowStock, debtors, writeoffs, profit, soldItems, soldFrom, soldTo, supplierLabel, tireRows, tireReport, tireError, tireDate, loading, soldLoading, tireLoading])
+  }, [tab, dateFrom, dateTo, report, weekly, lowStock, debtors, writeoffs, profit, soldItems, soldFrom, soldTo, supplierLabel, sellerLabel, soldSearch, soldError, todayKey, tireRows, tireReport, tireError, tireDate, loading, soldLoading, tireLoading])
 
   useEffect(() => {
     if (tab === 'today')         loadToday()
@@ -518,8 +526,8 @@ export default function DailyReport() {
 
   const weeklyTotal = weekly.reduce((s, d) => s + d.revenue, 0)
   const weeklySales = weekly.reduce((s, d) => s + d.sales, 0)
-  const soldQty = soldItems.reduce((sum, item) => sum + Number(item.qty_net), 0)
-  const soldRevenue = soldItems.reduce((sum, item) => sum + Number(item.net_revenue), 0)
+  const {qty: soldQty, revenue: soldRevenue} = soldTotals(soldItems)
+  const soldReady = !soldLoading && !soldError
 
   const chartData = weekly.map((d) => ({
     name: formatDate(d.date).slice(0, 5),
@@ -549,22 +557,24 @@ export default function DailyReport() {
           ))}
         </div>
 
-        <button onClick={exportToExcel}
+        <button onClick={exportToExcel} disabled={(tab === 'sold' || tab === 'today') && (!soldReady || soldItems.length === 0)}
           className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white font-medium px-4 py-2 rounded-lg text-sm transition-colors cursor-pointer">
           <Download size={15} />
           Експорт в Excel
         </button>
       </div>
 
+      {['today','weekly','period'].includes(tab) && reportError && <p role="alert" className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{reportError}</p>}
+      {['today','weekly','period'].includes(tab) && loading && <p role="status" className="mb-4 text-sm text-gray-500">Завантаження звіту…</p>}
       {/* Сьогодні */}
       {tab === 'today' && report && (
         <>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-4 mb-3">
             {[
-              { label: 'Товарних позицій', value: String(soldItems.length) },
-              { label: 'Продано одиниць', value: String(Number(soldQty.toFixed(3))) },
-              { label: 'Сума проданих товарів', value: formatMoney(soldRevenue) },
-              { label: 'Отримано грошей', value: formatMoney(report.payment_received_total) },
+              { label: 'Товарних позицій', value: soldReady ? String(soldItems.length) : '—' },
+              { label: 'Чисто продано одиниць', value: soldReady ? String(soldQty) : '—' },
+              { label: 'Сума товарів після повернень', value: soldReady ? formatMoney(soldRevenue) : '—' },
+              { label: 'Прийнято оплат до повернень', value: formatMoney(report.payment_received_total) },
               { label: 'Готівка', value: formatMoney(report.by_method.cash) },
               { label: 'Картка', value: formatMoney(report.by_method.card) },
               { label: 'Переказ', value: formatMoney(report.by_method.transfer) },
@@ -577,9 +587,9 @@ export default function DailyReport() {
             ))}
           </div>
           <p className="mb-4 text-xs text-gray-500">
-            Товари потрапляють у цей список за датою завершення продажу та об’єднуються незалежно від кількості чеків.
+            {soldReportNote}
             Передоплати замовлень рахуються окремо за датою прийняття грошей.
-            {' '}Отримано грошей — це платежі за період, а не залишок готівки в касі: внесення, виплати й початковий залишок звіряйте у закритті зміни.
+            {' '}{periodReportNote}
           </p>
 
           <Card padding="none">
@@ -590,10 +600,10 @@ export default function DailyReport() {
               </div>
               <div className="min-w-0 md:text-right">
                 <p className="text-xs text-gray-500">Сума товарів за день</p>
-                <p className="text-lg font-bold text-gray-900">{formatMoney(soldRevenue)}</p>
+                <p className="text-lg font-bold text-gray-900">{soldReady ? formatMoney(soldRevenue) : '—'}</p>
               </div>
             </div>
-            {soldItems.length === 0 ? (
+            {soldLoading ? <p className="p-6 text-gray-500">Формуємо список…</p> : soldError ? <p role="alert" className="p-6 text-red-700">{soldError}</p> : soldItems.length === 0 ? (
               <div className="px-4 py-8 text-center text-sm text-gray-400">Проданих товарів за сьогодні немає</div>
             ) : (
               <>
@@ -604,7 +614,7 @@ export default function DailyReport() {
                     <tr>
                       <th className="px-4 py-3 text-left">Назва товару</th>
                       <th className="px-2 py-3 text-left">Артикул</th>
-                      <th className="px-2 py-3 text-right">Продано</th>
+                      <th className="px-2 py-3 text-right">Чисто продано</th>
                       <th className="px-4 py-3 text-right">Сума</th>
                     </tr>
                   </thead>
@@ -636,7 +646,7 @@ export default function DailyReport() {
                 <h2 className="text-lg font-bold text-gray-900">Продані товари за період</h2>
                 <p className="mt-1 text-sm text-gray-500">Однакові товари з усіх чеків зібрані в один рядок — готовий список для повторного замовлення.</p>
               </div>
-              <div className="grid min-w-0 grid-cols-2 gap-2 lg:flex lg:flex-wrap lg:items-end">
+              <div className="analytics-sold-actions grid min-w-0 grid-cols-2 gap-2 lg:flex lg:flex-wrap lg:items-end">
                 <label className="min-w-0 text-xs font-medium text-gray-600">
                   Від
                   <input type="date" value={soldFrom} max={soldTo}
@@ -680,11 +690,30 @@ export default function DailyReport() {
                 </button>
               ))}
             </div>
+            <div className="mt-4 grid min-w-0 gap-3 md:grid-cols-2">
+              <label className="min-w-0 text-sm font-medium text-gray-700">
+                Знайти проданий товар
+                <input type="search" value={soldSearch} onChange={event=>setSoldSearch(event.target.value)}
+                  placeholder="Назва, артикул або штрихкод"
+                  className="mt-1 block min-h-[44px] w-full min-w-0 rounded-lg border border-gray-200 px-3 text-base" />
+              </label>
+              <label className="min-w-0 text-sm font-medium text-gray-700">
+                Продавець
+                <select aria-label="Продавець" value={soldSellerId} onChange={event=>setSoldSellerId(event.target.value)} disabled={soldLoading}
+                  className="mt-1 block min-h-[44px] w-full min-w-0 rounded-lg border border-gray-200 bg-white px-3 text-base">
+                  <option value="">Усі продавці</option>
+                  {soldSellerId && !sellerOptions.some(item=>item.id===soldSellerId) &&
+                    <option value={soldSellerId}>Вибраний продавець — немає операцій</option>}
+                  {sellerOptions.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}
+                </select>
+              </label>
+              <p className="text-xs text-gray-500 md:col-span-2">Продавець — менеджер, записаний у чеку, або касир для звичайного продажу. Повернення віднесено до продавця початкового чека.</p>
+            </div>
             <div className="mt-4 min-w-0 border-t border-gray-100 pt-4">
               <label className="block min-w-0 text-sm font-medium text-gray-700">
                 Постачальник
-                <select aria-label="Постачальник для дозамовлення" value={supplierDataAvailable ? soldSupplierId : ''}
-                  onChange={event => setSoldSupplierId(event.target.value)} disabled={soldLoading || !supplierDataAvailable}
+                <select aria-label="Постачальник для дозамовлення" value={soldSupplierId}
+                  onChange={event => setSoldSupplierId(event.target.value)} disabled={soldLoading}
                   className="mt-1 block min-h-[44px] w-full min-w-0 max-w-full rounded-lg border border-gray-200 bg-white px-3 text-base md:max-w-md md:text-sm">
                   <option value="">Усі постачальники</option>
                   <option value={UNKNOWN_SUPPLIER}>Постачальника не визначено</option>
@@ -694,22 +723,22 @@ export default function DailyReport() {
                 </select>
               </label>
               <p className="mt-2 text-xs leading-relaxed text-gray-500">{supplierReportNote}</p>
-              {!supplierDataAvailable && <p role="status" className="mt-2 text-sm text-amber-700">Оновіть програму або веб-сервер, щоб бачити постачальників. Зараз показано загальний звіт.</p>}
+              <p className="mt-2 text-xs leading-relaxed text-gray-500">{soldReportNote}</p>
             </div>
           </Card>
 
           <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
             <Card>
               <p className="text-xs text-gray-400">Товарних позицій</p>
-              <p className="text-2xl font-bold text-gray-900">{soldItems.length}</p>
+              <p className="text-2xl font-bold text-gray-900">{soldReady ? soldItems.length : '—'}</p>
             </Card>
             <Card>
               <p className="text-xs text-gray-400">Чисто продано</p>
-              <p className="text-2xl font-bold text-gray-900">{Number(soldQty.toFixed(3))}</p>
+              <p className="text-2xl font-bold text-gray-900">{soldReady ? soldQty : '—'}</p>
             </Card>
             <Card>
               <p className="text-xs text-gray-400">Чиста сума продажів</p>
-              <p className="text-2xl font-bold text-gray-900">{formatMoney(soldRevenue)}</p>
+              <p className="text-2xl font-bold text-gray-900">{soldReady ? formatMoney(soldRevenue) : '—'}</p>
             </Card>
           </div>
 
@@ -717,10 +746,10 @@ export default function DailyReport() {
             {soldLoading ? (
               <div className="flex min-h-48 items-center justify-center text-sm text-gray-400">Формуємо список…</div>
             ) : soldError ? (
-              <p role="alert" className="p-6 text-center text-red-700">Не вдалося завантажити звіт. Перевірте підключення та виберіть період ще раз.</p>
+              <p role="alert" className="p-6 text-center text-red-700">{soldError}</p>
             ) : soldItems.length === 0 ? (
               <div className="flex min-h-48 items-center justify-center px-4 text-center text-sm text-gray-400">
-                За вибраний період і постачальником проданих товарів немає
+                За вибраним періодом, пошуком і фільтрами операцій із товарами немає
               </div>
             ) : (
               <>
@@ -743,9 +772,9 @@ export default function DailyReport() {
                       <tr key={item.product_id} className={item.qty_on_hand <= 0 ? 'bg-red-50/60' : 'hover:bg-gray-50'}>
                         <td data-label="Артикул" className="px-4 py-2 font-mono text-xs text-gray-600">{item.sku || '—'}</td>
                         <td data-label="Штрихкод" className="px-2 py-2 font-mono text-xs text-gray-600">{item.barcode || '—'}</td>
-                        <td data-label="Назва" className="px-2 py-2 font-medium text-gray-900">{item.name}<div className="mt-1 text-xs font-normal text-gray-500">{soldSupplierNames(item)}</div></td>
+                        <td data-label="Назва" className="px-2 py-2 font-medium text-gray-900">{item.name}<div className="mt-1 text-xs font-normal text-gray-500">{soldSupplierNames(item)}<br />Продавці: {soldSellerNames(item)}</div></td>
                         <td data-label="Полиця" className="px-2 py-2 text-gray-500">{item.storage_bin || '—'}</td>
-                        <td data-label="Чисто продано" className="px-2 py-2 text-right font-bold text-gray-900">{item.qty_net} {item.unit}</td>
+                        <td data-label="Чисто продано" className="px-2 py-2 text-right font-bold text-gray-900">{item.qty_net} {item.unit}{item.qty_returned > 0 && <div className="text-xs font-normal text-gray-500">Продано {item.qty_sold}; повернуто {item.qty_returned}</div>}</td>
                         <td data-label="Залишок" className={`px-2 py-2 text-right font-semibold ${item.qty_on_hand <= 0 ? 'text-red-600' : 'text-gray-600'}`}>
                           {item.qty_on_hand} {item.unit}
                         </td>
@@ -776,17 +805,17 @@ export default function DailyReport() {
         <>
           <div className="grid grid-cols-2 gap-4 mb-6">
             <Card>
-              <p className="text-xs text-gray-400 mb-1">Виручка за 7 днів</p>
-              <p className="text-2xl font-bold text-gray-900">{formatMoney(weeklyTotal)}</p>
+              <p className="text-xs text-gray-400 mb-1">За 7 днів після повернень</p>
+              <p className="text-2xl font-bold text-gray-900">{weekly.length && !loading && !reportError ? formatMoney(weeklyTotal) : '—'}</p>
             </Card>
             <Card>
               <p className="text-xs text-gray-400 mb-1">Продажів за 7 днів</p>
-              <p className="text-2xl font-bold text-gray-900">{weeklySales}</p>
+              <p className="text-2xl font-bold text-gray-900">{weekly.length && !loading && !reportError ? weeklySales : '—'}</p>
             </Card>
           </div>
 
           <Card>
-            <p className="text-sm font-semibold text-gray-700 mb-4">Виручка по днях</p>
+            <p className="text-sm font-semibold text-gray-700 mb-4">Сума по днях після повернень</p>
             {loading ? (
               <div className="h-48 flex items-center justify-center text-gray-400 text-sm">Завантаження...</div>
             ) : (
@@ -831,13 +860,13 @@ export default function DailyReport() {
           <Card className="mb-4">
             <div className="flex items-end gap-4 flex-wrap">
               <div>
-                <label className="block text-xs text-gray-500 mb-1">Від</label>
-                <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)}
+                <label htmlFor="period-from" className="block text-xs text-gray-500 mb-1">Від</label>
+                <input id="period-from" type="date" value={dateFrom} max={dateTo || todayKey} onChange={(e) => setDateFrom(e.target.value)}
                   className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400" />
               </div>
               <div>
-                <label className="block text-xs text-gray-500 mb-1">До</label>
-                <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)}
+                <label htmlFor="period-to" className="block text-xs text-gray-500 mb-1">До</label>
+                <input id="period-to" type="date" value={dateTo} min={dateFrom} max={todayKey} onChange={(e) => setDateTo(e.target.value)}
                   className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400" />
               </div>
               <button onClick={loadPeriod}
@@ -852,9 +881,9 @@ export default function DailyReport() {
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
                 {[
                   { label: 'Продажів', value: String(report.total_sales) },
-                  { label: 'Виручка',  value: formatMoney(report.total_revenue) },
-                  { label: 'Готівка',  value: formatMoney(report.by_method.cash) },
-                  { label: 'Картка',   value: formatMoney(report.by_method.card) },
+                  { label: 'Сума чеків', value: formatMoney(report.total_revenue) },
+                  { label: 'Повернення', value: formatMoney(report.returns_total) },
+                  { label: 'Після повернень', value: formatMoney(report.net_revenue) },
                 ].map(({ label, value }) => (
                   <Card key={label}>
                     <p className="text-xs text-gray-400 mb-1">{label}</p>
@@ -862,6 +891,7 @@ export default function DailyReport() {
                   </Card>
                 ))}
               </div>
+              <p className="mb-3 text-xs text-gray-500">{periodReportNote} Готівка: {formatMoney(report.by_method.cash)}; картка: {formatMoney(report.by_method.card)}; переказ: {formatMoney(report.by_method.transfer)}; рахунок клієнта: {formatMoney(report.by_method.account)}; борг: {formatMoney(report.by_method.debt)}.</p>
               <Card padding="none">
                 <Table
                   columns={[
@@ -923,6 +953,7 @@ export default function DailyReport() {
       )}
 
       {/* Списання */}
+      {tab === 'writeoffs' && writeoffError && <p role="alert" className="text-sm text-red-700 bg-red-50 rounded-lg p-4">{writeoffError}</p>}
       {tab === 'writeoffs' && writeoffs && (
         <>
           <div className="grid grid-cols-2 gap-4 mb-6">
@@ -948,10 +979,10 @@ export default function DailyReport() {
               </thead>
               <tbody>
                 {writeoffs.writeoffs.map((w) => {
-                  const cost = w.items.reduce((s, i) => s + i.cost_kopecks, 0)
+                  const cost = w.total_cost
                   return (
                     <tr key={w.id} className="border-b border-gray-50 hover:bg-gray-50/50">
-                      <td data-label="Дата" className="px-4 py-2">{formatDate(w.created_at)}</td>
+                      <td data-label="Дата" className="px-4 py-2">{writeoffReportDate(w.created_at)}</td>
                       <td data-label="Причина" className="px-4 py-2 text-gray-600">{REASON_LABEL[w.reason as WriteoffReason] ?? w.reason}</td>
                       <td data-label="Позицій" className="px-4 py-2 text-right">{w.items.length}</td>
                       <td data-label="Собівартість" className="px-4 py-2 text-right font-mono text-red-600">{formatMoney(cost)}</td>

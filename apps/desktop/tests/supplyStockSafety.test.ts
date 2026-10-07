@@ -97,7 +97,7 @@ describe('local supply stock safety', () => {
       fund_source: 'owner_funds',
     })
 
-    expect(() => supply.cancelInvoice(invoice.id)).toThrow(/Не можна скасувати оплачену накладну/)
+    expect(() => supply.cancelInvoice(invoice.id)).toThrow(/накладну з оплатою/)
     expect(supply.getInvoice(invoice.id).status).toBe('posted')
   })
 })

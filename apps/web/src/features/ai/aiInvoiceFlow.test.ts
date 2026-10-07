@@ -8,7 +8,8 @@ describe('AI invoice confirmation lifecycle', () => {
     expect(send.indexOf('sendBusy.current = false', send.lastIndexOf('finally'))).toBeLessThan(send.lastIndexOf('await removeProcessingUploads'))
   })
   it('opens the full invoice review directly and suppresses the duplicate short table', () => {
-    expect(page).toContain('if (invoiceAction) setModalAction(invoiceAction)')
+    expect(page).toContain('if (invoiceAction) await openInvoice(invoiceAction,')
+    expect(page).not.toContain('<AiInvoiceReview')
     expect(page).toContain(') : isInvoice ? null : isBulk')
   })
   it('does not use confirming an action to unlock a different recognition operation', () => {

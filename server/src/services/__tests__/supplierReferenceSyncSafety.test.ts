@@ -19,10 +19,10 @@ describe('supplier reference synchronization safety', () => {
     expect(keysetSource).toContain('.order(options.timestampColumn, { ascending: true })')
   })
 
-  it('touches invoices and payments in both supplier merge paths', () => {
-    expect(syncSource).toContain('UPDATE supplier_payments SET supplier_id = $1, updated_at = $4')
-    expect(supplierSource).toContain("table === 'supply_invoices' || table === 'supplier_payments'")
-    expect(supplierSource).toContain('SET supplier_id = $1, updated_at = NOW()')
+  it('routes both merge paths through the history guard instead of rewriting financial identities', () => {
+    expect(syncSource).toContain('await mergeEmptySupplier(primaryId, duplicateId, tenantId, operation.created_at)')
+    expect(supplierSource).toContain('return mergeEmptySupplier(primaryId, duplicateId, tenantId)')
+    expect(supplierSource).not.toContain('SET supplier_id = $1 WHERE supplier_id = $2')
   })
 
   it('adds the indexed server timestamp required by delta pull', () => {

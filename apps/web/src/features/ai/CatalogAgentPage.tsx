@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useAuthStore } from '@/stores/authStore'
 import { Link } from 'react-router-dom'
 import { Layout } from '@/components/Layout'
@@ -15,10 +15,12 @@ type Scan = { products: AgentProduct[]; categories: Array<{ id: string; name: st
 const labels: Record<string, string> = { all: 'Усі', name: 'Назви', sku: 'Артикули', category: 'Категорії', price: 'Націнка', duplicate: 'Дублі', ai: 'Пропозиції AI' }
 const fields: Record<string, string> = { name: 'Назва', sku: 'Артикул', category_id: 'Категорія', retail_price: 'Ціна продажу' }
 let reviewMemory: { userId: string; issues: CatalogIssue[]; reviewed: Record<string, string> } | null = null
+const catalogScope = (id: string, tenant: unknown) => JSON.stringify([id, tenant ?? 'local'])
+const canReviewCatalog = (role: unknown) => role === 'owner' || role === 'admin'
 export default function CatalogAgentPage() {
   const user = useAuthStore(state => state.session?.user)
-  if (!user) return null
-  const scope = JSON.stringify([user.id, user.app_metadata?.tenant_id ?? 'local'])
+  if (!user || !canReviewCatalog(user.app_metadata?.role)) return null
+  const scope = catalogScope(user.id, user.app_metadata?.tenant_id)
   return <CatalogAgentContent key={scope} userId={scope} />
 }
 function CatalogAgentContent({userId}:{userId:string}) {
@@ -37,46 +39,52 @@ function CatalogAgentContent({userId}:{userId:string}) {
   const [confirm, setConfirm] = useState(false)
   const stop = useRef(false)
   const running = useRef(false)
-  const mounted = useRef(true)
+  const mounted = useRef(false)
   const pending = useRef<{ key: string; input: any } | null>(null)
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; stop.current = true } }, [])
-  useEffect(() => { if (scan && userId) reviewMemory = { userId, issues, reviewed } }, [scan, userId, issues, reviewed])
+  useLayoutEffect(() => { mounted.current = true; return () => { mounted.current = false; stop.current = true } }, [])
+  const isCurrentContext = useCallback(() => {
+    const user = useAuthStore.getState().session?.user
+    return mounted.current && !!user && canReviewCatalog(user.app_metadata?.role)
+      && catalogScope(user.id, user.app_metadata?.tenant_id) === userId
+  }, [userId])
+  useEffect(() => { if (scan && isCurrentContext()) reviewMemory = { userId, issues, reviewed } }, [scan, userId, issues, reviewed, isCurrentContext])
   const checked = Object.keys(reviewed).length
   const bridge = desktopBridge()?.catalog
   async function load() {
-    if (running.current || !mounted.current) return
+    if (running.current || !isCurrentContext()) return
     if (!bridge?.agentScan) { setError('Оновіть локальну програму, щоб користуватися AI-агентом.'); return }
     setBusy(true); setError('')
     try {
       running.current = true
       const result = await bridge.agentScan({ min_markup: Number(minMarkup) }) as Scan
-      if (!mounted.current) return
+      if (!isCurrentContext()) return
       const saved = reviewMemory?.userId === userId ? reviewMemory : null
       const retained = retainAgentReview(result.products, saved?.issues ?? [], saved?.reviewed ?? {})
       setScan(result); setIssues([...result.issues, ...retained.issues]); setReviewed(retained.reviewed)
       setSelected(new Set()); setPage(0); pending.current = null
-    } catch (err) { if (mounted.current) setError(err instanceof Error ? err.message : 'Не вдалося перевірити каталог') }
-    finally { running.current = false; if (mounted.current) setBusy(false) }
+    } catch (err) { if (isCurrentContext()) setError(err instanceof Error ? err.message : 'Не вдалося перевірити каталог') }
+    finally { running.current = false; if (isCurrentContext()) setBusy(false) }
   }
   async function reviewAi() {
-    if (!scan || running.current || !mounted.current) return
+    if (!scan || running.current || !isCurrentContext()) return
     running.current = true
     stop.current = false; setAiBusy(true); setError('')
     try {
       const remaining = scan.products.filter(p => reviewed[p.id] !== p.fingerprint).slice(0, runLimit)
       for (let offset = 0; offset < remaining.length && !stop.current; offset += 25) {
+        if (!isCurrentContext()) return
         const batch = remaining.slice(offset, offset + 25)
         const response = await aiApi.reviewCatalog({ products: batch.map(({ fingerprint: _fingerprint, ...product }) => product), categories: scan.categories })
-        if (!mounted.current) return
+        if (!isCurrentContext()) return
         const additions = catalogReviewIssues(response.data.proposals, batch, scan.categories)
         setIssues(previous => [...previous.filter(row => !additions.some(a => a.id === row.id)), ...additions])
         setReviewed(previous => ({ ...previous, ...Object.fromEntries(batch.map(p => [p.id, p.fingerprint])) }))
       }
-    } catch (err) { if (mounted.current) setError(err instanceof Error ? err.message : 'AI-перевірку зупинено. Уже отримані пропозиції залишилися.') }
-    finally { running.current = false; if (mounted.current) setAiBusy(false) }
+    } catch (err) { if (isCurrentContext()) setError(err instanceof Error ? err.message : 'AI-перевірку зупинено. Уже отримані пропозиції залишилися.') }
+    finally { running.current = false; if (isCurrentContext()) setAiBusy(false) }
   }
   async function apply() {
-    if (!bridge?.agentApply || running.current || !mounted.current) return
+    if (!bridge?.agentApply || running.current || !isCurrentContext()) return
     running.current = true
     setBusy(true); setError('')
     try {
@@ -85,13 +93,13 @@ function CatalogAgentContent({userId}:{userId:string}) {
       if (pending.current?.key !== key) pending.current = { key, input: { operation_id: crypto.randomUUID(), items } }
       const result = await bridge.agentApply(pending.current.input)
       pending.current = null
-      if (!mounted.current) return
+      if (!isCurrentContext()) return
       setLastResult('Змінено товарів: ' + result.updated + '. Резервна копія: ' + result.backupPath)
       toast.success('Підтверджені зміни збережено локально')
       running.current = false
       await load()
-    } catch (err) { if (mounted.current) setError(err instanceof Error ? err.message : 'Запис не завершено. Повторіть ту саму операцію.') }
-    finally { running.current = false; if (mounted.current) setBusy(false) }
+    } catch (err) { if (isCurrentContext()) setError(err instanceof Error ? err.message : 'Запис не завершено. Повторіть ту саму операцію.') }
+    finally { running.current = false; if (isCurrentContext()) setBusy(false) }
   }
   const visible = issues.filter(row => filter === 'all' || row.kind === filter)
   const pages = Math.max(1, Math.ceil(visible.length / 50))

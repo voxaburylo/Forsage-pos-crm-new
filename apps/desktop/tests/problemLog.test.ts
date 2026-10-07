@@ -70,6 +70,44 @@ describe('журнал проблем каси', () => {
     expect(open[0].id).not.toBe(first.id)
   })
 
+  it('не ламає основну операцію через циклічний context або BigInt', () => {
+    const context: Record<string, unknown> = { sequence: 7, attempts: 2, payload: 5n }
+    context.error = context
+    expect(() => problems.record({ source: 'app', code: 'ipc.test', title: 'Помилка команди', context })).not.toThrow()
+    const [row] = problems.list()
+    expect(row.context).toMatchObject({ sequence: 7, attempts: 2 })
+    expect(JSON.stringify(row.context).length).toBeLessThan(1000)
+  })
+  it('не записує фото, ключі, документ або getters у діагностичний context', () => {
+    let reads = 0
+    const context = Object.defineProperty({ sequence: 9, image: 'PRIVATE_PHOTO', token: 'PRIVATE_TOKEN', reason: 'PRIVATE_REASON',
+      payload: { text: 'PRIVATE_DOCUMENT' }, toJSON: () => { throw Error('PRIVATE_JSON') } }, 'error', {
+      enumerable: true, get: () => { reads++; return 'PRIVATE_GETTER' },
+    })
+    expect(() => problems.record({ source: 'app', code: 'ipc.test', title: 'Помилка команди',
+      detail: 'PRIVATE_INVOICE data:image/png;base64,PRIVATE_BYTES', context })).not.toThrow()
+    const row = problems.list()[0]
+    expect(reads).toBe(0)
+    expect(JSON.stringify(row)).not.toContain('PRIVATE_')
+    expect(row.detail).toContain('Відбиток')
+  })
+  it('не випускає старий сирий detail/context під час перегляду та експорту', () => {
+    problems.record({ source: 'app', code: 'ipc.test', title: 'Помилка команди' })
+    db.prepare("UPDATE problem_log SET detail = ?, context_json = ?").run('PRIVATE_OLD_DATA', '{"token":"PRIVATE_OLD_KEY","sequence":3}')
+    expect(JSON.stringify(problems.list())).not.toContain('PRIVATE_')
+    expect(problems.exportText()).not.toContain('PRIVATE_')
+    // Reading/exporting must not rewrite or delete the historical row.
+    expect((db.prepare('SELECT detail FROM problem_log').get() as { detail: string }).detail).toBe('PRIVATE_OLD_DATA')
+  })
+  it('зберігає безпечний відбиток помилки після запису та повторного читання', () => {
+    problems.record({ source: 'app', code: 'ipc.test', title: 'Помилка команди',
+      context: { sequence: 11, error: new Error('SQLITE_BUSY PRIVATE_DATABASE') } })
+    const [first] = problems.list()
+    expect(first.context).toMatchObject({ sequence: 11,
+      error: { error_code: 'database-busy', error_type: 'Error', fingerprint: expect.stringMatching(/^[a-f0-9]{20}$/) } })
+    expect(problems.list()[0].context).toEqual(first.context)
+    expect(JSON.stringify(first.context)).not.toContain('PRIVATE_')
+  })
   it('рахує відкриті помилки й попередження окремо', () => {
     problems.record({ source: 'sync', code: 'a', title: 'Помилка', severity: 'error' })
     problems.record({ source: 'sync', code: 'b', title: 'Увага', severity: 'warning' })

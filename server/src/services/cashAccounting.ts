@@ -6,6 +6,7 @@ export type SaleReceipt = {
   card_amount?: number | null
   transfer_amount?: number | null
   debt_amount?: number | null
+  is_debt?: boolean | null
   is_fiscal?: boolean | null
 }
 
@@ -60,8 +61,10 @@ export function summarizePaymentReceipts(
     const transfer = sale.payment_method === 'transfer'
       ? amount(sale.transfer_amount) || total
       : amount(sale.transfer_amount)
-    const debt = sale.payment_method === 'debt'
-      ? amount(sale.debt_amount) || total
+    // New copies carry the exact split. Legacy rows have NULL, not zero:
+    // derive only an explicitly recorded debt, never invent one for cash sales.
+    const debt = sale.debt_amount == null
+      ? (sale.is_debt || sale.payment_method === 'debt' ? Math.max(0, total - cash - card - transfer) : 0)
       : amount(sale.debt_amount)
     result.cash += cash
     result.card += card
@@ -89,11 +92,13 @@ export function calculateExpectedCash(input: {
   returnCash: number
   cashOut: number
 }): number {
-  return Math.max(0,
-    amount(input.openingCash)
-    + amount(input.regularSaleCash)
-    + amount(input.cashIn)
-    - amount(input.returnCash)
-    - amount(input.cashOut),
-  )
+  const values = [input.openingCash, input.regularSaleCash, input.cashIn, input.returnCash, input.cashOut]
+  if (values.some(value => !Number.isSafeInteger(value) || value < 0)) {
+    throw new Error('Некоректні суми каси. Звірку заблоковано до перевірки.')
+  }
+  const total = BigInt(input.openingCash) + BigInt(input.regularSaleCash) + BigInt(input.cashIn)
+    - BigInt(input.returnCash) - BigInt(input.cashOut)
+  const result = Number(total)
+  if (!Number.isSafeInteger(result)) throw new Error('Сума каси перевищує допустиму точність')
+  return result
 }

@@ -125,11 +125,12 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
 
     let cancelled = false
     const customerId = store.customer.id
+    const goodsTotal = Math.max(0, store.total - store.totalCoreDeposit)
     if (desktopBridge()) {
       customerApi.get(customerId).then((res) => {
         if (cancelled) return
         const balance = Number(res.data.bonus_balance ?? 0)
-        const maxRedeem = Math.min(balance, Math.floor(store.total * 0.30))
+        const maxRedeem = Math.min(balance, Math.floor(goodsTotal * 0.30))
         setBonusBalance(balance)
         setMaxBonus(maxRedeem)
         setLoyaltyEnabled(balance > 0)
@@ -143,7 +144,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
       return () => { cancelled = true }
     }
     api.get<{ data: { balance: number; max_redeem: number } }>(
-      '/api/v1/loyalty/customer/' + customerId + '/max-redeem?total=' + store.total
+      '/api/v1/loyalty/customer/' + customerId + '/max-redeem?total=' + goodsTotal
     ).then((res) => {
       if (cancelled) return
       setBonusBalance(res.data.balance)
@@ -151,77 +152,19 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
       setLoyaltyEnabled(res.data.max_redeem > 0 || res.data.balance > 0)
     }).catch(() => {})
     return () => { cancelled = true }
-  }, [open, store.customer?.id, store.total])
+  }, [open, store.customer?.id, store.total, store.totalCoreDeposit])
   // Обчислення сум (потрібні і для діалогу термінала, і для основного UI)
   const _bonusRedeemed = Math.min(
     parsePaymentKopecks(bonusInput),
-    maxBonus, bonusBalance,
+    maxBonus, bonusBalance, Math.max(0, store.total - store.totalCoreDeposit),
   )
   const _toPay = Math.max(0, store.total - _bonusRedeemed)
 
   if (!open) return null
 
-  // Діалог: проведіть оплату на терміналі і введіть код авторизації
-  if (terminalStep === 'waiting_auth') {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center">
-        <div className="absolute inset-0 bg-black/70" />
-        <div className="relative mx-4 max-h-[calc(100dvh-2rem)] w-full max-w-sm space-y-5 overflow-y-auto rounded-2xl border border-gray-700 bg-[#1A1A1A] p-6">
-          <div className="text-center">
-            <CreditCard size={40} className="text-blue-400 mx-auto mb-3" />
-            <h3 className="text-white text-lg font-bold">Проведіть оплату на терміналі</h3>
-            <p className="text-yellow-400 text-3xl font-bold mt-2">{formatMoney(_toPay)}</p>
-          </div>
 
-          <div className="bg-[#2C2C2C] rounded-xl p-4 text-sm text-gray-300 space-y-1">
-            <p>1. Введіть суму на терміналі ПриватБанку</p>
-            <p>2. Клієнт прикладає картку / телефон</p>
-            <p>3. Після успішної оплати введіть код авторизації з чека термінала</p>
-          </div>
 
-          <div>
-            <label className="text-gray-400 text-xs mb-1 block">Код авторизації (з чека термінала)</label>
-            <input
-              type="text"
-              autoFocus
-              value={terminalAuthCode}
-              onChange={(e) => setTerminalAuthCode(e.target.value.toUpperCase().replace(/\s/g, ''))}
-              onKeyDown={(e) => { if (e.key === 'Enter') confirmTerminalPayment() }}
-              maxLength={12}
-              placeholder="наприклад: 123456"
-              className="w-full bg-[#2C2C2C] text-white text-xl font-mono text-center rounded-xl px-4 py-3 border border-gray-600 focus:outline-none focus:border-blue-400"
-            />
-            <p className="text-gray-500 text-xs mt-1 text-center">Залиште порожнім якщо код не потрібен</p>
-          </div>
-
-          <div className="flex gap-3">
-            <button
-              type="button"
-              onClick={() => { setTerminalStep('none'); setTerminalAuthCode(''); setPrintAfterPayment(false) }}
-              disabled={loading}
-              className="flex-1 py-3 rounded-xl bg-[#2C2C2C] text-gray-300 font-semibold hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Скасувати
-            </button>
-            <button
-              type="button"
-              onClick={confirmTerminalPayment}
-              disabled={loading}
-              className="flex-1 py-3 rounded-xl bg-blue-500 hover:bg-blue-400 text-white font-bold disabled:opacity-40"
-            >
-              {loading
-                ? <Loader2 size={16} className="animate-spin mx-auto" />
-                : printAfterPayment ? 'Оплатити й друкувати' : 'Підтвердити оплату'}
-            </button>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  const bonusRedeemed = Math.min(
-    parsePaymentKopecks(bonusInput), maxBonus, bonusBalance,
-  )
+  const bonusRedeemed = _bonusRedeemed
   const toPay        = Math.max(0, store.total - bonusRedeemed)
   const cashReceived = parsePaymentKopecks(cashInput)
   const change       = Math.max(0, cashReceived - toPay)
@@ -296,6 +239,64 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
       submittingRef.current = false
       setLoading(false)
     }
+  }
+
+  // Діалог: проведіть оплату на терміналі і введіть код авторизації
+  if (terminalStep === 'waiting_auth') {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center">
+        <div className="absolute inset-0 bg-black/70" />
+        <div className="relative mx-4 max-h-[calc(100dvh-2rem)] w-full max-w-sm space-y-5 overflow-y-auto rounded-2xl border border-gray-700 bg-[#1A1A1A] p-6">
+          <div className="text-center">
+            <CreditCard size={40} className="text-blue-400 mx-auto mb-3" />
+            <h3 className="text-white text-lg font-bold">Проведіть оплату на терміналі</h3>
+            <p className="text-yellow-400 text-3xl font-bold mt-2">{formatMoney(_toPay)}</p>
+          </div>
+
+          <div className="bg-[#2C2C2C] rounded-xl p-4 text-sm text-gray-300 space-y-1">
+            <p>1. Введіть суму на терміналі ПриватБанку</p>
+            <p>2. Клієнт прикладає картку / телефон</p>
+            <p>3. Після успішної оплати введіть код авторизації з чека термінала</p>
+          </div>
+
+          <div>
+            <label className="text-gray-400 text-xs mb-1 block">Код авторизації (з чека термінала)</label>
+            <input
+              type="text"
+              autoFocus
+              value={terminalAuthCode}
+              onChange={(e) => setTerminalAuthCode(e.target.value.toUpperCase().replace(/\s/g, ''))}
+              onKeyDown={(e) => { if (e.key === 'Enter') confirmTerminalPayment() }}
+              maxLength={12}
+              placeholder="наприклад: 123456"
+              className="w-full bg-[#2C2C2C] text-white text-xl font-mono text-center rounded-xl px-4 py-3 border border-gray-600 focus:outline-none focus:border-blue-400"
+            />
+            <p className="text-gray-500 text-xs mt-1 text-center">Залиште порожнім якщо код не потрібен</p>
+          </div>
+
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={() => { setTerminalStep('none'); setTerminalAuthCode(''); setPrintAfterPayment(false) }}
+              disabled={loading}
+              className="flex-1 py-3 rounded-xl bg-[#2C2C2C] text-gray-300 font-semibold hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Скасувати
+            </button>
+            <button
+              type="button"
+              onClick={confirmTerminalPayment}
+              disabled={loading}
+              className="flex-1 py-3 rounded-xl bg-blue-500 hover:bg-blue-400 text-white font-bold disabled:opacity-40"
+            >
+              {loading
+                ? <Loader2 size={16} className="animate-spin mx-auto" />
+                : printAfterPayment ? 'Оплатити й друкувати' : 'Підтвердити оплату'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (

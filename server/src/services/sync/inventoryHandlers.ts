@@ -88,66 +88,7 @@ export async function applyWarehouseMovementCreated(tenantId: string, userId: st
   })
 }
 
-export async function applyWriteoffCreated(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
-  const payload = operation.payload ?? {}
-  const writeoffId = String(payload.id ?? operation.aggregate_id)
-  const items = Array.isArray(payload.items) ? payload.items : []
-  if (!isUuid(writeoffId) || items.length === 0) throw new AppError('SYNC_WRITEOFF_INVALID', 'Некоректне списання', 400)
-  if (items.some((item: any) => !isUuid(item?.product_id) || !Number.isFinite(Number(item?.qty)) || Number(item.qty) <= 0)) {
-    throw new AppError('SYNC_WRITEOFF_INVALID', 'Некоректна позиція списання', 422)
-  }
-  if (new Set(items.map((item: any) => item.product_id)).size !== items.length) {
-    throw new AppError('SYNC_WRITEOFF_DUPLICATE', 'Один товар не можна списувати двома рядками', 422)
-  }
-  const createdAt = payload.created_at ?? operation.created_at
-  const appliedAt = operation.applied_at ?? operation.created_at
-  await runTransaction(async (client) => {
-    const claim = await client.query(
-      `INSERT INTO inventory_writeoffs (id, tenant_id, reason, notes, created_by, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
-       ON CONFLICT (id) DO NOTHING
-       RETURNING id`,
-      [writeoffId, tenantId, payload.reason ?? 'other', payload.notes ?? null, userId, createdAt, appliedAt],
-    )
-    if (!claim.rowCount) {
-      const existing = await client.query(
-        'SELECT id FROM inventory_writeoffs WHERE id = $1 AND tenant_id = $2',
-        [writeoffId, tenantId],
-      )
-      if (existing.rowCount) return
-      throw new AppError('SYNC_WRITEOFF_TENANT_CONFLICT', 'Акт списання належить іншому магазину', 409)
-    }
-    await client.query(`SELECT set_config('app.stock_source_type', 'writeoff', true)`)
-    await client.query(`SELECT set_config('app.stock_source_id', $1, true)`, [writeoffId])
-    for (const item of items) {
-      const product = await client.query(
-        `SELECT purchase_price, COALESCE(qty_on_hand, 0) AS qty_on_hand
-         FROM products
-         WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
-         FOR UPDATE`,
-        [item.product_id, tenantId],
-      )
-      if (!product.rowCount) throw new AppError('SYNC_PRODUCT_NOT_FOUND', 'Товар списання не знайдено', 404)
-      const qty = Number(item.qty)
-      const available = Number(product.rows[0]?.qty_on_hand ?? 0)
-      if (!operation.balance_mirrored && qty > available) {
-        throw new AppError('INSUFFICIENT_STOCK', `Недостатньо товару для списання: є ${available}, потрібно ${qty}`, 409)
-      }
-      await client.query(
-        `INSERT INTO inventory_writeoff_items (
-          id, writeoff_id, product_id, qty, cost_kopecks, created_at
-        ) VALUES ($1,$2,$3,$4,$5,$6)`,
-        [randomUUID(), writeoffId, item.product_id, qty, Math.round(Number(product.rows[0]?.purchase_price ?? 0) * qty), createdAt],
-      )
-      if (!operation.balance_mirrored) await client.query(
-        `UPDATE products
-         SET qty_on_hand = qty_on_hand - $1, updated_at = $2
-         WHERE id = $3 AND tenant_id = $4`,
-        [qty, appliedAt, item.product_id, tenantId],
-      )
-    }
-  })
-}
+export { applyWriteoffCreated } from './writeoffMirror.js'
 
 export async function applyInventoryCreated(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
   const payload = operation.payload ?? {}

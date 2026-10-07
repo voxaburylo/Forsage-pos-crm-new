@@ -1,4 +1,5 @@
 import { soldSupplierNames } from './soldSupplierReport'
+import { soldSellerNames } from './soldReportData'
 import type { SoldItem } from '@/types/report'
 import { formatMoney } from '@/lib/utils'
 
@@ -6,7 +7,7 @@ export function SoldItemsMobile({ items, showSuppliers = false }: { items: SoldI
   return <div className="min-w-0 divide-y divide-gray-200 md:hidden" data-testid="sold-items-mobile">
     {items.map(item => <article key={item.product_id} className="min-w-0 p-4 space-y-3">
       <h3 className="text-base font-semibold leading-snug text-gray-900 [overflow-wrap:anywhere]">{item.name}</h3>
-      {showSuppliers && <p className="text-xs leading-relaxed text-gray-500 [overflow-wrap:anywhere]">Постачальники: {soldSupplierNames(item)}</p>}
+      {showSuppliers && <><p className="text-xs leading-relaxed text-gray-500 [overflow-wrap:anywhere]">Постачальники: {soldSupplierNames(item)}</p><p className="text-xs text-gray-500 [overflow-wrap:anywhere]">Продавці: {soldSellerNames(item)}</p></>}
       <dl className="space-y-1 text-sm">
         <div className="grid grid-cols-[5rem_minmax(0,1fr)] gap-2"><dt className="text-gray-500">Артикул</dt><dd className="min-w-0 select-text font-mono [overflow-wrap:anywhere]">{item.sku || '—'}</dd></div>
         {item.barcode && <div className="grid grid-cols-[5rem_minmax(0,1fr)] gap-2"><dt className="text-gray-500">Штрихкод</dt><dd className="min-w-0 select-text font-mono [overflow-wrap:anywhere]">{item.barcode}</dd></div>}

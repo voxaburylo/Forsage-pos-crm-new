@@ -9,6 +9,7 @@
 import type { LocalSaleCheckoutInput, LocalSaleCheckoutResult } from '../../db/localTypes'
 import { DEFAULT_TENANT_ID } from '../../db/localTypes'
 import { LocalStaffRepository } from '../staffRepository'
+import { addStockQuantity, stockQuantity, subtractStockQuantity } from '../stockQuantity'
 import { lineTotal, money, nowIso, operationId, payloadHash, paymentMethod } from './posShared'
 import { randomUUID } from 'node:crypto'
 import { LocalPosCustomers } from './customers'
@@ -284,7 +285,7 @@ export class LocalPosSales extends LocalPosCustomers {
           product_id: product?.id ?? null,
           description: item.description ?? product?.name ?? 'Вільна сума',
           sku: product?.sku ?? null,
-          qty: item.qty,
+          qty: stockQuantity(item.qty),
           unit_price: unitPrice,
           purchase_price: product?.purchase_price ?? 0,
           discount: itemDiscount,
@@ -373,13 +374,14 @@ export class LocalPosSales extends LocalPosCustomers {
         )
 
         if (item.product && item.product.is_service !== 1) {
-          const stock = this.db.prepare(`
+          const current = this.getProductForUpdate(item.product.id, tenantId)
+          if (!current) throw new Error('LOCAL_PRODUCT_NOT_FOUND')
+          const qtyAfter = subtractStockQuantity(Number(current.qty_on_hand), item.qty)
+          this.db.prepare(`
             UPDATE products
-            SET qty_on_hand = qty_on_hand - ?, dirty_at = ?, updated_at = ?
+            SET qty_on_hand = ?, dirty_at = ?, updated_at = ?
             WHERE id = ? AND tenant_id = ?
-            RETURNING qty_on_hand
-          `).get(Number(item.qty), timestamp, timestamp, item.product.id, tenantId) as { qty_on_hand: number }
-          const qtyAfter = stock.qty_on_hand
+          `).run(qtyAfter, timestamp, timestamp, item.product.id, tenantId)
 
           this.db.prepare(`
             INSERT INTO inventory_movements (
@@ -520,6 +522,7 @@ export class LocalPosSales extends LocalPosCustomers {
           discount,
           bonuses_spent: bonusesSpent,
           total,
+          notes: input.notes ?? null,
           payment_method: method,
           is_fiscal: input.is_fiscal === true,
           fiscal_number: input.fiscal_number ?? null,
@@ -623,7 +626,7 @@ export class LocalPosSales extends LocalPosCustomers {
       if (!item.product_id) continue
       requestedByProduct.set(
         item.product_id,
-        (requestedByProduct.get(item.product_id) ?? 0) + Number(item.qty ?? 0),
+        addStockQuantity(requestedByProduct.get(item.product_id) ?? 0, item.qty),
       )
     }
 
@@ -649,7 +652,7 @@ export class LocalPosSales extends LocalPosCustomers {
           AND released_at IS NULL AND deleted_at IS NULL
           AND (expires_at IS NULL OR unixepoch(expires_at) > unixepoch('now'))
       `).get(tenantId, productId) as { qty: number } | undefined
-      const available = Number(product.qty_on_hand ?? 0) - Number(reserve?.qty ?? 0)
+      const available = subtractStockQuantity(Number(product.qty_on_hand ?? 0), Number(reserve?.qty ?? 0))
       if (requestedQty > available) {
         throw new Error(`Недостатньо товару «${product.name}». Доступно: ${available}, потрібно: ${requestedQty}`)
       }

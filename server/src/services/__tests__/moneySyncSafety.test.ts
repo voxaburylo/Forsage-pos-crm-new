@@ -1,4 +1,4 @@
-import { syncModuleSource as syncSource } from './helpers/syncSource.js'
+import { syncModuleSource as syncSource, syncFunctionBody } from './helpers/syncSource.js'
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
@@ -44,8 +44,9 @@ describe('money synchronization safety', () => {
     expect(syncSource).toContain(".from('sync_deletions')")
     expect(syncSource).toContain('deleted_salary_payment_ids: deletedSalaryPayments.map')
     expect(syncSource).toContain('deleted_cash_operation_ids: deletedCashOperations.map')
-    expect(syncSource).toContain("VALUES ($1, 'salary_payment', $2, clock_timestamp())")
-    expect(syncSource).toContain("VALUES ($1, 'cash_operation', $2, clock_timestamp())")
+    expect(syncFunctionBody('applySalaryPaymentDeleted')).toContain("markFinancialCopyDeleted(client, tenantId, 'salary_payment'")
+    expect(syncFunctionBody('applySalaryPaymentDeleted')).toContain("markFinancialCopyDeleted(client, tenantId, 'cash_operation'")
+    expect(syncFunctionBody('markFinancialCopyDeleted')).toContain('clock_timestamp()')
     expect(salaryRouteSource).toContain('SELECT cash_operation_id, source FROM salary_payments')
     expect(salaryRouteSource).toContain('AUTOMATIC_SALARY_IMMUTABLE')
     expect(salaryRouteSource).toContain("VALUES ($1, 'cash_operation', $2, clock_timestamp())")
@@ -94,9 +95,10 @@ describe('money synchronization safety', () => {
     expect(saleSource).toContain('INSERT INTO salary_payments')
     expect(commissionSource).toContain("update(`commission-reversal:${returnId}:${employeeId}`)")
     expect(commissionSource).toContain('commission_source_return_id: returnId')
-    const salaryStart = syncSource.indexOf('async function applySalaryPaymentCreated')
-    const salaryEnd = syncSource.indexOf('async function applySalaryPaymentDeleted', salaryStart)
-    expect(syncSource.slice(salaryStart, salaryEnd)).toContain('ON CONFLICT DO NOTHING')
+    const salaryCopy = syncFunctionBody('applySalaryPaymentCreated')
+    expect(salaryCopy).toContain('ON CONFLICT (id) DO NOTHING RETURNING id')
+    expect(salaryCopy).toContain('storedValues(existing.rows[0])')
+    expect(salaryCopy).not.toContain('ON CONFLICT DO NOTHING`')
   })
 
 })

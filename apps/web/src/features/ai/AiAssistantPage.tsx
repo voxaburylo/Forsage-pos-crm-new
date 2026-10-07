@@ -1,6 +1,5 @@
 import { adminApi } from '@/features/admin/adminApi'
-import { invoiceProductBase } from '@/features/suppliers/invoiceFormModel'
-import type { SupplyInvoiceItem } from '@/types/supplier'
+
 import { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react'
 import { fileToCompressedImage } from './aiImageInput'
 import { aiActionOperationId } from './aiActionOperation'
@@ -19,15 +18,16 @@ import { toast } from '@/components/ui/Toast'
 import { aiApi } from './aiApi'
 import type { AiStatus, AiPendingAction, AiChatMessage, AiActionChange, AiChatImage } from './aiApi'
 import { OrderConfirmModal } from './OrderConfirmModal'
-import { AiInvoiceReview } from './AiInvoiceReview'
+import { openAiInvoiceDraft } from './openAiInvoiceDraft'
 import { useAuthStore } from '@/stores/authStore'
 import { api } from '@/lib/api'
 import { convertSupplyPrices, readSupplyExchangeRate, supplyImportAction, type AiSupplyRow, type AiSupplyInput } from './aiSupplyImport'
 import { AiSupplyResponseError, collectSupplyResponse } from './aiSupplyResponse'
 import { readAiSupplyInput } from './readAiSupplyInput'
+import { AiClipboardTimeoutError, readAiClipboard } from './readAiClipboard'
 import { dataUrlToBlob, removeProcessingUploads, uploadProcessingBlob } from '@/lib/processingUploads'
 import { requestDesktopSync } from '@/features/products/productApi'
-import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
+import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { aiChatStorageKey, readAiChat, saveAiChat } from './aiChatStorage'
 import { aiRequestHistory } from './aiRequestHistory'
 import { isOrderPhotoRequest, isSupplyRecognitionRequest, SUPPLY_PHOTO_INSTRUCTION } from './aiPhotoIntent'
@@ -113,6 +113,7 @@ interface TextAttachment {
   categoryCount?: number
   reviewReason?: string
   sourceCurrency?: string
+  sourceChecks?: AiSupplyInput['sourceChecks']
 }
 
 function isImageFile(file: File): boolean {
@@ -230,7 +231,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
   const [applyingId, setApplyingId] = useState<string | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const [modalAction, setModalAction] = useState<AiPendingAction | null>(null)
-  const [supplyReview, setSupplyReview] = useState<{ id: string; rows: Array<Record<string, unknown>> } | null>(null)
+
   const [recognizedVin, setRecognizedVin] = useState('')
   const [recognizingVin, setRecognizingVin] = useState(false)
   const [sendingProgress, setSendingProgress] = useState('')
@@ -241,6 +242,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
   const fileRef = useRef<HTMLInputElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const storageWarned = useRef(false)
+  const completedActions = useRef(new Set<string>())
 
   const loadStatus = useCallback(async () => {
     const isCurrent = statusGate.begin()
@@ -278,7 +280,8 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
   }, [storageKey, entries, applied, applyMsg, applyStatus, applyErrors])
 
   function clearChat() {
-    if (sendBusy.current || applyBusy.current) return
+    if (!isCurrentContext() || sendBusy.current || applyBusy.current || attachmentBusy.current) return
+    completedActions.current.clear()
     setEntries([]); setApplied({}); setApplyMsg({}); setApplyStatus({}); setApplyErrors({}); setModalAction(null)
     setOrderModalAction(null)
     try { localStorage.removeItem(storageKey) } catch { /* ignore */ }
@@ -294,7 +297,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
     // A clipboard / spreadsheet document always represents received quantities, not catalog stock.
     setLocalInvoiceMode(true)
     setExchangeRate('')
-    setAttachment({ name, parts: parsed.products.length ? parts : [parsed.text], rowCount: parsed.products.length || rowCount, products: parsed.products, categoryCount: parsed.categoryCount, reviewReason: parsed.reviewReason, sourceCurrency: parsed.sourceCurrency })
+    setAttachment({ name, parts: parsed.products.length ? parts : [parsed.text], rowCount: parsed.products.length || rowCount, products: parsed.products, categoryCount: parsed.categoryCount, reviewReason: parsed.reviewReason, sourceCurrency: parsed.sourceCurrency, sourceChecks: parsed.sourceChecks })
     if (parsed.reviewReason) toast.warning('Файл прикріплено. Для цієї форми накладної потрібен AI-розбір — натисніть «Надіслати».')
     else toast.success(parsed.products.length ? `Розібрано ${parsed.products.length} позицій. Натисніть «Перевірити таблицю».` : 'Текст прикріплено. AI підготує таблицю для перевірки.')
   }
@@ -360,33 +363,35 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
   }
 
   async function pasteFromClipboard() {
-    if (sendBusy.current || applyBusy.current || attachmentBusy.current) return
+    if (!isCurrentContext() || sendBusy.current || applyBusy.current || attachmentBusy.current) return
+    // Lock before the browser permission prompt, not only while parsing its result.
+    attachmentBusy.current++; setProcessingAttachments(true)
+    let reading = true
+    const releaseRead = () => {
+      if (reading) { reading = false; attachmentBusy.current-- }
+    }
     try {
-      // Read only following the user's explicit click, never on mount or in the background.
-      if (navigator.clipboard?.read) {
-        const items = await navigator.clipboard.read()
-        const textItem = items.find(item => item.types.includes('text/plain'))
-        if (textItem) { await attachClipboardText(await (await textItem.getType('text/plain')).text()); return }
-        const files: File[] = []
-        for (const item of items) {
-          const type = item.types.find(t => t.startsWith('image/'))
-          if (type) files.push(new File([await item.getType(type)], 'Фото з буфера.png', { type }))
-        }
-        if (files.length) { await handleFiles(files); return }
-      } else if (navigator.clipboard?.readText) {
-        await attachClipboardText(await navigator.clipboard.readText()); return
-      }
+      const content = await readAiClipboard(navigator.clipboard)
+      if (!isCurrentContext()) return
+      // The parser claims its own lock synchronously, before the next user event.
+      releaseRead()
+      if (content && 'text' in content) { await attachClipboardText(content.text); return }
+      if (content && 'files' in content) { await handleFiles(content.files); return }
       toast.warning('У буфері немає тексту чи фото. Скопіюйте таблицю або виберіть Excel-файл.')
-    } catch {
+    } catch (error) {
+      if (!isCurrentContext()) return
       inputRef.current?.focus()
-      toast.warning('Доступ до буфера недоступний. Натисніть Ctrl+V у полі повідомлення або виберіть файл.')
+      toast.warning(error instanceof AiClipboardTimeoutError ? error.message : 'Доступ до буфера недоступний. Натисніть Ctrl+V у полі повідомлення або виберіть файл.')
+    } finally {
+      releaseRead()
+      if (isCurrentContext()) setProcessingAttachments(attachmentBusy.current > 0)
     }
   }
 
   async function send() {
     const message = input.trim()
     if (!message && !attachment && imageAttachments.length === 0) return
-    if (sendBusy.current || attachmentBusy.current || applyBusy.current) return
+    if (!isCurrentContext() || sendBusy.current || attachmentBusy.current || applyBusy.current) return
     if (!attachment?.products?.length && (loadingStatus || !status || statusError || !status.enabled || !status.has_key)) return
     let importRate = 1
     try { if (attachment?.sourceCurrency) importRate = readSupplyExchangeRate(exchangeRate) }
@@ -422,10 +427,10 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
       const count = directProducts.length
       setEntries((prev) => [...prev, {
         role: 'model',
-        text: `Таблицю розібрано локально: ${count} позицій.${currencyNote} Перевірте кількість і закупівельні ціни у гривнях. Після підтвердження відкриється звичайна чернетка приходу; залишки ще не зміняться.`,
+        text: `Таблицю розібрано локально: ${count} позицій.${currencyNote} Перевірте кількість і закупівельні ціни у гривнях. Відкривається звичайна накладна. Спірні рядки підсвічено червоним; залишки зміняться лише після проведення.`,
         actions: [action],
       }])
-      setModalAction(action)
+      await openInvoice(action, [...entries, userEntry, { role: 'model', text: 'Таблицю розібрано — відкрийте накладну.', actions: [action] }])
       setAttachment(null)
       sendBusy.current = false
       return
@@ -494,20 +499,20 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
       let actions = requestInvoice ? [] : responses.flatMap((response) => response.actions)
       if (requestInvoice) {
         try {
-          const { products, metadata } = collectSupplyResponse(responses, partsToSend.length)
+          const { products, metadata } = collectSupplyResponse(responses, partsToSend.length, attachment?.sourceChecks)
           const action = supplyImportAction(attachment?.sourceCurrency ? convertSupplyPrices(products, importRate) : products, (attachment?.name ?? 'Фото накладної') + currencyNote)
           actions = [{ ...action, payload: { ...metadata, ...action.payload } }]
         } catch (error) {
           reportLocalError(new Error(error instanceof AiSupplyResponseError && error.kind === 'missing-table'
-            ? (attachment ? 'AI_SUPPLY_TEXT_NO_TABLE' : 'AI_SUPPLY_PHOTO_NO_TABLE') : 'AI_SUPPLY_RESPONSE_INVALID'))
-          throw new Error((error instanceof Error ? error.message : 'Некоректна відповідь ШІ.') + ' ' +
-            (attachment ? 'Текст залишився прикріпленим.' : 'Фото залишилося прикріпленим — повторіть розбір.') + ' Накладну не створено.')
+            ? (attachment ? 'AI_SUPPLY_TEXT_NO_TABLE' : 'AI_SUPPLY_PHOTO_NO_TABLE') : error instanceof AiSupplyResponseError && error.kind === 'source-mismatch' ? 'AI_SUPPLY_SOURCE_MISMATCH' : 'AI_SUPPLY_RESPONSE_INVALID'))
+          throw Object.assign(new Error((error instanceof Error ? error.message : 'Некоректна відповідь ШІ.') + ' ' +
+            (attachment ? 'Текст залишився прикріпленим.' : 'Фото залишилося прикріпленим — повторіть розбір.') + ' Накладну не створено.'), { cause:error })
         }
       }
       const cost = responses.reduce((sum, response) => sum + response.usage.cost_usd, 0)
       const completedAllParts = failedAt < 0
       const reply = requestInvoice
-        ? `Розпізнано ${actions[0].count} позицій для приходу. Перевірте кількість, закупівельні ціни та зіставлення з базою. Після підтвердження відкриється звичайна чернетка накладної; залишки поки не змінюються.`
+        ? `Розпізнано ${actions[0].count} позицій для приходу. Перевірте кількість, закупівельні ціни та зіставлення з базою. Відкривається звичайна накладна. Спірні рядки підсвічено червоним; залишки поки не змінюються.`
         : completedAllParts
         ? responses.length > 1
           ? `Файл оброблено повністю: ${attachment?.rowCount ?? 0} рядків у ${responses.length} частинах. Перевірте підготовлені товари нижче та підтвердьте додавання.`
@@ -515,7 +520,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
         : `Оброблено ${responses.length} із ${partsToSend.length} частин. Готові товари збережено нижче. Частина ${failedAt + 1} не відповіла вчасно; решта файлу залишилася прикріпленою — натисніть «Надіслати» ще раз, щоб продовжити без повторної обробки готових частин.`
       setEntries((prev) => [...prev, { role: 'model', text: reply, actions, cost }])
       const invoiceAction = actions.find((action) => action.tool === 'create_supply_invoice_bulk')
-      if (invoiceAction) setModalAction(invoiceAction)
+      if (invoiceAction) await openInvoice(invoiceAction, [...entries, userEntry, { role: 'model', text: reply, actions, cost }])
       if (completedAllParts) {
         setAttachment(null)
       } else if (attachment) {
@@ -553,66 +558,66 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
     }
   }
 
+  const draftBusy = useRef(false)
+  async function openInvoice(action: AiPendingAction, history = entries) {
+    if (draftBusy.current || !isCurrentContext()) return
+    draftBusy.current = true; setApplyingId(action.id)
+    const guard = () => {
+      if (!isCurrentContext()) throw new Error('Обліковий запис змінився. Відкрийте помічник повторно.')
+      assertAiWriteAllowed(action.tool, useAuthStore.getState().session?.user.app_metadata?.role, isDesktopRuntime())
+    }
+    try {
+      guard()
+      saveAiChat(storageKey, localStorage, { entries: history.slice(-80), applied, applyMsg, applyStatus, applyErrors })
+      const path = await openAiInvoiceDraft(action, storageKey, guard)
+      guard()
+      navigate(path)
+    } catch (error) {
+      if (isCurrentContext()) toast.error(error instanceof Error ? error.message : 'Не вдалося відкрити накладну')
+      reportAiFailure('write', error)
+    } finally { draftBusy.current = false; if (isCurrentContext()) setApplyingId(null) }
+  }
   const applyBusy = useRef(false)
   async function applyAction(action: AiPendingAction, payloadOverride?: Record<string, any>) {
-    if (!isCurrentContext() || applyBusy.current || sendBusy.current || applied[action.id]) return false
+    if (!isCurrentContext() || applyBusy.current || sendBusy.current || applied[action.id] || completedActions.current.has(action.id)) return false
     applyBusy.current = true
     setApplyingId(action.id)
+    let reviewedEntries = entries
+    const markSaved = (message: string, status: 'ok' | 'warn'): boolean => {
+      // The database has committed. A UI storage error must never turn this into
+      // "not saved" or permit a second write in the current window.
+      completedActions.current.add(action.id)
+      const nextApplied = { ...applied, [action.id]: 'ok' as const }
+      const nextMsg = { ...applyMsg, [action.id]: message }
+      const nextStatus = { ...applyStatus, [action.id]: status }
+      let checkpointSaved = true
+      try {
+        saveAiChat(storageKey, localStorage, { entries: reviewedEntries.slice(-80), applied: nextApplied, applyMsg: nextMsg, applyStatus: nextStatus, applyErrors })
+      } catch {
+        checkpointSaved = false
+        const warning = 'Документ вже збережено в базі, але не вдалося зберегти стан вікна. Перевірте його у відповідному розділі; не створюйте повторно.'
+        nextMsg[action.id] += ' ' + warning
+        nextStatus[action.id] = 'warn'
+        storageWarned.current = true
+        reportLocalError(new Error('AI_COMMITTED_CHECKPOINT_UNAVAILABLE'))
+        toast.warning(warning)
+      }
+      setApplied(nextApplied); setApplyMsg(nextMsg); setApplyStatus(nextStatus)
+      return checkpointSaved
+    }
     try {
       assertAiWriteAllowed(action.tool, useAuthStore.getState().session?.user.app_metadata?.role, isDesktopRuntime())
       if (action.tool === 'create_supply_invoice_bulk' || action.tool === 'create_order') {
         try {
           const reviewedAction = { ...action, payload: payloadOverride ?? action.payload }
-          const reviewedEntries = entries.map(entry => ({ ...entry, actions: entry.actions?.map(item => item.id === action.id ? reviewedAction : item) }))
+          reviewedEntries = entries.map(entry => ({ ...entry, actions: entry.actions?.map(item => item.id === action.id ? reviewedAction : item) }))
           saveAiChat(storageKey, localStorage, { entries: reviewedEntries.slice(-80), applied, applyMsg, applyStatus, applyErrors })
           setEntries(reviewedEntries)
         } catch {
           throw new Error('Не вдалося зберегти перевірені дані для відновлення. Звільніть місце на диску та повторіть. Запис ще не розпочато.')
         }
       }
-      if (action.tool === 'create_supply_invoice_bulk') {
-        const createLocalInvoice = desktopBridge()?.supply?.createInvoiceFromAi
-        if (!createLocalInvoice) throw new Error('Локальна база недоступна — відкрийте програму Форсаж')
-        const payload = payloadOverride ?? action.payload
-        const result = await createLocalInvoice({
-          operation_id: `ai-action:${storageKey}:${action.id}`,
-          supplier_id: payload.supplier_id ?? null,
-          supplier_name: payload.supplier_name ?? null,
-          invoice_number: payload.invoice_number ?? null,
-          notes: payload.notes ?? null,
-          rows: Array.isArray(payload.products) ? payload.products : [],
-        })
-        if (!isCurrentContext()) return false
-        let invoiceDraftKey = ''
-        if (result.invoice?.id && Array.isArray(result.draft_items)) {
-          invoiceDraftKey = `forsage:supply-invoice:edit-${result.invoice.id}:draft:v2`
-          localStorage.setItem(invoiceDraftKey, JSON.stringify({
-            supplierId: result.invoice.supplier_id ?? '', invoiceNumber: result.invoice.invoice_number ?? '',
-            notes: result.invoice.notes ?? '', items: result.draft_items.map(row => {
-              const product = result.invoice.items?.find((item: SupplyInvoiceItem) => item.product_id === row.product_id)?.product
-              return { ...row, product_base: product ? invoiceProductBase(product) : undefined }
-            }), paidAmount: '', cashboxPaidAmount: '',
-            payFullNow: false, paymentMethod: 'cash', fundSource: 'cashbox',
-            serverInvoiceId: result.invoice.id, baseRevision: result.invoice.edit_revision, savedAt: new Date().toISOString(),
-          }))
-        }
-        const withoutBarcode = result.unresolved.filter((item) => item.needs_barcode).length
-        const withoutCategory = result.unresolved.filter((item) => item.needs_category).length
-        const unresolvedText = result.unresolved.length > 0
-          ? ` Нових без штрихкоду: ${withoutBarcode}; папку треба вибрати вручну: ${withoutCategory}.`
-          : ''
-        const msg = `Чернетку приходу створено: ${result.matched} товарів знайдено, ${result.created} додано.${unresolvedText}`
-        setApplyMsg((prev) => ({ ...prev, [action.id]: msg }))
-        setApplyStatus((prev) => ({ ...prev, [action.id]: result.unresolved.length ? 'warn' : 'ok' }))
-        setApplied((prev) => ({ ...prev, [action.id]: 'ok' }))
-        toast.success(msg)
-        // The AI bridge has already persisted a draft invoice, but the user is
-        // still completing its initial creation. Open the normal new-invoice
-        // flow with that draft instead of edit mode: edit mode intentionally
-        // hides initial payment controls and would skip recording a payment.
-        if (invoiceDraftKey) navigate(`/suppliers/invoices/new?resume=${encodeURIComponent(invoiceDraftKey)}`)
-        return true
-      }
+      if (action.tool === 'create_supply_invoice_bulk') { await openInvoice(action); return true }
       const operationId = action.tool === 'create_order' ? await aiActionOperationId(storageKey, action.id) : undefined
       if (!isCurrentContext()) return false
       const { data } = await aiApi.applyAction({ tool: action.tool, payload: payloadOverride ?? action.payload, operation_id: operationId })
@@ -626,10 +631,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
         const num = r?.order_number != null ? `#${r.order_number}` : ''
         const where = r?.status === 'completed' ? 'в архіві (Виконані)' : 'у розділі «Замовлення»'
         const msg = `Замовлення ${num} створено — ${where}` + (r?.customer_created ? ', клієнта заведено' : '')
-        setApplyMsg((prev) => ({ ...prev, [action.id]: msg }))
-        setApplyStatus((prev) => ({ ...prev, [action.id]: 'ok' }))
-        setApplied((prev) => ({ ...prev, [action.id]: 'ok' }))
-        toast.success(msg)
+        if (markSaved(msg, 'ok')) toast.success(msg)
         return true
       }
 
@@ -897,8 +899,8 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
                                 <Eye size={14} className="mr-1" /> Перевірити та створити замовлення
                               </Button>
                             ) : isBulk || isInvoice ? (
-                              <Button disabled={!!applyingId || sending} type="button" onClick={() => setModalAction(action)} className="text-xs">
-                                <Eye size={14} className="mr-1" /> Переглянути та підтвердити{action.count ? ` (${action.count})` : ''}
+                              <Button disabled={!!applyingId || sending} type="button" onClick={() => isInvoice ? void openInvoice(action) : setModalAction(action)} className="text-xs">
+                                <Eye size={14} className="mr-1" /> {isInvoice ? 'Відкрити накладну' : 'Переглянути та підтвердити'}{action.count ? ` (${action.count})` : ''}
                               </Button>
                             ) : (
                               <Button type="button" onClick={() => applyAction(action)} loading={applyingId === action.id} className="text-xs">
@@ -1052,20 +1054,17 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
       <Modal
         open={!!modalAction}
         onClose={() => { if (!applyBusy.current) setModalAction(null) }}
-        title={modalAction?.title ?? 'Попередній перегляд'}
+        title={modalAction?.tool === 'create_supply_invoice_bulk' ? 'Прихід товарів — перевірка накладної' : modalAction?.title ?? 'Попередній перегляд'}
         size="xl"
       >
         {modalAction && (
           <div className="space-y-3">
             <p className="text-xs text-gray-500">
               Підготовлено <b>{modalAction.count}</b> {(modalAction.count ?? 0) === 1 ? 'запис' : 'записів'}.
-              Перевірте список — нічого не збережеться, доки ви не натиснете «Підтвердити».
+              {modalAction.tool === 'create_supply_invoice_bulk' ? 'Після підтвердження відкриється звичайна накладна: штрихкоди, папки та оплата. Залишки зміняться лише після її проведення.' : 'Перевірте список — нічого не збережеться, доки ви не натиснете «Підтвердити».'}
             </p>
 
-            {modalAction.tool === 'create_supply_invoice_bulk' && isDesktopRuntime()
-              ? <AiInvoiceReview key={modalAction.id} actionId={modalAction.id} rows={modalAction.payload.products} disabled={!!applyingId}
-                  onReady={rows => setSupplyReview(rows ? { id: modalAction.id, rows } : null)} />
-              : modalAction.items
+            {modalAction.items
               ? <BulkPreviewTable action={modalAction} />
               : <ChangesTable changes={modalAction.changes} />}
 
@@ -1074,11 +1073,9 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
                 type="button"
                 className="flex-1"
                 loading={applyingId === modalAction.id}
-                disabled={sending || (!!applyingId && applyingId !== modalAction.id) || (modalAction.tool === 'create_supply_invoice_bulk' && isDesktopRuntime() && supplyReview?.id !== modalAction.id)}
+                disabled={!canApplyAiWrite(modalAction.tool, role, isDesktopRuntime()) || sending || (!!applyingId && applyingId !== modalAction.id)}
                 onClick={async () => {
-                  const action = modalAction.tool === 'create_supply_invoice_bulk' && supplyReview?.id === modalAction.id
-                    ? { ...modalAction, payload: { ...modalAction.payload, products: supplyReview.rows } } : modalAction
-                  if (await applyAction(action)) setModalAction(null)
+                  if (await applyAction(modalAction)) setModalAction(null)
                 }}
               >
                 <Check size={16} className="mr-1" /> Підтвердити та зберегти{modalAction.count ? ` (${modalAction.count})` : ''}

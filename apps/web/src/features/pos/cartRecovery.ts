@@ -1,4 +1,5 @@
 import type { OpenReceiptSnapshot, POSCustomer, POSItem, usePOSStore } from '@/stores/posStore'
+import { posLineAmounts } from './posMoney'
 
 type ReceiptStore = Pick<typeof usePOSStore, 'getState' | 'subscribe'>
 type CartStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
@@ -31,11 +32,11 @@ export function parseOpenReceipts(raw: string | null): OpenReceipts | null {
         if (!item || !item.productId) return []
         const qty = Number(item.qty), unitPrice = Number(item.unitPrice)
         if (!Number.isFinite(qty) || qty <= 0 || !Number.isFinite(unitPrice) || unitPrice < 0) return []
-        const discount = Math.max(0, Math.min(Number(item.discount) || 0, qty * unitPrice))
+        const discountPct = Number.isFinite(item.discountPct) ? Math.max(0, Math.min(100, item.discountPct)) : undefined
+        const price = Math.round(unitPrice)
         return [{ productId: String(item.productId), sku: String(item.sku ?? ''),
           name: String(item.name ?? item.sku ?? 'Товар'), unit: String(item.unit ?? 'шт'),
-          qty, unitPrice, discount, total: qty * unitPrice - discount,
-          discountPct: Number.isFinite(item.discountPct) ? Math.max(0, Math.min(100, item.discountPct)) : undefined,
+          qty, unitPrice: price, discountPct, ...posLineAmounts({ unitPrice: price, qty, discount: Number(item.discount) || 0, discountPct }),
           qtyOnHand: Number(item.qtyOnHand) || 0, requiresCoreReturn: item.requiresCoreReturn === true,
           coreDepositAmount: Number.isFinite(item.coreDepositAmount) ? nonnegative(item.coreDepositAmount) : 0,
           photoUrl: typeof item.photoUrl === 'string' ? item.photoUrl : null }]

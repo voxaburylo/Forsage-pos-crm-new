@@ -1,4 +1,4 @@
-import { readInvoiceDraftRecords, removeInvoiceDrafts, isMissingInvoiceError } from './invoiceDraftStore'
+import { readInvoiceDraftRecords, removeInvoiceDrafts } from './invoiceDraftStore'
 import { listLocalInvoicesWithDrafts } from './localInvoiceList'
 import { api } from '@/lib/api'
 import { desktopBridge } from '@/lib/desktopBridge'
@@ -216,9 +216,7 @@ export const supplierApi = {
   deleteInvoice: async (id: string, expectedRevision?: string) => {
     const local = localSupply()
     if (local?.deleteInvoice) {
-      try { await local.deleteInvoice(id, undefined, expectedRevision) } catch (error) {
-        if (!isMissingInvoiceError(error)) throw error
-      }
+      await local.deleteInvoice(id, undefined, expectedRevision)
       removeInvoiceDrafts(undefined, id)
       requestDesktopSync()
       return

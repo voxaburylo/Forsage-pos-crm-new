@@ -79,6 +79,10 @@ describe('private bounded local black box', () => {
       ['AI_STATUS_TIMEOUT', 'ai-status-timeout'],
       ['AI_STATUS_SERVER', 'ai-status-server-error'],
       ['AI_PROCESSING_CLEANUP_FAILED Private path', 'ai-processing-cleanup-failed'],
+      ['AI_COMMITTED_CHECKPOINT_UNAVAILABLE Private invoice', 'ai-committed-checkpoint-unavailable'],
+      ['AI_COMMITTED_DRAFT_VIEW_UNAVAILABLE Private invoice', 'ai-committed-draft-view-unavailable'],
+      ['AI_OPERATION_CLIPBOARD_VALIDATION Private document', 'ai-clipboard-validation'],
+      ['AI_OPERATION_WRITE_VALIDATION Private document', 'ai-write-validation'],
       ['Недостатньо товару «Private product». Доступно: 1, потрібно: 2', 'insufficient-stock'],
       ['TSPL_PRINT_NOT_CONFIRMED: Private printer', 'print-outcome-unknown'],
       ['PRINT_GUARD_TIMEOUT', 'print-timeout'],
@@ -93,6 +97,41 @@ describe('private bounded local black box', () => {
   it('keeps a stable error fingerprint for comparison', () => {
     expect(safeDiagnosticDetails('network failed')).toEqual(safeDiagnosticDetails('network failed'))
     expect(safeDiagnosticDetails('network failed')).not.toEqual(safeDiagnosticDetails('SQL failed'))
+  })
+  it('bounds recursive error metadata and ignores unsupported values', () => {
+    const value: Record<string, unknown> = { sequence: 8, payload: 1n }
+    value.error = value
+    expect(() => safeDiagnosticDetails(value)).not.toThrow()
+    expect(JSON.stringify(safeDiagnosticDetails(value)).length).toBeLessThan(1000)
+    expect(safeDiagnosticDetails(value).sequence).toBe(8)
+  })
+  it('does not invoke getters or toJSON while collecting diagnostics', () => {
+    let reads = 0
+    const value = Object.defineProperty({ sequence: 2, toJSON: () => { throw Error('PRIVATE_JSON') } }, 'error', {
+      enumerable: true, get: () => { reads++; throw Error('PRIVATE_GETTER') },
+    })
+    expect(() => safeDiagnosticDetails(value)).not.toThrow()
+    expect(safeDiagnosticDetails(value)).toEqual({ sequence: 2 })
+    expect(reads).toBe(0)
+  })
+  it('handles a hostile Error without disabling the black box', () => {
+    const value = new Error('placeholder')
+    Object.defineProperty(value, 'message', { get: () => { throw Error('PRIVATE_MESSAGE') } })
+    expect(() => safeDiagnosticDetails(value)).not.toThrow()
+    expect(JSON.stringify(safeDiagnosticDetails(value))).not.toContain('PRIVATE_')
+  })
+  it('does not coerce hostile message objects while reading a native stack', () => {
+    let calls = 0
+    const value = new Error('placeholder')
+    Object.defineProperty(value, 'message', { value: { toString: () => { calls++; throw Error('PRIVATE_COERCION') } } })
+    expect(() => safeDiagnosticDetails(value)).not.toThrow()
+    expect(calls).toBe(0)
+    expect(JSON.stringify(safeDiagnosticDetails(value))).not.toContain('PRIVATE_')
+  })
+  it('accepts only known codes, types and hexadecimal fingerprints from saved metadata', () => {
+    expect(safeDiagnosticDetails({ fingerprint: 'PRIVATE_FINGERPRINT', error_code: 'PRIVATE_CODE', error_type: 'PRIVATE_TYPE' })).toEqual({})
+    expect(safeDiagnosticDetails({ fingerprint: 'a'.repeat(20), error_code: 'ai-write-validation', error_type: 'Error' }))
+      .toEqual({ fingerprint: 'a'.repeat(20), error_code: 'ai-write-validation', error_type: 'Error' })
   })
   it('rejects invalid names and unsafe nested metadata', () => {
     expect(safeDiagnosticEvent('password: secret')).toBe('unknown-event')

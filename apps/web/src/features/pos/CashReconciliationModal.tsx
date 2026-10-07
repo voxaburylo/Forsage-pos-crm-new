@@ -1,4 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useLayoutEffect, useRef } from 'react'
+import { shiftApi, type ExpectedCash } from './shiftApi'
+import { parseCountedCash } from './shiftCashData'
 import { X, DollarSign } from 'lucide-react'
 import { api } from '@/lib/api'
 import { formatMoney } from '@/lib/utils'
@@ -16,51 +18,46 @@ export function CashReconciliationModal({ open, onClose }: Props) {
   const role = (session?.user?.app_metadata?.role as string) ?? 'cashier'
   const isOwnerOrAdmin = role === 'owner' || role === 'admin'
 
-  const [expected, setExpected] = useState(0)
-  const [breakdown, setBreakdown] = useState<Record<string, number>>({})
+  const [breakdown, setBreakdown] = useState<ExpectedCash | null>(null)
   const [actual, setActual] = useState('')
   const [comment, setComment] = useState('')
   const [saving, setSaving] = useState(false)
+  const saveInFlight = useRef(false)
   const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState(false)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return
+    let cancelled = false
     setActual('')
     setComment('')
+    setBreakdown(null)
+    setLoadError(false)
     setLoading(true)
-    const desktop = desktopBridge()
-    const cashierId = session?.user?.id
-    if (desktop && cashierId) {
-      desktop.pos.expectedCash(cashierId)
-        .then((data) => {
-          if (!data) { toast.error('Зміну не відкрито'); return }
-          setExpected(data.expected_amount ?? 0)
-          setBreakdown(data as unknown as Record<string, number>)
-        })
-        .catch(() => toast.error('Помилка завантаження даних'))
-        .finally(() => setLoading(false))
-      return
-    }
-    api.get<{ data: Record<string, number> }>('/api/v1/shifts/current/expected-cash')
-      .then((res) => {
-        setExpected(res.data.expected_amount ?? 0)
-        setBreakdown(res.data)
+    shiftApi.expectedCash()
+      .then(({ data }) => { if (!cancelled) setBreakdown(data) })
+      .catch(() => {
+        if (!cancelled) { setLoadError(true); toast.error('Помилка завантаження даних звірки') }
       })
-      .catch(() => toast.error('Помилка завантаження даних'))
-      .finally(() => setLoading(false))
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
   }, [open, session?.user?.id])
 
   if (!open) return null
 
-  const actualKopecks = Math.round(parseFloat(actual || '0') * 100)
+  const expected = breakdown?.expected_amount ?? 0
+  const countedCash = parseCountedCash(actual)
+  const actualKopecks = countedCash ?? 0
   const difference = actualKopecks - expected
-  const hasDiff = actual !== '' && difference !== 0
+  const canSave = !loading && !loadError && breakdown !== null && countedCash !== null && Number.isSafeInteger(difference)
+  const hasDiff = canSave && difference !== 0
   const needsComment = isOwnerOrAdmin && hasDiff && !comment.trim()
+  const dismiss = () => { if (!saveInFlight.current) onClose() }
 
   async function handleSave() {
+    if (saveInFlight.current || !canSave) return
     if (needsComment) { toast.error('При розбіжності вкажіть коментар'); return }
-    if (actualKopecks < 0) { toast.error('Сума не може бути від\'ємною'); return }
-
+    saveInFlight.current = true
     setSaving(true)
     try {
       const desktop = desktopBridge()
@@ -77,24 +74,26 @@ export function CashReconciliationModal({ open, onClose }: Props) {
       onClose()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Помилка')
-    } finally { setSaving(false) }
+    } finally { saveInFlight.current = false; setSaving(false) }
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/70" onClick={onClose} />
-      <div className="relative bg-[#1A1A1A] rounded-2xl border border-gray-700 w-full max-w-md mx-4 p-6 shadow-xl">
+      <div className="absolute inset-0 bg-black/70" onClick={dismiss} />
+      <div className="relative max-h-[92vh] overflow-y-auto bg-[#1A1A1A] rounded-2xl border border-gray-700 w-full max-w-md mx-4 p-6 shadow-xl">
         {/* Header */}
         <div className="flex items-center justify-between mb-5">
           <div className="flex items-center gap-2">
             <DollarSign size={20} className="text-yellow-400" />
             <h2 className="text-white text-lg font-bold">Звірка каси</h2>
           </div>
-          <button onClick={onClose} aria-label="Закрити звірку" className="text-gray-500 hover:text-white"><X size={20} /></button>
+          <button onClick={dismiss} disabled={saving} aria-label="Закрити звірку" className="text-gray-500 hover:text-white"><X size={20} /></button>
         </div>
 
         {loading ? (
           <p className="text-gray-400 text-sm text-center py-8">Завантаження...</p>
+        ) : loadError || !breakdown ? (
+          <p role="alert" className="text-red-300 text-sm">Дані звірки не завантажено. Збереження заблоковано. Закрийте це вікно та відкрийте знову.</p>
         ) : (
           <div className="space-y-5">
             {/* Expected */}
@@ -122,7 +121,7 @@ export function CashReconciliationModal({ open, onClose }: Props) {
             {/* Actual input */}
             <div>
               <label className="text-gray-400 text-xs mb-1 block">Фактична сума в касі (₴)</label>
-              <input type="number" min="0" step="0.01" autoFocus value={actual}
+              <input type="text" inputMode="decimal" aria-label="Фактична сума в касі" autoFocus value={actual} disabled={saving}
                 onChange={(e) => setActual(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') handleSave() }}
                 placeholder="0.00"
@@ -130,7 +129,7 @@ export function CashReconciliationModal({ open, onClose }: Props) {
             </div>
 
             {/* Difference */}
-            {isOwnerOrAdmin && actual && (
+            {isOwnerOrAdmin && canSave && (
               <div className={`rounded-xl px-4 py-3 text-center font-bold text-lg ${
                 difference === 0 ? 'bg-gray-800 text-gray-400' :
                 difference > 0 ? 'bg-green-900/40 text-green-400 border border-green-500/40' :
@@ -163,9 +162,9 @@ export function CashReconciliationModal({ open, onClose }: Props) {
 
             {/* Buttons */}
             <div className="flex gap-3">
-              <button onClick={onClose}
+              <button onClick={dismiss} disabled={saving}
                 className="flex-1 py-3 rounded-xl bg-[#2C2C2C] text-gray-300 font-semibold hover:bg-gray-700 transition-colors">Скасувати</button>
-              <button onClick={handleSave} disabled={saving || !actual}
+              <button onClick={handleSave} disabled={saving || !canSave || needsComment}
                 className="flex-1 py-3 rounded-xl bg-yellow-400 text-black font-bold hover:bg-yellow-300 disabled:opacity-40 transition-colors">
                 {saving ? 'Збереження...' : 'Зберегти звірку'}
               </button>

@@ -1,4 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { DatabaseSync } from 'node:sqlite'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -133,4 +135,35 @@ describe('LocalDatabase.stageBackupForRestart', () => {
     reopened.database.close()
     expect(readdirSync(path.join(root, 'corrupt')).length).toBeGreaterThan(0)
   })
+
+  it.each(['migration-gap', 'photo-checksum', 'photo-schema'])(
+    'rejects %s before moving the current database', async (damage) => {
+      const database = new LocalDatabase(root)
+      database.exec('CREATE TABLE readiness_probe(value INTEGER); INSERT INTO readiness_probe VALUES(98)')
+      const backup = await database.backupNow()
+      database.exec('UPDATE readiness_probe SET value=101')
+      database.close()
+      const before = createHash('sha256').update(readFileSync(path.join(root, 'data', 'forsage.db'))).digest('hex')
+      const copy = new DatabaseSync(backup)
+      try {
+        if (damage === 'migration-gap') {
+          copy.exec('DELETE FROM schema_migrations WHERE version=2')
+        } else if (damage === 'photo-checksum') {
+          copy.exec('CREATE TABLE backup_assets(original_url TEXT PRIMARY KEY, sha256 TEXT, bytes BLOB, error TEXT)')
+          copy.prepare('INSERT INTO backup_assets VALUES(?,?,?,NULL)').run('file:///source/product.png',
+            createHash('sha256').update('original image').digest('hex'), Buffer.from('damaged image'))
+        } else {
+          copy.exec('CREATE TABLE backup_assets(original_url TEXT PRIMARY KEY, bytes BLOB)')
+        }
+      } finally { copy.close() }
+
+      expect(() => LocalDatabase.stageBackupForRestart(root, path.basename(backup)))
+        .toThrow(damage === 'migration-gap' ? 'LOCAL_BACKUP_INCOMPLETE_SCHEMA' : 'LOCAL_BACKUP_INVALID_ASSETS')
+      expect(createHash('sha256').update(readFileSync(path.join(root, 'data', 'forsage.db'))).digest('hex')).toBe(before)
+      expect(existsSync(path.join(root, 'corrupt'))).toBe(false)
+      const reopened = LocalDatabase.open(root).database
+      try { expect(reopened.prepare('SELECT value FROM readiness_probe').get()).toEqual({ value: 101 }) }
+      finally { reopened.close() }
+    },
+  )
 })

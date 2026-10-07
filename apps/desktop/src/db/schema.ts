@@ -1,6 +1,6 @@
 import { SUPPLIER_CATALOG_SCHEMA_SQL } from './supplierCatalogSchema'
 
-export const LOCAL_SCHEMA_VERSION = 26
+export const LOCAL_SCHEMA_VERSION = 27
 
 const MIGRATION_001_CORE_SQL = `
   CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1474,5 +1474,12 @@ export const LOCAL_MIGRATIONS: LocalMigration[] = [
     );
     CREATE INDEX IF NOT EXISTS idx_customer_receipts_history ON sales(tenant_id, customer_id, completed_at DESC, id DESC) WHERE deleted_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_customer_deposits_history ON customer_deposit_transactions(tenant_id, customer_id, created_at DESC, id DESC) WHERE deleted_at IS NULL;
+  ` },
+  { version: 27, sql: `
+    -- Keep the shift of the refund, not the shift of its original sale.
+    -- Historical rows stay NULL: reports resolve only unambiguous evidence.
+    ALTER TABLE customer_returns ADD COLUMN shift_id TEXT;
+    CREATE INDEX IF NOT EXISTS idx_customer_returns_shift
+      ON customer_returns(tenant_id, shift_id) WHERE deleted_at IS NULL;
   ` },
 ]

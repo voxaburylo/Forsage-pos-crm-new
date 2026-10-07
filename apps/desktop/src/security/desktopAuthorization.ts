@@ -18,6 +18,10 @@ export const PUBLIC_DESKTOP_CHANNELS = new Set([
 ])
 
 const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
+  ['desktop:warehouse:writeoffs-summary', ['owner', 'admin', 'manager']],
+  ['desktop:pos:sales-period-report', ['owner', 'admin', 'manager']],
+  ['desktop:auth:save-server-session', ALL_ROLES],
+  ['desktop:auth:restore-server-session', ALL_ROLES],
   ['desktop:staff:restore-user', OWNER_ROLES],
   ['desktop:staff:save-settings', OWNER_ROLES],
   ['desktop:staff:list-users', OWNER_ROLES],

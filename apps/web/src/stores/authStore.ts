@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
+import { rememberDesktopServerSession } from '@/lib/desktopServerSession'
 
 interface AuthState {
   session: Session | null
@@ -29,6 +30,10 @@ export const useAuthStore = create<AuthState>((set) => ({
       session = { ...session, user: { ...session.user, app_metadata: { ...session.user.app_metadata, role: verifiedLocalSession.user.app_metadata.role, tenant_id: verifiedLocalSession.user.app_metadata.tenant_id } } }
     }
     set({ session, offlineMode: false, loading: false })
+    if (session && verifiedLocalSession) {
+      const local = verifiedLocalSession
+      void rememberDesktopServerSession(session, () => verifiedLocalSession === local)
+    }
   },
   setOfflineSession: (session) => { verifiedLocalSession = session; set({ session, offlineMode: true, loading: false }) },
   setLoading: (loading) => set({ loading }),

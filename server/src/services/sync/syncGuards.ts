@@ -82,26 +82,20 @@ export async function ensureFreeAmountProduct(
   tenantId: string,
 ): Promise<string> {
   const sku = 'LOCAL-FREE-AMOUNT'
-  const existing = await client.query(
-    'SELECT id FROM products WHERE tenant_id = $1 AND sku = $2 AND deleted_at IS NULL LIMIT 1',
-    [tenantId, sku],
-  )
-  if (existing.rowCount && existing.rowCount > 0) return String(existing.rows[0].id)
-
-  const inserted = await client.query(
-    `INSERT INTO products (
-      tenant_id, sku, name, barcode, retail_price, purchase_price, qty_on_hand,
-      unit, is_active, is_service, notes, created_at, updated_at
-    )
-    VALUES ($1, $2, 'Вільна сума офлайн-каси', NULL, 0, 0, 0, 'шт', true, true, $3, now(), now())
-    ON CONFLICT (tenant_id, sku) DO UPDATE SET
-      is_service = true,
-      is_active = true,
-      deleted_at = NULL,
-      updated_at = now()
-    RETURNING id`,
-    [tenantId, sku, 'Службовий товар для чеків з довільною сумою, створений синхронізацією'],
-  )
-
-  return String(inserted.rows[0].id)
+  const read = () => client.query('SELECT id,is_service FROM products WHERE tenant_id=$1 AND sku=$2', [tenantId, sku])
+  const checked = (row: Record<string, any> | undefined): string => {
+    if (!row || row.is_service !== true) throw new AppError('SYNC_FREE_AMOUNT_PRODUCT_CONFLICT',
+      'Службовий артикул вільної суми зайнятий звичайним товаром. Картку не змінено; потрібна звірка.', 409)
+    return String(row.id)
+  }
+  const existing = await read()
+  // Historical service may be archived: use its identity without restoring or
+  // changing the product. Never convert a real stock product into a service.
+  if (existing.rowCount) return checked(existing.rows[0])
+  const inserted = await client.query(`INSERT INTO products(
+    tenant_id,sku,name,barcode,retail_price,purchase_price,qty_on_hand,unit,is_active,is_service,notes,created_at,updated_at)
+    VALUES($1,$2,'Вільна сума офлайн-каси',NULL,0,0,0,'шт',true,true,$3,now(),now())
+    ON CONFLICT(tenant_id,sku) DO NOTHING RETURNING id,is_service`,
+    [tenantId, sku, 'Службовий товар для чеків з довільною сумою, створений синхронізацією'])
+  return checked(inserted.rowCount ? inserted.rows[0] : (await read()).rows[0])
 }

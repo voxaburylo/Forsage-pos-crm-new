@@ -1,8 +1,10 @@
+import { parseSoldRows, validSoldRange } from './soldReportData'
+import { parsePeriodReport } from './periodReportData'
 import { api } from '@/lib/api'
-import { desktopBridge } from '@/lib/desktopBridge'
+import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
 import { productApi } from '@/features/products/productApi'
 import { customerApi } from '@/features/customers/customerApi'
-import { warehouseApi } from '@/features/inventory/warehouseApi'
+import { parseWriteoffSummary } from './writeoffReportData'
 import type { Sale } from '@/types/sale'
 import type { SalesSummary, SalesPeriodReport, LowStockProduct, Debtor } from '@/types/report'
 import { businessDateKey, businessDateRangeUtc } from '@/lib/businessDate'
@@ -75,7 +77,7 @@ async function localOrderPayments(from?: string, to?: string): Promise<LocalOrde
   }) as LocalOrderPayment[]
 }
 
-function summarize(sales: Sale[], orderPayments: LocalOrderPayment[] = []): SalesPeriodReport {
+function summarize(sales: Sale[], orderPayments: LocalOrderPayment[] = []) {
   const byMethod = { cash: 0, card: 0, transfer: 0, account: 0, debt: 0 }
   for (const sale of sales) {
     if (sale.is_order_sale) continue
@@ -108,32 +110,23 @@ function summarize(sales: Sale[], orderPayments: LocalOrderPayment[] = []): Sale
   }
 }
 export const reportApi = {
-  salesToday: async () => {
-    if (desktopBridge()) {
-      const [allSales, payments] = await Promise.all([localSales(today(), today()), localOrderPayments(today(), today())])
-      const report = summarize(salesInRange(allSales, today(), today()), payments)
-      const { sales: _sales, ...summary } = report
-      return { data: summary as SalesSummary }
-      void _sales
-    }
-    return api.get<{ data: SalesSummary }>('/api/v1/reports/sales/today')
+  salesToday: async (): Promise<{data:SalesSummary}> => {
+    const {data:{sales:_sales,daily:_daily,...summary}}=await reportApi.salesPeriod(today(),today())
+    void _sales; void _daily
+    return {data:summary}
   },
 
-  salesPeriod: async (from?: string, to?: string) => {
-    if (desktopBridge()) {
-      const effectiveFrom = from ?? today()
-      const effectiveTo = to ?? effectiveFrom
-      const [allSales, payments] = await Promise.all([
-        localSales(effectiveFrom, effectiveTo),
-        localOrderPayments(effectiveFrom, effectiveTo),
-      ])
-      return { data: summarize(salesInRange(allSales, effectiveFrom, effectiveTo), payments) }
+  salesPeriod: async (from=today(),to=from): Promise<{data:SalesPeriodReport}> => {
+    if(!validSoldRange(from,to))throw Error('Невірно вибраний період')
+    if(isDesktopRuntime()){
+      const read=desktopBridge()?.pos.salesPeriodReport
+      if(!read)throw Error('Для фінансового звіту потрібна оновлена локальна програма')
+      const range=businessDateRangeUtc(from,to)
+      return {data:parsePeriodReport(await read({date_from:range.from,date_to:range.to}),from,to)}
     }
-    const params = new URLSearchParams()
-    if (from) params.set('from', from)
-    if (to) params.set('to', to)
-    const qs = params.toString() ? `?${params.toString()}` : ''
-    return api.get<{ data: SalesPeriodReport }>(`/api/v1/reports/sales/period${qs}`)
+    const params=new URLSearchParams({from,to})
+    const response=await api.get<{data:unknown}>(`/api/v1/reports/sales/period?${params}`,{silent:true})
+    return {data:parsePeriodReport(response.data,from,to)}
   },
 
   lowStock: async () => {
@@ -161,79 +154,38 @@ export const reportApi = {
   },
 
   weekly: async () => {
-    if (desktopBridge()) {
-      const days = Array.from({ length: 7 }, (_, index) => {
-        const date = new Date()
-        date.setDate(date.getDate() - (6 - index))
-        return localDate(date)
-      })
-      const sales = await localSales(days[0], days[days.length - 1])
-      return { data: days.map((date) => {
-        const rows = salesInRange(sales, date, date)
-        return { date, revenue: rows.reduce((sum, sale) => sum + sale.total, 0), sales: rows.length }
-      }) }
-    }
-    return api.get<{ data: Array<{ date: string; revenue: number; sales: number }> }>('/api/v1/reports/sales/weekly')
+    const end=today()
+    const dates=Array.from({length:7},(_,index)=>{
+      const d=new Date(end+'T12:00:00Z');d.setUTCDate(d.getUTCDate()-6+index)
+      return d.toISOString().slice(0,10)
+    })
+    const {data}=await reportApi.salesPeriod(dates[0],end)
+    return {data:dates.map(date=>data.daily.find(row=>row.date===date)
+      ?? {date,revenue:0,gross_revenue:0,returns_total:0,sales:0})}
   },
 
   writeoffsSummary: async () => {
-    if (desktopBridge()) {
-      const all: any[] = []
-      for (let page = 1; ; page += 1) {
-        const batch = await warehouseApi.listWriteoffs({ page, per_page: 200 })
-        all.push(...(batch.data ?? []))
-        if (page >= Number(batch.pagination?.total_pages ?? 1)) break
-        if (!batch.data?.length) throw new Error('Неповний список списань. Звіт не сформовано.')
-      }
-      const month = today().slice(0, 7)
-      const writeoffs = await Promise.all(all
-        .filter((item) => localDate(item.created_at).startsWith(month))
-        .map((item) => warehouseApi.getWriteoff(item.id).then((result) => result.data)))
-      return { data: {
-        count: writeoffs.length,
-        total_cost: writeoffs.reduce((sum, item) => sum + (item.items ?? []).reduce((lineSum: number, line: any) => lineSum + Number(line.cost_kopecks ?? 0), 0), 0),
-        writeoffs: writeoffs.map((item) => ({
-          id: item.id,
-          reason: item.reason,
-          created_at: item.created_at,
-          items: (item.items ?? []).map((line) => ({ cost_kopecks: Number(line.cost_kopecks ?? 0) })),
-        })),
-      } }
+    const month = today().slice(0, 7)
+    if (isDesktopRuntime()) {
+      const read = desktopBridge()?.warehouse?.writeoffsSummary
+      if (!read) throw Error('Для звіту списань потрібна оновлена локальна програма')
+      return { data: parseWriteoffSummary(await read({ month }), month) }
     }
-    return api.get<{ data: { count: number; total_cost: number; writeoffs: Array<{ id: string; reason: string; created_at: string; items: Array<{ cost_kopecks: number }> }> } }>('/api/v1/reports/writeoffs/summary')
+    const response = await api.get<{ data: unknown }>(`/api/v1/reports/writeoffs/summary?month=${month}`, { silent: true })
+    return { data: parseWriteoffSummary(response.data, month) }
   },
 
   soldItems: async (from: string, to: string = from) => {
-    if (desktopBridge()) {
-      const range = businessDateRangeUtc(localDate(from), localDate(to))
+    if (!validSoldRange(from,to)) throw new Error('Невірно вибраний період')
+    if (isDesktopRuntime()) {
       const direct = desktopBridge()?.pos.soldItemsReport
-      if (direct) {
-        return { data: await direct({ date_from: range.from, date_to: range.to }) }
-      }
-      const rows = salesInRange(await localSales(from, to), from, to)
-      const grouped = new Map<string, any>()
-      for (const sale of rows) {
-        for (const item of sale.sale_items ?? []) {
-          if (!item.product_id || !item.product) continue
-          const current = grouped.get(item.product_id) ?? {
-            product_id: item.product_id, sku: item.product.sku, name: item.product.name,
-            barcode: item.product.barcode ?? null,
-            unit: item.product.unit, qty_sold: 0, qty_returned: 0, qty_net: 0,
-            revenue: 0, refund_total: 0, net_revenue: 0,
-            qty_on_hand: Number(item.product.qty_on_hand ?? 0), storage_bin: item.product.storage_bin ?? null,
-          }
-          current.qty_sold += Number(item.qty)
-          current.qty_net += Number(item.qty)
-          current.revenue += Number(item.total)
-          current.net_revenue += Number(item.total)
-          current.qty_on_hand = Number(item.product.qty_on_hand ?? current.qty_on_hand)
-          grouped.set(item.product_id, current)
-        }
-      }
-      return { data: [...grouped.values()].sort((a, b) => b.qty_net - a.qty_net) }
+      if (!direct) throw new Error('Для цього звіту потрібна оновлена локальна програма')
+      const range = businessDateRangeUtc(from,to)
+      return { data: parseSoldRows(await direct({date_from:range.from,date_to:range.to})) }
     }
-    const params = new URLSearchParams({ from, to })
-    return api.get<{ data: any[] }>(`/api/v1/reports/sold-items?${params.toString()}`, { silent: true })
+    const params = new URLSearchParams({from,to})
+    const response = await api.get<{data:unknown}>(`/api/v1/reports/sold-items?${params}`,{silent:true})
+    return {data:parseSoldRows(response.data)}
   },
 
   dailyControl: async () => {

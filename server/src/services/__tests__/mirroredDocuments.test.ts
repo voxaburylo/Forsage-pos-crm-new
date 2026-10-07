@@ -48,18 +48,19 @@ describe('documents after canonical balances were already applied',()=>{
     expect(Number((await state.db.query('SELECT bonus_balance FROM customers')).rows[0].bonus_balance)).toBe(0)
   })
   it('copies an already applied writeoff without checking or consuming stock again',async()=>{
-    const operation=op({items:[{product_id:product,qty:8}]});operation.aggregate_id=randomUUID()
+    const operation=op({reason:'other',notes:null,created_by:user,created_at:'2026-09-11T12:00:00Z',
+      items:[{id:randomUUID(),product_id:product,qty:8,cost_kopecks:800,created_at:'2026-09-11T12:00:00Z'}]});operation.aggregate_id=randomUUID()
     await applyWriteoffCreated(tenant,user,operation);await applyWriteoffCreated(tenant,user,operation)
     expect((await state.db.query('SELECT qty FROM inventory_writeoff_items')).rows.map((r:any)=>Number(r.qty))).toEqual([8])
     expect(Number((await state.db.query('SELECT qty_on_hand FROM products')).rows[0].qty_on_hand)).toBe(0)
   })
-  it('copies invoice posting and cancellation without invoking stock RPCs',async()=>{
+  it('refuses incomplete invoice cancellation and posting without touching stock',async()=>{
     const operation=op({});operation.aggregate_id=randomUUID()
     await state.db.query("INSERT INTO supply_invoices(id,tenant_id,status,paid_amount) VALUES($1,$2,'draft',0)",[operation.aggregate_id,tenant])
-    await applySupplierInvoicePosted(tenant,user,operation);await applySupplierInvoicePosted(tenant,user,operation)
-    expect((await state.db.query('SELECT status FROM supply_invoices')).rows[0].status).toBe('posted')
-    await applySupplierInvoiceCancelled(tenant,operation);await applySupplierInvoiceCancelled(tenant,operation)
-    expect((await state.db.query('SELECT status FROM supply_invoices')).rows[0].status).toBe('cancelled')
+    await expect(applySupplierInvoicePosted(tenant,user,operation)).rejects.toMatchObject({ code:'SYNC_INVOICE_COPY_INVALID' })
+    expect((await state.db.query('SELECT status FROM supply_invoices')).rows[0].status).toBe('draft')
+    await expect(applySupplierInvoiceCancelled(tenant,operation)).rejects.toMatchObject({ code:'SYNC_INVOICE_COPY_INVALID' })
+    expect((await state.db.query('SELECT status FROM supply_invoices')).rows[0].status).toBe('draft')
     expect(Number((await state.db.query('SELECT qty_on_hand FROM products')).rows[0].qty_on_hand)).toBe(0)
   })
 })

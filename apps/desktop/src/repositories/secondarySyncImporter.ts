@@ -368,8 +368,8 @@ export class LocalSecondarySyncImporter {
       INSERT INTO customer_returns (
         id, tenant_id, sale_id, customer_id, return_type, reason, reason_note,
         refund_method, refund_kopecks, stock_action, status, approved_by,
-        fiscal_number, remote_updated_at, created_at, updated_at, deleted_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        fiscal_number, shift_id, remote_updated_at, created_at, updated_at, deleted_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
       ON CONFLICT(id) DO UPDATE SET
         sale_id = excluded.sale_id,
         customer_id = excluded.customer_id,
@@ -382,6 +382,7 @@ export class LocalSecondarySyncImporter {
         status = excluded.status,
         approved_by = excluded.approved_by,
         fiscal_number = excluded.fiscal_number,
+        shift_id = COALESCE(excluded.shift_id, customer_returns.shift_id),
         remote_updated_at = excluded.remote_updated_at,
         updated_at = excluded.updated_at,
         deleted_at = NULL
@@ -392,6 +393,7 @@ export class LocalSecondarySyncImporter {
       customerReturn.refund_method ?? 'cash', Math.round(asNumber(customerReturn.refund_kopecks)),
       customerReturn.stock_action ?? 'return_to_stock', customerReturn.status ?? 'completed',
       customerReturn.approved_by ?? null, customerReturn.fiscal_number ?? null,
+      this.exists('shifts', tenantId, customerReturn.shift_id) ? customerReturn.shift_id : null,
       createdAt, createdAt, createdAt,
     )
     return true

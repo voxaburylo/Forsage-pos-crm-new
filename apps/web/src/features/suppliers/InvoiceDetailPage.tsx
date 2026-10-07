@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Tag, Trash2 } from 'lucide-react'
 import { supplierApi } from './supplierApi'
+import { sourceForPaymentMethod, methodForPaymentSource } from './supplierPaymentSelection'
 import type { SupplyInvoice } from '@/types/supplier'
 import { Layout } from '@/components/Layout'
 import { Button, Badge, Card } from '@/components/ui'
@@ -327,7 +328,11 @@ export default function InvoiceDetailPage() {
           value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)} />
         <div>
           <label className="mb-1 block text-sm font-medium text-gray-700">Спосіб оплати</label>
-          <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value as typeof paymentMethod)}
+          <select value={paymentMethod} onChange={(e) => {
+            const next = e.target.value as typeof paymentMethod
+            setPaymentMethod(next)
+            setFundSource(sourceForPaymentMethod(next, fundSource))
+          }}
             className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm">
             <option value="cash">Готівка</option>
             <option value="card">Картка / термінал</option>
@@ -336,7 +341,11 @@ export default function InvoiceDetailPage() {
         </div>
         <div>
           <label className="mb-1 block text-sm font-medium text-gray-700">Звідки взяті гроші</label>
-          <select value={fundSource} onChange={(e) => setFundSource(e.target.value as typeof fundSource)}
+          <select value={fundSource} onChange={(e) => {
+            const next = e.target.value as typeof fundSource
+            setFundSource(next)
+            setPaymentMethod(methodForPaymentSource(next, paymentMethod))
+          }}
             className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm">
             <option value="cashbox">З каси магазину</option>
             <option value="owner_funds">Власні кошти власника</option>

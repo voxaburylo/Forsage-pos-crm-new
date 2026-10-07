@@ -44,6 +44,11 @@ jobs:
       - run: node apps/desktop/scripts/readiness-crash-smoke.cjs
       - run: pnpm exec playwright install chromium
       - run: node apps/web/scripts/shift-close-smoke.mjs
+      - run: node apps/web/scripts/dashboard-readiness-smoke.mjs
+      - run: node apps/web/scripts/abc-readiness-smoke.mjs
+      - run: node apps/web/scripts/staff-readiness-smoke.mjs
+      - run: node apps/web/scripts/sold-readiness-smoke.mjs
+      - run: node apps/web/scripts/pos-discount-payment-ui-smoke.mjs
       - run: node apps/web/scripts/readiness-ui-smoke.mjs
       - run: node apps/web/scripts/invoice-search-ui-smoke.mjs
       - run: node apps/web/scripts/invoice-revision-ui-smoke.mjs
@@ -52,6 +57,7 @@ jobs:
       - run: node apps/web/scripts/warehouse-action-ui-smoke.mjs
       - run: node apps/web/scripts/order-form-recovery-ui-smoke.mjs
       - run: node apps/web/scripts/orders-photo-ui-smoke.mjs
+      - run: node apps/web/scripts/ai-image-preparation-smoke.mjs
       - run: node apps/web/scripts/access-race-ui-smoke.mjs
       - run: node apps/web/scripts/customer-staff-action-ui-smoke.mjs
       - run: node apps/web/scripts/payroll-action-ui-smoke.mjs
@@ -61,6 +67,7 @@ jobs:
       - run: node apps/web/scripts/stability-ui-smoke.mjs
       - run: node apps/web/scripts/tire-service-ui-smoke.mjs
       - run: node apps/web/scripts/ai-supply-input-ui-smoke.mjs
+      - run: node apps/web/scripts/ai-invoice-review-ui-smoke.mjs
       - run: node apps/web/scripts/catalog-agent-safety-ui-smoke.mjs
       - run: pnpm --filter desktop exec electron scripts/ai-input-renderer-smoke.cjs
       - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/ai-invoice-worker-smoke.cjs

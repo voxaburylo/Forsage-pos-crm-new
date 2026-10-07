@@ -67,6 +67,16 @@ describe('summarizePaymentReceipts', () => {
 })
 
 describe('calculateExpectedCash', () => {
+  it('keeps a negative expected balance visible', () => {
+    expect(calculateExpectedCash({openingCash:100,regularSaleCash:0,cashIn:0,returnCash:200,cashOut:0})).toBe(-100)
+  })
+  it.each([NaN, Infinity, -1, 0.5, Number.MAX_SAFE_INTEGER + 1])('rejects invalid cash %s', value => {
+    expect(() => calculateExpectedCash({openingCash:value,regularSaleCash:0,cashIn:0,returnCash:0,cashOut:0})).toThrow()
+  })
+  it('rejects unsafe totals but preserves exact cancellation', () => {
+    expect(() => calculateExpectedCash({openingCash:Number.MAX_SAFE_INTEGER,regularSaleCash:1,cashIn:0,returnCash:0,cashOut:0})).toThrow()
+    expect(calculateExpectedCash({openingCash:Number.MAX_SAFE_INTEGER,regularSaleCash:1,cashIn:0,returnCash:1,cashOut:0})).toBe(Number.MAX_SAFE_INTEGER)
+  })
   it('subtracts a return movement once from the shift where it happened', () => {
     expect(calculateExpectedCash({
       openingCash: 10_000,

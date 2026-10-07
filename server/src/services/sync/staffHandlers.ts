@@ -7,7 +7,7 @@ import { runTransaction } from '../../db/pg.js'
 import { supabaseAdmin } from '../../db/supabaseAdmin.js'
 import { isSupportedSecretHash, secretHashNeedsUpgrade } from '../../lib/secretHash.js'
 import { AppError } from '../../middleware/errorHandler.js'
-import { isUuid, normalizedPhoneEmail, uuidOr } from './syncCore.js'
+import { isUuid, normalizedPhoneEmail } from './syncCore.js'
 import type { SyncOutboxOperation } from './syncCore.js'
 import { randomUUID } from 'node:crypto'
 
@@ -143,82 +143,4 @@ export async function applyCommissionRuleDeleted(tenantId: string, operation: Sy
   })
 }
 
-export async function applySalaryPaymentCreated(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
-  const payload = operation.payload ?? {}
-  const id = String(payload.id ?? operation.aggregate_id)
-  if (!isUuid(id) || !isUuid(payload.employee_id)) {
-    throw new AppError('SYNC_SALARY_INVALID', 'Некоректне нарахування зарплати', 400)
-  }
-  const source = String(payload.source ?? 'manual')
-  const rawAmount = Math.round(Number(payload.amount ?? 0))
-  if (!Number.isFinite(rawAmount) || rawAmount === 0 || (source === 'commission_reversal' ? rawAmount >= 0 : rawAmount < 0)) {
-    throw new AppError('SYNC_SALARY_AMOUNT_INVALID', 'Некоректна сума нарахування зарплати', 400)
-  }
-  const amount = rawAmount
-  const createdAt = payload.created_at ?? operation.created_at
-  const appliedAt = operation.applied_at ?? operation.created_at
-  await runTransaction(async (client) => {
-    await client.query(
-      `INSERT INTO salary_payments (
-        id, tenant_id, employee_id, employee_name, amount, type, method, period,
-        work_date, source, note, cash_operation_id, commission_source_sale_id,
-        commission_source_order_id, commission_source_return_id, created_by, created_at, updated_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-      ON CONFLICT DO NOTHING`,
-      [
-        id,
-        tenantId,
-        payload.employee_id,
-        payload.employee_name ?? 'Співробітник',
-        amount,
-        payload.type ?? 'salary',
-        payload.method ?? 'cash',
-        payload.period ?? String(createdAt).slice(0, 7),
-        payload.work_date ?? String(createdAt).slice(0, 10),
-        source,
-        payload.note ?? null,
-        isUuid(payload.cash_operation_id) ? payload.cash_operation_id : null,
-        isUuid(payload.commission_source_sale_id) ? payload.commission_source_sale_id : null,
-        isUuid(payload.commission_source_order_id) ? payload.commission_source_order_id : null,
-        isUuid(payload.commission_source_return_id) ? payload.commission_source_return_id : null,
-        uuidOr(payload.created_by, userId),
-        createdAt,
-        appliedAt,
-      ],
-    )
-  })
-}
-
-export async function applySalaryPaymentDeleted(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
-  await runTransaction(async (client) => {
-    const payment = await client.query(
-      'SELECT cash_operation_id, source FROM salary_payments WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
-      [operation.aggregate_id, tenantId],
-    )
-    if (!payment.rowCount) return
-    if (payment.rows[0].source !== 'manual') {
-      throw new AppError('SYNC_AUTOMATIC_SALARY_IMMUTABLE', 'Автоматичне нарахування зарплати не можна видалити', 409)
-    }
-    const cashOperationId = payment.rows[0]?.cash_operation_id
-    await client.query('DELETE FROM salary_payments WHERE id = $1 AND tenant_id = $2', [operation.aggregate_id, tenantId])
-    if (cashOperationId) {
-      await client.query('DELETE FROM cash_operations WHERE id = $1 AND tenant_id = $2', [cashOperationId, tenantId])
-    }
-    await client.query(
-      `INSERT INTO sync_deletions (tenant_id, entity_type, entity_id, deleted_at)
-       VALUES ($1, 'salary_payment', $2, clock_timestamp())
-       ON CONFLICT (tenant_id, entity_type, entity_id)
-       DO UPDATE SET deleted_at = EXCLUDED.deleted_at`,
-      [tenantId, operation.aggregate_id],
-    )
-    if (cashOperationId) {
-      await client.query(
-        `INSERT INTO sync_deletions (tenant_id, entity_type, entity_id, deleted_at)
-         VALUES ($1, 'cash_operation', $2, clock_timestamp())
-         ON CONFLICT (tenant_id, entity_type, entity_id)
-         DO UPDATE SET deleted_at = EXCLUDED.deleted_at`,
-        [tenantId, cashOperationId],
-      )
-    }
-  })
-}
+export { applySalaryPaymentCreated, applySalaryPaymentDeleted } from './salaryMirror.js'

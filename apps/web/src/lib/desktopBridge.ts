@@ -2,6 +2,10 @@ import type { Product } from '@/types/product'
 import type { Shift } from '@/types/shift'
 import type { Sale } from '@/types/sale'
 
+export type DesktopServerSessionSaveResult =
+  | { success: true }
+  | { success: false; reason: 'local-session-ended' | 'superseded' }
+
 export type DesktopLanMode = 'standalone' | 'hub' | 'client'
 
 export interface DesktopLanStatus {
@@ -465,6 +469,8 @@ interface ForsageDesktopBridge {
     logout: () => Promise<{ success: true }>
     rememberedStatus?: () => Promise<{ phone?: string; name?: string; expiresAt?: number; locked: boolean; available: boolean }>
     restore?: () => Promise<{ id:string; tenant_id:string; role:string; phone:string; full_name:string; email:string; is_active:boolean } | null>
+    saveServerSession?: (tokens: {access_token:string;refresh_token:string}) => Promise<DesktopServerSessionSaveResult>
+    restoreServerSession?: () => Promise<{access_token:string;refresh_token:string} | null>
   }
   getRuntimeInfo: () => Promise<DesktopRuntimeInfo>
   lan?: {
@@ -592,6 +598,7 @@ interface ForsageDesktopBridge {
     listReserves: (tenantId?: string) => Promise<any[]>
     createReserve: (input: any) => Promise<any>
     releaseReserve: (id: string, tenantId?: string) => Promise<{ ok: true }>
+    writeoffsSummary?: (input: { month: string }) => Promise<unknown>
     listWriteoffs: (input?: any) => Promise<any>
     getWriteoff: (id: string, tenantId?: string) => Promise<any>
     resolveOperation?: (kind: 'movement' | 'reserve' | 'consumption', id: string) => Promise<{ status: 'committed'; result: any } | { status: 'not_committed' }>
@@ -656,10 +663,10 @@ interface ForsageDesktopBridge {
     getInvoice: (id: string, tenantId?: string) => Promise<any>
     createInvoice: (input: any) => Promise<any>
     commitReceiving?: (input: any) => Promise<any>
-    previewInvoiceFromAi?: (input: { rows: Array<Record<string, unknown>> }) => Promise<Array<{
+    previewInvoiceFromAi?: (input: { rows: Array<Record<string, unknown>>; operation_id?: string }) => Promise<Array<{
       name: string; source_name: string; brand: string; product_id: string | null
-      status: 'matched' | 'review' | 'new'; reason: string
-      candidates: Array<{ id: string; name: string; sku: string; barcode: string | null; brand: string | null }>
+      status: 'matched' | 'review' | 'new'; reason: string; validation_errors?: string[]; already_saved?: boolean; invoice_id?: string
+      candidates: Array<{ id: string; name: string; sku: string; barcode: string | null; brand: string | null; unit?: string | null; retail_price?: number; category_id?: string | null; storage_bin?: string | null; photo_url?: string | null }>
     }>>
     createInvoiceFromAi?: (input: { operation_id?: string; tenant_id?: string; supplier_id?: string | null; supplier_name?: string | null; invoice_number?: string | null; notes?: string | null; rows: Array<Record<string, unknown>> }) => Promise<{
       invoice: any
@@ -681,6 +688,7 @@ interface ForsageDesktopBridge {
     listSales?: (input?: any) => Promise<any>
     dashboardSummary?: (input: { tenant_id?: string; date_from: string; date_to: string }) => Promise<any>
     soldItemsReport?: (input: { tenant_id?: string; date_from: string; date_to: string }) => Promise<any[]>
+    salesPeriodReport?: (input: { tenant_id?: string; date_from: string; date_to: string }) => Promise<unknown>
     listReturns?: (input?: any) => Promise<any>
     getReturn?: (id: string, tenantId?: string) => Promise<any>
     getReturnByOperation?: (id: string) => Promise<any | null>
@@ -857,7 +865,7 @@ export function desktopCheckoutToSale(
     shift_id: input.shift_id ?? '',
     status: 'completed',
     subtotal: result.subtotal,
-    discount: input.discount ?? 0,
+    discount: Math.max(0, result.subtotal - result.total),
     total: result.total,
     payment_method: result.payment_method,
     is_debt: input.payments.some((payment) => payment.method === 'debt'),

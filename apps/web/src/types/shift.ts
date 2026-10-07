@@ -21,10 +21,20 @@ export interface ShiftReportByUser {
 export interface ShiftReport {
   shift: Shift
   total_sales: number
-  total_revenue: number   // копійки
+  total_revenue: number   // копійки; продажі мінус повернення цієї зміни
+  gross_revenue?: number
+  cash_breakdown?: import('@/features/pos/shiftApi').ExpectedCash
+  refund_total?: number
+  payment_received_total?: number
+  payment_refunded_total?: number
+  payment_net_total?: number
+  unassigned_refunds_count?: number
+  refunds_by_method?: { cash: number; card: number; transfer: number; account: number; debt: number }
   by_method: {
     cash: number
     card: number
+    transfer?: number
+    account?: number
     debt: number
   }
   by_user?: ShiftReportByUser[]

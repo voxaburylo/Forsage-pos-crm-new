@@ -1,8 +1,9 @@
-import { syncModuleSource as source } from './helpers/syncSource.js'
+import { syncFunctionBody } from './helpers/syncSource.js'
 import { describe, expect, it } from 'vitest'
 import {
   SYNC_OPERATIONS,
   SYNC_SHOP_ROLES,
+  SYNC_SUPERUSER_ROLES,
   isSyncOperationAllowed,
   operationsCreating,
   type SyncEntity,
@@ -40,14 +41,28 @@ describe('каталог операцій синхронізації', () => {
   })
 
   it('кожна операція, яку сервер уміє застосувати, описана в каталозі', () => {
-        const handled = new Set(
-      [...source.matchAll(/operation\.operation_type === '([a-z_.]+)'/g)].map((match) => match[1]),
+    // Inspect the public dispatcher, not comparisons inside receipt validation.
+    // Internal history checkpoints are not commands that clients can submit.
+    const dispatcher = syncFunctionBody('applyLocalOperation')
+    const handled = new Set(
+      [...dispatcher.matchAll(/operation\.operation_type === '([a-z_.]+)'/g)].map((match) => match[1]),
     )
+    expect(handled.size).toBe(Object.keys(SYNC_OPERATIONS).length)
 
     const undocumented = [...handled].filter((type) => !(type in SYNC_OPERATIONS)).sort()
     // Незадекларована операція мовчки дістається лише власнику: касир отримає
     // «Недостатньо прав», черга стане, і шукати причину доведеться в логах.
     expect(undocumented, 'додали обробник, але забули описати права в каталозі').toEqual([])
+  })
+
+  it('внутрішнє підтвердження злиття не є зовнішньою командою', () => {
+    const internal = 'supplier_invoice.supplier_merged'
+    expect(SYNC_OPERATIONS).not.toHaveProperty(internal)
+    const dispatcher = syncFunctionBody('applyLocalOperation')
+    expect(dispatcher).not.toContain(internal)
+    expect(dispatcher).toContain("throw new AppError('SYNC_UNSUPPORTED_OPERATION'")
+    for (const role of SYNC_SHOP_ROLES.filter(role => !SYNC_SUPERUSER_ROLES.includes(role)))
+      expect(isSyncOperationAllowed(role, internal)).toBe(false)
   })
 
   it('власник і адміністратор можуть усе, решта — лише описане', () => {

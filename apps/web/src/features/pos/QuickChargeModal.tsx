@@ -98,6 +98,7 @@ export function QuickChargeModal({
         qty: 1,
         unitPrice: price,
         discount: 0,
+        discountPct: 0, // The cashier entered the final amount for this charge.
         qtyOnHand: 999999,
         requiresCoreReturn: false,
         coreDepositAmount: 0,

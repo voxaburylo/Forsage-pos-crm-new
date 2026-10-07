@@ -2,6 +2,11 @@ import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai'
 import { z } from 'zod'
 import { AppError } from '../middleware/errorHandler.js'
 import { getAiConfig, recordAiUsage } from './aiService.js'
+import { withAiDataBoundary } from './aiPromptSafety.js'
+import { aiResponseCompletionError, isAiIncompleteResponseError } from './aiResponseSafety.js'
+import { isAiBudgetError, withAiExecutionBudget } from './aiExecutionBudget.js'
+
+class CatalogProposalError extends Error {}
 export function catalogCodeFromName(name: string, sku: string): boolean {
   const code = sku.toUpperCase().replace(/[^A-ZА-ЯІЇЄҐ0-9]/g, '')
   if (code.length < 4 || !/\d/.test(code) || /^(?:\d+(?:W\d+|ML|L|KG|MM|CM|V|W|AH|A|H)|(?:VAZ|ВАЗ|GAZ|ГАЗ|ЗАЗ|ЗИЛ)\d+)$/i.test(code)) return false
@@ -30,35 +35,41 @@ export function validateCatalogProposals(raw: unknown, input: z.infer<typeof cat
   const code = (s: string) => s.toUpperCase().replace(/[^A-ZА-ЯІЇЄҐ0-9]/g, '')
   for (const proposal of parsed.proposals) {
     const before = originals.get(proposal.id)
-    if (!before || seen.has(proposal.id)) throw new Error('AI повернув невідомий або повторний товар')
+    if (!before || seen.has(proposal.id)) throw new CatalogProposalError('AI повернув невідомий або повторний товар')
     seen.add(proposal.id)
-    if (proposal.category_id !== before.category_id && (!proposal.category_id || !categories.has(proposal.category_id))) throw new Error('AI запропонував неіснуючу категорію')
-    if (proposal.sku !== before.sku && ((!before.sku.trim() || /^AUTO[-_]/i.test(before.sku)) === false || !code(proposal.sku) || !catalogCodeFromName(before.name, proposal.sku))) throw new Error('AI запропонував артикул не з назви')
-    if (JSON.stringify(before.name.match(/\d+/g) ?? []) !== JSON.stringify(proposal.name.match(/\d+/g) ?? [])) throw new Error('AI змінив технічні числа в назві')
+    if (proposal.category_id !== before.category_id && (!proposal.category_id || !categories.has(proposal.category_id))) throw new CatalogProposalError('AI запропонував неіснуючу категорію')
+    if (proposal.sku !== before.sku && ((!before.sku.trim() || /^AUTO[-_]/i.test(before.sku)) === false || !code(proposal.sku) || !catalogCodeFromName(before.name, proposal.sku))) throw new CatalogProposalError('AI запропонував артикул не з назви')
+    if (JSON.stringify(before.name.match(/\d+/g) ?? []) !== JSON.stringify(proposal.name.match(/\d+/g) ?? [])) throw new CatalogProposalError('AI змінив технічні числа в назві')
     const technical = before.name.match(/\b[A-Z0-9][A-Z0-9/.-]*[A-Z0-9]\b/gi) ?? []
-    if (technical.filter(x => /[a-z]/i.test(x) && /\d/.test(x)).some(x => !code(proposal.name).includes(code(x)))) throw new Error('AI змінив технічний код')
-    if (before.brand && before.name.toLowerCase().includes(before.brand.toLowerCase()) && !proposal.name.toLowerCase().includes(before.brand.toLowerCase())) throw new Error('AI змінив бренд')
+    if (technical.filter(x => /[a-z]/i.test(x) && /\d/.test(x)).some(x => !code(proposal.name).includes(code(x)))) throw new CatalogProposalError('AI змінив технічний код')
+    if (before.brand && before.name.toLowerCase().includes(before.brand.toLowerCase()) && !proposal.name.toLowerCase().includes(before.brand.toLowerCase())) throw new CatalogProposalError('AI змінив бренд')
   }
-  if (seen.size !== originals.size) throw new Error('AI повернув неповну перевірку. Пакет не зараховано.')
+  if (seen.size !== originals.size) throw new CatalogProposalError('AI повернув неповну перевірку. Пакет не зараховано.')
   return parsed.proposals
 }
 export async function reviewCatalog(tenantId: string, userId: string, input: z.infer<typeof catalogReviewSchema>) {
-  const cfg = await getAiConfig(tenantId)
-  if (!cfg.enabled || !cfg.apiKey) throw new AppError('AI_NOT_CONFIGURED', 'Увімкніть AI та додайте ключ Gemini в налаштуваннях', 400)
-  const model = new GoogleGenerativeAI(cfg.apiKey).getGenerativeModel({ model: cfg.model, systemInstruction: CATALOG_AGENT_INSTRUCTION,
-    generationConfig: { temperature: 0, maxOutputTokens: 16384, responseMimeType: 'application/json', responseSchema: {
-      type: SchemaType.OBJECT, properties: { proposals: { type: SchemaType.ARRAY, items: { type: SchemaType.OBJECT,
-        properties: { id: { type: SchemaType.STRING }, name: { type: SchemaType.STRING }, sku: { type: SchemaType.STRING }, category_id: { type: SchemaType.STRING, nullable: true }, reason: { type: SchemaType.STRING } },
-        required: ['id', 'name', 'sku', 'category_id', 'reason'] } } }, required: ['proposals'] } } })
-  try {
-    const { response } = await model.generateContent(JSON.stringify(input), { timeout: 90_000 })
-    const usage = response.usageMetadata
-    await recordAiUsage(tenantId, userId, cfg.model, usage?.promptTokenCount ?? 0, Math.max(0, (usage?.totalTokenCount ?? 0) - (usage?.promptTokenCount ?? 0)))
-    const proposals = validateCatalogProposals(JSON.parse(response.text()), input)
-    return { proposals }
-  } catch (error) {
-    if (error instanceof AppError) throw error
-    // No retry loop or partial batch acceptance; the owner can retry explicitly.
-    throw new AppError('AI_REVIEW_FAILED', 'AI-перевірку зупинено: ' + (error instanceof Error && !/key|https?:/i.test(error.message) ? error.message.slice(0, 180) : 'не вдалося отримати безпечну відповідь. Спробуйте ще раз.'), 502)
-  }
+  return withAiExecutionBudget(90_000, async budget => {
+    const cfg = await budget.run(signal => getAiConfig(tenantId, signal))
+    if (!cfg.enabled || !cfg.apiKey) throw new AppError('AI_NOT_CONFIGURED', 'Увімкніть AI та додайте ключ Gemini в налаштуваннях', 400)
+    const model = new GoogleGenerativeAI(cfg.apiKey).getGenerativeModel({ model: cfg.model, systemInstruction: withAiDataBoundary(CATALOG_AGENT_INSTRUCTION),
+      generationConfig: { temperature: 0, maxOutputTokens: 16384, responseMimeType: 'application/json', responseSchema: {
+        type: SchemaType.OBJECT, properties: { proposals: { type: SchemaType.ARRAY, items: { type: SchemaType.OBJECT,
+          properties: { id: { type: SchemaType.STRING }, name: { type: SchemaType.STRING }, sku: { type: SchemaType.STRING }, category_id: { type: SchemaType.STRING, nullable: true }, reason: { type: SchemaType.STRING } },
+          required: ['id', 'name', 'sku', 'category_id', 'reason'] } } }, required: ['proposals'] } } })
+    try {
+      const { response } = await budget.run(signal => model.generateContent(JSON.stringify(input), { timeout: 90_000, signal }))
+      const usage = response.usageMetadata
+      await budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, usage?.promptTokenCount ?? 0, Math.max(0, (usage?.totalTokenCount ?? 0) - (usage?.promptTokenCount ?? 0)), signal))
+      const incomplete = aiResponseCompletionError(response)
+      if (incomplete) throw incomplete
+      const proposals = validateCatalogProposals(JSON.parse(response.text()), input)
+      return { proposals }
+    } catch (error) {
+      if (isAiBudgetError(error) || isAiIncompleteResponseError(error)) throw error
+      if (error instanceof CatalogProposalError) throw new AppError('AI_REVIEW_INVALID', error.message, 422)
+      if (error instanceof SyntaxError || error instanceof z.ZodError) throw new AppError('AI_REVIEW_INVALID', 'ШІ повернув некоректний формат перевірки. Пропозиції не застосовано; повторіть перевірку.', 422)
+      // Provider messages and JSON/Zod excerpts can contain private document data.
+      throw new AppError('AI_REVIEW_FAILED', 'AI-перевірку зупинено: не вдалося отримати безпечну відповідь. Спробуйте ще раз.', 502)
+    }
+  })
 }

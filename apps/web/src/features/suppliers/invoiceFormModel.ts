@@ -26,6 +26,8 @@ export interface LineItem {
   is_new?: boolean
   client_key: string
   product_base?: InvoiceProductBase
+  ai_review?: { source: Record<string, unknown>; choice?: string; result?: import('./aiInvoiceMatching').InvoiceMatch }
+  ai_category_name?: string
 }
 export interface InvoiceProductBase {
   name: string; sku: string; barcode: string | null; category_id: string | null

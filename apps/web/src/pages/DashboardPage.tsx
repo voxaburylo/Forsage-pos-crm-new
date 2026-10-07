@@ -9,27 +9,9 @@ import { useAuthStore } from '@/stores/authStore'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { businessDateKey, businessDateRangeUtc } from '@/lib/businessDate'
 import { staffApi } from '@/features/staff/staffApi'
-import type { TireServiceReportRow } from '@/features/staff/staffApi'
+import { parseDashboardData, parseDashboardTires, type DashboardData as Analytics, type DashboardTireWorker } from '@/features/analytics/dashboardData'
 
-interface DailyData {
-  date: string
-  revenue: number
-  profit: number
-}
 
-interface Analytics {
-  total_revenue: number
-  cogs: number
-  gross_profit: number
-  total_receipts: number
-  average_receipt: number
-  daily: DailyData[]
-  low_stock?: number
-  totals?: { products: number; customers: number; suppliers: number; openOrders: number }
-  overdue_count?: number
-  debt?: { count: number; total: number }
-  inventory?: { purchase_value: number; retail_value: number }
-}
 
 type Period = 'today' | 'week' | 'month' | 'date'
 type QuickPeriod = Exclude<Period, 'date'>
@@ -60,8 +42,10 @@ export default function DashboardPage() {
   const [overdueCount, setOverdueCount] = useState(0)
   const [debt, setDebt] = useState({ count: 0, total: 0 })
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [tireStatus, setTireStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const loadSequenceRef = useRef(0)
-  const [tireWorkers, setTireWorkers] = useState<TireServiceReportRow[]>([])
+  const [tireWorkers, setTireWorkers] = useState<DashboardTireWorker[]>([])
 
   const range = useMemo(() => getRange(period, selectedDate), [period, selectedDate])
 
@@ -71,97 +55,57 @@ export default function DashboardPage() {
     const isCurrent = () => !cancelled && requestId === loadSequenceRef.current
     async function load() {
       setLoading(true)
+      setLoadError(null)
+      setAnalytics(null)
+      setLowStock(0)
+      setOverdueCount(0)
+      setDebt({ count: 0, total: 0 })
       setTireWorkers([])
+      setTireStatus('loading')
       try {
         const desktop = desktopBridge()
         if (canSeeProfit && range.startDate === range.endDate) {
           void staffApi.tireServiceReport(range.startDate)
-            .then(({ data }) => { if (isCurrent()) setTireWorkers(data ?? []) })
-            .catch(() => { if (isCurrent()) setTireWorkers([]) })
+            .then(({ data }) => {
+              const workers = parseDashboardTires(data)
+              if (isCurrent()) { setTireWorkers(workers); setTireStatus('ready') }
+            })
+            .catch(() => { if (isCurrent()) setTireStatus('error') })
         }
-        if (desktop?.pos.dashboardSummary) {
+        if (desktop?.pos?.dashboardSummary) {
           const saleDateRange = businessDateRangeUtc(range.startDate, range.endDate)
           const summary = await desktop.pos.dashboardSummary({
             date_from: saleDateRange.from,
             date_to: saleDateRange.to,
           })
           if (!isCurrent()) return
-          setAnalytics({ ...summary.analytics, inventory: summary.inventory })
-          setLowStock(Number(summary.low_stock ?? 0))
-          setOverdueCount(Number(summary.overdue_count ?? 0))
-          setDebt(summary.debt)
+          const data = parseDashboardData({ ...summary.analytics, inventory: summary.inventory,
+            low_stock: summary.low_stock, overdue_count: summary.overdue_count, debt: summary.debt })
+          setAnalytics(data)
+          setLowStock(data.low_stock)
+          setOverdueCount(data.overdue_count)
+          setDebt(data.debt)
           return
         }
-        if (desktop?.catalog.listProducts && desktop.pos.listCustomers && desktop.pos.listSales && desktop.orders?.list) {
-          const [orders, lowResult, debtResult] = await Promise.all([
-            desktop.orders.list({ offset: 0, limit: 500 }),
-            desktop.catalog.listProducts({ lowStock: true, limit: 1, offset: 0 }),
-            desktop.pos.listCustomers({ has_debt: 'true', sort: 'debt', page: 1, per_page: 200 }),
-          ])
-
-          const allSales: any[] = []
-          let salesPage = 1
-          let salesPages = 1
-          const saleDateRange = businessDateRangeUtc(range.startDate, range.endDate)
-          do {
-            const response = await desktop.pos.listSales({ status: 'completed', date_from: saleDateRange.from, date_to: saleDateRange.to, page: salesPage, per_page: 200 })
-            allSales.push(...(response.data ?? []))
-            salesPages = response.pagination?.total_pages ?? 1
-            salesPage++
-          } while (salesPage <= salesPages)
-
-          if (!isCurrent()) return
-          const rangeSales = allSales.filter((sale) => {
-            const key = businessDateKey(String(sale.completed_at ?? ''))
-            return key >= range.startDate && key <= range.endDate
-          })
-          const totalRevenue = rangeSales.reduce((sum, sale) => sum + Number(sale.total ?? 0), 0)
-          const cogs = rangeSales.reduce((sum, sale) => sum + (sale.sale_items ?? []).reduce(
-            (itemSum: number, item: any) => itemSum + Number(item.purchase_price ?? 0) * Number(item.qty ?? 0),
-            0,
-          ), 0)
-          const dailyMap = new Map<string, DailyData>()
-          for (const sale of rangeSales) {
-            const date = businessDateKey(String(sale.completed_at ?? ''))
-            const current = dailyMap.get(date) ?? { date, revenue: 0, profit: 0 }
-            const saleCogs = (sale.sale_items ?? []).reduce(
-              (sum: number, item: any) => sum + Number(item.purchase_price ?? 0) * Number(item.qty ?? 0),
-              0,
-            )
-            current.revenue += Number(sale.total ?? 0)
-            current.profit += Number(sale.total ?? 0) - saleCogs
-            dailyMap.set(date, current)
-          }
-          setAnalytics({
-            total_revenue: totalRevenue,
-            cogs,
-            gross_profit: totalRevenue - cogs,
-            total_receipts: rangeSales.length,
-            average_receipt: rangeSales.length ? Math.round(totalRevenue / rangeSales.length) : 0,
-            daily: [...dailyMap.values()].sort((a, b) => a.date.localeCompare(b.date)),
-          })
-          const activeOrders = (orders ?? []).filter((order: any) => !['completed', 'canceled', 'cancelled', 'archived'].includes(order.status))
-          setLowStock(Number(lowResult.total ?? 0))
-          const nowTs = Date.now()
-          setOverdueCount(activeOrders.filter((order: any) =>
-            order.pickup_deadline_at && new Date(order.pickup_deadline_at).getTime() < nowTs).length)
-          const debtList = debtResult.data ?? []
-          setDebt({
-            count: Number(debtResult.pagination?.total ?? debtList.length),
-            total: debtList.reduce((sum: number, customer: any) => sum + Number(customer.debt_balance ?? 0), 0),
-          })
-          return
-        }
+        // An older desktop bridge cannot produce a complete return-aware report.
+        // Do not silently fall back to a partial sales list or an online copy.
+        if (desktop) throw new Error('DESKTOP_UPDATE_REQUIRED')
         const response = await api.get<{ data: Analytics }>(
           `/api/v1/analytics/dashboard?startDate=${range.startDate}&endDate=${range.endDate}`,
         )
         if (!isCurrent()) return
-        setAnalytics(response.data)
-        setLowStock(Number(response.data.low_stock ?? 0))
-        setOverdueCount(Number(response.data.overdue_count ?? 0))
-        setDebt(response.data.debt ?? { count: 0, total: 0 })
-      } catch {
-        if (isCurrent()) setAnalytics(null)
+        const data = parseDashboardData(response.data)
+        setAnalytics(data)
+        setLowStock(data.low_stock)
+        setOverdueCount(data.overdue_count)
+        setDebt(data.debt)
+      } catch (error) {
+        if (isCurrent()) {
+          setAnalytics(null)
+          setLoadError(error instanceof Error && error.message === 'DESKTOP_UPDATE_REQUIRED'
+            ? 'Оновіть локальну програму. Ця версія не може сформувати повну статистику.'
+            : 'Не вдалося завантажити статистику. Суми не показано, щоб не видати неповні дані за нулі. Відкрийте розділ повторно.')
+        }
       } finally {
         if (isCurrent()) setLoading(false)
       }
@@ -211,6 +155,9 @@ export default function DashboardPage() {
         </span>
       </div>
 
+      {loadError ? (
+        <p role="alert" className="mb-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{loadError}</p>
+      ) : <>
       {period === 'date' && (
         <div className="mb-6 flex flex-col gap-1 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <span className="text-sm font-semibold text-emerald-900">
@@ -220,7 +167,7 @@ export default function DashboardPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-4 mb-6"><div className="bg-indigo-50 border border-indigo-200 rounded-2xl p-4 shadow-sm"><div className="text-xs font-semibold text-indigo-700 uppercase tracking-wider">Товарів на складі</div><div className="mt-2 text-2xl font-bold text-indigo-950">{loading ? "—" : formatMoney(d?.inventory?.retail_value ?? 0)}</div><div className="text-xs text-indigo-700 mt-1">за ціною продажу</div></div><div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 shadow-sm"><div className="text-xs font-semibold text-slate-600 uppercase tracking-wider">Собівартість залишків</div><div className="mt-2 text-2xl font-bold text-slate-900">{loading ? "—" : formatMoney(d?.inventory?.purchase_value ?? 0)}</div><div className="text-xs text-slate-600 mt-1">закупівельна вартість</div></div><div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 shadow-sm"><div className="text-xs font-semibold text-emerald-700 uppercase tracking-wider">Продано сьогодні</div><div className="mt-2 text-2xl font-bold text-emerald-950">{loading ? "—" : formatMoney(d?.daily?.find((item) => item.date === businessDateKey(new Date()))?.revenue ?? 0)}</div><div className="text-xs text-emerald-700 mt-1">за поточний день</div></div></div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-4 mb-6"><div className="bg-indigo-50 border border-indigo-200 rounded-2xl p-4 shadow-sm"><div className="text-xs font-semibold text-indigo-700 uppercase tracking-wider">Товарів на складі</div><div className="mt-2 text-2xl font-bold text-indigo-950">{loading ? "—" : formatMoney(d?.inventory?.retail_value ?? 0)}</div><div className="text-xs text-indigo-700 mt-1">за ціною продажу</div></div><div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 shadow-sm"><div className="text-xs font-semibold text-slate-600 uppercase tracking-wider">Собівартість залишків</div><div className="mt-2 text-2xl font-bold text-slate-900">{loading ? "—" : formatMoney(d?.inventory?.purchase_value ?? 0)}</div><div className="text-xs text-slate-600 mt-1">закупівельна вартість</div></div><div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 shadow-sm"><div className="text-xs font-semibold text-emerald-700 uppercase tracking-wider">{period === 'today' ? 'Продано сьогодні' : 'Продажі за вибраний період'}</div><div className="mt-2 text-2xl font-bold text-emerald-950">{loading ? "—" : formatMoney(d?.total_revenue ?? 0)}</div><div className="text-xs text-emerald-700 mt-1">з урахуванням повернень</div></div></div>
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4 mb-6 md:mb-8">
@@ -250,12 +197,16 @@ export default function DashboardPage() {
               <p className="text-xs text-gray-500">Роботи й зарплата кожного працівника за день</p>
             </div>
             <div className="flex gap-4 text-sm">
-              <span>Послуг: <strong>{tireTotals.services_qty}</strong></span>
-              <span>Виручка: <strong>{formatMoney(tireTotals.service_revenue)}</strong></span>
-              <span className="text-cyan-700">До виплати: <strong>{formatMoney(tireTotals.due)}</strong></span>
+              <span>Послуг: <strong>{tireStatus === 'ready' ? tireTotals.services_qty : '—'}</strong></span>
+              <span>Виручка: <strong>{tireStatus === 'ready' ? formatMoney(tireTotals.service_revenue) : '—'}</strong></span>
+              <span className="text-cyan-700">До виплати: <strong>{tireStatus === 'ready' ? formatMoney(tireTotals.due) : '—'}</strong></span>
             </div>
           </div>
-          {tireWorkers.length === 0 ? (
+          {tireStatus !== 'ready' ? (
+            <div role={tireStatus === 'error' ? 'alert' : undefined} className="px-4 py-7 text-center text-sm text-gray-500">
+              {tireStatus === 'error' ? 'Не вдалося завантажити дані шиномонтажу' : 'Завантаження даних шиномонтажу…'}
+            </div>
+          ) : tireWorkers.length === 0 ? (
             <div className="px-4 py-7 text-center text-sm text-gray-400">
               Працівників шиномонтажу ще не налаштовано або за день немає нарахувань
             </div>
@@ -331,6 +282,7 @@ export default function DashboardPage() {
         )}
       </div>
 
+      </>}
     </Layout>
   )
 }

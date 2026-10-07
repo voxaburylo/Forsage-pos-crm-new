@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID, type LocalProductUpsert } from '../db/localTypes'
 import { LocalCatalogRepository } from './catalogRepository'
+import { addStockQuantity, stockQuantity, subtractStockQuantity } from './stockQuantity'
 import { assertDocumentRevision, documentRevision } from './documentRevision'
 import { applyInventoryProductEdits, type InventoryProductEdit } from './inventoryProductEdits'
 
@@ -258,7 +259,7 @@ export class LocalInventoryRepository {
     this.requireActiveSession(sessionId, tenantId)
     const product = this.findProductById(input.product_id, tenantId)
     if (!product) throw new Error('Товар не знайдено')
-    const qty = checkedNonnegative(input.qty)
+    const qty = stockQuantity(checkedNonnegative(input.qty))
     if (qty < 0) throw new Error('Некоректна кількість')
     const timestamp = nowIso()
     let itemId = ''
@@ -266,7 +267,7 @@ export class LocalInventoryRepository {
       const existing = this.findItemByProduct(sessionId, product.id, tenantId)
       if (!existing?.was_counted) this.rememberCountBaseline(sessionId, product.id, tenantId)
       itemId = existing?.id ?? randomUUID()
-      const nextQty = checkedNonnegative(num(existing?.counted_stock) + qty)
+      const nextQty = addStockQuantity(num(existing?.counted_stock), qty)
       this.db.prepare(`
         INSERT INTO inventory_items (
           id, tenant_id, session_id, product_id, expected_stock, counted_stock, was_counted,
@@ -348,7 +349,7 @@ export class LocalInventoryRepository {
       const existing = this.findItemByProduct(sessionId, product.id, tenantId)
       if (!existing?.was_counted) this.rememberCountBaseline(sessionId, product.id, tenantId)
       itemId = existing?.id ?? randomUUID()
-      const nextQty = checkedNonnegative(num(existing?.counted_stock) + qty)
+      const nextQty = addStockQuantity(num(existing?.counted_stock), qty)
       this.db.prepare(`
         INSERT INTO inventory_items (
           id, tenant_id, session_id, product_id, expected_stock, counted_stock, was_counted,
@@ -391,7 +392,7 @@ export class LocalInventoryRepository {
   private setItemQtyInTransaction(sessionId: string, itemId: string, input: { tenant_id?: string; counted_stock: number; expected_revision?: string }): any {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     this.requireActiveSession(sessionId, tenantId)
-    const qty = checkedNonnegative(input.counted_stock)
+    const qty = stockQuantity(checkedNonnegative(input.counted_stock))
     const current = this.findItemById(itemId, tenantId)
     if (!current || current.session_id !== sessionId) throw new Error('Рядок ревізії не знайдено')
     assertDocumentRevision(current.edit_revision, input.expected_revision, 'Позиція ревізії')
@@ -482,7 +483,7 @@ export class LocalInventoryRepository {
     let updated = 0
     for (const item of items) {
       if (!item.product_id || !item.product) throw new Error(`Товар ревізії ${item.product_id ?? item.id} видалений або неактивний. Видаліть рядок або відновіть товар.`)
-      const counted = checkedNonnegative(item.counted_stock)
+      const counted = stockQuantity(checkedNonnegative(item.counted_stock))
       const prevRow = this.db.prepare('SELECT qty_on_hand FROM products WHERE id = ? AND tenant_id = ?')
         .get(item.product_id, tenantId) as { qty_on_hand?: number } | undefined
       const prevQty = num(prevRow?.qty_on_hand ?? 0)
@@ -491,7 +492,7 @@ export class LocalInventoryRepository {
         .run(counted, timestamp, timestamp, item.product_id, tenantId)
       // Аудит: коригування ревізії лишає слід у русі складу (раніше не писалось,
       // і списання ревізією було невидиме в історії товару).
-      const delta = counted - prevQty
+      const delta = subtractStockQuantity(counted, prevQty)
       if (delta !== 0) {
         this.db.prepare(`
           INSERT INTO inventory_movements (

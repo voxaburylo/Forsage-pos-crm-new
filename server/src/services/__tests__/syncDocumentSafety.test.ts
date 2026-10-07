@@ -22,10 +22,10 @@ describe('document synchronization safety', () => {
   })
 
   it('soft-deletes supply invoices instead of losing the deletion event', () => {
-    const start = syncSource.indexOf('async function applySupplierInvoiceDeleted')
-    const end = syncSource.indexOf('async function applyShiftOpened', start)
-    const block = syncSource.slice(start, end)
-    expect(block).toContain('SET deleted_at = $3, updated_at = $3')
+    const block = readFileSync(new URL('../sync/supplierInvoiceTerminal.ts', import.meta.url), 'utf8')
+    expect(block).toContain('SET deleted_at=$3,updated_at=$4')
+    expect(block).toContain('checkInvoiceReceipt')
+    expect(block).toContain('saveInvoiceReceipt')
     expect(block).not.toContain('DELETE FROM supply_invoices')
 
     const supplierDelete = supplierSource.slice(

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { safeProblemContext, safeProblemDetail } from '../diagnostics/problemDetails'
 import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID, type LocalProblem, type LocalProblemInput, type LocalProblemSummary } from '../db/localTypes'
 
@@ -11,17 +12,6 @@ const RESOLVED_HISTORY_LIMIT = 500
 
 function nowIso(): string {
   return new Date().toISOString()
-}
-
-/**
- * Технічний текст помилки може містити цілий payload операції. У журналі він
- * потрібен для розуміння причини, але не в повному обсязі.
- */
-function trimDetail(value: string | null | undefined): string | null {
-  if (!value) return null
-  const clean = String(value).trim()
-  if (!clean) return null
-  return clean.length > 2000 ? `${clean.slice(0, 2000)}…` : clean
 }
 
 type ProblemRow = {
@@ -42,10 +32,10 @@ type ProblemRow = {
 
 function toProblem(row: ProblemRow): LocalProblem {
   let context: Record<string, unknown> | null = null
-  if (row.context_json) {
+  if (row.context_json && row.context_json.length <= 32_768) {
     try {
       const parsed = JSON.parse(row.context_json)
-      context = parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null
+      context = safeProblemContext(parsed)
     } catch {
       context = null
     }
@@ -56,7 +46,7 @@ function toProblem(row: ProblemRow): LocalProblem {
     code: row.code,
     severity: row.severity === 'warning' ? 'warning' : 'error',
     title: row.title,
-    detail: row.detail,
+    detail: safeProblemDetail(row.detail, row.code),
     entity_type: row.entity_type,
     entity_id: row.entity_id,
     context,
@@ -76,15 +66,15 @@ export class LocalProblemRepository {
   constructor(private readonly db: LocalDatabase) {}
 
   record(input: LocalProblemInput): void {
-    const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
-    const timestamp = nowIso()
-    const detail = trimDetail(input.detail)
-    const contextJson = input.context ? JSON.stringify(input.context) : null
-    const severity = input.severity === 'warning' ? 'warning' : 'error'
-
-    // Журнал не має права зламати операцію, під час якої його викликали:
-    // збій запису проблеми не повинен скасувати продаж чи синхронізацію.
+    // Include preparation in the guard: even malformed context must not break
+    // a committed sale or synchronization operation.
     try {
+      const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+      const timestamp = nowIso()
+      const detail = safeProblemDetail(input.detail, input.code)
+      const context = safeProblemContext(input.context)
+      const contextJson = context ? JSON.stringify(context) : null
+      const severity = input.severity === 'warning' ? 'warning' : 'error'
       this.db.transaction(() => {
         const existing = this.db.prepare(`
           SELECT id FROM problem_log

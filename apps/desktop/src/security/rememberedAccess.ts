@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto'
+import { DesktopSessionLifecycleError } from './desktopSessionLifecycle'
+import { checkedServerTokens, type ServerTokens } from './serverSession'
 
 export interface RememberedUser {
   id: string; tenant_id: string; role: string; phone: string; full_name: string
   password_hash: string; pin_hash?: string; is_active: number; deleted_at: string | null
 }
-interface Lease { version: 2; id: string; tenant: string; fingerprint: string; expires: number; issued: number; day: string }
+interface Lease { version: 2; id: string; tenant: string; fingerprint: string; expires: number; issued: number; day: string; server?: ServerTokens }
 interface Dependencies {
   read: () => string | null; write: (value: string | null) => void
   encrypt: (text: string) => string; decrypt: (text: string) => string
@@ -52,6 +54,20 @@ export class RememberedAccess {
     const issued = this.now()
     const lease: Lease = { version:2, id:user.id, tenant:user.tenant_id, fingerprint:this.fingerprint(user), issued, expires:endOfAccessDay(issued), day:localAccessDay(issued) }
     this.deps.write(this.deps.encrypt(JSON.stringify(lease)))
+  }
+  saveServerSession(identity: {id: string; tenant_id: string}, tokens: ServerTokens) {
+    const current = this.current()
+    if (!current) throw new DesktopSessionLifecycleError('local-session-ended', 'Збережений вхід завершено')
+    if (current.user.id !== identity.id || current.user.tenant_id !== identity.tenant_id)
+      throw new DesktopSessionLifecycleError('superseded', 'Поточний працівник змінився')
+    // Same encrypted lease, same original expiry. Never extend today's permission.
+    const lease = { ...current.lease, server: checkedServerTokens(tokens) }
+    this.deps.write(this.deps.encrypt(JSON.stringify(lease)))
+  }
+  serverSession(identity: {id: string; tenant_id: string}): ServerTokens | null {
+    const current = this.current()
+    if (!current || current.user.id !== identity.id || current.user.tenant_id !== identity.tenant_id || !current.lease.server) return null
+    try { return checkedServerTokens(current.lease.server) } catch { return null }
   }
   status() {
     const current = this.current()

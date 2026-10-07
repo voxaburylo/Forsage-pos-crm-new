@@ -1,4 +1,4 @@
-import { syncModuleSource as syncSource } from './helpers/syncSource.js'
+import { syncFunctionBody } from './helpers/syncSource.js'
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
@@ -26,9 +26,7 @@ describe('order child synchronization safety', () => {
   it('makes returned order-item status visible to local pull in both web and offline flows', () => {
     expect(returnSource).toContain(".from('customer_orders')")
     expect(returnSource).toContain(".update({ updated_at: new Date().toISOString() })")
-    const start = syncSource.indexOf('const returnedOrderItems = await client.query')
-    const end = syncSource.indexOf('const remainingResult = await client.query', start)
-    const block = syncSource.slice(start, end)
+    const block = syncFunctionBody('applyReturnCreated')
     expect(block).not.toContain("SET item_status = 'returned', updated_at")
     expect(block).toContain('UPDATE customer_orders SET updated_at = $3')
   })

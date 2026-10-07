@@ -147,8 +147,9 @@ export function allocateRefundPool(
     }
     return {
       id: item.id,
-      weight: Math.max(0, (unitPrice * qty) - discount),
-      coreTotal: Math.max(0, coreDeposit * qty),
+      // Checkout rounds every product and deposit line, not the receipt sum.
+      weight: Math.max(0, money(unitPrice * qty) - money(discount)),
+      coreTotal: Math.max(0, money(coreDeposit * qty)),
     }
   })
 

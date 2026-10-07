@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto'
+import { readWriteoffSummary } from './writeoffReport'
 import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID } from '../db/localTypes'
 import { idempotentMutation } from './idempotentMutation'
 import { normalizeSearchText } from './catalogRepository'
+import { stockQuantity, subtractStockQuantity } from './stockQuantity'
 
 function nowIso(): string {
   return new Date().toISOString()
@@ -88,13 +90,13 @@ export class LocalWarehouseRepository {
 
   private createMovementInTransaction(input: Parameters<LocalWarehouseRepository['createMovement']>[0]): any {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
-    const qty = numberValue(input.qty)
+    const qty = stockQuantity(input.qty)
     const toBin = String(input.to_bin ?? '').trim()
     if (qty <= 0) throw new Error('Кількість має бути більше нуля')
     if (!toBin) throw new Error('Вкажіть нову комірку')
     const product = this.product(input.product_id, tenantId)
-    if (qty > numberValue(product.qty_on_hand)) throw new Error('Кількість переміщення перевищує залишок товару')
-    if (qty !== numberValue(product.qty_on_hand)) throw new Error('Товар має одну комірку: перемістіть увесь залишок. Часткове переміщення не підтримується.')
+    if (qty > stockQuantity(product.qty_on_hand)) throw new Error('Кількість переміщення перевищує залишок товару')
+    if (qty !== stockQuantity(product.qty_on_hand)) throw new Error('Товар має одну комірку: перемістіть увесь залишок. Часткове переміщення не підтримується.')
     const fromBin = String(product.storage_bin ?? '').trim() || null
     if (input.from_bin !== undefined && (String(input.from_bin ?? '').trim() || null) !== fromBin) throw new Error('Комірка товару вже змінилася. Знайдіть товар повторно.')
     if (toBin === fromBin) throw new Error('Товар уже знаходиться в цій комірці')
@@ -198,7 +200,7 @@ export class LocalWarehouseRepository {
 
   private createReserveInTransaction(input: Parameters<LocalWarehouseRepository['createReserve']>[0]): any {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
-    const qty = numberValue(input.qty)
+    const qty = stockQuantity(input.qty)
     if (qty <= 0) throw new Error('Кількість резерву має бути більше нуля')
     let expiresAt: string | null = null
     if (input.duration_days !== undefined && (!Number.isInteger(input.duration_days) || input.duration_days < 1 || input.duration_days > 365 || input.expires_at)) {
@@ -216,7 +218,7 @@ export class LocalWarehouseRepository {
       WHERE tenant_id = ? AND product_id = ? AND released_at IS NULL
         AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
     `).get(tenantId, product.id, nowIso()) as { qty: number }
-    const available = numberValue(product.qty_on_hand) - numberValue(reservedRow.qty)
+    const available = subtractStockQuantity(product.qty_on_hand, reservedRow.qty)
     if (qty > available) throw new Error('Недостатньо доступного товару для резерву')
     if (input.customer_id) this.requireExisting('customers', input.customer_id, tenantId, 'Клієнта не знайдено')
     if (input.order_id) this.requireExisting('customer_orders', input.order_id, tenantId, 'Замовлення не знайдено')
@@ -258,6 +260,10 @@ export class LocalWarehouseRepository {
     if (Number(result.changes) === 0) throw new Error('Активний резерв не знайдено')
     this.addOutbox(tenantId, 'stock_reserve', id, 'reserve.released', { id, released_at: timestamp }, timestamp)
     return { ok: true }
+  }
+
+  writeoffsSummary(input: { month: string; tenant_id?: string }) {
+    return readWriteoffSummary(this.db, input.tenant_id ?? DEFAULT_TENANT_ID, input.month)
   }
 
   listWriteoffs(input: { tenant_id?: string; reason?: string; page?: number; per_page?: number } = {}): any {
@@ -351,11 +357,10 @@ export class LocalWarehouseRepository {
     if (uniqueProducts.size !== input.items.length) throw new Error('Один товар не можна додавати до акта списання кілька разів')
     const prepared = input.items.map((item) => {
       const product = this.product(item.product_id, tenantId)
-      const qty = item.qty
-      if (typeof qty !== 'number' || !Number.isFinite(qty) || qty <= 0 || qty > Number.MAX_SAFE_INTEGER / 1000
-        || Math.abs(qty * 1000 - Math.round(qty * 1000)) > 0.000001) throw new Error('Кількість списання має бути коректним числом більше нуля, до 3 знаків після коми')
+      const qty = stockQuantity(item.qty, 'Кількість списання має бути коректним числом більше нуля, до 3 знаків після коми')
+      if (qty <= 0) throw new Error('Кількість списання має бути коректним числом більше нуля, до 3 знаків після коми')
       if (product.is_service) throw new Error('Послугу не можна списати зі складу: ' + product.name)
-      if (qty > numberValue(product.qty_on_hand)) throw new Error('Недостатньо товару для списання: ' + product.name)
+      if (qty > stockQuantity(product.qty_on_hand)) throw new Error('Недостатньо товару для списання: ' + product.name)
       const cost = Math.round(numberValue(product.purchase_price) * qty)
       if (!Number.isSafeInteger(cost) || cost < 0 || cost > 2_147_483_647) throw new Error('Сума списання надто велика: ' + product.name)
       return { product, qty, cost, id: randomUUID() }
@@ -370,7 +375,7 @@ export class LocalWarehouseRepository {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `).run(id, tenantId, input.reason, input.notes ?? null, input.user_id ?? null, timestamp, timestamp, timestamp)
       for (const item of prepared) {
-        const nextQty = Math.round((numberValue(item.product.qty_on_hand) - item.qty) * 1000) / 1000
+        const nextQty = subtractStockQuantity(item.product.qty_on_hand, item.qty)
         this.db.prepare(`
           INSERT INTO writeoff_items (
             id, tenant_id, writeoff_id, product_id, qty, cost_kopecks, created_at, updated_at
@@ -398,7 +403,10 @@ export class LocalWarehouseRepository {
         id,
         reason: input.reason,
         notes: input.notes ?? null,
-        items: prepared.map((item) => ({ product_id: item.product.id, qty: item.qty })),
+        created_by: input.user_id ?? null,
+        created_at: timestamp,
+        items: prepared.map((item) => ({ id: item.id, product_id: item.product.id, qty: item.qty,
+          cost_kopecks: item.cost, created_at: timestamp })),
       }, timestamp)
     })
     return this.getWriteoff(id, tenantId)
@@ -450,11 +458,11 @@ export class LocalWarehouseRepository {
       if (!Array.isArray(input.items) || !input.items.length) throw new Error('Додайте товари для відпуску')
       const items = input.items.map(item => {
         const product = this.product(item.product_id, tenantId)
-        const qty = Number(item.qty)
-        if (!Number.isFinite(qty) || qty <= 0) throw new Error('Вкажіть додатну кількість')
+        const qty = stockQuantity(item.qty)
+        if (qty <= 0) throw new Error('Вкажіть додатну кількість')
         const reserved = this.db.prepare(`SELECT COALESCE(SUM(qty), 0) qty FROM stock_reserves WHERE tenant_id = ? AND product_id = ? AND deleted_at IS NULL AND released_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`)
           .get(tenantId, product.id, nowIso()) as { qty: number }
-        if (qty > Number(product.qty_on_hand) - Number(reserved.qty)) throw new Error('Недостатньо вільного товару: ' + product.name)
+        if (qty > subtractStockQuantity(product.qty_on_hand, reserved.qty)) throw new Error('Недостатньо вільного товару: ' + product.name)
         const total = Math.round(Number(product.purchase_price) * qty)
         if (!Number.isSafeInteger(total) || total < 0) throw new Error('Некоректна собівартість товару')
         return { product_id: product.id, product_name: product.name, sku: product.sku, qty, buy_price: Number(product.purchase_price), total }

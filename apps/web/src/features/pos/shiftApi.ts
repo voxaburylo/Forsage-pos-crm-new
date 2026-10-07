@@ -2,6 +2,7 @@ import { api } from '@/lib/api'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
 import type { Shift, ShiftReport } from '@/types/shift'
+import { parseExpectedCash } from './shiftCashData'
 
 type ShiftRequestOptions = {
   silent?: boolean
@@ -82,7 +83,7 @@ export const shiftApi = {
     const local = desktopBridge()?.pos
     if (local) {
       const data = await local.shiftReport(cashierId())
-      if (!data) throw new Error('Зміну не знайдено')
+      if (!data || data.shift.id !== shiftId) throw new Error('Зміну не знайдено')
       return { data }
     }
     return api.get<{ data: ShiftReport }>(`/api/v1/shifts/${shiftId}/report`, {
@@ -96,11 +97,12 @@ export const shiftApi = {
     if (local) {
       const data = await local.expectedCash(cashierId())
       if (!data) throw new Error('Спочатку відкрийте касову зміну')
-      return { data }
+      return { data: parseExpectedCash(data) }
     }
-    return api.get<{ data: ExpectedCash }>('/api/v1/shifts/current/expected-cash', {
+    const result = await api.get<{ data: ExpectedCash }>('/api/v1/shifts/current/expected-cash', {
       timeoutMs: SHIFT_READ_TIMEOUT_MS,
       ...options,
     })
+    return { data: parseExpectedCash(result.data) }
   },
 }

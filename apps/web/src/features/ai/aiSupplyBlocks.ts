@@ -1,5 +1,8 @@
+import { assertSupplyAnnotation } from './aiSupplySourceGuard'
+import { readSupplySummary, type SupplySummary } from './aiSupplySummary'
+
 /** Explicit numbered product descriptions copied from chat/email; no inference from sizes or retail prices. */
-export function readSupplyBlocks(text: string): { rows: Record<string, unknown>[]; currencyText: string } | null {
+export function readSupplyBlocks(text: string): { rows: Record<string, unknown>[]; currencyText: string; summaries: SupplySummary[] } | null {
   const lines = text.split(/\r?\n/).map(line => line.trim().replace(/\*\*/g, ''))
   const title = /^(\d+(?:\uFE0F?\u20E3|[.)]))\s+(.+)$/
   const quantity = /^(?:кількість|количество|кол[ -]?во|qty)\s*:\s*(.*)$/i
@@ -16,6 +19,7 @@ export function readSupplyBlocks(text: string): { rows: Record<string, unknown>[
     else if (!/^(?:товари|товары|список товарів|список товаров|накладна|накладная)\s*:?$/i.test(line)) return null
   }
   const currencyLines: string[] = []
+  const summaries: SupplySummary[] = []
   const currencies = new Set<string>()
   const rows = blocks.map((block,index) => {
     const location = 'Товар ' + (index+1)
@@ -23,6 +27,13 @@ export function readSupplyBlocks(text: string): { rows: Record<string, unknown>[
     const quantities = block.lines.flatMap(line=>{const match=line.match(quantity);return match?[match[1]]:[]})
     const prices = block.lines.flatMap(line=>{const match=line.match(buying);return match?[match[1]]:[]})
     if (quantities.length !== 1 || prices.length !== 1) throw Error(location + ': потрібні по одному полю «Кількість» і «Закупівля». Товари не пропущено.')
+    const summaryLines = new Set<string>()
+    for (const line of block.lines) {
+      const summary = readSupplySummary([line], index + 1, location)
+      if (summary) { summaries.push(summary); summaryLines.add(line); currencyLines.push(line); continue }
+      const separator = line.indexOf(':')
+      if (separator >= 0) assertSupplyAnnotation(line.slice(0,separator), line.slice(separator+1), location)
+    }
     const rawQty = quantities[0], rawPrice = prices[0]
     const unitMatch = rawQty.match(/\s*(шт|кг|л|м|компл)\.?$/i)
     const unit = unitMatch?.[1].toLowerCase() ?? 'шт'
@@ -33,7 +44,7 @@ export function readSupplyBlocks(text: string): { rows: Record<string, unknown>[
     const numericPrice = perUnitRemoved.slice(approximate?.[0].length ?? 0).replace(/\s*(?:грн\.?|uah|₴|usd|\$|eur|€|pln)\s*$/i,'')
     currencyLines.push('Закупівля: '+rawPrice)
     currencies.add(/USD|\$/i.test(rawPrice) ? 'USD' : /EUR|€/i.test(rawPrice) ? 'EUR' : /PLN/i.test(rawPrice) ? 'PLN' : 'UAH')
-    const description = block.lines.filter(line=>!quantity.test(line)&&!buying.test(line)&&!/^(?:ціна продажу|цена продажи|продаж|роздріб|розница)\s*:/i.test(line))
+    const description = block.lines.filter(line=>!summaryLines.has(line)&&!quantity.test(line)&&!buying.test(line)&&!/^(?:ціна продажу|цена продажи|продаж|роздріб|розница)\s*:/i.test(line))
     const row: Record<string,unknown> = {
       name:block.name, source_name:[block.name,...description].join(' '), unit,
       qty:rawQty, purchase_price_uah:numericPrice,
@@ -52,5 +63,5 @@ export function readSupplyBlocks(text: string): { rows: Record<string, unknown>[
     return row
   })
   if (currencies.size > 1) throw Error('У списку кілька валют закупівлі. Розділіть товари за валютою, щоб не змішати ціни.')
-  return {rows,currencyText:currencyLines.join('\n')}
+  return {rows,summaries,currencyText:currencyLines.join('\n')}
 }

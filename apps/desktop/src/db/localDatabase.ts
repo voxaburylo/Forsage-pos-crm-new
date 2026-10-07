@@ -1,5 +1,5 @@
 import { restoreEmbeddedPhotos } from '../backup/embeddedPhotos'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync, type StatementSync } from 'node:sqlite'
@@ -186,7 +186,8 @@ export class LocalDatabase {
   static assertBackupIsUsable(sourcePath: string): void {
     const probe = new DatabaseSync(sourcePath, { readOnly: true, timeout: 5_000 })
     try {
-      assertBackupContents(probe)
+      assertBackupContents(probe, LOCAL_MIGRATIONS.map(migration => migration.version),
+        bytes => createHash('sha256').update(bytes).digest('hex'))
       const version = probe.prepare('SELECT max(version) AS version FROM schema_migrations').get() as { version: number }
       const buildVersion = Math.max(...LOCAL_MIGRATIONS.map((migration) => migration.version))
       if (version.version > buildVersion) throw new OutdatedBuildError(version.version, buildVersion)

@@ -62,7 +62,8 @@ router.get('/sales/weekly', requireRole('owner', 'admin', 'manager'), async (req
 // GET /api/v1/reports/writeoffs/summary — списання за поточний місяць
 router.get('/writeoffs/summary', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
-    const data = await reportService.getWriteoffsSummary(req.user!.tenant_id)
+    if (req.query.month !== undefined && typeof req.query.month !== 'string') throw new AppError('VALIDATION_ERROR', 'Некоректний місяць', 400)
+    const data = await reportService.getWriteoffsSummary(req.user!.tenant_id, req.query.month as string | undefined)
     res.json({ data })
   } catch (err) { next(err) }
 })
@@ -81,6 +82,9 @@ router.get('/shift/:id', requireRole('owner', 'admin', 'manager', 'cashier'), as
 router.get('/sold-items', requireRole('owner', 'admin', 'manager', 'cashier', 'storekeeper'), async (req, res, next) => {
   try {
     const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Kyiv' })
+    if (['date','from','to'].some(key => req.query[key] !== undefined && typeof req.query[key] !== 'string')) {
+      throw new AppError('VALIDATION_ERROR', 'Невірно вибраний період', 400)
+    }
     const legacyDate = String(req.query.date ?? '')
     const from = String(req.query.from ?? (legacyDate || today))
     const to = String(req.query.to ?? (legacyDate || from))

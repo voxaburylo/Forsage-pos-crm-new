@@ -3,6 +3,29 @@ import { collectSupplyResponse } from './aiSupplyResponse'
 const row = { name:'Ключ', qty:2, purchase_price_uah:141 }
 const action = (products:unknown = [row], extra = {}) => ({tool:'create_products_bulk',payload:{products},...extra})
 const response = (...actions:unknown[]) => ({actions})
+
+describe('Printed total at the client response boundary', () => {
+  const totalAction=(total:unknown,amount=100)=>({tool:'create_products_bulk',payload:{products:[{...row,qty:1,purchase_price_uah:amount}],invoice_total:total}})
+  it('compares one invoice total with every part, without adding repeated footer totals', () => {
+    expect(collectSupplyResponse([response(totalAction(250)),response(totalAction(250,150))],2).products).toHaveLength(2)
+  })
+  it.each([90,110])('rejects a partial/duplicated response at stated total %s', total => {
+    expect(()=>collectSupplyResponse([response(totalAction(total))],1)).toThrow('підсумок')
+  })
+  it('does not choose between contradictory totals', () => {
+    expect(()=>collectSupplyResponse([response(totalAction(250)),response(totalAction(251,150))],2)).toThrow('різні підсумки')
+  })
+  it.each([{},true,'100 грн/шт',1.234,-1])('rejects malformed total %j', total => {
+    expect(()=>collectSupplyResponse([response(totalAction(total))],1)).toThrow()
+  })
+  it('keeps zero and rounds each line separately', () => {
+    expect(collectSupplyResponse([response(totalAction(0,0))],1).products[0].purchase_price_uah).toBe(0)
+    const products=[{...row,qty:1.5,purchase_price_uah:1.01},{...row,qty:1.5,purchase_price_uah:1.01}]
+    const payload={products,invoice_total:3.04}
+    expect(collectSupplyResponse([response({tool:'create_products_bulk',payload})],1).products).toHaveLength(2)
+    expect(()=>collectSupplyResponse([response({tool:'create_products_bulk',payload:{...payload,invoice_total:3.03}})],1)).toThrow('підсумок')
+  })
+})
 describe('Complete AI invoice response contract', () => {
   it('combines every valid action and keeps legitimate repeated rows', () => {
     const result = collectSupplyResponse([response(action(),action()),response(action([row,{...row,name:'Інший'}]))],2)

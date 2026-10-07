@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { Shift } from '@/types/shift'
 import { useAuthStore } from './authStore'
+import { posCoreTotal, posLineAmounts, posLineGross } from '@/features/pos/posMoney'
 
 export interface POSItem {
   productId: string
@@ -101,10 +102,7 @@ function roundPOSUnitPrice(price: number, rounding: POSPriceRounding) {
 function recalcItem(item: Omit<POSItem, 'total'> | POSItem, rounding: POSPriceRounding): POSItem {
   const unitPrice = roundPOSUnitPrice(item.unitPrice, rounding)
   const qty = Math.max(0, Number(item.qty) || 0)
-  const discount = item.discountPct !== undefined
-    ? automaticDiscount(unitPrice, qty, item.discountPct)
-    : Math.max(0, Math.min(Number(item.discount) || 0, unitPrice * qty))
-  return { ...item, qty, unitPrice, discount, total: unitPrice * qty - discount }
+  return { ...item, qty, unitPrice, ...posLineAmounts({ ...item, qty, unitPrice }) }
 }
 
 function recalcTabs(tabs: ReceiptTab[], rounding: POSPriceRounding) {
@@ -115,15 +113,12 @@ function recalcTabs(tabs: ReceiptTab[], rounding: POSPriceRounding) {
 }
 
 function calcTotals(items: POSItem[]) {
-  const subtotal = items.reduce((s, i) => s + i.unitPrice * i.qty, 0)
+  const subtotal = items.reduce((s, i) => s + posLineGross(i.unitPrice, i.qty), 0)
   const totalDiscount = items.reduce((s, i) => s + i.discount, 0)
-  const totalCoreDeposit = items.reduce((s, i) => s + (i.requiresCoreReturn ? (i.coreDepositAmount ?? 0) * i.qty : 0), 0)
+  const totalCoreDeposit = items.reduce((s, i) => s + posCoreTotal(i), 0)
   return { subtotal, totalDiscount, totalCoreDeposit, total: subtotal - totalDiscount + totalCoreDeposit }
 }
 
-function automaticDiscount(unitPrice: number, qty: number, pct: number) {
-  return Math.round(unitPrice * qty * Math.max(0, Math.min(100, pct)) / 100)
-}
 
 interface POSState {
   // Зміна (глобальна)
@@ -308,7 +303,11 @@ export const usePOSStore = create<POSState>((set, get) => {
         if (seen.has(receipt.idempotencyKey)) return false
         seen.add(receipt.idempotencyKey)
         return true
-      }).map(receipt => ({ ...createEmptyTab(), ...receipt, ...calcTotals(receipt.items) }))
+      }).map(receipt => {
+        // A saved draft keeps its prices, not today's optional price-rounding step.
+        const items = receipt.items.map(item => recalcItem(item, DEFAULT_PRICE_ROUNDING))
+        return { ...createEmptyTab(), ...receipt, items, ...calcTotals(items) }
+      })
       if (!tabs.length) tabs.push(createEmptyTab())
       const activeTabId = tabs.find(tab => tab.idempotencyKey === activeOperationId)?.id ?? tabs[0].id
       set({ tabs, activeTabId, ...getActiveTabGetters(tabs, activeTabId) })
@@ -316,19 +315,21 @@ export const usePOSStore = create<POSState>((set, get) => {
 
     // Дії на активній вкладці
     addItem: (rawItem) => {
-      const item = recalcItem(rawItem, get().priceRounding)
+      if (!Number.isFinite(rawItem.qty) || rawItem.qty <= 0 || !Number.isFinite(rawItem.unitPrice) || rawItem.unitPrice < 0
+        || !Number.isFinite(rawItem.discount) || (rawItem.discountPct !== undefined && !Number.isFinite(rawItem.discountPct))) return
       const { tabs, activeTabId } = get()
       const tab = tabs.find((t) => t.id === activeTabId)
       if (!tab) return
+      // Every entry path (search, favorites, analogs) uses the same customer policy.
+      // Explicit line discounts, including an explicit 0% charge, remain explicit.
+      const discountPct = rawItem.discountPct ?? (rawItem.discount === 0 && tab.automaticDiscountPct > 0 ? tab.automaticDiscountPct : undefined)
+      const item = recalcItem({ ...rawItem, discountPct }, get().priceRounding)
       const existing = tab.items.find((i) => i.productId === item.productId)
       const updatedItems = existing
         ? tab.items.map((i) => {
             if (i.productId !== item.productId) return i
             const qty = i.qty + item.qty
-            const discount = i.discountPct !== undefined
-              ? automaticDiscount(i.unitPrice, qty, i.discountPct)
-              : Math.min(i.discount, i.unitPrice * qty)
-            return { ...i, qty, discount, total: qty * i.unitPrice - discount }
+            return { ...i, qty, ...posLineAmounts({ ...i, qty }) }
           })
         : [...tab.items, item]
       const totals = calcTotals(updatedItems)
@@ -345,24 +346,21 @@ export const usePOSStore = create<POSState>((set, get) => {
     },
 
     updateQty: (productId, qty) => {
+      if (!Number.isFinite(qty)) return
       const { tabs, activeTabId } = get()
       const tab = tabs.find((t) => t.id === activeTabId)
       if (!tab) return
       if (qty <= 0) { get().removeItem(productId); return }
       const updated = tab.items.map((i) =>
         i.productId === productId
-          ? (() => {
-              const discount = i.discountPct !== undefined
-                ? automaticDiscount(i.unitPrice, qty, i.discountPct)
-                : Math.min(i.discount, qty * i.unitPrice)
-              return { ...i, qty, discount, total: qty * i.unitPrice - discount }
-            })()
+          ? { ...i, qty, ...posLineAmounts({ ...i, qty }) }
           : i)
       const totals = calcTotals(updated)
       updateTabInStore(set, get, activeTabId!, { items: updated, ...totals })
     },
 
     setDiscount: (productId, discount) => {
+      if (!Number.isFinite(discount)) return
       const { tabs, activeTabId } = get()
       const tab = tabs.find((t) => t.id === activeTabId)
       if (!tab) return
@@ -373,14 +371,14 @@ export const usePOSStore = create<POSState>((set, get) => {
       }
       const updated = tab.items.map((i) => {
         if (i.productId !== productId) return i
-        const safeDiscount = Math.max(0, Math.min(discount, i.qty * i.unitPrice))
-        return { ...i, discount: safeDiscount, discountPct: undefined, total: i.qty * i.unitPrice - safeDiscount }
+        return { ...i, discountPct: undefined, ...posLineAmounts({ ...i, discount, discountPct: undefined }) }
       })
       const totals = calcTotals(updated)
       updateTabInStore(set, get, activeTabId!, { items: updated, ...totals })
     },
 
     setAutomaticDiscountPct: (pct) => {
+      if (!Number.isFinite(pct)) return
       const { tabs, activeTabId } = get()
       const tab = tabs.find((t) => t.id === activeTabId)
       if (!tab || !activeTabId) return
@@ -388,13 +386,8 @@ export const usePOSStore = create<POSState>((set, get) => {
       const updated = tab.items.map((item) => {
         // Ручну знижку менеджера не перезаписуємо автоматичною.
         if (item.discount > 0 && item.discountPct === undefined) return item
-        const discount = automaticDiscount(item.unitPrice, item.qty, safePct)
-        return {
-          ...item,
-          discount,
-          discountPct: safePct > 0 ? safePct : undefined,
-          total: item.qty * item.unitPrice - discount,
-        }
+        const discountPct = safePct > 0 ? safePct : undefined
+        return { ...item, discountPct, ...posLineAmounts({ ...item, discount: 0, discountPct }) }
       })
       const totals = calcTotals(updated)
       updateTabInStore(set, get, activeTabId, {
@@ -407,7 +400,11 @@ export const usePOSStore = create<POSState>((set, get) => {
     setCustomer: (customer) => {
       const { activeTabId } = get()
       if (!activeTabId) return
-      updateTabInStore(set, get, activeTabId, { customer } as any)
+      const previousCustomer = get().getActiveTab()?.customer
+      updateTabInStore(set, get, activeTabId, {
+        customer,
+        ...(previousCustomer?.id !== customer?.id ? { bonusToRedeem: 0 } : {}),
+      })
     },
 
     setNotes: (notes) => {
@@ -418,8 +415,8 @@ export const usePOSStore = create<POSState>((set, get) => {
 
     setBonusToRedeem: (amount) => {
       const { activeTabId } = get()
-      if (!activeTabId) return
-      updateTabInStore(set, get, activeTabId, { bonusToRedeem: amount } as any)
+      if (!activeTabId || !Number.isFinite(amount)) return
+      updateTabInStore(set, get, activeTabId, { bonusToRedeem: Math.max(0, Math.round(amount)) })
     },
 
     setSelectedProductId: (id) => {
@@ -444,16 +441,11 @@ export const usePOSStore = create<POSState>((set, get) => {
           Number.isFinite(item.unitPrice) &&
           item.unitPrice >= 0,
         )
-        .map((item) => {
-          const discount = Math.max(0, Math.min(Number(item.discount) || 0, item.unitPrice * item.qty))
-          return {
-            ...item,
-            name: item.name || item.sku || 'Товар',
-            unit: item.unit || 'шт',
-            discount,
-            total: item.unitPrice * item.qty - discount,
-          }
-        })
+        .map((item) => recalcItem({
+          ...item,
+          name: item.name || item.sku || 'Товар',
+          unit: item.unit || 'шт',
+        }, DEFAULT_PRICE_ROUNDING))
 
       if (restoredItems.length === 0) return false
 

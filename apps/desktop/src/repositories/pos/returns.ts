@@ -12,6 +12,7 @@ import type { ReturnableSaleItemRow } from './posShared'
 import { allocateRefundPool, money, nowIso, operationId, payloadHash } from './posShared'
 import { randomUUID } from 'node:crypto'
 import { LocalPosSales } from './sales'
+import { addStockQuantity, stockQuantity } from '../stockQuantity'
 
 export class LocalPosReturns extends LocalPosSales {
   listReturns(input: { tenant_id?: string; page?: number; per_page?: number } = {}): {
@@ -199,9 +200,9 @@ export class LocalPosReturns extends LocalPosSales {
         INSERT INTO customer_returns (
           id, tenant_id, sale_id, customer_id, return_type, reason, reason_note,
           refund_method, refund_kopecks, stock_action, status, approved_by,
-          fiscal_number, client_operation_id, client_payload_hash,
+          fiscal_number, client_operation_id, client_payload_hash, shift_id,
           dirty_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, 'customer_return', ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, 'customer_return', ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         returnId,
         tenantId,
@@ -216,6 +217,7 @@ export class LocalPosReturns extends LocalPosSales {
         input.fiscal_number ?? null,
         clientOperationId,
         clientOperationId ? returnHash : null,
+        ready.shift_id,
         timestamp,
         timestamp,
         timestamp,
@@ -243,7 +245,7 @@ export class LocalPosReturns extends LocalPosSales {
         if (ready.stock_action === 'return_to_stock' && item.product_id) {
           const product = this.getProductForUpdate(item.product_id, tenantId)
           if (product && product.is_service !== 1) {
-            const nextQty = Math.round((Number(product.qty_on_hand ?? 0) + item.quantity) * 1000) / 1000
+            const nextQty = addStockQuantity(Number(product.qty_on_hand ?? 0), item.quantity)
             this.db.prepare(`
               UPDATE products SET qty_on_hand = ?, dirty_at = ?, updated_at = ?
               WHERE id = ? AND tenant_id = ?
@@ -252,7 +254,9 @@ export class LocalPosReturns extends LocalPosSales {
               INSERT INTO inventory_movements (
                 id, tenant_id, product_id, source_type, source_id, qty_delta, qty_after,
                 unit_cost, notes, dirty_at, created_at, updated_at
-              ) VALUES (?, ?, ?, 'customer_return', ?, ?, ?, ?, ?, ?, ?, ?)
+              ) VALUES (?, ?, ?, 'customer_return', ?, ?, ?,
+                (SELECT COALESCE(purchase_price, 0) FROM sale_items
+                 WHERE id = ? AND tenant_id = ? AND sale_id = ?), ?, ?, ?, ?)
             `).run(
               randomUUID(),
               tenantId,
@@ -260,7 +264,10 @@ export class LocalPosReturns extends LocalPosSales {
               returnId,
               item.quantity,
               nextQty,
-              item.unit_price,
+              // Cost is captured by the original sale, not today's purchase or refund price.
+              item.sale_item_id,
+              tenantId,
+              ready.sale.id,
               `Повернення за чеком ${ready.sale.sale_number}`,
               timestamp,
               timestamp,
@@ -302,6 +309,7 @@ export class LocalPosReturns extends LocalPosSales {
         tenantId, ready.sale.id, ready.sale.id, tenantId,
       )
 
+      let depositTransaction: { id: string; balance_after: number } | undefined
       if (ready.refund_method === 'cash') {
         this.addCashOperation(
           tenantId,
@@ -342,13 +350,14 @@ export class LocalPosReturns extends LocalPosSales {
         if (Number(updated.changes) !== 1) {
           throw new Error('Клієнта не знайдено')
         }
+        depositTransaction = { id: randomUUID(), balance_after: balanceAfter }
         this.db.prepare(`
           INSERT INTO customer_deposit_transactions (
             id, tenant_id, customer_id, amount, balance_after, method, sale_id,
             shift_id, notes, created_by, dirty_at, created_at, updated_at
           ) VALUES (?, ?, ?, ?, ?, 'return_credit', ?, ?, ?, ?, ?, ?, ?)
         `).run(
-          randomUUID(),
+          depositTransaction.id,
           tenantId,
           ready.sale.customer_id,
           ready.refund,
@@ -384,6 +393,10 @@ export class LocalPosReturns extends LocalPosSales {
         fiscal_number: input.fiscal_number ?? null,
         refund_kopecks: ready.refund,
         shift_id: ready.shift_id,
+        shift_link_recorded: true,
+        approved_by: ready.approved_by,
+        created_at: timestamp,
+        deposit_transaction: depositTransaction,
         items: normalized,
       }, timestamp)
       this.addAudit(tenantId, ready.approved_by, 'return.created', 'customer_return', returnId, {
@@ -504,7 +517,7 @@ export class LocalPosReturns extends LocalPosSales {
       return {
         sale_item_id: source.id,
         product_id: source.product_id,
-        quantity,
+        quantity: stockQuantity(quantity),
         unit_price: Number(source.unit_price),
         total,
         condition,
@@ -519,15 +532,17 @@ export class LocalPosReturns extends LocalPosSales {
         throw new Error('Сума боргу клієнта менша за суму повернення')
       }
     }
-    if (refundMethod === 'cash') {
-      if (!shiftId) throw new Error('Для повернення готівки потрібна відкрита касова зміна')
+    if (shiftId !== null) {
       const openShift = this.db.prepare(`
         SELECT id FROM shifts
         WHERE id = ? AND tenant_id = ? AND cashier_id = ?
           AND status = 'open' AND deleted_at IS NULL
         LIMIT 1
       `).get(shiftId, tenantId, approvedBy)
-      if (!openShift) throw new Error('Касова зміна для повернення вже закрита')
+      if (!openShift) throw new Error('Касова зміна для повернення вже закрита або належить іншому касиру')
+    }
+    if (refundMethod === 'cash') {
+      if (!shiftId) throw new Error('Для повернення готівки потрібна відкрита касова зміна')
       const expectedCash = this.getExpectedCash(approvedBy, tenantId)?.expected_amount ?? 0
       if (expectedCash < refund) {
         throw new Error(`У касі недостатньо готівки. Доступно ${(expectedCash / 100).toFixed(2)} грн, потрібно ${(refund / 100).toFixed(2)} грн`)

@@ -1,7 +1,8 @@
 import type { LocalSaleCheckoutInput } from '../../db/localTypes'
+import { stockQuantity } from '../stockQuantity'
 const MAX_MONEY = 2_147_483_647
 export function assertSaleMoney(value: unknown, code = 'LOCAL_SALE_INVALID_AMOUNT'): asserts value is number {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || Math.round(value) > MAX_MONEY) throw new Error(code)
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > MAX_MONEY) throw new Error(code)
 }
 /** Validate before hashing: NaN/Infinity must not become the same request as zero. */
 export function assertCheckoutPayload(input: LocalSaleCheckoutInput): void {
@@ -9,9 +10,11 @@ export function assertCheckoutPayload(input: LocalSaleCheckoutInput): void {
   if (!Array.isArray(input.payments) || !input.payments.length) throw new Error('LOCAL_SALE_PAYMENT_REQUIRED')
   assertSaleMoney(input.discount ?? 0, 'LOCAL_SALE_INVALID_DISCOUNT')
   assertSaleMoney(input.bonuses_spent ?? 0, 'LOCAL_SALE_INVALID_BONUS')
+  // Redeemed bonuses are part of the receipt-level discount, never an extra debit
+  // while the customer also pays that amount in money.
+  if ((input.bonuses_spent ?? 0) > (input.discount ?? 0)) throw new Error('LOCAL_SALE_INVALID_BONUS')
   for (const item of input.items) {
-    if (!item || typeof item.qty !== 'number' || !Number.isFinite(item.qty) || item.qty <= 0 || item.qty > Number.MAX_SAFE_INTEGER)
-      throw new Error('LOCAL_SALE_INVALID_QTY')
+    if (!item || stockQuantity(item.qty, 'LOCAL_SALE_INVALID_QTY') <= 0) throw new Error('LOCAL_SALE_INVALID_QTY')
     if (item.unit_price !== undefined) assertSaleMoney(item.unit_price, 'LOCAL_SALE_INVALID_PRICE')
     assertSaleMoney(item.discount ?? 0, 'LOCAL_SALE_INVALID_DISCOUNT')
   }

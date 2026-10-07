@@ -5,7 +5,7 @@ import { Worker, parentPort, workerData } from 'node:worker_threads'
 import { LocalDatabase } from '../db/localDatabase'
 import { LocalSupplyRepository } from './supplyRepository'
 import { commitReceiving, type ReceivingCommitInput } from './receivingCommit'
-import { AiInvoiceMatcher } from './aiInvoiceIdentity'
+import { previewAiInvoiceRows } from './aiInvoiceIdentity'
 import { DEFAULT_TENANT_ID } from '../db/localTypes'
 
 type Input = Parameters<LocalSupplyRepository['createInvoiceFromAiRows']>[0]
@@ -67,8 +67,7 @@ if (parentPort && workerData?.aiInvoice) {
       const reader = new DatabaseSync(path.join(workerData.dataRoot, 'data', 'forsage.db'), { readOnly: true, timeout: 5000 })
       try {
         reader.exec('BEGIN')
-        const matcher = new AiInvoiceMatcher(reader, workerData.input.tenant_id ?? DEFAULT_TENANT_ID)
-        parentPort.postMessage({ result: rows.map(row => matcher.review(row)) })
+        parentPort.postMessage({ result: previewAiInvoiceRows(reader, workerData.input.tenant_id ?? DEFAULT_TENANT_ID, rows, workerData.input.operation_id) })
       } finally { reader.close() }
     } else {
       db = new LocalDatabase(workerData.dataRoot)

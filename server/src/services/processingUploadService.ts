@@ -1,5 +1,8 @@
 import { db } from '../db/supabase.js'
 import { AppError } from '../middleware/errorHandler.js'
+import { logger } from '../lib/logger.js'
+import { safeErrorInfo } from '../lib/safeErrorInfo.js'
+import { withAiExecutionBudget } from './aiExecutionBudget.js'
 
 export const PROCESSING_UPLOAD_BUCKET = 'processing-uploads'
 
@@ -58,5 +61,14 @@ export async function removeProcessingUploads(paths: readonly string[], userId: 
   if (owned.length === 0) return
 
   // Service role bypasses Storage RLS; ownership is checked above before delete.
-  await db.storage.from(PROCESSING_UPLOAD_BUCKET).remove([...new Set(owned)])
+  // Cleanup must not hold a completed recognition request open indefinitely.
+  try {
+    await withAiExecutionBudget(5_000, async budget => {
+      const { error } = await budget.run(() => db.storage.from(PROCESSING_UPLOAD_BUCKET).remove([...new Set(owned)]))
+      if (error) throw error
+    })
+  } catch (error) {
+    logger.warn({ code: 'AI_PROCESSING_CLEANUP_FAILED', ...safeErrorInfo(error) }, 'Temporary upload cleanup failed')
+    throw new AppError('AI_PROCESSING_CLEANUP_FAILED', 'Не вдалося підтвердити очищення тимчасових вкладень.', 502)
+  }
 }

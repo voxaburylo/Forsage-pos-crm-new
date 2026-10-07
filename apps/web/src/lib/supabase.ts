@@ -7,7 +7,7 @@ const desktopRuntime = typeof window !== 'undefined' && Boolean(window.forsageDe
 
 if (desktopRuntime && typeof localStorage !== 'undefined') {
   // Remove browser-stored credentials from older desktop builds. Main may
-  // restore an encrypted day permission; server passwords/tokens stay out of localStorage.
+  // restore an encrypted day permission + server session; passwords/tokens stay out of localStorage.
   try {
     const obsoleteKeys = new Set([
       'forsage_offline_auth_v1',

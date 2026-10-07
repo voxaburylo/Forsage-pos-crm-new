@@ -6,8 +6,9 @@ import { withRequestDeadline } from './requestDeadline'
 
 let connecting = false
 
-// Reconnect only the already verified local employee. No password/token storage,
+// Reconnect only the already verified local employee. No password storage,
 // no local login/logout, no shop data writes, no retry retaining the password.
+// authStore asks main to protect the resulting server tokens for the current day.
 export async function reconnectDesktopServer(password: string, caller?: AbortSignal): Promise<void> {
   const local = useAuthStore.getState().session
   if (!isDesktopRuntime() || !local?.user?.id || !local.user.email || !local.user.app_metadata?.tenant_id)

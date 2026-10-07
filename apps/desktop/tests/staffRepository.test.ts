@@ -231,6 +231,11 @@ describe('LocalStaffRepository server-first credentials', () => {
       VALUES (?, ?, ?, 10, 0, 'pos_sales', ?, ?)
     `).run(randomUUID(), DEFAULT_TENANT_ID, employeeId, timestamp, timestamp)
 
+    // A reversal must be tied to a real original award and persisted returned lines.
+    expect(repository.recordSaleCommissions(saleId, DEFAULT_TENANT_ID, employeeId)).toHaveLength(1)
+    db.prepare(`INSERT INTO customer_return_items
+      (id,tenant_id,return_id,sale_item_id,product_id,quantity,unit_price_kopecks,total_kopecks,condition,created_at,updated_at)
+      VALUES (?,?,?,?,?,1,10000,10000,'good',?,?)`).run(randomUUID(), DEFAULT_TENANT_ID, returnId, saleItemId, productId, timestamp, timestamp)
     const first = repository.recordReturnCommissionReversals(returnId, saleId, [{
       product_id: productId, sale_item_id: saleItemId, quantity: 1,
     }], DEFAULT_TENANT_ID, employeeId)
@@ -247,6 +252,15 @@ describe('LocalStaffRepository server-first credentials', () => {
     expect(payment.amount).toBe(-1000)
     expect(payment.source).toBe('commission_reversal')
     expect(payment.commission_source_return_id).toBe(returnId)
+    const outgoing = db.prepare("SELECT payload_json FROM sync_outbox WHERE operation_type='salary_payment.created'")
+      .all().map((row: any) => JSON.parse(row.payload_json))
+    expect(outgoing).toHaveLength(2)
+    expect(outgoing.find(row => row.source === 'commission')).toMatchObject({
+      amount: 1000, commission_source_sale_id: saleId, commission_source_return_id: null, created_by: employeeId,
+    })
+    expect(outgoing.find(row => row.source === 'commission_reversal')).toMatchObject({
+      amount: -1000, commission_source_sale_id: saleId, commission_source_return_id: returnId, created_by: employeeId,
+    })
     expect(payment.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
   })
 

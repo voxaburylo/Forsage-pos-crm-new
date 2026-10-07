@@ -4,6 +4,8 @@ import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID } from '../db/localTypes'
 import { LocalPosRepository } from './posRepository'
 import { LocalWarehouseRepository } from './warehouseRepository'
+import { LocalStaffRepository } from './staffRepository'
+import { addStockQuantity, stockQuantity, subtractStockQuantity } from './stockQuantity'
 
 function nowIso(): string { return new Date().toISOString() }
 function dayStamp(date: Date): string {
@@ -235,6 +237,7 @@ export class LocalOrderRepository {
           : 0
       return {
         ...item,
+        qty: stockQuantity(Number(item.qty)),
         item_status: itemStatus,
         core_deposit_amount: coreDepositAmount,
         core_return_status: item.core_return_status
@@ -370,7 +373,7 @@ export class LocalOrderRepository {
       if (item.source_type !== 'warehouse' && item.item_status !== 'arrived') continue
       const product = this.db.prepare('SELECT is_service FROM products WHERE id = ? AND tenant_id = ?').get(item.product_id, tenantId) as { is_service: number } | undefined
       if (product?.is_service === 1) continue
-      desired.set(item.product_id, (desired.get(item.product_id) ?? 0) + num(item.qty))
+      desired.set(item.product_id, addStockQuantity(desired.get(item.product_id) ?? 0, item.qty))
     }
     const old = this.db.prepare(`SELECT id, product_id, qty, expires_at FROM stock_reserves
       WHERE tenant_id = ? AND order_id = ? AND released_at IS NULL AND deleted_at IS NULL`)
@@ -466,7 +469,10 @@ export class LocalOrderRepository {
       FROM customer_order_items
       WHERE tenant_id = ? AND order_id = ? AND deleted_at IS NULL AND item_status <> 'canceled'
     `).all(tenantId, orderId) as LocalOrderItemState[]
-    const totalAmount = activeItems.reduce((sum, item) => sum + num(item.sell_price) * num(item.qty) + num(item.core_deposit_amount) * num(item.qty), 0)
+    const totalAmount = activeItems.reduce((sum, item) => sum
+      + Math.round(num(item.sell_price) * stockQuantity(item.qty))
+      + Math.round(num(item.core_deposit_amount) * stockQuantity(item.qty)), 0)
+    assertOrderTotal(totalAmount)
     const nextStatus = activeItems.length > 0 && activeItems.every((item) => ['arrived', 'handed', 'returned'].includes(item.item_status))
       ? 'ready'
       : activeItems.some((item) => item.item_status === 'ordered')
@@ -476,14 +482,8 @@ export class LocalOrderRepository {
       UPDATE customer_orders SET total_amount = ?, status = ?, dirty_at = ?, updated_at = ?
       WHERE id = ? AND tenant_id = ?
     `).run(totalAmount, nextStatus, timestamp, timestamp, orderId, tenantId)
-    if (itemStatus === 'canceled') {
-      this.db.prepare(`
-        UPDATE stock_reserves SET released_at = ?, dirty_at = ?, updated_at = ?
-        WHERE tenant_id = ? AND order_id = ? AND product_id = (
-          SELECT product_id FROM customer_order_items WHERE id = ? AND tenant_id = ?
-        ) AND released_at IS NULL AND deleted_at IS NULL
-      `).run(timestamp, timestamp, timestamp, tenantId, orderId, itemId, tenantId)
-    }
+    // syncOrderReserves above already recalculated the complete active order.
+    // Releasing by product here would also release another active line of that product.
     this.addOutbox(tenantId, 'customer_order', orderId, 'order.item_status_updated', {
       order_id: orderId, item_id: itemId, item_status: itemStatus,
     }, timestamp)
@@ -965,7 +965,7 @@ export class LocalOrderRepository {
           throw new Error(`Не можна видати замовлення: товар «${item.name || item.product_id}» не знайдено в локальній базі`)
         }
 
-        const qty = num(item.qty)
+        const qty = stockQuantity(item.qty)
         if (qty <= 0) throw new Error(`Некоректна кількість у позиції «${item.name || product.name}»`)
         const unitPrice = Math.round(num(item.sell_price))
         const savedCoreDeposit = Math.max(0, Math.round(num(item.core_deposit_amount)))
@@ -976,7 +976,7 @@ export class LocalOrderRepository {
             : 0
         const lineAmount = Math.round(unitPrice * qty) + Math.round(coreDepositAmount * qty)
         subtotal += lineAmount
-        const combinedQty = (requested.get(product.id) ?? 0) + qty
+        const combinedQty = addStockQuantity(requested.get(product.id) ?? 0, qty)
         requested.set(product.id, combinedQty)
         if (product.is_service !== 1 && !allowNegativeQty) {
           const reserve = this.db.prepare(`SELECT COALESCE(SUM(qty), 0) qty FROM stock_reserves
@@ -984,7 +984,7 @@ export class LocalOrderRepository {
               AND released_at IS NULL AND deleted_at IS NULL
               AND (expires_at IS NULL OR unixepoch(expires_at) > unixepoch('now'))
           `).get(tenantId, product.id, orderId) as { qty: number }
-          const available = num(product.qty_on_hand) - num(reserve.qty)
+          const available = subtractStockQuantity(product.qty_on_hand, reserve.qty)
           if (combinedQty > available) throw new Error(`Недостатньо залишку для «${product.name}»: доступно ${available}, потрібно ${combinedQty}`)
         }
 
@@ -1081,13 +1081,14 @@ export class LocalOrderRepository {
         )
 
         if (!item.is_service) {
-          const stock = this.db.prepare(`
+          const current = this.db.prepare('SELECT qty_on_hand FROM products WHERE id = ? AND tenant_id = ?')
+            .get(item.product_id, tenantId) as { qty_on_hand: number }
+          const qtyAfter = subtractStockQuantity(current.qty_on_hand, item.qty)
+          this.db.prepare(`
             UPDATE products
-            SET qty_on_hand = qty_on_hand - ?, dirty_at = ?, updated_at = ?
+            SET qty_on_hand = ?, dirty_at = ?, updated_at = ?
             WHERE id = ? AND tenant_id = ?
-            RETURNING qty_on_hand
-          `).get(item.qty, timestamp, timestamp, item.product_id, tenantId) as { qty_on_hand: number }
-          const qtyAfter = stock.qty_on_hand
+          `).run(qtyAfter, timestamp, timestamp, item.product_id, tenantId)
           this.db.prepare(`
             INSERT INTO inventory_movements (
               id, tenant_id, product_id, source_type, source_id, qty_delta, qty_after,
@@ -1175,6 +1176,8 @@ export class LocalOrderRepository {
         },
       }, timestamp)
 
+      // The issue, stock movement and payroll accrual must commit together.
+      new LocalStaffRepository(this.db).recordOrderCommissions(orderId, tenantId, cashierId)
       return { data: { success: true as const, sale_id: saleId, sale_number: saleNumber } }
     })
   }

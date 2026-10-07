@@ -1,4 +1,9 @@
+export interface SoldSeller {
+  id: string; name: string; qty_sold: number; qty_returned: number; qty_net: number;
+  revenue: number; refund_total: number; net_revenue: number;
+}
 export interface SoldItem {
+  sellers?: SoldSeller[]
   /** Absent only on older backends; an empty array means no posted supply. */
   suppliers?: Array<{ id: string; name: string }>
   product_id: string
@@ -33,6 +38,11 @@ export interface SalesSummary {
 }
 
 export interface SalesPeriodReport extends SalesSummary {
+  returns_count: number
+  returns_total: number
+  net_revenue: number
+  profit: number
+  daily: Array<{ date: string; sales: number; revenue: number; gross_revenue: number; returns_total: number }>
   sales: Array<{
     id: string
     sale_number: string

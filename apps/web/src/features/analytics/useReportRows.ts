@@ -2,8 +2,9 @@ import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
 import { businessDateKey, businessDateRangeUtc } from '@/lib/businessDate'
 import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
+import { abcDateRange } from './abcData'
 
-export function useReportRows<T>(url: string, valid = true) {
+export function useReportRows<T>(url: string, valid = true, parseRows?: (data: unknown) => T[]) {
   const [revision, setRevision] = useState(0)
   const key = url + ':' + revision
   const [state, setState] = useState<{ key: string; rows: T[]; error: string; pending: boolean }>({
@@ -19,18 +20,21 @@ export function useReportRows<T>(url: string, valid = true) {
       if (!local) throw new Error('Для локальної аналітики запустіть оновлену програму')
       const parsed = new URL(url, 'https://local.invalid')
       const kind = parsed.pathname.endsWith('/abc') ? 'abc' : 'staff'
-      const endDate = parsed.searchParams.get('endDate') || businessDateKey()
-      const startDate = parsed.searchParams.get('startDate') || businessDateKey(new Date(Date.now() - 90*86400000))
+      const { startDate, endDate } = kind === 'abc'
+        ? abcDateRange(parsed.searchParams.get('days') ?? '90')
+        : { startDate: parsed.searchParams.get('startDate') || businessDateKey(new Date(Date.now() - 90*86400000)),
+          endDate: parsed.searchParams.get('endDate') || businessDateKey() }
       return { data: await local({kind,startDate,endDate,...businessDateRangeUtc(startDate,endDate)}) as T[] }
     }
     load().then((response) => {
       if (!Array.isArray(response.data)) throw new Error('Сервер повернув неповний звіт')
-      if (active) setState({ key, rows: response.data, error: '', pending: false })
+      const rows = parseRows ? parseRows(response.data) : response.data
+      if (active) setState({ key, rows, error: '', pending: false })
     }).catch((error) => {
       if (active) setState({ key, rows: [], error: error instanceof Error ? error.message : 'Не вдалося завантажити звіт', pending: false })
     })
     return () => { active = false }
-  }, [key, url, valid])
+  }, [key, url, valid, parseRows])
   const current = state.key === key
   return {
     rows: valid && current ? state.rows : [],

@@ -12,7 +12,8 @@
   .analytics-content :where(input, select, textarea) { min-width: 0; max-width: 100%; font-size: 16px; }
   .analytics-content :where(.grid > *, .flex > *) { min-width: 0; }
   .analytics-content :where(.grid-cols-2) { grid-template-columns: minmax(0, 1fr); }
-  .analytics-content [data-testid="sold-items-mobile"] .grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .analytics-content [data-testid="sold-items-mobile"] .grid-cols-2,
+  .analytics-content .analytics-sold-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .analytics-content div:has(> table) { overflow: visible; max-height: none; }
   .analytics-content table { display: block; width: 100%; min-width: 0; }
   .analytics-content table thead { display: none; }
