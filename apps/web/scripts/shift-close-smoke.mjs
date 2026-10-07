@@ -23,14 +23,20 @@ import {createRoot} from 'react-dom/client';
 import {ShiftCloseModal} from '/src/features/pos/ShiftCloseModal.tsx';
 const root=createRoot(document.getElementById('root'));
 const f=window.fixture={mode:'ok',id:'A',calls:[],errors:[],pending:[],closed:0,holdClose:false};
-function read(kind){
+function read(){
  const id=f.id;
- const value=kind==='report'?{shift:{id},by_method:{cash:10000,card:0},total_sales:0,total_revenue:0,sales:[],...f.report}:{expected_amount:10000,...f.cash};
+ const methods={cash:0,card:0,transfer:0,account:0,debt:0};
+ const value={
+  shift:{id,cashier_id:'cashier',status:'open',opening_cash:10000},
+  cash_breakdown:{opening_cash:10000,cash_sales:0,cash_returns:0,cash_in:0,cash_out:0,expected_amount:10000,...f.cash},
+  by_method:{...methods},refunds_by_method:{...methods},total_sales:0,gross_revenue:0,refund_total:0,total_revenue:0,
+  payment_received_total:0,payment_refunded_total:0,payment_net_total:0,unassigned_refunds_count:0,sales:[],...f.report,
+ };
  if(f.mode==='error')return Promise.reject(Error('test failure'));
  if(f.mode==='defer')return new Promise(resolve=>f.pending.push(()=>resolve(value)));
  return Promise.resolve(value);
 }
-f.bridge={pos:{shiftReport:()=>read('report'),expectedCash:()=>read('cash'),closeShift:(...args)=>{
+f.bridge={pos:{shiftReport:()=>read(),expectedCash:()=>{throw Error('Closing must use one atomic snapshot')},closeShift:(...args)=>{
  f.calls.push(args);return f.holdClose?new Promise(resolve=>f.finishClose=resolve):Promise.resolve();
 }}};
 f.render=(id='A',open=true)=>{f.id=id;root.render(React.createElement(ShiftCloseModal,{open,shiftId:id,onClose:()=>f.render(id,false),onClosed:()=>{f.closed++;f.render(id,false)}}))};
@@ -68,7 +74,7 @@ try {
   page.on('pageerror', error => errors.push(error.message))
   await page.route('**/*', route => new URL(route.request().url()).hostname === '127.0.0.1' ? route.continue() : route.abort())
   await page.goto(server.resolvedUrls.local[0] + 'audit')
-  const input = page.getByRole('spinbutton')
+  const input = page.getByRole('textbox', { name: 'Фактична сума в касі', exact: true })
   await input.waitFor()
   await input.press('Enter')
   assert.equal(await page.evaluate(() => fixture.calls.length), 0)
@@ -83,7 +89,7 @@ try {
   await page.evaluate(() => fixture.finishClose())
   await page.waitForFunction(() => fixture.closed === 1)
   await page.evaluate(() => { fixture.mode='defer'; fixture.render('B') })
-  await page.waitForFunction(() => fixture.pending.length === 2)
+  await page.waitForFunction(() => fixture.pending.length === 1)
   await page.evaluate(() => { fixture.mode='error'; fixture.render('C') })
   await page.getByRole('alert').waitFor()
   await page.evaluate(() => fixture.pending.splice(0).forEach(resolve=>resolve()))
@@ -100,7 +106,10 @@ try {
   await page.getByText('Не вдалося завантажити нарахування.', {exact:false}).waitFor()
   assert.equal(await page.getByText('Доступно до виплати:',{exact:false}).count(), 0)
   await page.evaluate(() => {
-    fixture.report={total_sales:1,gross_revenue:2000,refund_total:2000,total_revenue:0,refunds_by_method:{cash:1000,card:1000}};
+    fixture.report={total_sales:1,gross_revenue:2000,refund_total:2000,total_revenue:0,
+      by_method:{cash:1000,card:1000,transfer:0,account:0,debt:0},refunds_by_method:{cash:1000,card:1000,transfer:0,account:0,debt:0},
+      payment_received_total:2000,payment_refunded_total:2000,payment_net_total:0,
+      sales:[{id:'sale',status:'returned',total:2000}]};
     fixture.cash={opening_cash:10000,cash_sales:1000,cash_returns:1000};
     fixture.render('F');
   })
@@ -115,10 +124,15 @@ try {
   await page.getByText('Для 1 старих повернень',{exact:false}).waitFor()
   await input.fill('100')
   assert.equal(await page.getByRole('button', {name:'Закрити зміну',exact:true}).isDisabled(), false)
-  await page.evaluate(() => {fixture.report={};fixture.render('H')})
+  await page.evaluate(() => {fixture.report={cash_breakdown:undefined};fixture.render('H')})
+  await page.getByRole('alert').waitFor()
+  assert.equal(await input.count(),0)
+  assert.equal(await page.getByRole('button', {name:'Закрити зміну',exact:true}).isDisabled(),true)
+  assert.equal(await page.evaluate(() => fixture.calls.length),1)
+  await page.evaluate(() => {fixture.report={};fixture.cash={};fixture.render('I')})
+  await input.waitFor()
   await page.getByText('Продано: 0 чек(ів)',{exact:true}).waitFor()
-  assert.equal(await page.getByText('Продажі мінус повернення:',{exact:true}).count(),0)
   assert.equal(await page.getByText('Неповні дані',{exact:true}).count(),0)
   assert.deepEqual(errors, [])
-  console.log('PASS: blank Enter, duplicate Enter, explicit shift ID, close lock, stale responses, load failure, clean reopen, salary error not shown as zero, gross/refund/net separation, incomplete legacy refunds, old report compatibility')
+  console.log('PASS: blank Enter, duplicate Enter, explicit shift ID, close lock, single atomic snapshot, stale responses, load failure, clean reopen, salary error not shown as zero, gross/refund/net separation, incomplete legacy refunds, incomplete snapshot blocks close')
 } finally { await browser?.close(); await server.close() }
