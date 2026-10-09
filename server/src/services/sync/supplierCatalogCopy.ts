@@ -1,5 +1,6 @@
 import { pool } from '../../db/pg.js'
 import { AppError } from '../../middleware/errorHandler.js'
+import { MVP_TENANT_ID } from '../../config/constants.js'
 import { createSupplierCatalogManifest } from '../../lib/supplierCatalogManifest.js'
 
 // One SELECT has one MVCC snapshot; never split these into REST pages.
@@ -44,7 +45,9 @@ export async function fetchSupplierCatalogCopy(tenantId: string, cursor: string,
     data: { supplier_price_items: [], supplier_price_imports: [],
       supplier_catalog_copy: createSupplierCatalogManifest(tenantId, cursor, [], [], since ?? null) }, parents: [] as any[],
   }
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(tenantId)
+  // The original shop predates random UUID tenants. Accept only that known
+  // legacy identity in addition to standard UUIDs; auth still supplies the tenant.
+  if ((tenantId !== MVP_TENANT_ID && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(tenantId))
     || !Number.isFinite(Date.parse(cursor))
     || (since !== undefined && (!Number.isFinite(Date.parse(since)) || Date.parse(since) > Date.parse(cursor)))) throw new AppError('SYNC_CATALOG_SCOPE_INVALID', 'Некоректні реквізити копії прайсу.', 400)
   const result = await pool.query(SUPPLIER_CATALOG_COPY_SQL, [tenantId, since ?? null])

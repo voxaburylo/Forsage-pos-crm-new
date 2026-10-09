@@ -11,6 +11,7 @@ vi.mock('../../db/pg.js', () => ({ pool: { query: async (sql: string, args: unkn
 import { fetchSupplierCatalogCopy, mergeCatalogSupplierParents } from '../sync/supplierCatalogCopy.js'
 import { validateSupplierCatalogManifest } from '../../lib/supplierCatalogManifest.js'
 import { syncFunctionBody } from './helpers/syncSource.js'
+import { MVP_TENANT_ID } from '../../config/constants.js'
 
 const tenant = '00000000-0000-4000-8000-000000000001', foreign = '00000000-0000-4000-8000-000000000002'
 const at = '2026-10-09T10:00:00.000Z'
@@ -57,6 +58,22 @@ it.each(['owner','admin'])('reads complete catalog and history in one SQL statem
   expect(value.supplier_catalog_copy?.item_count).toBe(2501)
   validateSupplierCatalogManifest(value,tenant,at)
 })
+it.each([
+  ['owner', undefined], ['admin', undefined],
+  ['owner', '2026-10-07T00:00:00Z'], ['admin', '2026-10-07T00:00:00Z'],
+])('supports the original shop identity for %s with since=%s', async (role, since) => {
+  await seed(2, MVP_TENANT_ID)
+  await seed(3, foreign)
+  const { data } = await fetchSupplierCatalogCopy(MVP_TENANT_ID, at, role!, since)
+  expect(data.supplier_price_items).toHaveLength(2)
+  expect(data.supplier_price_imports).toHaveLength(1)
+  expect([...data.supplier_price_items, ...data.supplier_price_imports]
+    .every((row:any) => row.tenant_id === MVP_TENANT_ID)).toBe(true)
+  expect(data.supplier_catalog_copy.mode).toBe(since ? 'delta' : 'full')
+  validateSupplierCatalogManifest(data, MVP_TENANT_ID, at)
+  expect(state.queries).toHaveLength(1)
+  expect(state.queries[0].args).toEqual([MVP_TENANT_ID, since ?? null])
+})
 it.each(['cashier','manager','storekeeper','tire_worker','sto_viewer','unknown'])('does not access supplier prices for %s', async role => {
   const result = await fetchSupplierCatalogCopy(tenant,at,role)
   expect(result).toMatchObject({data:{supplier_price_items:[],supplier_price_imports:[],
@@ -79,7 +96,7 @@ it('isolates both tables by tenant and never includes unrelated commercial data'
   expect([...value.supplier_price_items,...value.supplier_price_imports].every((r:any)=>r.tenant_id===tenant)).toBe(true)
   expect(state.queries[0].args).toEqual([tenant,null])
 })
-it.each(["'; SELECT 1; --",'','not-a-tenant'])('rejects invalid tenant %s before querying', async scope => {
+it.each(["'; SELECT 1; --",'','not-a-tenant','00000000-0000-0000-0000-000000000002'])('rejects invalid tenant %s before querying', async scope => {
   await expect(fetchSupplierCatalogCopy(scope,at,'owner')).rejects.toThrow()
   expect(state.queries).toHaveLength(0)
 })
