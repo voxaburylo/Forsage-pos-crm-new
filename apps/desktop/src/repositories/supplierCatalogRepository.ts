@@ -1,4 +1,11 @@
 import { randomUUID } from 'node:crypto'
+import {
+  catalogCopyRows, validateCatalogRecord, catalogTimestamp, remoteCatalogIsOlder,
+  verifyCatalogVersionContent, catalogHistoryCount, catalogHistoryErrors, catalogCopyText, invalidCatalogCopy,
+} from './supplierCatalogRemoteValidation'
+import { runCatalogImport, resolveCatalogImport, type CatalogImportResult } from './supplierCatalogImportRecovery'
+import { SupplierCatalogWriteGuard, catalogWriteConflict } from './supplierCatalogWriteSafety'
+import { addCatalogQuantity, catalogPriceKopecks, catalogQuantity } from '../lib/supplierCatalogNumbers'
 import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID } from '../db/localTypes'
 
@@ -46,6 +53,8 @@ export interface LocalSupplierImportRow {
 }
 
 export interface LocalSupplierImportOptions {
+  operation_id?: string
+  user_id?: string
   tenant_id?: string
   supplier_id: string | null
   supplier_name?: string | null
@@ -116,16 +125,6 @@ export function normalizeLocalSupplierName(value: unknown): string {
     .trim()
 }
 
-function numberQty(value: unknown): number {
-  const parsed = Number.parseFloat(String(value ?? '0').replace(',', '.'))
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
-}
-
-function displayQty(value: unknown): string {
-  const qty = numberQty(value)
-  return Number.isInteger(qty) ? String(qty) : String(Number(qty.toFixed(3)))
-}
-
 function scopeValue(value: unknown): string | null {
   const clean = String(value ?? '').trim()
   return clean || null
@@ -162,14 +161,19 @@ class ExactIdentityIndex {
   }
 
   remove(id: string): void {
-    if (!this.candidates.has(id)) return
+    const previous = this.candidates.get(id)
+    if (!previous) return
     this.candidates.delete(id)
-    for (const index of [this.byBarcode, this.bySku, this.byName]) {
-      for (const [key, ids] of index) {
-        ids.delete(id)
-        if (ids.size === 0) index.delete(key)
-      }
+    const removeKey = (index: Map<string, Set<string>>, key: string) => {
+      const ids = index.get(key)
+      if (!ids) return
+      ids.delete(id)
+      if (!ids.size) index.delete(key)
     }
+    for (const barcode of [previous.barcode, ...(previous.additional_barcodes ?? [])])
+      removeKey(this.byBarcode, normalizeLocalSupplierBarcode(barcode))
+    removeKey(this.bySku, normalizeLocalSupplierSku(previous.sku))
+    removeKey(this.byName, normalizeLocalSupplierName(previous.name))
   }
 
   match(input: { sku?: string; barcode?: string | null; name: string }, label = 'товар'): ExactMatch {
@@ -285,203 +289,304 @@ export class LocalSupplierCatalogRepository {
 
   create(input: LocalSupplierCatalogItemInput): LocalSupplierCatalogItem {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
-    const normalized = this.normalizeInput(input, tenantId)
-    const draftMatch = this.draftIndex(tenantId, normalized.supplier_id, normalized.warehouse_name).match(normalized, 'черновими позиці')
-    if (draftMatch.error) throw new Error(draftMatch.error)
-    if (draftMatch.candidate) throw new Error('Така чернова позиція вже існує у вибраному прайсі')
-    const match = this.productIndex(tenantId).match(normalized)
-    const id = randomUUID()
-    const timestamp = nowIso()
-    this.db.transaction(() => {
-      this.insertItem({ id, tenantId, normalized, match, timestamp })
+    return this.db.transaction(() => {
+      const guard = new SupplierCatalogWriteGuard(this.db)
+      const normalized = this.normalizeInput(input, tenantId)
+      const draftMatch = this.draftIndex(tenantId, normalized.supplier_id, normalized.warehouse_name).match(normalized, 'черновими позиці')
+      if (draftMatch.error) throw new Error(draftMatch.error)
+      if (draftMatch.candidate) throw new Error('Така чернова позиція вже існує у вибраному прайсі')
+      const match = this.productIndex(tenantId).match(normalized)
+      const id = randomUUID(), timestamp = nowIso()
+      this.insertItem({ id, tenantId, normalized, match, timestamp }, guard)
       this.addOutbox(tenantId, 'supplier_catalog_item', id, 'supplier_catalog.item_upserted', {
         id, ...normalized,
-      }, timestamp)
+      }, timestamp, guard)
+      guard.verify()
+      return this.requireItem(id, tenantId)
     })
-    return this.requireItem(id, tenantId)
   }
 
   update(id: string, input: Partial<LocalSupplierCatalogItemInput>, tenantId = DEFAULT_TENANT_ID): LocalSupplierCatalogItem {
-    const current = this.requireItem(id, tenantId)
-    const normalized = this.normalizeInput({ ...current, ...input, tenant_id: tenantId }, tenantId)
-    const drafts = this.activeScopeRows(tenantId, normalized.supplier_id, normalized.warehouse_name)
-      .filter((row) => row.id !== id)
-    const draftMatch = new ExactIdentityIndex(drafts).match(normalized, 'черновими позиці')
-    if (draftMatch.error) throw new Error(draftMatch.error)
-    if (draftMatch.candidate) throw new Error('Така чернова позиція вже існує у вибраному прайсі')
-    const match = this.productIndex(tenantId).match(normalized)
-    const timestamp = nowIso()
-    this.db.transaction(() => {
-      this.updateItem(id, tenantId, normalized, match, timestamp)
+    return this.db.transaction(() => {
+      const guard = new SupplierCatalogWriteGuard(this.db)
+      const current = this.requireItem(id, tenantId)
+      const normalized = this.normalizeInput({ ...current, ...input, tenant_id: tenantId }, tenantId)
+      const drafts = this.activeScopeRows(tenantId, normalized.supplier_id, normalized.warehouse_name).filter(row => row.id !== id)
+      const draftMatch = new ExactIdentityIndex(drafts).match(normalized, 'черновими позиці')
+      if (draftMatch.error) throw new Error(draftMatch.error)
+      if (draftMatch.candidate) throw new Error('Така чернова позиція вже існує у вибраному прайсі')
+      const match = this.productIndex(tenantId).match(normalized), timestamp = nowIso()
+      this.updateItem(id, tenantId, normalized, match, timestamp, guard)
       this.addOutbox(tenantId, 'supplier_catalog_item', id, 'supplier_catalog.item_upserted', {
         id, ...normalized,
-      }, timestamp)
+      }, timestamp, guard)
+      guard.verify()
+      return this.requireItem(id, tenantId)
     })
-    return this.requireItem(id, tenantId)
   }
 
   delete(id: string, tenantId = DEFAULT_TENANT_ID): { ok: true } {
-    const timestamp = nowIso()
     this.db.transaction(() => {
+      const guard = new SupplierCatalogWriteGuard(this.db)
+      const before = guard.item(id), timestamp = nowIso()
+      if (!before || before.tenant_id !== tenantId || before.deleted_at) throw new Error('Чернову позицію не знайдено')
       const result = this.db.prepare(`
-        UPDATE supplier_price_items
-        SET deleted_at = ?, dirty_at = ?, updated_at = ?
+        UPDATE supplier_price_items SET deleted_at = ?, dirty_at = ?, updated_at = ?
         WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
       `).run(timestamp, timestamp, timestamp, id, tenantId)
-      if (Number(result.changes) === 0) throw new Error('Чернову позицію не знайдено')
-      this.addOutbox(tenantId, 'supplier_catalog_item', id, 'supplier_catalog.item_deleted', { id }, timestamp)
+      guard.written(result)
+      guard.expectItem({ ...before, deleted_at: timestamp, dirty_at: timestamp, updated_at: timestamp })
+      this.addOutbox(tenantId, 'supplier_catalog_item', id, 'supplier_catalog.item_deleted', { id }, timestamp, guard)
+      guard.verify()
     })
     return { ok: true }
   }
 
-  importRows(filename: string, rows: LocalSupplierImportRow[], options: LocalSupplierImportOptions): { success: true; importId: string } {
-    if (rows.length === 0) throw new Error('Не знайдено товарних рядків для імпорту')
-    const tenantId = options.tenant_id ?? DEFAULT_TENANT_ID
-    const supplierId = this.validReference('suppliers', options.supplier_id, tenantId)
-    const warehouseName = scopeValue(options.warehouse_name)
-    const timestamp = nowIso()
-    const importId = randomUUID()
-    const errors = [...(options.parse_errors ?? [])]
-    const changedItems: Array<Record<string, unknown>> = []
-    const productIndex = this.productIndex(tenantId)
+  resolveImport(operationId: string, userId: string, tenantId = DEFAULT_TENANT_ID) {
+    return resolveCatalogImport(this.db, tenantId, userId, operationId)
+  }
 
+  importRows(filename: string, rows: LocalSupplierImportRow[], options: LocalSupplierImportOptions): CatalogImportResult {
+    // Internal legacy callers remain valid; the current IPC requires an operation ID.
+    if (options.operation_id !== undefined) return runCatalogImport(this.db,
+      options.tenant_id ?? DEFAULT_TENANT_ID, options.user_id, options.operation_id,
+      { filename, rows, options: { ...options, operation_id: undefined } },
+      capture => this.importRowsInTransaction(filename, rows, options, capture))
+    return this.importRowsInTransaction(filename, rows, options)
+  }
+
+  private importRowsInTransaction(filename: string, rows: LocalSupplierImportRow[], options: LocalSupplierImportOptions,
+    capture?: (guard: SupplierCatalogWriteGuard) => void): CatalogImportResult {
+    if (rows.length === 0) throw new Error('Не знайдено товарних рядків для імпорту')
+    if (options.parse_errors?.length) {
+      const first = options.parse_errors[0]
+      throw new Error(`Рядок ${first.row}: ${first.error}. Виправте файл; прайс не змінено.`)
+    }
+    if (options.mode !== 'add' && options.mode !== 'replace') throw new Error('Некоректний режим імпорту прайсу')
+    const tenantId = options.tenant_id ?? DEFAULT_TENANT_ID
+    const timestamp = nowIso(), importId = randomUUID()
     this.db.transaction(() => {
+      const guard = new SupplierCatalogWriteGuard(this.db)
+      const supplierId = this.validReference('suppliers', options.supplier_id, tenantId)
+      const warehouseName = scopeValue(options.warehouse_name)
+      const errors: Array<{ row: number; error: string }> = []
+      const changedItems = new Map<string, Record<string, unknown>>()
+      const productIndex = this.productIndex(tenantId)
+      const activeRows = this.db.prepare(`
+        SELECT * FROM supplier_price_items
+        WHERE tenant_id = ? AND supplier_id IS ? AND warehouse_name IS ? AND deleted_at IS NULL
+      `).all(tenantId, supplierId, warehouseName) as Array<Record<string, any>>
+      for (const row of activeRows) guard.expectItem(row)
+
       if (options.mode === 'replace') {
-        this.db.prepare(`
-          UPDATE supplier_price_items
-          SET deleted_at = ?, dirty_at = ?, updated_at = ?
+        const retired = this.db.prepare(`
+          UPDATE supplier_price_items SET deleted_at = ?, dirty_at = ?, updated_at = ?
           WHERE tenant_id = ? AND supplier_id IS ? AND warehouse_name IS ? AND deleted_at IS NULL
         `).run(timestamp, timestamp, timestamp, tenantId, supplierId, warehouseName)
+        guard.written(retired, activeRows.length)
+        for (const row of activeRows) guard.expectItem({ ...row, deleted_at: timestamp, dirty_at: timestamp, updated_at: timestamp })
       }
-
-      const activeRows = options.mode === 'add'
-        ? this.activeScopeRows(tenantId, supplierId, warehouseName)
-        : []
-      const draftIndex = new ExactIdentityIndex(activeRows)
-
+      const draftIndex = new ExactIdentityIndex(options.mode === 'add' ? activeRows as IdentityCandidate[] : [])
       for (const row of rows) {
         const normalized = this.normalizeInput({
-          tenant_id: tenantId,
-          supplier_id: supplierId,
+          tenant_id: tenantId, supplier_id: supplierId,
           sku: row.sku?.trim() || `IMP-${randomUUID().replace(/-/g, '').toUpperCase()}`,
-          barcode: row.barcode,
-          brand: row.brand,
-          name: row.name,
-          price_kopecks: row.price_kopecks,
-          qty: row.qty,
-          warehouse_name: warehouseName,
+          barcode: row.barcode, brand: row.brand, name: row.name,
+          price_kopecks: row.price_kopecks, qty: row.qty, warehouse_name: warehouseName,
         }, tenantId)
         const productMatch = productIndex.match(normalized)
         if (productMatch.error) errors.push({ row: row.source_row, error: productMatch.error })
         const draftMatch = draftIndex.match(normalized, 'черновими позиці')
-        if (draftMatch.error) {
-          errors.push({ row: row.source_row, error: `Дублікат у прайсі: ${draftMatch.error}` })
-          continue
-        }
-
+        if (draftMatch.error) throw new Error(`Рядок ${row.source_row}: Дублікат у прайсі: ${draftMatch.error}. Прайс не змінено.`)
         const existingId = draftMatch.candidate?.id
-        const nextQty = existingId && options.mode === 'add'
-          ? displayQty(numberQty((this.requireItem(existingId, tenantId)).qty) + numberQty(normalized.qty))
-          : normalized.qty
-        const next = { ...normalized, qty: nextQty }
+        // Accumulate from the initial/planned state, never from an unverified write.
+        const previous = existingId ? guard.item(existingId) : undefined
+        if (existingId && !previous) throw catalogWriteConflict()
+        const next = { ...normalized, qty: existingId ? addCatalogQuantity(previous!.qty, normalized.qty) : normalized.qty }
         const itemId = existingId ?? randomUUID()
-        if (existingId) this.updateItem(itemId, tenantId, next, productMatch, timestamp)
-        else this.insertItem({ id: itemId, tenantId, normalized: next, match: productMatch, timestamp })
+        if (existingId) this.updateItem(itemId, tenantId, next, productMatch, timestamp, guard)
+        else this.insertItem({ id: itemId, tenantId, normalized: next, match: productMatch, timestamp }, guard)
         draftIndex.add({ id: itemId, sku: next.sku, barcode: next.barcode, name: next.name })
-        changedItems.push({ id: itemId, ...next })
+        changedItems.set(itemId, { id: itemId, ...next })
       }
 
-      this.db.prepare(`
+      const name = filename.trim() || 'import.csv'
+      const inserted = this.db.prepare(`
         INSERT INTO supplier_price_imports (
           id, tenant_id, supplier_id, filename, mode, warehouse_name, status,
-          total_rows, processed_rows, errors_json, dirty_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?)
-      `).run(
-        importId, tenantId, supplierId, filename.trim() || 'import.csv', options.mode, warehouseName,
-        rows.length + (options.parse_errors?.length ?? 0), changedItems.length,
-        JSON.stringify(errors), timestamp, timestamp, timestamp,
-      )
+          total_rows, processed_rows, errors_json, dirty_at, created_at, updated_at, scope_known
+        ) VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, 1)
+      `).run(importId, tenantId, supplierId, name, options.mode, warehouseName,
+        rows.length, rows.length, JSON.stringify(errors), timestamp, timestamp, timestamp)
+      guard.written(inserted)
+      guard.expectImport({
+        id: importId, tenant_id: tenantId, supplier_id: supplierId, filename: name,
+        mode: options.mode, warehouse_name: warehouseName, status: 'completed',
+        total_rows: rows.length, processed_rows: rows.length, errors_json: JSON.stringify(errors),
+        remote_updated_at: null, dirty_at: timestamp, created_at: timestamp, updated_at: timestamp,
+        deleted_at: null, scope_known: 1,
+      })
       this.addOutbox(tenantId, 'supplier_catalog_import', importId, 'supplier_catalog.imported', {
         import: {
-          id: importId,
-          supplier_id: supplierId,
-          filename: filename.trim() || 'import.csv',
-          status: 'completed',
-          total_rows: rows.length + (options.parse_errors?.length ?? 0),
-          processed_rows: changedItems.length,
-          errors_log: errors,
-          created_at: timestamp,
-          updated_at: timestamp,
+          id: importId, supplier_id: supplierId, filename: name, status: 'completed',
+          total_rows: rows.length, processed_rows: rows.length, errors_log: errors,
+          created_at: timestamp, updated_at: timestamp,
         },
-        mode: options.mode,
-        warehouse_name: warehouseName,
-        items: changedItems,
-      }, timestamp)
+        mode: options.mode, warehouse_name: warehouseName, items: [...changedItems.values()],
+      }, timestamp, guard)
+      guard.verify()
+      capture?.(guard)
     })
     return { success: true, importId }
   }
 
-  upsertRemoteItem(item: any, tenantId: string, importedAt: string): boolean {
-    if (!item?.id) return false
-    const dirty = this.db.prepare('SELECT dirty_at FROM supplier_price_items WHERE id = ? AND tenant_id = ?')
-      .get(item.id, tenantId) as { dirty_at: string | null } | undefined
-    if (dirty?.dirty_at) return false
-    const normalized = this.normalizeInput({ ...item, tenant_id: tenantId }, tenantId, true)
-    const updatedAt = String(item.updated_at ?? importedAt)
-    this.db.prepare(`
-      INSERT INTO supplier_price_items (
-        id, tenant_id, supplier_id, sku, barcode, brand, name, price_kopecks, qty,
-        warehouse_name, matched_product_id, match_kind, match_error, search_text,
-        remote_updated_at, dirty_at, created_at, updated_at, deleted_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        supplier_id = excluded.supplier_id, sku = excluded.sku, barcode = excluded.barcode,
-        brand = excluded.brand, name = excluded.name, price_kopecks = excluded.price_kopecks,
-        qty = excluded.qty, warehouse_name = excluded.warehouse_name,
-        search_text = excluded.search_text, remote_updated_at = excluded.remote_updated_at,
-        updated_at = excluded.updated_at, deleted_at = excluded.deleted_at
-      WHERE supplier_price_items.dirty_at IS NULL
-    `).run(
-      item.id, tenantId, normalized.supplier_id, normalized.sku, normalized.barcode,
-      normalized.brand, normalized.name, normalized.price_kopecks, normalized.qty,
-      normalized.warehouse_name, searchText(normalized), updatedAt,
-      item.created_at ?? updatedAt, updatedAt, item.deleted_at ?? null,
-    )
-    return true
+  /** One catalog batch inside the enclosing pull/bootstrap transaction. */
+  applyRemoteCopy(items: unknown, imports: unknown, tenantId: string, importedAt: string) {
+    const itemRows = catalogCopyRows(items), importRows = catalogCopyRows(imports)
+    return this.db.transaction(() => {
+      const guard = new SupplierCatalogWriteGuard(this.db)
+      const counts = { supplier_price_items: 0, supplier_price_imports: 0 }
+      for (const item of itemRows) if (this.upsertRemoteItem(item, tenantId, importedAt, guard)) counts.supplier_price_items++
+      for (const record of importRows) if (this.upsertRemoteImport(record, tenantId, importedAt, guard)) counts.supplier_price_imports++
+      guard.verify()
+      // Called again before the enclosing COMMIT, after secondary/cursor writes.
+      return { counts, verify: () => guard.verifyStoredRows() }
+    })
   }
 
-  upsertRemoteImport(record: any, tenantId: string, importedAt: string): boolean {
-    if (!record?.id) return false
-    const dirty = this.db.prepare('SELECT dirty_at FROM supplier_price_imports WHERE id = ? AND tenant_id = ?')
-      .get(record.id, tenantId) as { dirty_at: string | null } | undefined
-    if (dirty?.dirty_at) return false
-    const supplierId = this.validReference('suppliers', record.supplier_id, tenantId, true)
-    const updatedAt = String(record.updated_at ?? importedAt)
-    this.db.prepare(`
-      INSERT INTO supplier_price_imports (
-        id, tenant_id, supplier_id, filename, mode, warehouse_name, status,
-        total_rows, processed_rows, errors_json, remote_updated_at, dirty_at,
-        created_at, updated_at, deleted_at
-      ) VALUES (?, ?, ?, ?, 'add', NULL, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
-      ON CONFLICT(id) DO UPDATE SET
-        supplier_id = excluded.supplier_id, filename = excluded.filename, status = excluded.status,
-        total_rows = excluded.total_rows, processed_rows = excluded.processed_rows,
-        errors_json = excluded.errors_json, remote_updated_at = excluded.remote_updated_at,
-        updated_at = excluded.updated_at, deleted_at = NULL
-      WHERE supplier_price_imports.dirty_at IS NULL
-    `).run(
-      record.id, tenantId, supplierId, String(record.filename ?? 'import.csv'),
-      record.status ?? 'completed', Math.max(0, Number(record.total_rows) || 0),
-      Math.max(0, Number(record.processed_rows) || 0), JSON.stringify(record.errors_log ?? []),
-      updatedAt, record.created_at ?? updatedAt, updatedAt,
-    )
-    return true
+  upsertRemoteItem(item: any, tenantId: string, importedAt: string, batch?: SupplierCatalogWriteGuard): boolean {
+    const work = () => {
+      const guard = batch ?? new SupplierCatalogWriteGuard(this.db)
+      const previous = this.remoteCatalogOwner('supplier_price_items', item, tenantId, guard)
+      if (previous?.dirty_at) return false
+      const updatedAt = catalogTimestamp(item.updated_at ?? previous?.remote_updated_at ?? previous?.updated_at ?? item.created_at ?? importedAt)
+      if (remoteCatalogIsOlder(previous, updatedAt)) return false
+      const fields = { ...item }
+      for (const key of ['name', 'sku', 'barcode', 'brand', 'warehouse_name', 'supplier_id', 'qty', 'price_kopecks'])
+        if (fields[key] === undefined && previous) fields[key] = previous[key]
+      for (const key of ['sku', 'barcode', 'brand', 'warehouse_name'])
+        if (fields[key] !== undefined) catalogCopyText(fields[key])
+      catalogCopyText(fields.name, false)
+      if (fields.qty === undefined) throw invalidCatalogCopy()
+      const normalized = this.normalizeInput({ ...fields, tenant_id: tenantId }, tenantId, true)
+      const expected = {
+        id: item.id, tenant_id: tenantId, ...normalized, qty: Number(normalized.qty),
+        matched_product_id: previous?.matched_product_id ?? null,
+        match_kind: previous?.match_kind ?? null, match_error: previous?.match_error ?? null,
+        search_text: searchText(normalized), remote_updated_at: updatedAt, dirty_at: null,
+        created_at: previous?.created_at ?? catalogTimestamp(item.created_at ?? updatedAt),
+        updated_at: updatedAt,
+        deleted_at: Object.hasOwn(item, 'deleted_at')
+          ? (item.deleted_at === null ? null : catalogTimestamp(item.deleted_at)) : previous?.deleted_at ?? null,
+      }
+      verifyCatalogVersionContent(previous, expected, item.updated_at != null)
+      const result = this.db.prepare(`
+        INSERT INTO supplier_price_items (
+          id, tenant_id, supplier_id, sku, barcode, brand, name, price_kopecks, qty,
+          warehouse_name, matched_product_id, match_kind, match_error, search_text,
+          remote_updated_at, dirty_at, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          supplier_id = excluded.supplier_id, sku = excluded.sku, barcode = excluded.barcode,
+          brand = excluded.brand, name = excluded.name, price_kopecks = excluded.price_kopecks,
+          qty = excluded.qty, warehouse_name = excluded.warehouse_name,
+          search_text = excluded.search_text, remote_updated_at = excluded.remote_updated_at,
+          updated_at = excluded.updated_at, deleted_at = excluded.deleted_at
+        WHERE supplier_price_items.tenant_id = excluded.tenant_id AND supplier_price_items.dirty_at IS NULL
+      `).run(
+        expected.id, tenantId, expected.supplier_id, expected.sku, expected.barcode,
+        expected.brand, expected.name, expected.price_kopecks, expected.qty,
+        expected.warehouse_name, expected.search_text, updatedAt,
+        expected.created_at, updatedAt, expected.deleted_at,
+      )
+      guard.written(result)
+      guard.expectItem(expected)
+      if (!batch) guard.verify()
+      return true
+    }
+    return batch ? work() : this.db.transaction(work)
+  }
+
+  upsertRemoteImport(record: any, tenantId: string, importedAt: string, batch?: SupplierCatalogWriteGuard): boolean {
+    const work = () => {
+      const guard = batch ?? new SupplierCatalogWriteGuard(this.db)
+      const previous = this.remoteCatalogOwner('supplier_price_imports', record, tenantId, guard)
+      if (previous?.dirty_at) return false
+      const updatedAt = catalogTimestamp(record.updated_at ?? previous?.remote_updated_at ?? previous?.updated_at ?? record.created_at ?? importedAt)
+      if (remoteCatalogIsOlder(previous, updatedAt)) return false
+      if (record.mode != null && record.mode !== 'add' && record.mode !== 'replace')
+        throw new Error('Некоректний режим імпорту прайсу; історію не змінено.')
+      if (record.warehouse_name != null && typeof record.warehouse_name !== 'string')
+        throw new Error('Некоректний склад імпорту прайсу; історію не змінено.')
+      const completeScope = record.mode != null && Object.hasOwn(record, 'warehouse_name')
+      if (record.mode != null && !completeScope)
+        throw new Error('Неповні дані складу імпорту прайсу; історію не змінено.')
+      const mode = completeScope ? record.mode : previous?.mode ?? 'add'
+      const warehouseName = completeScope ? scopeValue(record.warehouse_name) : previous?.warehouse_name ?? null
+      const scopeKnown = completeScope ? 1 : previous?.scope_known ?? 0
+      if (completeScope && previous?.scope_known
+        && (previous.mode !== mode || previous.warehouse_name !== warehouseName))
+        throw new Error('Конфлікт режиму або складу імпорту прайсу; історію не змінено.')
+      const supplierId = this.validReference('suppliers',
+        Object.hasOwn(record, 'supplier_id') ? record.supplier_id : previous?.supplier_id, tenantId, true)
+      if (previous && previous.supplier_id !== supplierId) throw invalidCatalogCopy()
+      const total = catalogHistoryCount(record.total_rows === undefined ? previous?.total_rows ?? 0 : record.total_rows)
+      const processed = catalogHistoryCount(record.processed_rows === undefined ? previous?.processed_rows ?? 0 : record.processed_rows)
+      if (processed > total) throw invalidCatalogCopy()
+      const status = record.status === undefined ? previous?.status ?? 'completed' : record.status
+      if (!['pending', 'processing', 'completed', 'failed'].includes(status)) throw invalidCatalogCopy()
+      const expected = {
+        id: record.id, tenant_id: tenantId, supplier_id: supplierId,
+        filename: record.filename === undefined ? previous?.filename ?? 'import.csv' : catalogCopyText(record.filename, false),
+        mode, warehouse_name: warehouseName, scope_known: scopeKnown, status,
+        total_rows: total, processed_rows: processed,
+        errors_json: record.errors_log === undefined ? previous?.errors_json ?? '[]' : catalogHistoryErrors(record.errors_log),
+        remote_updated_at: updatedAt, dirty_at: null,
+        created_at: previous?.created_at ?? catalogTimestamp(record.created_at ?? updatedAt),
+        updated_at: updatedAt,
+        deleted_at: Object.hasOwn(record, 'deleted_at')
+          ? (record.deleted_at === null ? null : catalogTimestamp(record.deleted_at)) : previous?.deleted_at ?? null,
+      }
+      verifyCatalogVersionContent(previous, expected, record.updated_at != null)
+      const result = this.db.prepare(`
+        INSERT INTO supplier_price_imports (
+          id, tenant_id, supplier_id, filename, mode, warehouse_name, status,
+          total_rows, processed_rows, errors_json, remote_updated_at, dirty_at,
+          created_at, updated_at, deleted_at, scope_known
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          supplier_id = excluded.supplier_id, filename = excluded.filename, status = excluded.status,
+          mode = excluded.mode, warehouse_name = excluded.warehouse_name, scope_known = excluded.scope_known,
+          total_rows = excluded.total_rows, processed_rows = excluded.processed_rows,
+          errors_json = excluded.errors_json, remote_updated_at = excluded.remote_updated_at,
+          updated_at = excluded.updated_at, deleted_at = excluded.deleted_at
+        WHERE supplier_price_imports.tenant_id = excluded.tenant_id AND supplier_price_imports.dirty_at IS NULL
+      `).run(
+        expected.id, tenantId, supplierId, expected.filename, mode, warehouseName,
+        status, total, processed, expected.errors_json,
+        updatedAt, expected.created_at, updatedAt, expected.deleted_at, scopeKnown,
+      )
+      guard.written(result)
+      guard.expectImport(expected)
+      if (!batch) guard.verify()
+      return true
+    }
+    return batch ? work() : this.db.transaction(work)
+  }
+
+  private remoteCatalogOwner(table: 'supplier_price_items' | 'supplier_price_imports', record: any,
+    tenantId: string, guard: SupplierCatalogWriteGuard) {
+    validateCatalogRecord(record)
+    const existing = table === 'supplier_price_items' ? guard.item(record.id) : guard.import(record.id)
+    if ((record.tenant_id !== undefined && record.tenant_id !== tenantId) || (existing && existing.tenant_id !== tenantId))
+      throw new Error('Запис прайсу належить іншій організації. Копію не застосовано; дані не змінено.')
+    return existing
   }
 
   private normalizeInput(input: LocalSupplierCatalogItemInput, tenantId: string, historical = false) {
     const name = String(input.name ?? '').trim()
     if (!name) throw new Error('Назва товару обов’язкова')
-    const price = Math.max(0, Math.round(Number(input.price_kopecks) || 0))
+    const price = catalogPriceKopecks(input.price_kopecks)
     return {
       supplier_id: this.validReference('suppliers', input.supplier_id, tenantId, historical),
       sku: normalizeLocalSupplierSku(input.sku),
@@ -489,7 +594,7 @@ export class LocalSupplierCatalogRepository {
       brand: scopeValue(input.brand),
       name,
       price_kopecks: price,
-      qty: displayQty(input.qty),
+      qty: catalogQuantity(input.qty),
       warehouse_name: scopeValue(input.warehouse_name),
     }
   }
@@ -531,9 +636,15 @@ export class LocalSupplierCatalogRepository {
     normalized: ReturnType<LocalSupplierCatalogRepository['normalizeInput']>
     match: ExactMatch
     timestamp: string
-  }): void {
+  }, guard: SupplierCatalogWriteGuard): void {
     const { id, tenantId, normalized, match, timestamp } = args
-    this.db.prepare(`
+    const expected = {
+      id, tenant_id: tenantId, ...normalized, qty: Number(normalized.qty),
+      matched_product_id: match.candidate?.id ?? null, match_kind: match.kind, match_error: match.error,
+      search_text: searchText(normalized), remote_updated_at: null, dirty_at: timestamp,
+      created_at: timestamp, updated_at: timestamp, deleted_at: null,
+    }
+    const inserted = this.db.prepare(`
       INSERT INTO supplier_price_items (
         id, tenant_id, supplier_id, sku, barcode, brand, name, price_kopecks, qty,
         warehouse_name, matched_product_id, match_kind, match_error, search_text,
@@ -545,27 +656,36 @@ export class LocalSupplierCatalogRepository {
       normalized.warehouse_name, match.candidate?.id ?? null, match.kind, match.error,
       searchText(normalized), timestamp, timestamp, timestamp,
     )
+    guard.written(inserted)
+    guard.expectItem(expected)
   }
 
   private updateItem(
-    id: string,
-    tenantId: string,
+    id: string, tenantId: string,
     normalized: ReturnType<LocalSupplierCatalogRepository['normalizeInput']>,
-    match: ExactMatch,
-    timestamp: string,
+    match: ExactMatch, timestamp: string, guard: SupplierCatalogWriteGuard,
   ): void {
-    this.db.prepare(`
+    const before = guard.item(id)
+    if (!before || before.tenant_id !== tenantId || before.deleted_at) throw catalogWriteConflict()
+    const expected = {
+      ...before, ...normalized, qty: Number(normalized.qty),
+      matched_product_id: match.candidate?.id ?? null, match_kind: match.kind, match_error: match.error,
+      search_text: searchText(normalized), dirty_at: timestamp, updated_at: timestamp, deleted_at: null,
+    }
+    const updated = this.db.prepare(`
       UPDATE supplier_price_items SET
         supplier_id = ?, sku = ?, barcode = ?, brand = ?, name = ?, price_kopecks = ?,
         qty = ?, warehouse_name = ?, matched_product_id = ?, match_kind = ?, match_error = ?,
         search_text = ?, dirty_at = ?, updated_at = ?, deleted_at = NULL
-      WHERE id = ? AND tenant_id = ?
+      WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
     `).run(
       normalized.supplier_id, normalized.sku, normalized.barcode, normalized.brand,
       normalized.name, normalized.price_kopecks, normalized.qty, normalized.warehouse_name,
       match.candidate?.id ?? null, match.kind, match.error, searchText(normalized),
       timestamp, timestamp, id, tenantId,
     )
+    guard.written(updated)
+    guard.expectItem(expected)
   }
 
   private requireItem(id: string, tenantId: string): LocalSupplierCatalogItem {
@@ -591,7 +711,8 @@ export class LocalSupplierCatalogRepository {
       brand: row.brand ?? null,
       name: String(row.name ?? ''),
       price_kopecks: Number(row.price_kopecks ?? 0),
-      qty: displayQty(row.qty),
+      // Show legacy values as stored; never silently round/zero them on read.
+      qty: String(row.qty ?? ''),
       warehouse_name: row.warehouse_name ?? null,
       matched_product_id: match.candidate?.id ?? null,
       match_kind: match.kind,
@@ -634,21 +755,24 @@ export class LocalSupplierCatalogRepository {
   }
 
   private addOutbox(
-    tenantId: string,
-    aggregateType: string,
-    aggregateId: string,
-    operationType: string,
-    payload: unknown,
-    timestamp: string,
+    tenantId: string, aggregateType: string, aggregateId: string,
+    operationType: string, payload: unknown, timestamp: string, guard: SupplierCatalogWriteGuard,
   ): void {
-    this.db.prepare(`
+    const operationId = randomUUID(), payloadJson = JSON.stringify(payload)
+    const inserted = this.db.prepare(`
       INSERT INTO sync_outbox (
         operation_id, tenant_id, device_id, aggregate_type, aggregate_id,
         operation_type, payload_json, status, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
-    `).run(
-      randomUUID(), tenantId, this.db.deviceId, aggregateType, aggregateId,
-      operationType, JSON.stringify(payload), timestamp,
-    )
+    `).run(operationId, tenantId, this.db.deviceId, aggregateType, aggregateId, operationType, payloadJson, timestamp)
+    guard.written(inserted)
+    const sequence = Number(inserted.lastInsertRowid)
+    if (!Number.isSafeInteger(sequence) || sequence <= 0) throw catalogWriteConflict()
+    guard.expectEvent({
+      sequence, operation_id: operationId, tenant_id: tenantId, device_id: this.db.deviceId,
+      aggregate_type: aggregateType, aggregate_id: aggregateId, operation_type: operationType,
+      payload_json: payloadJson, status: 'pending', attempts: 0, next_attempt_at: null,
+      created_at: timestamp, synced_at: null, last_error: null,
+    })
   }
 }

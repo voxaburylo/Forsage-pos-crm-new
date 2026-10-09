@@ -1,4 +1,5 @@
 import { request } from '@/lib/api'
+import { submitCatalogImport } from './supplierImportRequest'
 import { removeProcessingUploads, uploadProcessingBlob } from '@/lib/processingUploads'
 import { desktopBridge, desktopProductToProduct } from '@/lib/desktopBridge'
 import { productApi, requestDesktopSync } from '@/features/products/productApi'
@@ -148,16 +149,26 @@ async function uploadServerFile(file: File, options: SupplierImportRowsOptions) 
 
 async function uploadLocalRows(filename: string, rows: SupplierImportRow[], options: SupplierImportRowsOptions) {
   const bridge = localSupplierCatalogBridge()
-  if (!bridge) throw new Error('Локальний каталог постачальника недоступний')
-  const result = await bridge.importRows(filename, rows, {
-    tenant_id: currentTenantId(),
+  if (!bridge?.importOperationIds || !bridge.resolveImport) throw new Error('Оновіть локальну програму для безпечного імпорту прайсу.')
+  const userId = useAuthStore.getState().session?.user?.id
+  if (!userId) throw new Error('Увійдіть у програму для імпорту прайсу.')
+  const tenantId = currentTenantId()
+  const body = {
+    tenant_id: tenantId, user_id: userId,
     supplier_id: options.supplierId,
-    supplier_name: options.supplierName ?? null,
     mode: options.mode,
     warehouse_name: options.warehouseName?.trim() || null,
     parse_errors: options.parseErrors ?? [],
-  })
-  requestDesktopSync()
+  }
+  const payload = structuredClone({ filename, rows, options: body })
+  const result = await submitCatalogImport('supplier-import:' + tenantId + ':' + userId,
+    payload, {
+      send: operation_id => bridge.importRows(payload.filename, payload.rows, { ...payload.options, operation_id }),
+      resolve: operationId => bridge.resolveImport!(operationId),
+      sameSession: () => currentTenantId() === tenantId && useAuthStore.getState().session?.user?.id === userId,
+    })
+  // A background copy scheduling problem must not turn a committed import into a failed write.
+  try { requestDesktopSync() } catch { /* automatic sync can resume later */ }
   return result
 }
 async function findExactDesktopProduct(input: { sku: string; barcode?: string | null; name: string }): Promise<Product | null> {
@@ -182,6 +193,10 @@ export const supplierImportsApi = {
   previewRows: previewDesktopMatches,
 
   uploadRows: async (filename: string, rows: SupplierImportRow[], options: SupplierImportRowsOptions) => {
+    if (options.parseErrors?.length) {
+      const first = options.parseErrors[0]
+      throw new Error(`Рядок ${first.row}: ${first.error}. Виправте файл; прайс не змінено.`)
+    }
     if (isDesktopCatalog()) return uploadLocalRows(filename, rows, options)
     return uploadServerFile(mappedRowsToServerFile(filename, rows), options)
   },

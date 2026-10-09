@@ -12,7 +12,7 @@ const libraryRequire = createRequire(builderRequire.resolve('app-builder-lib'))
 const asar = libraryRequire('@electron/asar')
 const roots: string[] = []
 
-async function fixture(includeWorkers = true) {
+async function fixture(includeWorkers = true, includeSyncWorker = true) {
   const root = mkdtempSync(path.join(tmpdir(), 'forsage-package-test-'))
   roots.push(root)
   const project = path.join(root, 'project'), dist = path.join(project, 'dist')
@@ -20,7 +20,8 @@ async function fixture(includeWorkers = true) {
   mkdirSync(path.join(dist, 'repositories'))
   writeFileSync(path.join(project, 'package.json'), JSON.stringify({ name: 'desktop', version: '0.1.0', main: 'dist/main.js' }))
   for (const file of ['main.js', 'preload.js', 'renderer/index.html', ...(includeWorkers
-    ? ['repositories/supplyInvoiceWorker.js', 'repositories/catalogAgentWorker.js'] : [])]) {
+    ? ['repositories/supplyInvoiceWorker.js', 'repositories/catalogAgentWorker.js',
+      ...(includeSyncWorker ? ['repositories/syncPullWorkerEntry.js'] : [])] : [])]) {
     writeFileSync(path.join(dist, file), 'fixture ' + file)
   }
   const info = writeBuildInfo(project, new Date('2026-10-02T10:00:00Z'))
@@ -60,6 +61,11 @@ it('does not accept a stale package when the selected build itself was modified'
   const f = await fixture()
   writeFileSync(path.join(f.dist, 'preload.js'), 'unstamped change')
   expect(() => verifyPackage(f.archive, f.project)).toThrow('Build identity mismatch')
+})
+
+it('rejects a matching package that omitted the background copy worker', async () => {
+  const f = await fixture(true, false)
+  expect(() => verifyPackage(f.archive, f.project)).toThrow('Packaged worker missing: repositories/syncPullWorkerEntry.js')
 })
 
 it('still rejects a matching package without its receiving workers', async () => {

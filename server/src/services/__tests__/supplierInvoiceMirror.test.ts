@@ -79,6 +79,85 @@ const finish = (op: any) => op.operation_type === 'supplier_invoice.deleted'
   ? applySupplierInvoiceDeleted(tenant, op) : applySupplierInvoiceCancelled(tenant, op)
 
 const mergeApply = (op: any) => applySupplierMerged(tenant, op)
+
+it('rejects coherent line changes during a supplier transfer', async () => {
+  const a=operation();await apply(a);const m=await historyMerge([a.aggregate_id])
+  await state.db.exec('CREATE FUNCTION alter_merge_lines() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN UPDATE supply_invoice_items SET qty=1,purchase_price=200 WHERE invoice_id=NEW.id; RETURN NEW; END $$; CREATE TRIGGER alter_merge_lines BEFORE UPDATE OF supplier_id ON supply_invoices FOR EACH ROW EXECUTE FUNCTION alter_merge_lines()')
+  try {const before=await mergeState();await expect(mergeApply(m)).rejects.toThrow();expect(await mergeState()).toEqual(before)}
+  finally {await state.db.exec('DROP TRIGGER alter_merge_lines ON supply_invoices; DROP FUNCTION alter_merge_lines()')}
+  await mergeApply(m)
+})
+
+it('accepts production server timestamp triggers and exact historical retries', async () => {
+  const deltaSql = readFileSync(new URL('../../../../supabase/migrations/20260801090000_sync_keyset_reference_deltas.sql', import.meta.url), 'utf8')
+  const touchSql = deltaSql.slice(deltaSql.indexOf('CREATE OR REPLACE FUNCTION public.sync_touch_updated_at()'), deltaSql.indexOf('REVOKE ALL ON FUNCTION public.sync_touch_updated_at()'))
+  await state.db.exec(touchSql)
+  for(const table of ['suppliers','supply_invoices','supplier_payments'])
+    await state.db.exec('CREATE TRIGGER real_sync_touch BEFORE INSERT OR UPDATE ON '+table+' FOR EACH ROW EXECUTE FUNCTION public.sync_touch_updated_at()')
+  try {
+    const a=operation(25); await apply(a); const p=paymentOperation(a); await pay(p)
+    const m=await historyMerge([a.aggregate_id]); await mergeApply(m)
+    const after=await mergeState(); await mergeApply(m); await apply(a); await pay(p); expect(await mergeState()).toEqual(after)
+    const i=(await rows('SELECT * FROM supply_invoices WHERE id=$1',[a.aggregate_id]))[0]
+    expect(i.updated_at).not.toEqual(new Date(m.created_at));expect(i.created_at).toEqual(new Date(at));expect(i.paid_amount).toBe(100)
+  } finally {
+    for(const table of ['suppliers','supply_invoices','supplier_payments']) await state.db.exec('DROP TRIGGER real_sync_touch ON '+table)
+    await state.db.exec('DROP FUNCTION public.sync_touch_updated_at()')
+  }
+})
+
+it.each(['create','edit','post','cancel','delete'])('requires a durable invoice receipt for %s', async kind => {
+  const a=operation(kind==='create'?25:0)
+  if(kind!=='create') await apply(a)
+  const op=kind==='create'?a:kind==='edit'?edit(a):kind==='post'?post(a):terminal(a,kind==='delete'?'deleted':'cancelled')
+  const run=()=>kind==='create'?apply(op):kind==='edit'?update(op):kind==='post'?posting(op):finish(op)
+  await state.db.exec('CREATE FUNCTION skip_invoice_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$; CREATE TRIGGER skip_invoice_receipt BEFORE INSERT ON supplier_invoice_copy_receipts FOR EACH ROW EXECUTE FUNCTION skip_invoice_receipt()')
+  try {const before=await mergeState();await expect(run()).rejects.toThrow();expect(await mergeState()).toEqual(before)}
+  finally {await state.db.exec('DROP TRIGGER skip_invoice_receipt ON supplier_invoice_copy_receipts; DROP FUNCTION skip_invoice_receipt()')}
+  await run();const after=await mergeState();await run();expect(await mergeState()).toEqual(after)
+})
+
+it.each(['supply_invoices','supplier_payments','suppliers','supplier_invoice_copy_receipts','supplier_merge_receipts'])('rejects silently skipped history merge write to %s', async table => {
+  const a=operation(table==='supply_invoices'?0:25), b=operation()
+  await apply(a); await apply(b)
+  const m=await historyMerge([a.aggregate_id,b.aggregate_id])
+  const insert=table.endsWith('receipts')
+  await state.db.exec('CREATE FUNCTION skip_history_merge() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$; CREATE TRIGGER skip_history_merge BEFORE ' + (insert?'INSERT':'UPDATE') + ' ON ' + table + ' FOR EACH ROW EXECUTE FUNCTION skip_history_merge()')
+  try {
+    const before=await mergeState()
+    await expect(mergeApply(m)).rejects.toThrow()
+    expect(await mergeState()).toEqual(before)
+  } finally { await state.db.exec('DROP TRIGGER skip_history_merge ON '+table+'; DROP FUNCTION skip_history_merge()') }
+  await mergeApply(m); const after=await mergeState(); await mergeApply(m); expect(await mergeState()).toEqual(after)
+})
+
+it.each(['supply_invoices','supplier_payments'])('rejects a partially skipped history transfer in %s', async table => {
+  const a=operation(25),b=operation(25);await apply(a);await apply(b)
+  const m=await historyMerge([a.aggregate_id,b.aggregate_id])
+  const id=(await rows('SELECT id FROM '+table+' ORDER BY id LIMIT 1'))[0].id
+  await state.db.exec("CREATE FUNCTION skip_one_history() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.id='"+id+"'::uuid THEN RETURN NULL; END IF; RETURN NEW; END $$; CREATE TRIGGER skip_one_history BEFORE UPDATE ON "+table+" FOR EACH ROW EXECUTE FUNCTION skip_one_history()")
+  try {const before=await mergeState();await expect(mergeApply(m)).rejects.toThrow();expect(await mergeState()).toEqual(before)}
+  finally {await state.db.exec('DROP TRIGGER skip_one_history ON '+table+'; DROP FUNCTION skip_one_history()')}
+  await mergeApply(m)
+})
+
+it.each(['supply_invoices','supplier_payments','suppliers','target','supplier_invoice_copy_receipts','supplier_merge_receipts','late payment'])('checks actual history merge contents after %s write', async kind => {
+  const a=operation(25);await apply(a);const m=await historyMerge([a.aggregate_id])
+  const table=kind==='late payment'?'supplier_merge_receipts':kind==='target'?'suppliers':kind
+  let body: string
+  if(kind==='late payment') body="UPDATE supplier_payments SET note='Changed' WHERE invoice_id='"+a.aggregate_id+"'::uuid;"
+  else if(kind==='target') body="UPDATE suppliers SET is_active=false WHERE id='"+m.aggregate_id+"'::uuid;"
+  else if(kind==='suppliers') body='NEW.is_active:=true;'
+  else if(kind==='supplier_merge_receipts') body="NEW.device_id:='Changed';"
+  else if(kind==='supplier_invoice_copy_receipts') body="NEW.payload_hash:=repeat('0',64);"
+  else body=kind==='supply_invoices'?"NEW.notes:='Changed';":"NEW.note:='Changed';"
+  const insert=table.endsWith('receipts')
+  await state.db.exec('CREATE FUNCTION alter_history() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN '+body+' RETURN NEW; END $$; CREATE TRIGGER alter_history BEFORE '+(insert?'INSERT':'UPDATE')+' ON '+table+(kind==='target'?" FOR EACH ROW WHEN (OLD.id='"+supplier+"'::uuid)":" FOR EACH ROW")+' EXECUTE FUNCTION alter_history()')
+  try {const before=await mergeState();await expect(mergeApply(m)).rejects.toThrow();expect(await mergeState()).toEqual(before)}
+  finally {await state.db.exec('DROP TRIGGER alter_history ON '+table+'; DROP FUNCTION alter_history()')}
+  await mergeApply(m);const after=await mergeState();await mergeApply(m);expect(await mergeState()).toEqual(after)
+})
+
 async function historyMerge(invoiceIds: string[], sourceId = supplier, destination = randomUUID()): Promise<any> {
   await state.db.query('INSERT INTO suppliers(id,tenant_id) VALUES($1,$2) ON CONFLICT DO NOTHING',[destination,tenant])
   const invoices = []
@@ -495,6 +574,53 @@ describe('terminal supplier invoice copies', () => {
 })
 
 describe('immutable supplier payment copies', () => {
+
+  it.each(['owner_funds','bank_account','business_card'])('rolls back a skipped noncash payment header for %s',async source=>{
+    const a=operation();await apply(a);const p=paymentOperation(a)
+    p.payload.fund_source=source;p.payload.shift_id=null;p.payload.payment_method=source==='owner_funds'?'cash':'card'
+    await state.db.exec('CREATE FUNCTION skip_noncash() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$; CREATE TRIGGER skip_noncash BEFORE UPDATE ON supply_invoices FOR EACH ROW EXECUTE FUNCTION skip_noncash()')
+    try {const before=await mergeState();await expect(pay(p)).rejects.toThrow();expect(await mergeState()).toEqual(before)}
+    finally {await state.db.exec('DROP TRIGGER skip_noncash ON supply_invoices; DROP FUNCTION skip_noncash()')}
+    await pay(p);expect(await rows('SELECT * FROM cash_operations')).toHaveLength(0)
+  })
+  it('uses production timestamps for all copied payment writes without changing original payment date',async()=>{
+    const sql=readFileSync(new URL('../../../../supabase/migrations/20260801090000_sync_keyset_reference_deltas.sql',import.meta.url),'utf8')
+    await state.db.exec(sql.slice(sql.indexOf('CREATE OR REPLACE FUNCTION public.sync_touch_updated_at()'),sql.indexOf('REVOKE ALL ON FUNCTION public.sync_touch_updated_at()')))
+    for(const table of ['supply_invoices','supplier_payments','cash_operations']) await state.db.exec('CREATE TRIGGER real_payment_touch BEFORE INSERT OR UPDATE ON '+table+' FOR EACH ROW EXECUTE FUNCTION public.sync_touch_updated_at()')
+    try {
+      const a=operation();await apply(a);const p=paymentOperation(a);await pay(p)
+      const before=await mergeState();await pay(p);expect(await mergeState()).toEqual(before)
+      const row=(await rows('SELECT * FROM supplier_payments'))[0];expect(row.created_at).toEqual(new Date(at));expect(row.updated_at).not.toEqual(new Date(applied))
+    } finally {
+      for(const table of ['supply_invoices','supplier_payments','cash_operations']) await state.db.exec('DROP TRIGGER real_payment_touch ON '+table)
+      await state.db.exec('DROP FUNCTION public.sync_touch_updated_at()')
+    }
+  })
+  it('rolls back an earlier payment changed during a later payment insertion',async()=>{
+    const a=operation();await apply(a);const p=paymentOperation(a,25);await pay(p)
+    const next=paymentOperation(a,50)
+    await state.db.exec("CREATE FUNCTION change_old_payment() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN UPDATE supplier_payments SET note='Changed' WHERE id='"+p.payload.payment_id+"'::uuid; RETURN NEW; END $$; CREATE TRIGGER change_old_payment BEFORE INSERT ON supplier_payments FOR EACH ROW EXECUTE FUNCTION change_old_payment()")
+    try {const before=await mergeState();await expect(pay(next)).rejects.toThrow();expect(await mergeState()).toEqual(before)}
+    finally {await state.db.exec('DROP TRIGGER change_old_payment ON supplier_payments; DROP FUNCTION change_old_payment()')}
+  })
+
+  it.each(['supplier_payments','supply_invoices','cash_operations'])('rolls back a silently skipped payment copy write to %s', async table=>{
+    const a=operation();await apply(a);const p=paymentOperation(a)
+    await state.db.exec('CREATE FUNCTION skip_payment_copy() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$; CREATE TRIGGER skip_payment_copy BEFORE '+(table==='supply_invoices'?'UPDATE':'INSERT')+' ON '+table+' FOR EACH ROW EXECUTE FUNCTION skip_payment_copy()')
+    try {const before=await mergeState();await expect(pay(p)).rejects.toThrow();expect(await mergeState()).toEqual(before)}
+    finally {await state.db.exec('DROP TRIGGER skip_payment_copy ON '+table+'; DROP FUNCTION skip_payment_copy()')}
+    await pay(p);const after=await mergeState();await pay(p);expect(await mergeState()).toEqual(after)
+  })
+  it.each(['payment','cash','invoice','lines','late payment'])('rejects wrong persisted payment copy %s', async kind=>{
+    const a=operation();await apply(a);const p=paymentOperation(a)
+    const table=kind==='payment'?'supplier_payments':kind==='cash'||kind==='late payment'?'cash_operations':'supply_invoices'
+    const body=kind==='payment'?"NEW.note:='Wrong';":kind==='cash'?'NEW.amount:=NEW.amount+1;':kind==='invoice'?"NEW.notes:='Wrong';"
+      :kind==='lines'?'UPDATE supply_invoice_items SET qty=1,purchase_price=200 WHERE invoice_id=NEW.id;':"UPDATE supplier_payments SET note='Wrong' WHERE id=NEW.id;"
+    await state.db.exec('CREATE FUNCTION alter_payment_copy() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN '+body+' RETURN NEW; END $$; CREATE TRIGGER alter_payment_copy BEFORE '+(table==='supply_invoices'?'UPDATE':'INSERT')+' ON '+table+' FOR EACH ROW EXECUTE FUNCTION alter_payment_copy()')
+    try {const before=await mergeState();await expect(pay(p)).rejects.toThrow();expect(await mergeState()).toEqual(before)}
+    finally {await state.db.exec('DROP TRIGGER alter_payment_copy ON '+table+'; DROP FUNCTION alter_payment_copy()')}
+    await pay(p);const after=await mergeState();await pay(p);expect(await mergeState()).toEqual(after)
+  })
   it('copies a closed-shift payment with original author/date without consuming current cash or stock', async () => {
     const a = operation(); await apply(a); const p = paymentOperation(a); await pay(p)
     expect(await rows('SELECT id,amount,created_by,created_at FROM supplier_payments')).toEqual([

@@ -5,6 +5,7 @@ import { LocalCatalogRepository } from './catalogRepository'
 import { LocalSupplyRepository } from './supplyRepository'
 import { assertDocumentRevision, requireDocumentRevision } from './documentRevision'
 import { idempotentMutation } from './idempotentMutation'
+import { captureSupplyWriteState } from './supplyWriteSafety'
 import { checkedSupplyMoney, normalizeSupplyItem, checkedAiSupplyUnit } from './supplyValidation'
 import { AiInvoiceMatcher, invoiceBrand, rememberInvoiceProductName } from './aiInvoiceIdentity'
 
@@ -199,6 +200,6 @@ export function commitReceiving(db: LocalDatabase, input: ReceivingCommitInput):
       user_id: input.user_id, payment_id: randomUUID(), expected_revision: invoice.edit_revision })
     supply.postInvoice(invoice.id, { tenant_id: tenant, user_id: input.user_id, expected_revision: invoice.edit_revision })
     return { id: invoice.id as string }
-  })
+  }, result => captureSupplyWriteState(db, result.id, tenant))
   return supply.getInvoice(result.id, tenant)
 }

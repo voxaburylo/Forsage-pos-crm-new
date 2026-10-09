@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { writePullCompletion } from './syncPullCompletion'
 import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID, type LocalBootstrapImportResult, type LocalBootstrapSnapshot, type LocalSyncOutboxOperation, type LocalSyncPullChanges, type LocalSyncPullResult, type LocalSyncPullState, type LocalSyncPushResult, type LocalSyncStuckOperation } from '../db/localTypes'
 import { LocalBootstrapRepository } from './bootstrapRepository'
@@ -6,6 +7,7 @@ import { MAX_OUTBOX_ATTEMPTS, STUCK_OUTBOX_RETRY_MS } from './outboxPolicy'
 import { outboxDependencyKeys, type OutboxDependencyRow } from './outboxDependencies'
 import { LocalProblemRepository } from './problemRepository'
 import { ChunkedSyncApplier } from './chunkedSyncApplier'
+import type { LocalSyncPullExecutor } from './syncPullWorker'
 import { readServerResetGeneration } from './localTenantReset'
 import { recoverInventoryDocumentCopies } from './inventoryCopyRecovery'
 import { attachBalanceSnapshots } from './balanceSnapshot'
@@ -106,7 +108,8 @@ interface OutboxDropCandidate {
 export class LocalSyncRepository {
   private readonly problems: LocalProblemRepository
 
-  constructor(private readonly db: LocalDatabase, private readonly signMirror?: (text: string) => string) {
+  constructor(private readonly db: LocalDatabase, private readonly signMirror?: (text: string) => string,
+    private readonly pullExecutor?: LocalSyncPullExecutor) {
     this.problems = new LocalProblemRepository(db)
     recoverInventoryDocumentCopies(db)
     this.coalesceSupersededProductOperations()
@@ -534,39 +537,21 @@ export class LocalSyncRepository {
     const importer = new LocalBootstrapRepository(this.db)
     const result = this.db.transaction(() => {
       this.markPullAttempt(timestamp)
-      const applied = importer.applySyncChanges(tenantId, changes)
-      this.db.prepare(`
-        INSERT INTO sync_state(scope, pull_cursor, last_attempt_at, last_success_at, last_error, updated_at)
-        VALUES (?, ?, ?, ?, NULL, ?)
-        ON CONFLICT(scope) DO UPDATE SET
-          pull_cursor = excluded.pull_cursor,
-          last_attempt_at = excluded.last_attempt_at,
-          last_success_at = excluded.last_success_at,
-          last_error = NULL,
-          updated_at = excluded.updated_at
-      `).run(SERVER_PULL_SCOPE, changes.cursor, timestamp, timestamp, timestamp)
-
-      if (changes.references_included) {
-        this.db.prepare(`
-          INSERT INTO app_meta(key, value_json, updated_at)
-          VALUES (?, ?, ?)
-          ON CONFLICT(key) DO UPDATE SET
-            value_json = excluded.value_json,
-            updated_at = excluded.updated_at
-        `).run(LAST_REFERENCE_SYNC_KEY, JSON.stringify(timestamp), timestamp)
-      }
-
-      return applied
+      return importer.applySyncChanges(tenantId, changes, () => {
+        writePullCompletion(this.db, {
+          cursor: changes.cursor, appliedAt: timestamp, referencesIncluded: changes.references_included,
+        })
+      })
     })
     return result
   }
 
   applyPullChangesChunked(changes: LocalSyncPullChanges): Promise<LocalSyncPullResult> {
-    return new ChunkedSyncApplier(this.db).applyPullChanges(changes)
+    return (this.pullExecutor ?? new ChunkedSyncApplier(this.db)).applyPullChanges(changes)
   }
 
   importSnapshotChunked(snapshot: LocalBootstrapSnapshot): Promise<LocalBootstrapImportResult> {
-    return new ChunkedSyncApplier(this.db).importSnapshot(snapshot)
+    return (this.pullExecutor ?? new ChunkedSyncApplier(this.db)).importSnapshot(snapshot)
   }
 
   markPullFailed(error: string): void {

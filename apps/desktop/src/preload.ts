@@ -136,6 +136,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:catalog:list-analogs', productId, limit),
   },
   supplierCatalog: {
+    importOperationIds: true,
+    resolveImport: (operationId: string) => ipcRenderer.invoke('desktop:supplier-catalog:resolve-import', operationId),
     list: (options?: unknown) =>
       ipcRenderer.invoke('desktop:supplier-catalog:list', options),
     listImports: (tenantId?: string, limit?: number) =>

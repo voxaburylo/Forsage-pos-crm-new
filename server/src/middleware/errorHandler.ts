@@ -20,6 +20,13 @@ export function errorHandler(
   res: Response,
   _next: NextFunction,
 ): void {
+  // A failed stream is not a successful partial JSON response. Never append an
+  // error envelope or try to replace headers after bytes have already been sent.
+  if (res.headersSent || res.destroyed) {
+    logger.error(safeUnhandledErrorInfo(err), 'Response interrupted')
+    if (!res.destroyed) res.destroy()
+    return
+  }
   if (err instanceof AppError) {
     res.status(err.status).json({
       error: {

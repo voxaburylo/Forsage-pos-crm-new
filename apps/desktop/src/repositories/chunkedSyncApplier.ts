@@ -9,10 +9,10 @@ import {
 import { LocalBootstrapRepository } from './bootstrapRepository'
 import { normalizeReferenceDeletes } from './referenceSyncAdapter'
 import { bootstrapSnapshotToPullChanges, createPullChangeChunks } from './syncPullPlanner'
-import { resetLocalTenantData, writeServerResetGeneration } from './localTenantReset'
+import { resetLocalTenantData } from './localTenantReset'
+import { writePullCompletion, SERVER_PULL_SCOPE } from './syncPullCompletion'
+import { validateSupplierCatalogManifest } from '../lib/supplierCatalogManifest'
 
-const SERVER_PULL_SCOPE = 'desktop_server_pull'
-const LAST_REFERENCE_SYNC_KEY = 'desktop_last_reference_sync_at'
 const CLEANUP_BATCH_SIZE = 100
 
 type PullCounts = LocalSyncPullResult['counts']
@@ -46,9 +46,9 @@ function parts<T>(rows: T[], size = CLEANUP_BATCH_SIZE): T[][] {
 }
 
 /**
- * Applies a downloaded response in bounded transactions. The HTTP payload is
- * retained in memory for the whole operation, so a large response is never
- * discarded and downloaded again merely because it exceeds a row threshold.
+ * Applies dependencies in bounded transactions, then supplier prices, history
+ * and completion in one final atomic transaction. The HTTP payload stays in
+ * memory; large responses are not discarded because of a row threshold.
  */
 export class ChunkedSyncApplier {
   constructor(private readonly db: LocalDatabase) {}
@@ -76,11 +76,13 @@ export class ChunkedSyncApplier {
   }
 
   private async apply(
-    changes: LocalSyncPullChanges,
+    input: LocalSyncPullChanges,
     options: { bootstrap?: boolean; appliedAt?: string } = {},
   ): Promise<LocalSyncPullResult> {
+    const changes = { ...input }
     const appliedAt = options.appliedAt ?? nowIso()
     const tenantId = changes.tenant_id ?? DEFAULT_TENANT_ID
+    validateSupplierCatalogManifest(changes, tenantId, changes.cursor)
     const importer = new LocalBootstrapRepository(this.db)
     const counts: Partial<PullCounts> = {}
 
@@ -98,7 +100,13 @@ export class ChunkedSyncApplier {
         counts: counts as PullCounts,
       }
     }
-    for (const chunk of createPullChangeChunks(changes)) {
+    // Freeze deferred data before yielding; UI work must not mutate the downloaded copy.
+    const planned = createPullChangeChunks(changes)
+    const catalogChunk = planned.find(chunk => chunk.supplier_price_items || chunk.supplier_price_imports)
+    const finalCatalog: LocalSyncPullChanges = catalogChunk
+      ? structuredClone(catalogChunk) : { cursor: changes.cursor, tenant_id: tenantId }
+    for (const chunk of planned) {
+      if (chunk === catalogChunk) continue
       const result = importer.applySyncChanges(tenantId, chunk)
       addCounts(counts, result.counts)
       await yieldToEventLoop()
@@ -110,7 +118,16 @@ export class ChunkedSyncApplier {
     }
     await this.pruneDeclaredSnapshots(tenantId, changes, appliedAt, counts)
 
-    this.finalizeCursor(tenantId, changes, appliedAt, counts, options.bootstrap === true)
+    // Prices, history and completion are committed together, after every dependency
+    // and cleanup succeeds. A failed final write cannot leave half of a price list.
+    importer.applySyncChanges(tenantId, finalCatalog, catalogCounts => {
+      addCounts(counts, catalogCounts)
+      writePullCompletion(this.db, {
+        cursor: changes.cursor, appliedAt, referencesIncluded: changes.references_included === true,
+        bootstrap: options.bootstrap === true, counts: counts as Record<string, number>,
+        resetGeneration: changes.reset_generation,
+      })
+    })
     return {
       applied_at: appliedAt,
       cursor: changes.cursor,
@@ -126,54 +143,6 @@ export class ChunkedSyncApplier {
         last_attempt_at = excluded.last_attempt_at,
         updated_at = excluded.updated_at
     `).run(SERVER_PULL_SCOPE, timestamp, timestamp)
-  }
-
-  private finalizeCursor(
-    tenantId: string,
-    changes: LocalSyncPullChanges,
-    appliedAt: string,
-    counts: Partial<PullCounts>,
-    bootstrap: boolean,
-  ): void {
-    this.db.transaction(() => {
-      this.db.prepare(`
-        INSERT INTO sync_state(scope, pull_cursor, last_attempt_at, last_success_at, last_error, updated_at)
-        VALUES (?, ?, ?, ?, NULL, ?)
-        ON CONFLICT(scope) DO UPDATE SET
-          pull_cursor = excluded.pull_cursor,
-          last_attempt_at = excluded.last_attempt_at,
-          last_success_at = excluded.last_success_at,
-          last_error = NULL,
-          updated_at = excluded.updated_at
-      `).run(SERVER_PULL_SCOPE, changes.cursor, appliedAt, appliedAt, appliedAt)
-
-      if (changes.references_included === true) {
-        this.db.prepare(`
-          INSERT INTO app_meta(key, value_json, updated_at)
-          VALUES (?, ?, ?)
-          ON CONFLICT(key) DO UPDATE SET
-            value_json = excluded.value_json,
-            updated_at = excluded.updated_at
-        `).run(LAST_REFERENCE_SYNC_KEY, JSON.stringify(appliedAt), appliedAt)
-      }
-
-      if (Number.isSafeInteger(changes.reset_generation)) {
-        writeServerResetGeneration(
-          this.db,
-          Number(changes.reset_generation),
-          appliedAt,
-        )
-      }
-      if (bootstrap) {
-        this.db.prepare(`
-          INSERT INTO app_meta(key, value_json, updated_at)
-          VALUES ('last_bootstrap_snapshot', ?, ?)
-          ON CONFLICT(key) DO UPDATE SET
-            value_json = excluded.value_json,
-            updated_at = excluded.updated_at
-        `).run(JSON.stringify({ exported_at: changes.cursor, counts }), appliedAt)
-      }
-    })
   }
 
   private async applyReferenceDeleteDeltas(

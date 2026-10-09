@@ -87,6 +87,85 @@ describe('LocalSupplierCatalogRepository', () => {
     expect(operations).toHaveLength(2)
   })
 
+  it.each(['add','replace'] as const)('consolidates repeated input rows in %s into a unique final copy without losing quantity', mode => {
+    const rows = [
+      {source_row:1,sku:'BOLT',name:'Bolt',qty:'2',price_kopecks:100},
+      {source_row:2,sku:'BOLT',name:'Bolt',qty:'3',price_kopecks:110},
+      {source_row:3,sku:'BOLT',name:'Bolt',qty:'4',price_kopecks:120},
+    ]
+    const imported=repository.importRows('repeated.csv',rows,{supplier_id:'supplier-a',mode,warehouse_name:'Main'})
+    const payload=JSON.parse((db.prepare('SELECT payload_json FROM sync_outbox WHERE aggregate_id=?').get(imported.importId) as any).payload_json)
+    expect(repository.list({supplier_id:'supplier-a'}).data).toHaveLength(1)
+    expect(repository.list({supplier_id:'supplier-a'}).data[0]).toMatchObject({qty:'9',price_kopecks:120})
+    expect(payload.items).toHaveLength(1)
+    expect(payload.items[0]).toMatchObject({qty:'9',price_kopecks:120})
+    expect(payload.import.processed_rows).toBe(3)
+    expect(repository.getImport(imported.importId)?.processed_rows).toBe(3)
+  })
+
+  it('keeps import mode and warehouse when copying complete server history',()=>{
+    repository.upsertRemoteImport({id:'remote-history',supplier_id:'supplier-a',filename:'price.csv',mode:'replace',warehouse_name:'Main'},DEFAULT_TENANT_ID,'2026-10-07T18:00:00Z')
+    expect(db.prepare('SELECT mode,warehouse_name FROM supplier_price_imports WHERE id=?').get('remote-history')).toEqual({mode:'replace',warehouse_name:'Main'})
+  })
+
+  it('does not erase known import metadata with an older server response that lacks it',()=>{
+    const imported=repository.importRows('local.csv',[{source_row:1,sku:'X',name:'X',qty:2,price_kopecks:100}],{supplier_id:'supplier-a',mode:'replace',warehouse_name:'Main'})
+    db.exec('UPDATE supplier_price_imports SET dirty_at=NULL')
+    repository.upsertRemoteImport({id:imported.importId,supplier_id:'supplier-a',filename:'local.csv'},DEFAULT_TENANT_ID,'2026-10-07T18:00:00Z')
+    expect(db.prepare('SELECT mode,warehouse_name FROM supplier_price_imports WHERE id=?').get(imported.importId)).toEqual({mode:'replace',warehouse_name:'Main'})
+  })
+
+
+  it.each([{ mode: 'bad', warehouse_name: null }, { mode: 'add' }, { mode: 'replace', warehouse_name: {} }])('rejects malformed scope metadata without changing history: %j', fields => {
+    expect(() => repository.upsertRemoteImport({ id: 'invalid', ...fields }, DEFAULT_TENANT_ID, '2026-10-07T18:00:00Z')).toThrow()
+    expect(db.prepare('SELECT id FROM supplier_price_imports').all()).toHaveLength(0)
+  })
+
+  it('marks legacy scope unknown until a complete copy supplies evidence, then protects it', () => {
+    const id = 'legacy-history', at = '2026-10-07T18:00:00Z'
+    repository.upsertRemoteImport({ id }, DEFAULT_TENANT_ID, at)
+    expect(db.prepare('SELECT scope_known FROM supplier_price_imports WHERE id=?').get(id)).toEqual({ scope_known: 0 })
+    repository.upsertRemoteImport({ id, mode: 'replace', warehouse_name: 'Main' }, DEFAULT_TENANT_ID, at)
+    expect(db.prepare('SELECT mode,warehouse_name,scope_known FROM supplier_price_imports WHERE id=?').get(id)).toEqual({ mode: 'replace', warehouse_name: 'Main', scope_known: 1 })
+    const before = db.prepare('SELECT * FROM supplier_price_imports WHERE id=?').get(id)
+    for (const fields of [{ mode: 'add', warehouse_name: 'Main' }, { mode: 'replace', warehouse_name: null }])
+      expect(() => repository.upsertRemoteImport({ id, ...fields }, DEFAULT_TENANT_ID, at)).toThrow(/Конфлікт/)
+    expect(db.prepare('SELECT * FROM supplier_price_imports WHERE id=?').get(id)).toEqual(before)
+    repository.upsertRemoteImport({ id, mode: null, warehouse_name: null }, DEFAULT_TENANT_ID, at)
+    expect(db.prepare('SELECT * FROM supplier_price_imports WHERE id=?').get(id)).toEqual(before)
+    db.close()
+    db = new LocalDatabase(root)
+    expect(db.prepare('SELECT * FROM supplier_price_imports WHERE id=?').get(id)).toEqual(before)
+  })
+
+  it('records an explicitly unassigned warehouse as known for new imports and complete copies', () => {
+    const imported = repository.importRows('local.csv', [{ source_row: 1, sku: 'X', name: 'X', qty: 1, price_kopecks: 100 }], { mode: 'add', supplier_id: null })
+    repository.upsertRemoteImport({ id: 'remote-known', mode: 'replace', warehouse_name: null }, DEFAULT_TENANT_ID, '2026-10-07T18:00:00Z')
+    for (const id of [imported.importId, 'remote-known'])
+      expect(db.prepare('SELECT warehouse_name,scope_known FROM supplier_price_imports WHERE id=?').get(id)).toEqual({ warehouse_name: null, scope_known: 1 })
+  })
+
+  it.each(['add', 'replace'] as const)('copies final unique quantities across a 400-row boundary in %s without changing stock', mode => {
+    repository.importRows('old.csv', [{ source_row: 1, sku: 'BOLT', name: 'Bolt', qty: 10, price_kopecks: 80 }], { mode: 'add', supplier_id: 'supplier-a' })
+    const products = db.prepare('SELECT * FROM products').all()
+    const rows = Array.from({ length: 401 }, (_, index) => ({ source_row: index + 1, sku: 'BOLT', name: 'Bolt', qty: 1, price_kopecks: 100 }))
+    const imported = repository.importRows('large.csv', rows, { mode, supplier_id: 'supplier-a' })
+    const payload = JSON.parse((db.prepare('SELECT payload_json FROM sync_outbox WHERE aggregate_id=?').get(imported.importId) as any).payload_json)
+    expect(payload.items).toHaveLength(1)
+    expect(payload.items[0].qty).toBe(mode === 'add' ? '411' : '401')
+    expect(payload.import.processed_rows).toBe(401)
+    expect(db.prepare('SELECT * FROM products').all()).toEqual(products)
+  })
+
+  it('rolls back a replacement and consolidated quantities when recording the copy fails', () => {
+    repository.importRows('old.csv', [{ source_row: 1, sku: 'OLD', name: 'Old', qty: 2, price_kopecks: 100 }], { mode: 'add', supplier_id: null })
+    const snapshot = () => ['supplier_price_items', 'supplier_price_imports', 'sync_outbox', 'products'].map(table => db.prepare('SELECT * FROM ' + table + ' ORDER BY rowid').all())
+    const before = snapshot()
+    db.exec("CREATE TRIGGER reject_catalog_queue BEFORE INSERT ON sync_outbox BEGIN SELECT RAISE(ABORT, 'fixture'); END;")
+    expect(() => repository.importRows('new.csv', [1, 2].map(source_row => ({ source_row, sku: 'NEW', name: 'New', qty: 3, price_kopecks: 120 })), { mode: 'replace', supplier_id: null })).toThrow(/fixture/)
+    expect(snapshot()).toEqual(before)
+  })
+
   it('replace affects only the selected supplier and warehouse scope', () => {
     repository.importRows('old-a.xlsx', [{
       source_row: 2, sku: 'OLD-A', name: 'Старий А', qty: 1, price_kopecks: 100,

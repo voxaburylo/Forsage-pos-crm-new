@@ -41,6 +41,30 @@ describe('supplier Excel import mapping', () => {
   })
 })
 
+describe('supplier numeric import safety', () => {
+  const mapping = { sku: 0, name: 1, qty: 2, price: 3, barcode: null, brand: null }
+  it.each([
+    ['2oops', '12'], ['-1', '12'], ['0.0001', '12'], ['1 2', '12'],
+    ['1e3', '12'], ['1', '12oops'], ['1', '12.345'], ['1', '21 474 836,48'],
+  ])('reports an invalid quantity/price (%s, %s) instead of inventing a number', (qty, price) => {
+    const result = buildSupplierImportRows([['CODE', 'Товар', qty, price]], mapping, 0)
+    expect(result.rows).toEqual([])
+    expect(result.errors).toHaveLength(1)
+    expect(result.errors[0].row).toBe(1)
+  })
+  it('keeps comma thousandths and explicit zero, including grouped prices', () => {
+    const result = buildSupplierImportRows([
+      ['A', 'Перший', '0,125', '1 234,56'],
+      ['B', 'Другий', '1 234,125', '₴ 1,234.56'],
+      ['C', 'Третій', 0, 0],
+    ], mapping, 0)
+    expect(result.errors).toEqual([])
+    expect(result.rows.map(row => [row.qty, row.price_kopecks])).toEqual([
+      ['0.125', 123456], ['1234.125', 123456], ['0', 0],
+    ])
+  })
+})
+
 describe('supplier product exact matching', () => {
   const first = { id: 'p1', sku: 'ABC-10', barcode: '200 309-3555486', name: 'Рулетка 5м Greener' }
   const second = { id: 'p2', sku: 'XYZ-20', barcode: '222', name: 'Рулетка 7.5м Greener' }

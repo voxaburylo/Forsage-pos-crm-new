@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, expect, it } from 'vitest'
+import { LOCAL_MIGRATIONS } from '../src/db/schema'
 
 const { databaseFingerprint, restoreComparisonOptions } = createRequire(import.meta.url)('../scripts/backup-restore-readiness.cjs')
 const connections: DatabaseSync[] = []
@@ -99,6 +100,53 @@ it('fails closed for unreviewed migrations and incorrect restored schema version
   const db = migrationFixture()
   expect(() => restoreComparisonOptions(db, 26, 27)).toThrow('Restored schema version differs')
   migrateRefundShift(db)
-  db.exec("INSERT INTO schema_migrations VALUES(28, '2026-10-02T10:00:00Z')")
-  expect(() => restoreComparisonOptions(db, 26, 28)).toThrow('Restore comparison requires a reviewed migration')
+  db.exec("INSERT INTO schema_migrations VALUES(29, '2026-10-02T10:00:00Z')")
+  expect(() => restoreComparisonOptions(db, 28, 29)).toThrow('Restore comparison requires a reviewed migration')
+})
+
+function importScopeFixture() {
+  const db = migrationFixture()
+  migrateRefundShift(db)
+  db.exec("CREATE TABLE supplier_price_imports(id TEXT PRIMARY KEY,mode TEXT,warehouse_name TEXT,remote_updated_at TEXT); INSERT INTO supplier_price_imports VALUES('local','replace','Main',NULL),('remote','add',NULL,'2026-10-01');")
+  return db
+}
+function migrateImportScope(db: DatabaseSync) {
+  db.exec(LOCAL_MIGRATIONS.find(migration => migration.version === 28)!.sql)
+  db.exec("INSERT INTO schema_migrations VALUES(28, '2026-10-07T18:00:00Z')")
+}
+
+it('verifies 27 to 28 while retaining real refund shifts and every original import field', () => {
+  const db = importScopeFixture()
+  db.exec("UPDATE customer_returns SET shift_id='real-shift'")
+  const before = databaseFingerprint(db)
+  migrateImportScope(db)
+  expect(databaseFingerprint(db, new Map(), restoreComparisonOptions(db, 27, 28))).toEqual(before)
+})
+
+it('reviews both migrations when restoring 26 directly to 28', () => {
+  const db = importScopeFixture()
+  db.exec('ALTER TABLE customer_returns DROP COLUMN shift_id; DELETE FROM schema_migrations WHERE version=27')
+  const before = databaseFingerprint(db)
+  migrateRefundShift(db)
+  migrateImportScope(db)
+  expect(databaseFingerprint(db, new Map(), restoreComparisonOptions(db, 26, 28))).toEqual(before)
+})
+
+it.each(['local', 'remote'])('rejects invented scope evidence for %s history', id => {
+  const db = importScopeFixture()
+  migrateImportScope(db)
+  db.prepare('UPDATE supplier_price_imports SET scope_known=1-scope_known WHERE id=?').run(id)
+  expect(() => restoreComparisonOptions(db, 27, 28)).toThrow('Historical import scope provenance differs')
+})
+
+it.each([
+  "UPDATE supplier_price_imports SET mode='add' WHERE id='local'",
+  "UPDATE supplier_price_imports SET warehouse_name='Other' WHERE id='local'",
+  "DELETE FROM supplier_price_imports WHERE id='local'",
+  "UPDATE customer_returns SET shift_id='changed'",
+])('does not mask changed old values during 27 to 28 upgrade: %s', sql => {
+  const db = importScopeFixture(), before = databaseFingerprint(db)
+  migrateImportScope(db)
+  db.exec(sql)
+  expect(databaseFingerprint(db, new Map(), restoreComparisonOptions(db, 27, 28))).not.toEqual(before)
 })

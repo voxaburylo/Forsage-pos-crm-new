@@ -2,9 +2,30 @@ import { runTransaction } from '../db/pg.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { isUuid } from './sync/syncCore.js'
 import type { PoolClient } from 'pg'
+import { isDeepStrictEqual } from 'node:util'
 
 const conflict = () => new AppError('SUPPLIER_MERGE_CONFLICT', 'Злиття вже має інший результат або стан картки змінився. Потрібна звірка.', 409)
 const quote = (value: string) => '"' + value.replace(/"/g, '""') + '"'
+const jsonValue = (value: unknown) => JSON.parse(JSON.stringify(value))
+
+/** Verify committed facts inside the same transaction, not just SQL acceptance. */
+export async function verifySupplierMergeStored(client: PoolClient, source: any, target: any, timestamp: string, writtenUpdatedAt: Date, extras: Record<string, unknown> = {}) {
+  const current = (await client.query('SELECT * FROM suppliers WHERE tenant_id=$1 AND id=ANY($2::uuid[]) ORDER BY id',
+    [source.tenant_id, [source.id, target.id]])).rows
+  const date = new Date(timestamp).toISOString()
+  if (!(writtenUpdatedAt instanceof Date) || !Number.isFinite(writtenUpdatedAt.getTime())) throw conflict()
+  const expectedSource = { ...jsonValue(source), deleted_at: date, is_active: false, updated_at: writtenUpdatedAt.toISOString() }
+  if (!isDeepStrictEqual(jsonValue(current.find(row => row.id === source.id) ?? null), expectedSource)
+    || !isDeepStrictEqual(jsonValue(current.find(row => row.id === target.id) ?? null), jsonValue(target))) throw conflict()
+  const receipt = (await client.query('SELECT * FROM supplier_merge_receipts WHERE tenant_id=$1 AND duplicate_id=$2',
+    [source.tenant_id, source.id])).rows[0]
+  const expected = { tenant_id: source.tenant_id, duplicate_id: source.id, primary_id: target.id,
+    result: jsonValue(target), merged_at: date, ...extras }
+  const actual = receipt ? jsonValue({ ...receipt,
+    ...(receipt.source_sequence == null ? {} : { source_sequence: Number(receipt.source_sequence) }) }) : null
+  if (!actual || Object.entries(expected).some(([key, value]) => !isDeepStrictEqual(actual[key], value))) throw conflict()
+  await assertNoSupplierReferences(client, source.id)
+}
 
 /** Unknown/foreign/deleted references fail closed. Only explicit callers may move known tables. */
 export async function assertNoSupplierReferences(client: PoolClient, source: string, allowed: string[] = []) {
@@ -49,9 +70,12 @@ export async function mergeEmptySupplier(primaryId: string, duplicateId: string,
     } else if (source.deleted_at || target.deleted_at || target.is_active !== true) throw conflict()
     await assertNoSupplierReferences(client, duplicate)
     if (receipt) return receipt.result
-    await client.query('UPDATE suppliers SET deleted_at=$3,is_active=false,updated_at=$3 WHERE tenant_id=$1 AND id=$2', [tenant, duplicate, timestamp])
-    await client.query('INSERT INTO supplier_merge_receipts(tenant_id,duplicate_id,primary_id,result,merged_at) VALUES($1,$2,$3,$4::jsonb,$5)',
+    const archived = await client.query('UPDATE suppliers SET deleted_at=$3,is_active=false,updated_at=$3 WHERE tenant_id=$1 AND id=$2 RETURNING id,updated_at', [tenant, duplicate, timestamp])
+    if (archived.rowCount !== 1) throw conflict()
+    const saved = await client.query('INSERT INTO supplier_merge_receipts(tenant_id,duplicate_id,primary_id,result,merged_at) VALUES($1,$2,$3,$4::jsonb,$5) RETURNING duplicate_id',
       [tenant, duplicate, primary, JSON.stringify(target), timestamp])
+    if (saved.rowCount !== 1) throw conflict()
+    await verifySupplierMergeStored(client, source, target, timestamp, archived.rows[0].updated_at)
     return target
   })
 }

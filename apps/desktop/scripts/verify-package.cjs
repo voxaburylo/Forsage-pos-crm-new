@@ -18,7 +18,7 @@ function verifyPackage(archive, project = path.resolve(__dirname, '..')) {
     if (identity.some(key => info[key] !== expected[key])) {
       throw new Error('Packaged release does not match the selected build: ' + info.releaseId + ' != ' + expected.releaseId)
     }
-    for (const worker of ['repositories/supplyInvoiceWorker.js', 'repositories/catalogAgentWorker.js']) {
+    for (const worker of ['repositories/supplyInvoiceWorker.js', 'repositories/catalogAgentWorker.js', 'repositories/syncPullWorkerEntry.js']) {
       if (!fs.existsSync(path.join(temporary, 'dist', worker))) throw new Error('Packaged worker missing: ' + worker)
     }
     return info

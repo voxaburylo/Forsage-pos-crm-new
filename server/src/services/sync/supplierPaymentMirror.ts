@@ -1,4 +1,6 @@
 import { z } from 'zod'
+import { isDeepStrictEqual } from 'node:util'
+import type { PoolClient } from 'pg'
 import { mergedPaymentSupplierMatches } from './supplierHistoryMerge.js'
 import { runTransaction } from '../../db/pg.js'
 import type { SyncOutboxOperation } from './syncCore.js'
@@ -17,6 +19,25 @@ const paymentCopy = z.object({
   user_id: invoiceId, created_at: invoiceDate,
 })
 const iso = (value: any) => value == null ? null : new Date(value).toISOString()
+
+type PaymentCopy = z.infer<typeof paymentCopy>
+async function assertPaymentStored(client: PoolClient, tenant: string, copy: PaymentCopy, payment: any, cash: any, allowMerged: boolean) {
+  if (!payment || payment.id !== copy.payment_id || payment.tenant_id !== tenant || payment.invoice_id !== copy.id
+    || (allowMerged
+      ? !await mergedPaymentSupplierMatches(client,tenant,copy.id,copy.payment_id,copy.supplier_id,payment.supplier_id)
+      : payment.supplier_id !== copy.supplier_id)
+    || payment.amount !== copy.amount || payment.payment_method !== copy.payment_method
+    || payment.fund_source !== copy.fund_source || payment.shift_id !== copy.shift_id
+    || payment.note !== copy.note || payment.created_by !== copy.user_id
+    || iso(payment.created_at) !== copy.created_at || payment.deleted_at) invoiceConflict()
+  if (copy.fund_source === 'cashbox') {
+    if (!cash || cash.id !== copy.payment_id || cash.tenant_id !== tenant || cash.shift_id !== copy.shift_id
+      || cash.type !== 'out' || cash.source !== 'cashbox' || cash.amount !== copy.amount
+      || cash.note !== (copy.note ?? 'Оплата постачальнику') || cash.created_by !== copy.user_id
+      || iso(cash.created_at) !== copy.created_at || cash.deleted_at || cash.sale_id || cash.employee_id || cash.work_date) invoiceConflict()
+  } else if (cash) invoiceConflict()
+}
+const validWriteDate = (value: unknown): value is Date => value instanceof Date && Number.isFinite(value.getTime())
 
 /** Mirror an already completed local payment, not a new withdrawal.
  * Payment ID is the immutable retry key; never use the uploading user as payer.
@@ -55,32 +76,43 @@ export async function applySupplierInvoicePaymentAdded(tenantId: string, _userId
     if (await financialCopyDeleted(client, tenantId, 'cash_operation', copy.payment_id)) invoiceConflict()
     const cashNote = copy.note ?? 'Оплата постачальнику'
     if (payment) {
-      if (payment.tenant_id !== tenantId || payment.invoice_id !== copy.id
-        || !await mergedPaymentSupplierMatches(client, tenantId, copy.id, copy.payment_id, copy.supplier_id, payment.supplier_id)
-        || payment.amount !== copy.amount || payment.payment_method !== copy.payment_method
-        || payment.fund_source !== copy.fund_source || payment.shift_id !== copy.shift_id
-        || payment.note !== copy.note || payment.created_by !== copy.user_id
-        || iso(payment.created_at) !== copy.created_at || payment.deleted_at) invoiceConflict()
-      if (copy.fund_source === 'cashbox') {
-        if (!cash || cash.tenant_id !== tenantId || cash.shift_id !== copy.shift_id
-          || cash.type !== 'out' || cash.source !== 'cashbox' || cash.amount !== copy.amount
-          || cash.note !== cashNote || cash.created_by !== copy.user_id || iso(cash.created_at) !== copy.created_at
-          || cash.deleted_at || cash.sale_id || cash.employee_id || cash.work_date) invoiceConflict()
-      } else if (cash) invoiceConflict()
+      await assertPaymentStored(client,tenantId,copy,payment,cash,true)
       return
     }
     if (invoice.supplier_id !== copy.supplier_id || cash || copy.amount > invoice.total - invoice.paid_amount) invoiceConflict()
     const appliedAt = operation.applied_at ?? operation.created_at
-    await client.query(`INSERT INTO supplier_payments
+    if (!invoiceDate.safeParse(appliedAt).success) invoiceInvalid()
+    const previousPayments = (await client.query('SELECT * FROM supplier_payments WHERE invoice_id=$1 ORDER BY id', [copy.id])).rows
+    const inserted = await client.query(`INSERT INTO supplier_payments
       (id,tenant_id,invoice_id,supplier_id,amount,payment_method,fund_source,shift_id,note,created_by,created_at,updated_at)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id,updated_at`,
       [copy.payment_id, tenantId, copy.id, copy.supplier_id, copy.amount, copy.payment_method,
         copy.fund_source, copy.shift_id, copy.note, copy.user_id, copy.created_at, appliedAt])
-    await client.query('UPDATE supply_invoices SET paid_amount=paid_amount+$1,payment_method=$2,updated_at=$3 WHERE id=$4 AND tenant_id=$5',
+    if (inserted.rowCount !== 1 || inserted.rows[0].id !== copy.payment_id || !validWriteDate(inserted.rows[0].updated_at)) invoiceConflict()
+    const updated = await client.query('UPDATE supply_invoices SET paid_amount=paid_amount+$1,payment_method=$2,updated_at=$3 WHERE id=$4 AND tenant_id=$5 RETURNING id,updated_at',
       [copy.amount, copy.payment_method, appliedAt, copy.id, tenantId])
-    if (copy.fund_source === 'cashbox') await client.query(`INSERT INTO cash_operations
-      (id,tenant_id,shift_id,type,amount,note,created_by,source,created_at,updated_at)
-      VALUES($1,$2,$3,'out',$4,$5,$6,'cashbox',$7,$8)`,
-      [copy.payment_id, tenantId, copy.shift_id, copy.amount, cashNote, copy.user_id, copy.created_at, appliedAt])
+    if (updated.rowCount !== 1 || updated.rows[0].id !== copy.id || !validWriteDate(updated.rows[0].updated_at)) invoiceConflict()
+    let cashUpdatedAt: Date | null = null
+    if (copy.fund_source === 'cashbox') {
+      const cashResult = await client.query(`INSERT INTO cash_operations
+        (id,tenant_id,shift_id,type,amount,note,created_by,source,created_at,updated_at)
+        VALUES($1,$2,$3,'out',$4,$5,$6,'cashbox',$7,$8) RETURNING id,updated_at`,
+        [copy.payment_id, tenantId, copy.shift_id, copy.amount, cashNote, copy.user_id, copy.created_at, appliedAt])
+      if (cashResult.rowCount !== 1 || cashResult.rows[0].id !== copy.payment_id || !validWriteDate(cashResult.rows[0].updated_at)) invoiceConflict()
+      cashUpdatedAt = cashResult.rows[0].updated_at
+    }
+    // All dependent facts must exist before acknowledging. No current-shift cash
+    // calculation: this is a copy of a payment already made on the main PC.
+    const after = (await client.query('SELECT * FROM supply_invoices WHERE id=$1', [copy.id])).rows[0]
+    const payments = (await client.query('SELECT * FROM supplier_payments WHERE invoice_id=$1 ORDER BY id', [copy.id])).rows
+    const savedPayment = payments.find(row => row.id === copy.payment_id)
+    const savedCash = (await client.query('SELECT * FROM cash_operations WHERE id=$1', [copy.payment_id])).rows[0]
+    await assertPaymentStored(client,tenantId,copy,savedPayment,savedCash,false)
+    if (!isDeepStrictEqual(after, { ...invoice, paid_amount: invoice.paid_amount + copy.amount,
+        payment_method: copy.payment_method, updated_at: updated.rows[0].updated_at })
+      || !isDeepStrictEqual(payments.filter(row => row.id !== copy.payment_id), previousPayments)
+      || !isDeepStrictEqual(savedPayment.updated_at, inserted.rows[0].updated_at)
+      || (cashUpdatedAt && !isDeepStrictEqual(savedCash.updated_at,cashUpdatedAt))
+      || snapshotHash(await readInvoiceState(client,tenantId,after)) !== snapshotHash(snapshot)) invoiceConflict()
   })
 }

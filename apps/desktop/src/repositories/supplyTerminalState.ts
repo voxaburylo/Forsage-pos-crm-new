@@ -8,6 +8,7 @@ export interface SupplyTerminalReceipt {
   after_fingerprint: string | null
   payload: Record<string, unknown>
   current_supplier_id?: string | null
+  movement_fingerprint?: string
 }
 const key = (tenant: string, id: string) => 'supply-terminal:' + tenant + ':' + id
 const hash = (value: unknown) => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
@@ -22,20 +23,45 @@ export function readSupplyTerminalReceipt(db: LocalDatabase, tenant: string, id:
   if (!receipt || !['cancelled', 'deleted'].includes(receipt.kind) || !hash(receipt.before_revision)
     || (receipt.kind === 'cancelled' ? !hash(receipt.after_fingerprint) : receipt.after_fingerprint !== null)
     || !receipt.payload || receipt.payload.id !== id
+    || (receipt.movement_fingerprint !== undefined && (receipt.kind !== 'cancelled' || !hash(receipt.movement_fingerprint)))
     || (receipt.current_supplier_id !== undefined && (receipt.kind !== 'deleted'
       || !(receipt.current_supplier_id === null || (typeof receipt.current_supplier_id === 'string' && receipt.current_supplier_id.trim()))))) throw conflict()
   return receipt
 }
 export function saveSupplyTerminalReceipt(db: LocalDatabase, tenant: string, id: string, receipt: SupplyTerminalReceipt, timestamp: string) {
-  db.prepare('INSERT INTO app_meta(key, value_json, updated_at) VALUES (?, ?, ?)')
-    .run(key(tenant, id), JSON.stringify(receipt), timestamp)
+  const json = JSON.stringify(receipt)
+  const changed = db.prepare('INSERT INTO app_meta(key, value_json, updated_at) VALUES (?, ?, ?)')
+    .run(key(tenant, id), json, timestamp)
+  const actual = db.prepare('SELECT value_json,updated_at FROM app_meta WHERE key=?').get(key(tenant, id)) as any
+  if (changed.changes !== 1 || !actual || actual.value_json !== json || actual.updated_at !== timestamp) throw conflict()
 }
+/** Include immutable movement facts, not dirty/sync timestamps or the current stock.
+ * Later sales may change stock; sync may clear dirty_at without changing this history. */
+export function supplyMovementFingerprint(rows: any[]): string {
+  return documentRevision([...rows].sort((a,b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0).map(row => [
+    row.id, row.tenant_id, row.product_id, row.source_type, row.source_id, row.qty_delta,
+    row.qty_after, row.unit_cost, row.notes, row.created_at, row.deleted_at,
+  ]))
+}
+export function assertSupplyTerminalMovements(db: LocalDatabase, id: string, receipt: SupplyTerminalReceipt) {
+  // Legacy receipts have no recorded fingerprint; do not invent one from current data.
+  if (receipt.movement_fingerprint !== undefined
+    && receipt.movement_fingerprint !== supplyMovementFingerprint(db.prepare('SELECT * FROM inventory_movements WHERE source_id=?').all(id))) throw conflict()
+}
+export function assertDeletedSupplyAbsent(db: LocalDatabase, id: string) {
+  if (db.prepare('SELECT 1 FROM supply_invoices WHERE id=?').get(id)
+    || db.prepare('SELECT 1 FROM supply_invoice_items WHERE invoice_id=? LIMIT 1').get(id)
+    || db.prepare('SELECT 1 FROM supplier_payments WHERE invoice_id=? LIMIT 1').get(id)
+    || db.prepare('SELECT 1 FROM inventory_movements WHERE source_id=? LIMIT 1').get(id)) throw conflict()
+}
+
 /** Advance only the fingerprint after an independently validated supplier-only transfer.
  * Keep the original cancellation request intact for lost-reply retries. */
 export function advanceSupplyTerminalSupplier(db: LocalDatabase, tenant: string, before: any, after: any, timestamp: string) {
   const receipt = readSupplyTerminalReceipt(db, tenant, before.id)
   if (!receipt) return // Legacy cancelled document has no durable retry receipt.
   assertSupplyTerminalRetry(receipt, 'cancelled', undefined, before)
+  assertSupplyTerminalMovements(db, before.id, receipt)
   if (after.id !== before.id || after.status !== 'cancelled') throw conflict()
   const next = { ...receipt, after_fingerprint: supplyTerminalFingerprint(after) }
   const changed = db.prepare('UPDATE app_meta SET value_json=?,updated_at=? WHERE key=? AND value_json=?')

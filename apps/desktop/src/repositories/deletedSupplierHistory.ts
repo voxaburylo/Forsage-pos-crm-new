@@ -28,7 +28,8 @@ export function deletedSupplierHistory(db: LocalDatabase, tenant: string, id: st
     || p.posted_by !== null || p.posted_at !== null || !snapshot
     || db.prepare('SELECT 1 FROM supply_invoices WHERE id=?').get(id)
     || db.prepare('SELECT 1 FROM supply_invoice_items WHERE invoice_id=? LIMIT 1').get(id)
-    || db.prepare('SELECT 1 FROM supplier_payments WHERE invoice_id=? LIMIT 1').get(id)) throw conflict()
+    || db.prepare('SELECT 1 FROM supplier_payments WHERE invoice_id=? LIMIT 1').get(id)
+    || db.prepare('SELECT 1 FROM inventory_movements WHERE source_id=? LIMIT 1').get(id)) throw conflict()
   const items = snapshot.items
   if (!Array.isArray(items) || !items.length || items.length > 5000
     || new Set(items.map(i=>i.id)).size !== items.length) throw conflict()

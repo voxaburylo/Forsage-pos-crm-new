@@ -1,5 +1,5 @@
 import type { DesktopProduct } from '@/lib/desktopBridge'
-import { parseLocaleNumber } from '@/lib/parseDecimal'
+import { catalogPriceFromHryvnia, catalogQuantity } from '@/lib/supplierCatalogNumbers'
 
 export type SupplierImportField = 'sku' | 'barcode' | 'brand' | 'name' | 'qty' | 'price'
 export type SupplierImportMapping = Record<SupplierImportField, number | null>
@@ -89,11 +89,6 @@ export function cleanSupplierImportCell(raw: unknown): string {
   return String(raw ?? '').replace(/[\s\u00a0\u202f]+/g, ' ').trim()
 }
 
-function parseDecimal(raw: unknown): number | null {
-  const value = parseLocaleNumber(cleanSupplierImportCell(raw))
-  return Number.isFinite(value) ? value : null
-}
-
 function isJunkRow(row: unknown[]): boolean {
   const cells = row.map(cleanSupplierImportCell).filter(Boolean)
   if (cells.length === 0) return true
@@ -168,23 +163,22 @@ export function buildSupplierImportRows(
       continue
     }
 
-    const rawPrice = read('price')
-    const price = mapping.price == null ? null : parseDecimal(rawPrice)
-    if (price == null || price < 0) {
-      errors.push({ row: sourceRow, error: `Невірна закупівельна ціна: «${rawPrice || 'порожньо'}»` })
+    let price: number, qty: string
+    try {
+      price = catalogPriceFromHryvnia(read('price'))
+      qty = mapping.qty == null ? '0' : catalogQuantity(read('qty'))
+    } catch (error) {
+      errors.push({ row: sourceRow, error: error instanceof Error ? error.message : 'Некоректні числа прайсу' })
       continue
     }
-
-    const rawQty = read('qty')
-    const qty = mapping.qty == null ? 0 : parseDecimal(rawQty)
     rows.push({
       source_row: sourceRow,
       sku,
       barcode,
       brand: read('brand'),
       name,
-      qty: String(qty != null && qty >= 0 ? qty : 0),
-      price_kopecks: Math.round(price * 100),
+      qty,
+      price_kopecks: price,
     })
   }
 

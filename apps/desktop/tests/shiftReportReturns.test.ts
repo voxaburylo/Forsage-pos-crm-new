@@ -5,6 +5,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LocalDatabase } from '../src/db/localDatabase'
 import { DEFAULT_TENANT_ID as tenant } from '../src/db/localTypes'
+import { LOCAL_SCHEMA_VERSION } from '../src/db/schema'
 import { LocalCatalogRepository } from '../src/repositories/catalogRepository'
 import { LocalPosRepository } from '../src/repositories/posRepository'
 import { LocalOrderRepository } from '../src/repositories/orderRepository'
@@ -198,12 +199,12 @@ describe('shift report: original sales, shift returns and drawer money are separ
   it('migrates a v26 copy without altering stock, payments, return history or the outgoing queue', () => {
     const id = pos.createReturn(request(sale(2), 1, 'terminal')).id
     // Only this generated fixture is reverted to the previous schema.
-    db.exec('DROP INDEX idx_customer_returns_shift; ALTER TABLE customer_returns DROP COLUMN shift_id; DELETE FROM schema_migrations WHERE version=27')
+    db.exec('DROP INDEX idx_customer_returns_shift; ALTER TABLE customer_returns DROP COLUMN shift_id; ALTER TABLE supplier_price_imports DROP COLUMN scope_known; DELETE FROM schema_migrations WHERE version>=27')
     const tables = ['products', 'sales', 'sale_items', 'sale_payments', 'customer_return_items', 'cash_operations', 'sync_outbox', 'shifts']
     const before = tables.map(table => db.prepare('SELECT * FROM ' + table).all())
     const oldReturn = db.prepare('SELECT * FROM customer_returns WHERE id=?').get(id)
     restart()
-    expect(db.info().schemaVersion).toBe(27)
+    expect(db.info().schemaVersion).toBe(LOCAL_SCHEMA_VERSION)
     expect(tables.map(table => db.prepare('SELECT * FROM ' + table).all())).toEqual(before)
     expect(db.prepare('SELECT * FROM customer_returns WHERE id=?').get(id)).toEqual({ ...oldReturn, shift_id: null })
     expect(report()).toMatchObject({ gross_revenue: 2000, refund_total: 1000, total_revenue: 1000 })

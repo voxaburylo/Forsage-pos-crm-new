@@ -187,6 +187,7 @@ export interface DesktopBootstrapSnapshot {
   supplier_payments?: unknown[]
   supplier_price_items?: unknown[]
   supplier_price_imports?: unknown[]
+  supplier_catalog_copy?: unknown
   inventory_sessions?: unknown[]
   deleted_inventory_session_ids?: string[]
   inventory_items?: unknown[]
@@ -286,6 +287,7 @@ export interface DesktopSyncPullChanges {
   supplier_payments?: unknown[]
   supplier_price_items?: unknown[]
   supplier_price_imports?: unknown[]
+  supplier_catalog_copy?: unknown
   inventory_sessions?: unknown[]
   deleted_inventory_session_ids?: string[]
   inventory_items?: unknown[]
@@ -554,6 +556,8 @@ interface ForsageDesktopBridge {
     listPopular: (limit?: number) => Promise<DesktopProduct[]>
   }
   supplierCatalog?: {
+    importOperationIds?: boolean
+    resolveImport?: (operationId: string) => Promise<{ status: 'committed'; result: { success: true; importId: string } } | { status: 'not_committed' }>
     list: (options?: {
       tenant_id?: string
       query?: string

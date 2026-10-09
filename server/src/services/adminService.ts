@@ -158,7 +158,7 @@ export async function updateUser(id: string, input: UpdateUserInput, tenantId: s
   const currentAppMeta = existing.user.app_metadata ?? {}
   if (currentAppMeta.deleted_at) throw new AppError('USER_ARCHIVED', 'Спочатку відновіть працівника з архіву', 409)
   if (currentAppMeta.role === 'owner' && (input.role && input.role !== 'owner' || input.is_active === false)) await requireAnotherOwner(id, tenantId)
-  
+
   if (input.phone !== undefined && input.phone !== currentUserMeta.phone) {
     const email = phoneToEmail(input.phone)
     const allUsers = await listAllAuthUsers()
@@ -598,6 +598,7 @@ export async function resetAllData(tenantId: string, currentUserId: string) {
     { name: 'inventory_receipt_items', query: 'DELETE FROM inventory_receipt_items WHERE tenant_id = $1' },
     { name: 'inventory_receipts', query: 'DELETE FROM inventory_receipts WHERE tenant_id = $1' },
 
+    { name: 'supplier_catalog_copy_receipts', query: 'DELETE FROM supplier_catalog_copy_receipts WHERE tenant_id = $1' },
     { name: 'supplier_merge_receipts', query: 'DELETE FROM supplier_merge_receipts WHERE tenant_id = $1' },
     { name: 'supplier_invoice_copy_receipts', query: 'DELETE FROM supplier_invoice_copy_receipts WHERE tenant_id = $1' },
     { name: 'supplier_payments', query: 'DELETE FROM supplier_payments WHERE tenant_id = $1' },

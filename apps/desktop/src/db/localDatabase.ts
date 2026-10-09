@@ -65,25 +65,33 @@ const SIDECAR_SUFFIXES = ['-wal', '-shm']
 const BACKUP_FILE_PATTERN = /^Forsage-\d{4}-\d{2}-\d{2}_.+\.db$/
 const DATABASE_IDENTITY_FILE = 'database-identity.json'
 export const MAX_CACHED_STATEMENTS = 512
+export type ExistingDatabaseIdentity = { deviceId: string; schemaVersion: number }
 
 export class LocalDatabase {
   private readonly database: DatabaseSync
   private readonly statements = new Map<string, StatementSync>()
   private backupInProgress: Promise<string> | null = null
   private transactionSequence = 0
+  private backgroundWrite: Promise<unknown> | null = null
+  private backgroundWriteActive = false
   readonly dataRoot: string
   readonly databasePath: string
   readonly backupsPath: string
   readonly deviceId: string
 
-  constructor(dataRoot: string) {
+  constructor(dataRoot: string, existing?: ExistingDatabaseIdentity) {
     this.dataRoot = dataRoot
     const dataPath = path.join(dataRoot, 'data')
     this.backupsPath = path.join(dataRoot, 'backups')
-    mkdirSync(dataPath, { recursive: true })
-    mkdirSync(this.backupsPath, { recursive: true })
-
     this.databasePath = path.join(dataPath, DATABASE_FILE)
+    if (existing) {
+      if (!existsSync(this.databasePath) || !statSync(this.databasePath).isFile() || statSync(this.databasePath).size === 0) {
+        throw new Error('Робочу базу не знайдено. Порожню базу не створено.')
+      }
+    } else {
+      mkdirSync(dataPath, { recursive: true })
+      mkdirSync(this.backupsPath, { recursive: true })
+    }
     this.database = new DatabaseSync(this.databasePath, { timeout: 5_000 })
     this.database.function('forsage_lower', { deterministic: true }, (value) => String(value ?? '').toLocaleLowerCase('uk-UA'))
     this.database.function('forsage_phone', { deterministic: true }, (value) => customerPhoneKey(value))
@@ -93,16 +101,32 @@ export class LocalDatabase {
     // може навіть перейменувати його: `EBUSY: resource busy or locked`.
     let deviceId: string
     try {
+      if (existing) {
+        const mode = this.database.prepare('PRAGMA journal_mode').get() as { journal_mode: string }
+        if (mode.journal_mode !== 'wal') throw new Error('LOCAL_WORKER_DATABASE_MODE_MISMATCH')
+      } else this.database.exec('PRAGMA journal_mode = WAL')
       this.database.exec(`
-        PRAGMA journal_mode = WAL;
         PRAGMA foreign_keys = ON;
         PRAGMA busy_timeout = 5000;
         PRAGMA synchronous = FULL;
       `)
-      this.migrate()
-      this.assertIntegrity()
-      restoreEmbeddedPhotos(this.database, dataRoot)
-      deviceId = this.getOrCreateDeviceId()
+      if (existing) {
+        // A worker attaches to an already opened database. Never migrate, restore
+        // photos, recover documents or generate a new identity from this path.
+        const version = this.database.prepare('SELECT max(version) version FROM schema_migrations').get() as { version: number }
+        const identity = this.database.prepare("SELECT value_json FROM app_meta WHERE key='device_id'").get() as { value_json: string } | undefined
+        if (!Number.isSafeInteger(existing.schemaVersion) || version.version !== existing.schemaVersion
+          || version.version !== Math.max(...LOCAL_MIGRATIONS.map(migration => migration.version))
+          || !identity || JSON.parse(identity.value_json) !== existing.deviceId) {
+          throw new Error('LOCAL_WORKER_DATABASE_IDENTITY_MISMATCH')
+        }
+        deviceId = existing.deviceId
+      } else {
+        this.migrate()
+        this.assertIntegrity()
+        restoreEmbeddedPhotos(this.database, dataRoot)
+        deviceId = this.getOrCreateDeviceId()
+      }
     } catch (error) {
       try { this.database.close() } catch { /* уже закрита або не відкривалась */ }
       throw error
@@ -418,7 +442,32 @@ export class LocalDatabase {
     await this.backupInProgress
   }
 
+  /** A background writer owns a separate connection. WAL readers keep working;
+   * synchronous competing writes must fail promptly, never stall the event loop.
+   * The caller's promise must settle only after its worker has actually exited. */
+  runBackgroundWrite<T>(work: () => Promise<T>): Promise<T> {
+    if (!this.database.isOpen) return Promise.reject(new Error('LOCAL_DATABASE_NOT_READY'))
+    if (this.database.isTransaction) return Promise.reject(new Error('LOCAL_ASYNC_TRANSACTION_FORBIDDEN'))
+    if (this.backgroundWriteActive) return Promise.reject(new Error('Копіювання вже триває. Дочекайтеся завершення.'))
+    const prior = Number((this.database.prepare('PRAGMA busy_timeout').get() as { timeout: number }).timeout)
+    this.database.exec('PRAGMA busy_timeout = 0')
+    this.backgroundWriteActive = true
+    let pending: Promise<T>
+    try { pending = Promise.resolve(work()) } catch (error) { pending = Promise.reject(error) }
+    const finished = pending.finally(() => {
+      try { if (this.database.isOpen) this.database.exec('PRAGMA busy_timeout = ' + prior) }
+      finally { this.backgroundWriteActive = false; this.backgroundWrite = null }
+    })
+    this.backgroundWrite = finished
+    return finished
+  }
+
+  async waitForBackgroundWrite(): Promise<void> {
+    await this.backgroundWrite
+  }
+
   close(): void {
+    if (this.backgroundWriteActive) throw new Error('Копіювання ще триває. Базу поки не закрито.')
     if (!this.database.isOpen) return
     try { this.database.exec('PRAGMA wal_checkpoint(TRUNCATE)') }
     finally {

@@ -31,6 +31,7 @@ function execute(db, spec) {
   if (spec.operation === 'writeoff') return new LocalWarehouseRepository(db).createWriteoff(spec.writeoff)
   if (spec.operation === 'inventory') return new LocalInventoryRepository(db).complete(spec.session)
   if (spec.operation === 'invoice_cancel') return new LocalSupplyRepository(db).cancelInvoice(spec.invoice)
+  if (spec.operation === 'invoice_delete') return new LocalSupplyRepository(db).deleteInvoice(spec.invoice)
   if (spec.operation === 'invoice') return new LocalSupplyRepository(db).postInvoice(spec.invoice)
   throw Error('Unknown test operation')
 }
@@ -172,7 +173,7 @@ async function scenario(operation, phase) {
     assert.deepEqual(snapshot(db), final, 'Retry modified a committed operation')
     const expected = {
       checkout: [7, 13000, 1], fractional_checkout: [0, 10300, 2],
-      invoice: [13, 10000, 1], receiving: [13, 9000, 1],
+      invoice: [13, 10000, 1], receiving: [13, 9000, 1], invoice_delete: [10, 10000, 0],
       invoice_cancel: [10, 10000, 1], return: [9.8, 10200, 1], legacy_return: [9.8, 10200, 1], legacy_review: [9.8, 10200, 1],
       writeoff: [9.9, 10000, 1], inventory: [0.3, 10000, 1],
       order_payment: [10, 11000, 0], order_issue: [9, 11000, 1], order_cancel: [10, 11000, 0],
@@ -181,6 +182,11 @@ async function scenario(operation, phase) {
     assert.equal(new LocalCatalogRepository(db).findById(product.id).qty_on_hand, expected[0])
     assert.equal(new LocalPosRepository(db).getExpectedCash(cashier).expected_amount, expected[1])
     assert.equal(final.inventory_movements.length, before.inventory_movements.length + expected[2])
+    if (operation === 'invoice_delete') {
+      assert.equal(final.supply_invoices.length, 0)
+      assert.equal(final.supply_invoice_items.length, 0)
+      assert.equal(final.supplier_payments.length, 0)
+    }
     if (operation === 'order_issue') {
       assert.equal(final.salary_payments.length, 1)
       assert.equal(final.salary_payments[0].amount, 100)
@@ -222,6 +228,6 @@ async function scenario(operation, phase) {
 }
 async function main() {
   if (process.argv[2] === '--worker') return worker()
-  for (const operation of ['checkout', 'fractional_checkout', 'invoice', 'receiving', 'invoice_cancel', 'return', 'legacy_return', 'legacy_review', 'writeoff', 'inventory', 'order_payment', 'order_issue', 'order_cancel', 'salary_payout', 'tire_handover', 'deposit_payout']) for (const phase of ['before', 'after']) await scenario(operation, phase)
+  for (const operation of ['checkout', 'fractional_checkout', 'invoice', 'receiving', 'invoice_cancel', 'invoice_delete', 'return', 'legacy_return', 'legacy_review', 'writeoff', 'inventory', 'order_payment', 'order_issue', 'order_cancel', 'salary_payout', 'tire_handover', 'deposit_payout']) for (const phase of ['before', 'after']) await scenario(operation, phase)
 }
 main().catch(error => { console.error(error); process.exitCode = 1 })

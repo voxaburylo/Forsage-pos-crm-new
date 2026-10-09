@@ -14,6 +14,19 @@ function handle(error: unknown) {
 beforeEach(() => vi.clearAllMocks())
 
 describe('unhandled errors keep diagnostics but not private documents', () => {
+  it.each([
+    { headersSent: true, destroyed: false },
+    { headersSent: true, destroyed: true },
+    { headersSent: false, destroyed: true },
+  ])('closes partial responses without appending private errors %#', state => {
+    const res = { ...state, destroy: vi.fn(), status: vi.fn(), json: vi.fn() }
+    errorHandler(new AppError('INTERNAL', 'PRIVATE_INVOICE', 500), {} as Request, res as unknown as Response, vi.fn())
+    expect(res.status).not.toHaveBeenCalled()
+    expect(res.json).not.toHaveBeenCalled()
+    expect(res.destroy).toHaveBeenCalledTimes(state.destroyed ? 0 : 1)
+    expect(mocks.error).toHaveBeenCalledOnce()
+    expect(JSON.stringify(mocks.error.mock.calls)).not.toContain('PRIVATE_')
+  })
   it('preserves intentional application validation errors', () => {
     expect(handle(new AppError('VALIDATION_ERROR', 'Невірна кількість', 422, { field: 'quantity' }))).toEqual({
       status: 422, body: { error: { code: 'VALIDATION_ERROR', message: 'Невірна кількість', status: 422, details: { field: 'quantity' } } },

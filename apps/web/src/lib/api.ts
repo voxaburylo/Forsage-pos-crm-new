@@ -167,7 +167,17 @@ async function requestOnce<T>(path: string, options?: RequestOptions): Promise<T
   }
 
   if (res.status === 204) return undefined as T
-  return res.json()
+  try {
+    return await res.json()
+  } catch (cause) {
+    options?.signal?.throwIfAborted()
+    if (/^\/api\/v1\/sync\/(?:changes|bootstrap)(?:\?|$)/.test(path)) {
+      throw Object.assign(new Error('Копію даних отримано не повністю. Повторіть завантаження; неповну відповідь не застосовано.'), {
+        code: 'SYNC_RESPONSE_INCOMPLETE', cause,
+      })
+    }
+    throw cause
+  }
 }
 
 export const api = {

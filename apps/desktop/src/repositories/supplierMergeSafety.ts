@@ -1,6 +1,6 @@
 import type { LocalDatabase } from '../db/localDatabase'
 import { terminalSupplier, deletedSupplierHistory, sameDeletedSupplierHistory } from './deletedSupplierHistory'
-import { readSupplyTerminalReceipt, assertSupplyTerminalRetry, assertUnpaidSupplyTerminal } from './supplyTerminalState'
+import { readSupplyTerminalReceipt, assertSupplyTerminalRetry, assertSupplyTerminalMovements, assertUnpaidSupplyTerminal } from './supplyTerminalState'
 
 const quote = (name: string) => '"' + name.replace(/"/g, '""') + '"'
 export const supplierMergeReceiptKey = (tenant: string, source: string) => 'supplier-merge:' + tenant + ':' + source
@@ -56,8 +56,16 @@ export function recordInvoiceSupplierChange(db: LocalDatabase, tenant: string, b
   }
   changes.push({ invoice_id: before.id, from: before.supplier_id, to: after.supplier_id,
     before_revision: before.edit_revision, after_revision: after.edit_revision })
-  db.prepare('INSERT INTO app_meta(key,value_json,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at')
-    .run(key,JSON.stringify(changes),at)
+  const valueJson = JSON.stringify(changes)
+  const inserted = db.prepare('INSERT INTO app_meta(key,value_json,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at')
+    .run(key,valueJson,at)
+  if (inserted.changes !== 1) throw supplierMergeHistoryError()
+  const verify = () => {
+    const stored = db.prepare('SELECT value_json,updated_at FROM app_meta WHERE key=?').get(key) as any
+    if (!stored || stored.value_json !== valueJson || stored.updated_at !== at) throw supplierMergeHistoryError()
+  }
+  verify()
+  return verify
 }
 
 /** Supplier changes require durable evidence: a subsequent merge or an explicit unpaid draft edit. */
@@ -138,6 +146,7 @@ export function readSupplierMergeReceipt(db: LocalDatabase, tenant: string, sour
           const invoice = getInvoice(before.id)
           assertUnpaidSupplyTerminal(db,tenant,invoice)
           assertSupplyTerminalRetry(terminal,'cancelled',undefined,invoice)
+          assertSupplyTerminalMovements(db,before.id,terminal)
         }
         if (before.status === 'cancelled') cancelledIds.add(before.id)
       }

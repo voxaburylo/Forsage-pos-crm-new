@@ -1,4 +1,5 @@
 import type { LocalBootstrapSnapshot, LocalSyncPullChanges } from '../db/localTypes'
+import { catalogCopyRows } from './supplierCatalogRemoteValidation'
 
 // Keep each synchronous SQLite transaction short enough for Electron's main
 // process to continue servicing window and printer events during a large pull.
@@ -39,14 +40,18 @@ function rowId(row: any): string | null {
 }
 
 /**
- * Splits one server response without losing document atomicity. Catalog and
- * independent ledgers are bounded; a document parent and every child supplied
- * for that parent always stay in the same SQLite transaction.
+ * Splits one server response without losing document atomicity. Product catalog
+ * and independent ledgers are bounded; a document parent and every child supplied
+ * for that parent always stay in the same SQLite transaction. Supplier prices
+ * and import history stay together for the final completion transaction.
  */
 export function createPullChangeChunks(
   changes: LocalSyncPullChanges,
   chunkSize = DEFAULT_PULL_CHUNK_SIZE,
 ): LocalSyncPullChanges[] {
+  // Validate before slicing: malformed or duplicate IDs must not disappear at a chunk boundary.
+  catalogCopyRows(changes.supplier_price_items)
+  catalogCopyRows(changes.supplier_price_imports)
   const size = Math.max(1, Math.floor(chunkSize))
   const result: LocalSyncPullChanges[] = []
   const make = () => baseChunk(changes)
@@ -133,8 +138,7 @@ export function createPullChangeChunks(
   pushArray('bonus_transactions', changes.bonus_transactions)
   pushArray('customer_deposit_transactions', changes.customer_deposit_transactions)
   pushArray('salary_payments', changes.salary_payments)
-  pushArray('supplier_price_items', changes.supplier_price_items)
-  pushArray('supplier_price_imports', changes.supplier_price_imports)
+  // Supplier prices and their history are one final atomic unit below.
 
   pushArray('deleted_product_ids', changes.deleted_product_ids)
   pushArray('deleted_customer_ids', changes.deleted_customer_ids)
@@ -144,6 +148,13 @@ export function createPullChangeChunks(
   pushArray('deleted_inventory_session_ids', changes.deleted_inventory_session_ids)
   pushArray('deleted_salary_payment_ids', changes.deleted_salary_payment_ids)
   pushArray('deleted_cash_operation_ids', changes.deleted_cash_operation_ids)
+
+  if (changes.supplier_price_items?.length || changes.supplier_price_imports?.length
+    || changes.supplier_catalog_copy !== undefined) {
+    push({ ...make(), supplier_price_items: changes.supplier_price_items ?? [],
+      supplier_price_imports: changes.supplier_price_imports ?? [],
+      supplier_catalog_copy: changes.supplier_catalog_copy })
+  }
 
   // Even an empty delta must advance its cursor, but cursor advancement happens
   // in LocalSyncRepository only after this no-op chunk succeeds.

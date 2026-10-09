@@ -231,6 +231,7 @@ export interface LocalBootstrapSnapshot {
   supplier_payments?: any[]
   supplier_price_items?: any[]
   supplier_price_imports?: any[]
+  supplier_catalog_copy?: unknown
   inventory_sessions?: any[]
   deleted_inventory_session_ids?: string[]
   inventory_items?: any[]
@@ -432,6 +433,7 @@ export interface LocalSyncPullChanges {
   supplier_payments?: any[]
   supplier_price_items?: any[]
   supplier_price_imports?: any[]
+  supplier_catalog_copy?: unknown
   inventory_sessions?: any[]
   deleted_inventory_session_ids?: string[]
   inventory_items?: any[]

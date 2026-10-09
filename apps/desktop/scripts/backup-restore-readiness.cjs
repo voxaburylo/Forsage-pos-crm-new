@@ -22,15 +22,27 @@ function restoreComparisonOptions(db, sourceVersion, targetVersion) {
   if (sourceVersion === targetVersion) return {}
   // Only explicitly reviewed, additive migrations may change the comparison.
   // Never ignore arbitrary new columns, changed business values or future migrations.
+  const omittedColumns = {}
   for (let version = sourceVersion + 1; version <= targetVersion; version += 1) {
-    assert.equal(version, 27, 'Restore comparison requires a reviewed migration: ' + version)
+    if (version === 27) {
+      const columns = db.prepare('PRAGMA table_info(customer_returns)').all()
+      assert(columns.some(column => column.name === 'shift_id' && column.type === 'TEXT'),
+        'Refund shift column is missing after migration')
+      assert.equal(Number(db.prepare('SELECT COUNT(*) count FROM customer_returns WHERE shift_id IS NOT NULL').get().count),
+        0, 'Historical refund shifts must remain NULL')
+      omittedColumns.customer_returns = ['shift_id']
+    } else if (version === 28) {
+      const columns = db.prepare('PRAGMA table_info(supplier_price_imports)').all()
+      assert(columns.some(column => column.name === 'scope_known' && column.type === 'INTEGER'),
+        'Import scope provenance column is missing after migration')
+      assert.equal(Number(db.prepare('SELECT COUNT(*) count FROM supplier_price_imports WHERE scope_known IS NOT CASE WHEN remote_updated_at IS NULL THEN 1 ELSE 0 END').get().count),
+        0, 'Historical import scope provenance differs from migration evidence')
+      omittedColumns.supplier_price_imports = ['scope_known']
+    } else {
+      assert.fail('Restore comparison requires a reviewed migration: ' + version)
+    }
   }
-  const columns = db.prepare('PRAGMA table_info(customer_returns)').all()
-  assert(columns.some(column => column.name === 'shift_id' && column.type === 'TEXT'),
-    'Refund shift column is missing after migration')
-  assert.equal(Number(db.prepare('SELECT COUNT(*) count FROM customer_returns WHERE shift_id IS NOT NULL').get().count),
-    0, 'Historical refund shifts must remain NULL')
-  return { omittedColumns: { customer_returns: ['shift_id'] }, maxMigrationVersion: sourceVersion }
+  return { omittedColumns, maxMigrationVersion: sourceVersion }
 }
 
 function databaseFingerprint(db, photoUrls = new Map(), options = {}) {

@@ -35,7 +35,38 @@ beforeEach(async () => {
   await state.db.query('INSERT INTO suppliers(id,tenant_id,name,created_at,updated_at) VALUES($1,$2,$3,$4,$4),($5,$2,$6,$4,$4)', [target, tenant, 'Primary', at, source, 'Duplicate'])
 })
 const merge = () => mergeEmptySupplier(target, source, tenant, at)
+
+it.each(['suppliers','supplier_merge_receipts'])('rejects silently skipped empty merge write to %s', async table => {
+  await state.db.exec('CREATE FUNCTION skip_empty_merge() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$; CREATE TRIGGER skip_empty_merge BEFORE ' + (table === 'suppliers' ? 'UPDATE' : 'INSERT') + ' ON ' + table + ' FOR EACH ROW EXECUTE FUNCTION skip_empty_merge()')
+  try {
+    const before = await snap()
+    await expect(merge()).rejects.toThrow()
+    expect(await snap()).toEqual(before)
+  } finally { await state.db.exec('DROP TRIGGER skip_empty_merge ON ' + table + '; DROP FUNCTION skip_empty_merge()') }
+  await merge(); const after = await snap(); await merge(); expect(await snap()).toEqual(after)
+})
 const operation = (): any => ({ operation_type: 'supplier.merged', aggregate_id: target, operation_id: randomUUID(), tenant_id: tenant, device_id: 'local', sequence: 2, created_at: at, payload: { primary_supplier_id: target, duplicate_supplier_id: source } })
+
+
+it.each(['archive','receipt','target'])('rejects wrong persisted empty merge %s', async kind => {
+  const table=kind==='receipt'?'supplier_merge_receipts':'suppliers'
+  const body=kind==='receipt'?"NEW.result:=jsonb_set(NEW.result,'{name}','\"Changed\"');":kind==='target'?"UPDATE suppliers SET name='Changed' WHERE id='"+target+"'::uuid;":'NEW.is_active:=true;'
+  await state.db.exec('CREATE FUNCTION alter_empty() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN '+body+' RETURN NEW; END $$; CREATE TRIGGER alter_empty BEFORE '+(kind==='receipt'?'INSERT':'UPDATE')+' ON '+table+(kind==='target'?" FOR EACH ROW WHEN (OLD.id='"+source+"'::uuid)":" FOR EACH ROW")+' EXECUTE FUNCTION alter_empty()')
+  try {const before=await snap();await expect(merge()).rejects.toThrow();expect(await snap()).toEqual(before)}
+  finally {await state.db.exec('DROP TRIGGER alter_empty ON '+table+'; DROP FUNCTION alter_empty()')}
+  await merge()
+})
+
+it('accepts the production server timestamp trigger during an empty merge', async () => {
+  const deltaSql = readFileSync(new URL('../../../../supabase/migrations/20260801090000_sync_keyset_reference_deltas.sql', import.meta.url), 'utf8')
+  const touchSql = deltaSql.slice(deltaSql.indexOf('CREATE OR REPLACE FUNCTION public.sync_touch_updated_at()'), deltaSql.indexOf('REVOKE ALL ON FUNCTION public.sync_touch_updated_at()'))
+  await state.db.exec(touchSql)
+  await state.db.exec('CREATE TRIGGER real_sync_touch BEFORE INSERT OR UPDATE ON suppliers FOR EACH ROW EXECUTE FUNCTION public.sync_touch_updated_at()')
+  try {
+    await merge(); const after=await snap(); await merge(); expect(await snap()).toEqual(after)
+    expect((await rows('SELECT updated_at FROM suppliers WHERE id=$1',[source]))[0].updated_at).not.toEqual(new Date(at))
+  } finally {await state.db.exec('DROP TRIGGER real_sync_touch ON suppliers; DROP FUNCTION public.sync_touch_updated_at()')}
+})
 
 it('commits once and acknowledges the same pair after lost replies', async () => {
   const result = await merge(); const after = await snap()

@@ -1,6 +1,6 @@
 import { SUPPLIER_CATALOG_SCHEMA_SQL } from './supplierCatalogSchema'
 
-export const LOCAL_SCHEMA_VERSION = 27
+export const LOCAL_SCHEMA_VERSION = 28
 
 const MIGRATION_001_CORE_SQL = `
   CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1481,5 +1481,11 @@ export const LOCAL_MIGRATIONS: LocalMigration[] = [
     ALTER TABLE customer_returns ADD COLUMN shift_id TEXT;
     CREATE INDEX IF NOT EXISTS idx_customer_returns_shift
       ON customer_returns(tenant_id, shift_id) WHERE deleted_at IS NULL;
+  ` },
+  { version: 28, sql: `
+    -- Old server copies lacked scope evidence; do not invent historical mode.
+    ALTER TABLE supplier_price_imports ADD COLUMN scope_known INTEGER NOT NULL DEFAULT 0
+      CHECK (scope_known IN (0, 1));
+    UPDATE supplier_price_imports SET scope_known = 1 WHERE remote_updated_at IS NULL;
   ` },
 ]

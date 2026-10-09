@@ -119,7 +119,8 @@ export async function saveInvoiceReceipt(client: PoolClient, tenantId: string, o
     || (operation.operation_type === 'supplier_invoice.supplier_merged' && !!invoice?.deleted_at)
   if (deleted && (invoice?.status !== 'draft' || !invoice.deleted_at || invoice.paid_amount !== 0)) invoiceConflict()
   const snapshot = await readInvoiceState(client, tenantId, invoice, deleted)
-  await client.query(`INSERT INTO supplier_invoice_copy_receipts(tenant_id,operation_id,invoice_id,operation_type,payload_hash,document_hash,device_id,source_sequence,lifecycle_hash)
-    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [tenantId, operation.operation_id, operation.aggregate_id,
+  const saved = await client.query(`INSERT INTO supplier_invoice_copy_receipts(tenant_id,operation_id,invoice_id,operation_type,payload_hash,document_hash,device_id,source_sequence,lifecycle_hash)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING operation_id`, [tenantId, operation.operation_id, operation.aggregate_id,
     operation.operation_type, invoiceHash(payload), snapshotHash(snapshot), operation.device_id, operation.sequence, invoiceLifecycleHash(invoice)])
+  if (saved.rowCount !== 1 || !await checkInvoiceReceipt(client, tenantId, operation, payload, invoice, true)) invoiceConflict()
 }

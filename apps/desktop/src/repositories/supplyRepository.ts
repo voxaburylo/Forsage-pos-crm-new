@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import { readSupplierMergeReceipt, supplierMergeReceiptKey, recordInvoiceSupplierChange, invoiceSupplierChangeCount } from './supplierMergeSafety'
 import { advanceSupplyTerminalSupplier } from './supplyTerminalState'
 import { moveDeletedSupplierHistory } from './deletedSupplierHistory'
 import { prepareSupplierHistory, applySupplierHistory } from './supplierHistoryMerge'
+import { readSupplierPaymentState, verifySupplierPaymentCash, verifySupplierPaymentRows, verifySupplierPaymentState, supplierPaymentConflict } from './supplierPaymentSafety'
 import { rememberInvoiceProductName, AiInvoiceMatcher, previewAiInvoiceRows } from './aiInvoiceIdentity'
 import { addStockQuantity, stockQuantity, subtractStockQuantity } from './stockQuantity'
 import type { LocalDatabase } from '../db/localDatabase'
@@ -10,8 +12,10 @@ import { DEFAULT_TENANT_ID } from '../db/localTypes'
 import { LocalCatalogRepository } from './catalogRepository'
 import { readOpenCashBalance } from './cashBalance'
 import { idempotentMutation } from './idempotentMutation'
+import { readSupplyWriteState, assertCleanDraft, assertPostedSupplyMovements, verifySupplyWrite, verifyDeletedSupplyWrite, supplyWriteConflict } from './supplyWriteSafety'
+import { captureSupplyCreation, verifyCreatedSupply, supplyCreationConflict } from './supplyCreationSafety'
 import { assertDocumentRevision, documentRevision } from './documentRevision'
-import { readSupplyTerminalReceipt, saveSupplyTerminalReceipt, supplyTerminalFingerprint, assertSupplyTerminalRetry, assertUnpaidSupplyTerminal } from './supplyTerminalState'
+import { readSupplyTerminalReceipt, saveSupplyTerminalReceipt, supplyTerminalFingerprint, supplyMovementFingerprint, assertSupplyTerminalMovements, assertDeletedSupplyAbsent, assertSupplyTerminalRetry, assertUnpaidSupplyTerminal } from './supplyTerminalState'
 import { checkedSupplyMoney as checkedMoney, normalizeSupplyItem, checkedAiSupplyUnit, checkedAiSupplyQuantity, checkedAiSupplyPrice } from './supplyValidation'
 
 // Immutable document contents captured with the local transaction, never from
@@ -190,30 +194,53 @@ export class LocalSupplyRepository {
       if (receipt) return receipt
       const primary = this.getSupplier(primaryId, tenantId)
       this.getSupplier(duplicateId, tenantId)
+      const originalSource = this.db.prepare('SELECT * FROM suppliers WHERE id=? AND tenant_id=?').get(duplicateId, tenantId) as any
+      const originalTarget = this.db.prepare('SELECT * FROM suppliers WHERE id=? AND tenant_id=?').get(primaryId, tenantId)
       if (!primary.is_active) throw new Error('Основний постачальник має бути активним')
       const history = prepareSupplierHistory(this.db, tenantId, duplicateId, primaryId)
       const timestamp = nowIso()
+      let verifyHistory: (() => void) | undefined
       if (history) {
         const cancelled = history.payload.invoices.filter(i => i.status === 'cancelled').map(i => this.getInvoice(i.id, tenantId))
         for (const invoice of cancelled) {
           const terminal = readSupplyTerminalReceipt(this.db, tenantId, invoice.id)
-          if (terminal) assertSupplyTerminalRetry(terminal, 'cancelled', undefined, invoice)
+          if (terminal) {
+            assertSupplyTerminalRetry(terminal, 'cancelled', undefined, invoice)
+            assertSupplyTerminalMovements(this.db, invoice.id, terminal)
+          }
         }
-        applySupplierHistory(this.db, tenantId, duplicateId, primaryId, timestamp)
+        verifyHistory = applySupplierHistory(this.db, tenantId, duplicateId, primaryId, timestamp)
         for (const invoice of history.payload.invoices.filter(i=>i.status==='deleted'))
           moveDeletedSupplierHistory(this.db,tenantId,invoice.id,duplicateId,primaryId,timestamp)
         for (const invoice of cancelled)
           advanceSupplyTerminalSupplier(this.db, tenantId, invoice, this.getInvoice(invoice.id, tenantId), timestamp)
       }
-      this.db.prepare(`UPDATE suppliers SET deleted_at=?,is_active=0,dirty_at=?,updated_at=?
+      const archived = this.db.prepare(`UPDATE suppliers SET deleted_at=?,is_active=0,dirty_at=?,updated_at=?
         WHERE id=? AND tenant_id=? AND deleted_at IS NULL`).run(timestamp, timestamp, timestamp, duplicateId, tenantId)
-      this.addOutbox(tenantId, 'supplier', primaryId, 'supplier.merged', history?.payload ?? {
-        primary_supplier_id: primaryId, duplicate_supplier_id: duplicateId,
-      }, timestamp)
-      this.db.prepare('INSERT INTO app_meta(key,value_json,updated_at) VALUES(?,?,?)')
-        .run(supplierMergeReceiptKey(tenantId, duplicateId), JSON.stringify({ source: duplicateId, target: primaryId, result: primary,
-          ...(history ? { history_payload: history.payload, previous_cash: history.cash,
-            invoice_supplier_change_offsets: Object.fromEntries(history.payload.invoices.map(i => [i.id, invoiceSupplierChangeCount(this.db,tenantId,i.id)])) } : {}) }), timestamp)
+      if (archived.changes !== 1) throw new Error('Не вдалося завершити об’єднання постачальників. Нічого не змінено.')
+      const payload = history?.payload ?? { primary_supplier_id: primaryId, duplicate_supplier_id: duplicateId }
+      const operationId = this.addOutbox(tenantId, 'supplier', primaryId, 'supplier.merged', payload, timestamp)
+      const receiptKey = supplierMergeReceiptKey(tenantId, duplicateId)
+      const receiptValue = JSON.stringify({ source: duplicateId, target: primaryId, result: primary,
+        ...(history ? { history_payload: history.payload, previous_cash: history.cash,
+          invoice_supplier_change_offsets: Object.fromEntries(history.payload.invoices.map(i => [i.id, invoiceSupplierChangeCount(this.db,tenantId,i.id)])) } : {}) })
+      const saved = this.db.prepare('INSERT INTO app_meta(key,value_json,updated_at) VALUES(?,?,?)')
+        .run(receiptKey, receiptValue, timestamp)
+      const storedReceipt = this.db.prepare('SELECT value_json,updated_at FROM app_meta WHERE key=?').get(receiptKey) as any
+      const queued = this.db.prepare('SELECT * FROM sync_outbox WHERE operation_id=?').get(operationId) as any
+      const source = this.db.prepare('SELECT * FROM suppliers WHERE id=? AND tenant_id=?').get(duplicateId, tenantId) as any
+      if (saved.changes !== 1 || storedReceipt?.value_json !== receiptValue || storedReceipt?.updated_at !== timestamp
+        || !queued || queued.tenant_id !== tenantId || queued.device_id !== this.db.deviceId
+        || queued.aggregate_type !== 'supplier' || queued.aggregate_id !== primaryId || queued.operation_type !== 'supplier.merged'
+        || queued.payload_json !== JSON.stringify(payload) || queued.status !== 'pending' || queued.created_at !== timestamp
+        || source?.deleted_at !== timestamp || source?.is_active !== 0 || source?.dirty_at !== timestamp || source?.updated_at !== timestamp)
+        throw new Error('Не вдалося завершити об’єднання постачальників. Нічого не змінено.')
+      if (!isDeepStrictEqual({ ...source }, { ...originalSource, deleted_at: timestamp, is_active: 0, dirty_at: timestamp, updated_at: timestamp })
+        || !isDeepStrictEqual(this.db.prepare('SELECT * FROM suppliers WHERE id=? AND tenant_id=?').get(primaryId, tenantId), originalTarget))
+        throw new Error('Стан постачальників змінився під час об’єднання. Нічого не змінено.')
+      verifyHistory?.()
+      if (!readSupplierMergeReceipt(this.db, tenantId, duplicateId, primaryId, id => this.getInvoice(id, tenantId)))
+        throw new Error('Не вдалося підтвердити об’єднання постачальників. Нічого не змінено.')
       return primary
     })
   }
@@ -357,7 +384,8 @@ export class LocalSupplyRepository {
     draft_items: Array<Record<string, unknown>>
   } {
     if (input.operation_id) return idempotentMutation(this.db, 'ai-invoice:' + (input.tenant_id ?? DEFAULT_TENANT_ID), input.operation_id, input,
-      () => this.createInvoiceFromAiRows({ ...input, operation_id: undefined }))
+      () => this.createInvoiceFromAiRows({ ...input, operation_id: undefined }),
+      result => captureSupplyCreation(this.db, result.invoice.id, input.tenant_id ?? DEFAULT_TENANT_ID))
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     if (!Array.isArray(input.rows) || input.rows.length === 0 || input.rows.length > 2000) throw new Error('AI не повернув таблицю товарів (до 2000 рядків).')
     const catalog = new LocalCatalogRepository(this.db)
@@ -519,7 +547,8 @@ export class LocalSupplyRepository {
 
   private createInvoiceInTransaction(input: CreateSupplyInvoiceInput): any {
     if (input.operation_id) return idempotentMutation(this.db, 'supply-create:' + (input.tenant_id ?? DEFAULT_TENANT_ID), input.operation_id, input,
-      () => this.createInvoice({ ...input, operation_id: undefined }))
+      () => this.createInvoice({ ...input, operation_id: undefined }),
+      result => captureSupplyCreation(this.db, result.id, input.tenant_id ?? DEFAULT_TENANT_ID))
     if (!Array.isArray(input.items) || input.items.length === 0) {
       throw new Error('Додайте хоча б один товар у накладну')
     }
@@ -549,10 +578,11 @@ export class LocalSupplyRepository {
     const fundSource = input.fund_source ?? (paymentMethod === 'cash' ? 'cashbox' : 'bank_account')
     const userId = input.user_id ?? null
     let initialPaymentId: string | null = null
+    let verifyInitialPayment: (() => void) | null = null
 
     this.db.transaction(() => {
       if (input.supplier_id) this.getSupplier(input.supplier_id, tenantId)
-      this.db.prepare(`
+      const inserted = this.db.prepare(`
         INSERT INTO supply_invoices (
           id, tenant_id, supplier_id, invoice_number, status, total, paid_amount,
           payment_method, notes, dirty_at, created_at, updated_at
@@ -570,12 +600,13 @@ export class LocalSupplyRepository {
         timestamp,
         timestamp,
       )
+      if (inserted.changes !== 1) throw supplyCreationConflict()
       for (const item of normalizedItems) {
         this.insertItem(invoiceId, tenantId, item, timestamp)
       }
       if (paidAmount > 0 && paymentMethod) {
         initialPaymentId = randomUUID()
-        this.insertPayment(invoiceId, tenantId, {
+        verifyInitialPayment = this.insertPayment(invoiceId, tenantId, {
           amount: paidAmount,
           payment_method: paymentMethod,
           fund_source: fundSource,
@@ -585,7 +616,7 @@ export class LocalSupplyRepository {
           payment_id: initialPaymentId,
         }, input.supplier_id ?? null, timestamp)
       }
-      this.addOutbox(tenantId, 'supply_invoice', invoiceId, 'supplier_invoice.created', {
+      const payload = {
         id: invoiceId,
         supplier_id: input.supplier_id ?? null,
         invoice_number: text(input.invoice_number),
@@ -599,7 +630,22 @@ export class LocalSupplyRepository {
         total,
         user_id: userId,
         created_at: timestamp,
-      }, timestamp)
+      }
+      const operationId = this.addOutbox(tenantId, 'supply_invoice', invoiceId, 'supplier_invoice.created', payload, timestamp)
+      verifyInitialPayment?.()
+      verifyCreatedSupply(this.db, {
+        header: {
+          id: invoiceId, tenant_id: tenantId, supplier_id: input.supplier_id ?? null,
+          invoice_number: text(input.invoice_number), status: 'draft', total, paid_amount: paidAmount,
+          payment_method: paymentMethod, notes: input.notes ?? null, posted_by: null, posted_at: null,
+          remote_updated_at: null, dirty_at: timestamp, created_at: timestamp, updated_at: timestamp, deleted_at: null,
+        },
+        lines: normalizedItems.map(item => ({
+          ...item, tenant_id: tenantId, invoice_id: invoiceId, remote_updated_at: null,
+          dirty_at: timestamp, created_at: timestamp, updated_at: timestamp, deleted_at: null,
+        })),
+        paymentId: initialPaymentId, operationId, payload,
+      })
     })
     return this.getInvoice(invoiceId, tenantId)
   }
@@ -620,20 +666,13 @@ export class LocalSupplyRepository {
       const product = this.findProduct(item.product_id, tenantId)
       if (!product) throw new Error('Товар у накладній не знайдено в локальній базі')
       return normalizeSupplyItem({
-        id: item.id ?? randomUUID(),
-        product_id: item.product_id,
-        qty: item.qty,
-        purchase_price: item.purchase_price,
-        total: item.total,
+        id: item.id ?? randomUUID(), product_id: item.product_id,
+        qty: item.qty, purchase_price: item.purchase_price, total: item.total,
       })
     })
     if (normalizedItems && normalizedItems.length === 0) throw new Error('Додайте хоча б один товар у накладну')
-    const total = checkedMoney(
-      normalizedItems
-        ? normalizedItems.reduce((sum, item) => sum + item.total, 0)
-        : Number(invoice.total ?? 0),
-      'Сума накладної',
-    )
+    const total = checkedMoney(normalizedItems
+      ? normalizedItems.reduce((sum, item) => sum + item.total, 0) : Number(invoice.total ?? 0), 'Сума накладної')
     const supplierId = input.supplier_id !== undefined ? input.supplier_id : invoice.supplier_id ?? null
     if (supplierId && supplierId !== invoice.supplier_id) this.getSupplier(supplierId, tenantId)
     if (total < Number(invoice.paid_amount ?? 0)) throw new Error('Сума накладної менша за вже внесену оплату. Спочатку звірте оплату.')
@@ -641,34 +680,44 @@ export class LocalSupplyRepository {
       throw new Error('Не можна змінити постачальника накладної з оплатою. Спочатку звірте оплату.')
     const invoiceNumber = input.invoice_number !== undefined ? text(input.invoice_number) : invoice.invoice_number ?? null
     const notes = input.notes !== undefined ? input.notes ?? null : invoice.notes ?? null
+    const productIds = [...new Set<string>([...invoice.items.map((row: any) => row.product_id),
+      ...(normalizedItems ?? []).map(row => row.product_id)])]
+    const before = readSupplyWriteState(this.db, id, tenantId, productIds)
+    assertCleanDraft(before, productIds)
+    if (before.lines.length !== invoice.items.length) throw supplyWriteConflict()
 
-    this.db.transaction(() => {
-      this.db.prepare(`
-        UPDATE supply_invoices
-        SET supplier_id = ?, invoice_number = ?, notes = ?, total = ?, dirty_at = ?, updated_at = ?
-        WHERE id = ? AND tenant_id = ?
-      `).run(supplierId, invoiceNumber, notes, total, timestamp, timestamp, id, tenantId)
-
-      if (normalizedItems) {
-        this.db.prepare('DELETE FROM supply_invoice_items WHERE invoice_id = ? AND tenant_id = ?').run(id, tenantId)
-        for (const item of normalizedItems) {
-          this.insertItem(id, tenantId, item, timestamp)
-        }
-      }
-
-      if (supplierId !== invoice.supplier_id)
-        recordInvoiceSupplierChange(this.db, tenantId, invoice, this.getInvoice(id, tenantId), timestamp)
-      this.addOutbox(tenantId, 'supply_invoice', id, 'supplier_invoice.updated', {
-        id,
-        supplier_id: supplierId,
-        invoice_number: invoiceNumber,
-        notes,
-        total,
-        items: normalizedItems ? normalizedItems.map(item => ({ ...item, created_at: timestamp })) : invoiceCopySnapshot(invoice).items,
-        previous_invoice: invoiceCopySnapshot(invoice),
-        created_at: timestamp,
-      }, timestamp)
-    })
+    const updated = this.db.prepare(`
+      UPDATE supply_invoices
+      SET supplier_id = ?, invoice_number = ?, notes = ?, total = ?, dirty_at = ?, updated_at = ?
+      WHERE id = ? AND tenant_id = ?
+    `).run(supplierId, invoiceNumber, notes, total, timestamp, timestamp, id, tenantId)
+    if (updated.changes !== 1) throw supplyWriteConflict()
+    if (normalizedItems) {
+      const removed = this.db.prepare('DELETE FROM supply_invoice_items WHERE invoice_id = ? AND tenant_id = ?').run(id, tenantId)
+      if (removed.changes !== before.lines.length) throw supplyWriteConflict()
+      for (const item of normalizedItems) this.insertItem(id, tenantId, item, timestamp)
+    }
+    let verifySupplierChange: (() => void) | undefined
+    if (supplierId !== invoice.supplier_id)
+      verifySupplierChange = recordInvoiceSupplierChange(this.db, tenantId, invoice, this.getInvoice(id, tenantId), timestamp)
+    const payload = {
+      id, supplier_id: supplierId, invoice_number: invoiceNumber, notes, total,
+      items: normalizedItems ? normalizedItems.map(item => ({...item, created_at: timestamp})) : invoiceCopySnapshot(invoice).items,
+      previous_invoice: invoiceCopySnapshot(invoice), created_at: timestamp,
+    }
+    const expected = {
+      ...before,
+      header: {...before.header, supplier_id: supplierId, invoice_number: invoiceNumber, notes, total, dirty_at: timestamp, updated_at: timestamp},
+      lines: normalizedItems ? normalizedItems.map(item => ({
+        ...item, tenant_id: tenantId, invoice_id: id, remote_updated_at: null,
+        dirty_at: timestamp, created_at: timestamp, updated_at: timestamp, deleted_at: null,
+      })).sort((a,b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0) : before.lines,
+      supplierChanges: verifySupplierChange
+        ? this.db.prepare('SELECT * FROM app_meta WHERE key=?').get('invoice-supplier-changes:' + tenantId + ':' + id) : before.supplierChanges,
+    }
+    const operationId = this.addOutbox(tenantId, 'supply_invoice', id, 'supplier_invoice.updated', payload, timestamp)
+    verifySupplierChange?.()
+    verifySupplyWrite(this.db, expected, {operationId, type: 'supplier_invoice.updated', payload, timestamp}, productIds)
     return this.getInvoice(id, tenantId)
   }
 
@@ -685,51 +734,63 @@ export class LocalSupplyRepository {
         FROM supply_invoice_items ii
         LEFT JOIN products p ON p.id = ii.product_id AND p.tenant_id = ii.tenant_id
         WHERE ii.invoice_id = ? AND ii.tenant_id = ? AND ii.deleted_at IS NULL
-        ORDER BY ii.created_at ASC
+        ORDER BY ii.created_at ASC, ii.rowid ASC
       `).all(id, tenantId) as any[]
       if (items.length === 0) throw new Error('Додайте хоча б один товар у накладну')
-      const missing = items.find((item) => !item.product_exists || item.product_deleted_at)
-      if (missing) {
-        throw new Error(`Неможливо провести накладну: товар ${missing.product_name || missing.product_id} відсутній або видалений`)
-      }
+      const missing = items.find(item => !item.product_exists || item.product_deleted_at)
+      if (missing) throw new Error(`Неможливо провести накладну: товар ${missing.product_name || missing.product_id} відсутній або видалений`)
       for (const item of items) Object.assign(item, normalizeSupplyItem(item))
       const total = checkedMoney(items.reduce((sum, item) => sum + Number(item.total), 0), 'Сума накладної')
       if (Number(invoice.paid_amount ?? 0) > total) throw new Error('Сума накладної менша за вже внесену оплату. Спочатку звірте оплату.')
+      const productIds = [...new Set<string>(items.map(row => row.product_id))]
+      const before = readSupplyWriteState(this.db, id, tenantId, productIds)
+      assertCleanDraft(before, productIds)
+      if (before.lines.length !== items.length) throw supplyWriteConflict()
+      const products = new Map<string, any>(before.products.map(row => [row.id, row]))
+      const movements: any[] = []
 
       for (const item of items) {
-        const product = this.findProduct(item.product_id, tenantId)
-        if (!product) throw new Error(`Товар ${item.product_id} не знайдено в локальній базі`)
-        const newQty = addStockQuantity(Number(product.qty_on_hand ?? 0), item.qty)
-        if (!Number.isFinite(newQty) || Math.abs(newQty) > Number.MAX_SAFE_INTEGER) throw new Error('Некоректний залишок товару. Проведення зупинено.')
-        this.db.prepare(`
-          UPDATE products
-          SET qty_on_hand = ?, purchase_price = ?, dirty_at = ?, updated_at = ?
+        const product = products.get(item.product_id)
+        const newQty = addStockQuantity(Number(product.qty_on_hand), item.qty)
+        const changed = this.db.prepare(`
+          UPDATE products SET qty_on_hand = ?, purchase_price = ?, dirty_at = ?, updated_at = ?
           WHERE id = ? AND tenant_id = ?
-        `).run(newQty, item.purchase_price ?? 0, timestamp, timestamp, item.product_id, tenantId)
-        this.db.prepare(`
+        `).run(newQty, item.purchase_price, timestamp, timestamp, item.product_id, tenantId)
+        if (changed.changes !== 1) throw supplyWriteConflict()
+        products.set(item.product_id, {...product, qty_on_hand: newQty, purchase_price: item.purchase_price, dirty_at: timestamp, updated_at: timestamp})
+        const movement = {
+          id: randomUUID(), tenant_id: tenantId, product_id: item.product_id,
+          source_type: 'supply_invoice', source_id: id, qty_delta: item.qty, qty_after: newQty,
+          unit_cost: item.purchase_price, notes: `Прихідна накладна ${invoice.invoice_number ?? id}`,
+          remote_updated_at: null, dirty_at: timestamp, created_at: timestamp, updated_at: timestamp, deleted_at: null,
+        }
+        const inserted = this.db.prepare(`
           INSERT INTO inventory_movements (
             id, tenant_id, product_id, source_type, source_id, qty_delta, qty_after,
             unit_cost, notes, dirty_at, created_at, updated_at
           ) VALUES (?, ?, ?, 'supply_invoice', ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          randomUUID(), tenantId, item.product_id, id, item.qty, newQty,
-          item.purchase_price ?? 0, `Прихідна накладна ${invoice.invoice_number ?? id}`,
-          timestamp, timestamp, timestamp,
-        )
+        `).run(movement.id, tenantId, item.product_id, id, item.qty, newQty,
+          item.purchase_price, movement.notes, timestamp, timestamp, timestamp)
+        if (inserted.changes !== 1) throw supplyWriteConflict()
+        movements.push(movement)
       }
-
-      this.db.prepare(`
-        UPDATE supply_invoices
-        SET status = 'posted', total = ?, posted_by = ?, posted_at = ?, dirty_at = ?, updated_at = ?
+      const updated = this.db.prepare(`
+        UPDATE supply_invoices SET status = 'posted', total = ?, posted_by = ?, posted_at = ?, dirty_at = ?, updated_at = ?
         WHERE id = ? AND tenant_id = ?
       `).run(total, input.user_id ?? null, timestamp, timestamp, timestamp, id, tenantId)
-      this.addOutbox(tenantId, 'supply_invoice', id, 'supplier_invoice.posted', {
-        id,
-        user_id: input.user_id ?? null,
-        items: items.map((item: any) => ({ product_id: item.product_id, qty: item.qty, purchase_price: item.purchase_price })),
-        invoice_snapshot: invoiceCopySnapshot(invoice),
-        created_at: timestamp,
-      }, timestamp)
+      if (updated.changes !== 1) throw supplyWriteConflict()
+      const payload = {
+        id, user_id: input.user_id ?? null,
+        items: items.map(item => ({product_id: item.product_id, qty: item.qty, purchase_price: item.purchase_price})),
+        invoice_snapshot: invoiceCopySnapshot(invoice), created_at: timestamp,
+      }
+      const operationId = this.addOutbox(tenantId, 'supply_invoice', id, 'supplier_invoice.posted', payload, timestamp)
+      verifySupplyWrite(this.db, {
+        ...before,
+        header: {...before.header, status: 'posted', total, posted_by: input.user_id ?? null, posted_at: timestamp, dirty_at: timestamp, updated_at: timestamp},
+        products: before.products.map(row => products.get(row.id)),
+        movements: movements.sort((a,b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+      }, {operationId, type: 'supplier_invoice.posted', payload, timestamp}, productIds)
     })
     return this.getInvoice(id, tenantId)
   }
@@ -750,9 +811,12 @@ export class LocalSupplyRepository {
           || (existing.created_by ?? null) !== (input.user_id ?? null)) {
           throw new Error('Ідентифікатор оплати вже використано іншою операцією')
         }
+        readSupplierPaymentState(this.db,id,tenantId)
+        verifySupplierPaymentCash(this.db,tenantId,existing)
         return this.getInvoice(id, tenantId)
       }
     }
+    const before = readSupplierPaymentState(this.db,id,tenantId)
     const invoice = this.getInvoice(id, tenantId)
     assertDocumentRevision(invoice.edit_revision, input.expected_revision, 'Накладна')
     if (invoice.status === 'cancelled') throw new Error('Не можна оплатити скасовану накладну')
@@ -763,13 +827,14 @@ export class LocalSupplyRepository {
     const timestamp = nowIso()
     const paymentId = input.payment_id ?? randomUUID()
     this.db.transaction(() => {
-      this.insertPayment(id, tenantId, { ...input, payment_id: paymentId }, invoice.supplier_id ?? null, timestamp)
-      this.db.prepare(`
+      const verifyPayment = this.insertPayment(id, tenantId, { ...input, payment_id: paymentId }, invoice.supplier_id ?? null, timestamp)
+      const updated = this.db.prepare(`
         UPDATE supply_invoices
         SET paid_amount = paid_amount + ?, payment_method = ?, dirty_at = ?, updated_at = ?
         WHERE id = ? AND tenant_id = ?
       `).run(amount, input.payment_method, timestamp, timestamp, id, tenantId)
-      this.addOutbox(tenantId, 'supply_invoice', id, 'supplier_invoice.payment_added', {
+      if (updated.changes !== 1) throw supplierPaymentConflict()
+      const payload = {
         id,
         payment_id: paymentId,
         supplier_id: invoice.supplier_id ?? null,
@@ -780,7 +845,14 @@ export class LocalSupplyRepository {
         shift_id: input.shift_id ?? null,
         note: input.note ?? null,
         user_id: input.user_id ?? null,
-      }, timestamp)
+      }
+      const operationId = this.addOutbox(tenantId, 'supply_invoice', id, 'supplier_invoice.payment_added', payload, timestamp)
+      const queued = this.db.prepare('SELECT * FROM sync_outbox WHERE operation_id=?').get(operationId) as any
+      if (!queued || queued.tenant_id !== tenantId || queued.device_id !== this.db.deviceId
+        || queued.aggregate_type !== 'supply_invoice' || queued.aggregate_id !== id || queued.operation_type !== 'supplier_invoice.payment_added'
+        || queued.status !== 'pending' || queued.created_at !== timestamp || queued.payload_json !== JSON.stringify(payload)) throw supplierPaymentConflict()
+      verifyPayment()
+      verifySupplierPaymentState(before,readSupplierPaymentState(this.db,id,tenantId),paymentId,amount,input.payment_method,timestamp)
     })
     return this.getInvoice(id, tenantId)
   }
@@ -793,20 +865,27 @@ export class LocalSupplyRepository {
       assertUnpaidSupplyTerminal(this.db, tenantId, invoice)
       if (receipt) {
         assertSupplyTerminalRetry(receipt, 'cancelled', expectedRevision, invoice)
+        assertSupplyTerminalMovements(this.db, id, receipt)
         return
       }
       assertDocumentRevision(invoice.edit_revision, expectedRevision, 'Накладна')
       if (invoice.status === 'cancelled') return // Legacy cancellation: only the current revision may be acknowledged.
       if (!['draft', 'posted'].includes(invoice.status)) throw new Error('Некоректний стан накладної')
+      const before = readSupplyWriteState(this.db, id, tenantId)
+      const productIds = [...new Set<string>(before.lines.map(row => row.product_id))]
+      if (invoice.status === 'draft') assertCleanDraft(before, productIds)
+      else assertPostedSupplyMovements(before)
+      const products = new Map<string, any>(before.products.map(row => [row.id, row]))
+      const reversals: any[] = []
       const payload = { id, created_at: timestamp, previous_invoice: invoiceCopySnapshot(invoice),
         previous_status: invoice.status, posted_by: invoice.posted_by, posted_at: invoice.posted_at }
       const items = this.db.prepare(`
         SELECT ii.product_id, ii.qty, ii.purchase_price,
-               p.id AS product_exists, p.name AS product_name, p.qty_on_hand, p.deleted_at AS product_deleted_at
+               p.id AS product_exists, p.name AS product_name, p.deleted_at AS product_deleted_at
         FROM supply_invoice_items ii
         LEFT JOIN products p ON p.id = ii.product_id AND p.tenant_id = ii.tenant_id
         WHERE ii.invoice_id = ? AND ii.tenant_id = ? AND ii.deleted_at IS NULL
-        ORDER BY ii.created_at ASC
+        ORDER BY ii.created_at ASC, ii.rowid ASC
       `).all(id, tenantId) as any[]
       if (invoice.status === 'posted') {
         const requiredByProduct = new Map<string, number>()
@@ -819,38 +898,53 @@ export class LocalSupplyRepository {
           requiredByProduct.set(item.product_id, addStockQuantity(requiredByProduct.get(item.product_id) ?? 0, item.qty))
         }
         for (const [productId, requiredQty] of requiredByProduct) {
-          const product = this.findProduct(productId, tenantId)
-          if (!product || stockQuantity(Number(product.qty_on_hand ?? 0)) < requiredQty) {
+          const product = products.get(productId)
+          if (!product || stockQuantity(Number(product.qty_on_hand)) < requiredQty) {
             throw new Error('Неможливо скасувати накладну: частину товару вже продано або списано')
           }
         }
         for (const item of items) {
-          const product = this.findProduct(item.product_id, tenantId)!
-          const newQty = subtractStockQuantity(Number(product.qty_on_hand ?? 0), item.qty)
-          this.db.prepare(`
+          const product = products.get(item.product_id)
+          const newQty = subtractStockQuantity(Number(product.qty_on_hand), item.qty)
+          const changed = this.db.prepare(`
             UPDATE products SET qty_on_hand = ?, dirty_at = ?, updated_at = ?
             WHERE id = ? AND tenant_id = ?
           `).run(newQty, timestamp, timestamp, item.product_id, tenantId)
-          this.db.prepare(`
+          if (changed.changes !== 1) throw supplyWriteConflict()
+          products.set(item.product_id, {...product, qty_on_hand: newQty, dirty_at: timestamp, updated_at: timestamp})
+          const movement = {
+            id: randomUUID(), tenant_id: tenantId, product_id: item.product_id,
+            source_type: 'supply_invoice_cancel', source_id: id, qty_delta: -item.qty, qty_after: newQty,
+            unit_cost: item.purchase_price, notes: `Скасування приходної накладної ${invoice.invoice_number ?? id}`,
+            remote_updated_at: null, dirty_at: timestamp, created_at: timestamp, updated_at: timestamp, deleted_at: null,
+          }
+          const inserted = this.db.prepare(`
             INSERT INTO inventory_movements (
               id, tenant_id, product_id, source_type, source_id, qty_delta, qty_after,
               unit_cost, notes, dirty_at, created_at, updated_at
             ) VALUES (?, ?, ?, 'supply_invoice_cancel', ?, ?, ?, ?, ?, ?, ?, ?)
-          `).run(
-            randomUUID(), tenantId, item.product_id, id, -Number(item.qty ?? 0), newQty,
-            item.purchase_price ?? 0, `Скасування приходної накладної ${invoice.invoice_number ?? id}`,
-            timestamp, timestamp, timestamp,
-          )
+          `).run(movement.id, tenantId, item.product_id, id, movement.qty_delta, newQty,
+            item.purchase_price, movement.notes, timestamp, timestamp, timestamp)
+          if (inserted.changes !== 1) throw supplyWriteConflict()
+          reversals.push(movement)
         }
       }
-      this.db.prepare(`
-        UPDATE supply_invoices
-        SET status = 'cancelled', dirty_at = ?, updated_at = ?
+      const changed = this.db.prepare(`
+        UPDATE supply_invoices SET status = 'cancelled', dirty_at = ?, updated_at = ?
         WHERE id = ? AND tenant_id = ?
       `).run(timestamp, timestamp, id, tenantId)
-      this.addOutbox(tenantId, 'supply_invoice', id, 'supplier_invoice.cancelled', payload, timestamp)
+      if (changed.changes !== 1) throw supplyWriteConflict()
+      const expected = {
+        ...before,
+        header: {...before.header, status: 'cancelled', dirty_at: timestamp, updated_at: timestamp},
+        products: before.products.map(row => products.get(row.id)),
+        movements: [...before.movements, ...reversals].sort((a,b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+      }
+      const operationId = this.addOutbox(tenantId, 'supply_invoice', id, 'supplier_invoice.cancelled', payload, timestamp)
       saveSupplyTerminalReceipt(this.db, tenantId, id, { kind: 'cancelled', before_revision: invoice.edit_revision,
-        after_fingerprint: supplyTerminalFingerprint(this.getInvoice(id, tenantId)), payload }, timestamp)
+        after_fingerprint: supplyTerminalFingerprint(this.getInvoice(id, tenantId)),
+        movement_fingerprint: supplyMovementFingerprint(expected.movements), payload }, timestamp)
+      verifySupplyWrite(this.db, expected, {operationId, type: 'supplier_invoice.cancelled', payload, timestamp}, productIds)
     })
     return this.getInvoice(id, tenantId)
   }
@@ -864,6 +958,7 @@ export class LocalSupplyRepository {
     if (receipt) {
       if (exists) throw new Error('Видалену накладну було змінено. Потрібна звірка документа.')
       assertSupplyTerminalRetry(receipt, 'deleted', expectedRevision)
+      assertDeletedSupplyAbsent(this.db, id)
       return
     }
     const invoice = this.getInvoice(id, tenantId)
@@ -872,14 +967,20 @@ export class LocalSupplyRepository {
       throw new Error('Видалити можна лише неоплачену чернетку накладної. Проведені, скасовані та оплачені документи залишаються в історії.')
     }
     assertUnpaidSupplyTerminal(this.db, tenantId, invoice)
+    const before = readSupplyWriteState(this.db, id, tenantId)
+    const productIds = [...new Set<string>(before.lines.map(row => row.product_id))]
+    assertCleanDraft(before, productIds)
     const timestamp = nowIso()
     const payload = { id, created_at: timestamp, previous_invoice: invoiceCopySnapshot(invoice),
       previous_status: invoice.status, posted_by: invoice.posted_by, posted_at: invoice.posted_at }
-    this.db.prepare('DELETE FROM supply_invoice_items WHERE invoice_id = ? AND tenant_id = ?').run(id, tenantId)
-    this.db.prepare('DELETE FROM supply_invoices WHERE id = ? AND tenant_id = ?').run(id, tenantId)
-    this.addOutbox(tenantId, 'supply_invoice', id, 'supplier_invoice.deleted', payload, timestamp)
+    const removed = this.db.prepare('DELETE FROM supply_invoice_items WHERE invoice_id = ? AND tenant_id = ?').run(id, tenantId)
+    if (removed.changes !== before.lines.length) throw supplyWriteConflict()
+    const deleted = this.db.prepare('DELETE FROM supply_invoices WHERE id = ? AND tenant_id = ?').run(id, tenantId)
+    if (deleted.changes !== 1) throw supplyWriteConflict()
+    const operationId = this.addOutbox(tenantId, 'supply_invoice', id, 'supplier_invoice.deleted', payload, timestamp)
     saveSupplyTerminalReceipt(this.db, tenantId, id, { kind: 'deleted', before_revision: invoice.edit_revision,
       after_fingerprint: null, payload }, timestamp)
+    verifyDeletedSupplyWrite(this.db, before, {operationId, type: 'supplier_invoice.deleted', payload, timestamp}, productIds)
   }
 
   private mapInvoiceRow(row: any): any {
@@ -963,50 +1064,46 @@ export class LocalSupplyRepository {
     }
   }
 
-  private insertPayment(invoiceId: string, tenantId: string, input: PaymentInput & { payment_id?: string }, supplierId: string | null, timestamp: string): string {
+  private insertPayment(invoiceId: string, tenantId: string, input: PaymentInput & { payment_id?: string }, supplierId: string | null, timestamp: string): () => void {
     const paymentId = input.payment_id ?? randomUUID()
     const amount = checkedMoney(input.amount, 'Сума оплати')
+    if (amount <= 0 || !['cash','card','transfer'].includes(input.payment_method)
+      || !['cashbox','owner_funds','bank_account','business_card'].includes(input.fund_source)) throw supplierPaymentConflict()
     this.ensureCashboxPaymentAllowed(tenantId, input, amount)
-    this.db.prepare(`
+    const payment = {
+      id: paymentId, tenant_id: tenantId, invoice_id: invoiceId, supplier_id: supplierId,
+      amount, payment_method: input.payment_method, fund_source: input.fund_source,
+      shift_id: input.shift_id ?? null, note: input.note ?? null, created_by: input.user_id ?? null,
+      dirty_at: timestamp, created_at: timestamp, updated_at: timestamp, deleted_at: null, remote_updated_at: null,
+    }
+    const inserted = this.db.prepare(`
       INSERT INTO supplier_payments (
         id, tenant_id, invoice_id, supplier_id, amount, payment_method, fund_source,
         shift_id, note, created_by, dirty_at, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      paymentId,
-      tenantId,
-      invoiceId,
-      supplierId,
-      amount,
-      input.payment_method,
-      input.fund_source,
-      input.shift_id ?? null,
-      input.note ?? null,
-      input.user_id ?? null,
-      timestamp,
-      timestamp,
-      timestamp,
-    )
+    `).run(paymentId,tenantId,invoiceId,supplierId,amount,input.payment_method,input.fund_source,
+      payment.shift_id,payment.note,payment.created_by,timestamp,timestamp,timestamp)
+    if (inserted.changes !== 1) throw supplierPaymentConflict()
+    let cash: Record<string, unknown> | null = null
     if (input.fund_source === 'cashbox') {
-      this.db.prepare(`
+      const cashId = randomUUID()
+      cash = {
+        id: cashId, tenant_id: tenantId, shift_id: input.shift_id ?? null, user_id: input.user_id ?? null,
+        type: 'supplier_payment', source: 'cashbox', amount, supplier_id: supplierId,
+        notes: input.note ?? 'Оплата постачальнику', dirty_at: timestamp, created_at: timestamp, updated_at: timestamp,
+        deleted_at: null, remote_updated_at: null, sale_id: null, employee_id: null,
+      }
+      const insertedCash = this.db.prepare(`
         INSERT INTO cash_operations (
           id, tenant_id, shift_id, user_id, type, source, amount, supplier_id,
           notes, dirty_at, created_at, updated_at
         ) VALUES (?, ?, ?, ?, 'supplier_payment', 'cashbox', ?, ?, ?, ?, ?, ?)
-      `).run(
-        randomUUID(),
-        tenantId,
-        input.shift_id ?? null,
-        input.user_id ?? null,
-        amount,
-        supplierId,
-        input.note ?? 'Оплата постачальнику',
-        timestamp,
-        timestamp,
-        timestamp,
-      )
+      `).run(cashId,tenantId,payment.shift_id,payment.created_by,amount,supplierId,cash.notes as string,timestamp,timestamp,timestamp)
+      if (insertedCash.changes !== 1) throw supplierPaymentConflict()
     }
-    return paymentId
+    const verify = () => verifySupplierPaymentRows(this.db,payment,cash)
+    verify()
+    return verify
   }
 
   private findProduct(productId: string, tenantId: string): { id: string; qty_on_hand: number } | null {
@@ -1026,14 +1123,15 @@ export class LocalSupplyRepository {
     operationType: string,
     payload: unknown,
     createdAt: string,
-  ): void {
+  ): string {
+    const operationId = randomUUID()
     this.db.prepare(`
       INSERT INTO sync_outbox (
         operation_id, tenant_id, device_id, aggregate_type, aggregate_id,
         operation_type, payload_json, status, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
     `).run(
-      randomUUID(),
+      operationId,
       tenantId,
       this.db.deviceId,
       aggregateType,
@@ -1042,5 +1140,6 @@ export class LocalSupplyRepository {
       JSON.stringify(payload),
       createdAt,
     )
+    return operationId
   }
 }

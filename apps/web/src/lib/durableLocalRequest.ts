@@ -8,6 +8,8 @@ function canonical(value: unknown): unknown {
     .map(([key, item]) => [key, canonical(item)]))
   return value
 }
+export function localRequestFingerprint(payload: unknown): string { return JSON.stringify(canonical(payload)) }
+
 function readPending(scope: string, storage: Storage): Record<string, string> {
   const parsed: unknown = JSON.parse(storage.getItem('forsage:pending-request:v1:' + scope) ?? '{}')
   if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object'
@@ -33,7 +35,7 @@ export function clearPendingLocalRequest(scope: string, operationId: string, sto
 
 export async function durableLocalRequest<T>(scope: string, payload: unknown, send: (id: string) => Promise<T>, storage: Storage = localStorage, options: { exclusive?: boolean } = {}): Promise<T> {
   const key = `forsage:pending-request:v1:${scope}`
-  const fingerprint = JSON.stringify(canonical(payload))
+  const fingerprint = localRequestFingerprint(payload)
   const runningKey = key + fingerprint
   const running = active.get(runningKey)
   if (running) return running as Promise<T>

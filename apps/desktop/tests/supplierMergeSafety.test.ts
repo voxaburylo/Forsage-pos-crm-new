@@ -24,7 +24,64 @@ afterEach(() => {
 const snap = () => Object.fromEntries(['suppliers','supply_invoices','supply_invoice_items','supplier_payments','products','cash_operations','sync_outbox','app_meta']
   .map(table => [table, db.prepare('SELECT * FROM ' + table + ' ORDER BY rowid').all()]))
 const merge = () => supply.mergeSuppliers(target, source)
+
+it.each(['supply_invoices','supplier_payments','cash_operations','suppliers','sync_outbox','app_meta','empty suppliers','empty sync_outbox','empty app_meta'])('rolls back silently skipped merge writes: %s', kind => {
+  const table = kind.replace('empty ', '')
+  if (!kind.startsWith('empty ')) {
+    db.prepare('INSERT INTO shifts(id,tenant_id,cashier_id,opening_cash,opened_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?)')
+      .run('shift',tenant,'owner',1000,at,at,at)
+    const a = supply.createInvoice({supplier_id:source,paid_amount:25,payment_method:'cash',fund_source:'cashbox',shift_id:'shift',user_id:'owner',items:[{product_id:'p',qty:2,purchase_price:100}]})
+    supply.postInvoice(a.id)
+    supply.payInvoice(a.id,{amount:50,payment_method:'cash',fund_source:'cashbox',shift_id:'shift',user_id:'owner'})
+    invoice()
+  }
+  const insert = table === 'sync_outbox' || table === 'app_meta'
+  const when = table === 'sync_outbox' ? " WHEN NEW.operation_type='supplier.merged'" : table === 'app_meta' ? " WHEN NEW.key LIKE 'supplier-merge:%'" : ''
+  db.exec('CREATE TRIGGER skip_merge BEFORE ' + (insert ? 'INSERT' : 'UPDATE') + ' ON ' + table + when + ' BEGIN SELECT RAISE(IGNORE); END')
+  const before = snap()
+  expect(merge).toThrow()
+  expect(snap()).toEqual(before)
+  db.exec('DROP TRIGGER skip_merge')
+  merge()
+  const after = snap(); merge(); expect(snap()).toEqual(after)
+  expect(db.prepare("SELECT * FROM sync_outbox WHERE operation_type='supplier.merged'").all()).toHaveLength(1)
+})
 const invoice = (supplier_id = source) => supply.createInvoice({ supplier_id, items: [{ product_id: 'p', qty: 2, purchase_price: 100 }] })
+
+it.each(['supply_invoices','supplier_payments'])('rolls back a partially skipped transfer in %s', table => {
+  const a=invoice(),b=invoice()
+  for (const i of [a,b]) supply.payInvoice(i.id,{amount:25,payment_method:'cash',fund_source:'owner_funds'})
+  const id=(db.prepare('SELECT id FROM '+table+' WHERE supplier_id=? ORDER BY id LIMIT 1').get(source) as any).id
+  db.exec("CREATE TRIGGER skip_one BEFORE UPDATE ON "+table+" WHEN OLD.id='"+id+"' BEGIN SELECT RAISE(IGNORE); END")
+  const before=snap();expect(merge).toThrow();expect(snap()).toEqual(before)
+  db.exec('DROP TRIGGER skip_one');merge()
+})
+
+it.each(['supply_invoices','supplier_payments','cash_operations','suppliers','target','sync_outbox','app_meta','late cash'])('checks actual merge contents after %s write', kind => {
+  db.prepare('INSERT INTO shifts(id,tenant_id,cashier_id,opening_cash,opened_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?)')
+    .run('shift',tenant,'owner',1000,at,at,at)
+  const a=supply.createInvoice({supplier_id:source,paid_amount:25,payment_method:'cash',fund_source:'cashbox',shift_id:'shift',user_id:'owner',items:[{product_id:'p',qty:2,purchase_price:100}]})
+  let trigger: string
+  if(kind==='late cash') trigger="AFTER INSERT ON app_meta WHEN NEW.key LIKE 'supplier-merge:%' BEGIN UPDATE cash_operations SET amount=amount+1 WHERE supplier_id='"+target+"'; END"
+  else if(kind==='target') trigger="AFTER UPDATE ON suppliers WHEN NEW.id='"+source+"' BEGIN UPDATE suppliers SET name='Changed' WHERE id='"+target+"'; END"
+  else if(kind==='sync_outbox') trigger="AFTER INSERT ON sync_outbox WHEN NEW.operation_type='supplier.merged' BEGIN UPDATE sync_outbox SET payload_json='{}' WHERE operation_id=NEW.operation_id; END"
+  else if(kind==='app_meta') trigger="AFTER INSERT ON app_meta WHEN NEW.key LIKE 'supplier-merge:%' BEGIN DELETE FROM app_meta WHERE key=NEW.key; END"
+  else {
+    const field=kind==='suppliers'?'name':kind==='supply_invoices'?'notes':'amount'
+    const value=field==='amount'?'NEW.amount+1':"'Changed'"
+    trigger="AFTER UPDATE ON "+kind+" BEGIN UPDATE "+kind+" SET "+field+"="+value+" WHERE id=NEW.id; END"
+  }
+  db.exec('CREATE TRIGGER alter_merge '+trigger)
+  const before=snap();expect(merge).toThrow();expect(snap()).toEqual(before)
+  db.exec('DROP TRIGGER alter_merge');merge();expect(supply.getInvoice(a.id).supplier_id).toBe(target)
+})
+
+it('rejects coherent line changes during a supplier transfer', () => {
+  invoice()
+  db.exec('CREATE TRIGGER alter_lines AFTER UPDATE OF supplier_id ON supply_invoices BEGIN UPDATE supply_invoice_items SET qty=1,purchase_price=200 WHERE invoice_id=NEW.id; END')
+  const before=snap();expect(merge).toThrow();expect(snap()).toEqual(before)
+  db.exec('DROP TRIGGER alter_lines');merge()
+})
 
 it('merges an empty duplicate once, survives restart and queue cleanup without changing the primary', () => {
   const before = supply.getSupplier(target), result = merge()

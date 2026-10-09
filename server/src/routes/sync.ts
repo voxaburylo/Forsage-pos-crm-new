@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { getBootstrapSnapshot, getSyncChanges, pushLocalOperations } from '../services/syncService.js'
+import { streamSyncJson } from '../lib/streamSyncJson.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -44,7 +45,7 @@ router.get('/changes', async (req, res, next) => {
       includeReferences: parsed.data.include_references,
       resetGeneration: parsed.data.reset_generation,
     })
-    res.json({ data })
+    await streamSyncJson(res, data)
   } catch (error) {
     next(error)
   }
@@ -53,7 +54,7 @@ router.get('/changes', async (req, res, next) => {
 router.get('/bootstrap', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
     const data = await getBootstrapSnapshot(req.user!.tenant_id)
-    res.json({ data })
+    await streamSyncJson(res, data)
   } catch (error) {
     next(error)
   }

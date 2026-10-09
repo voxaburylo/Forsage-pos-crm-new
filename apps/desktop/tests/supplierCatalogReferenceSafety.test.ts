@@ -9,6 +9,62 @@ import { LocalSupplierCatalogRepository } from '../src/repositories/supplierCata
 
 let root: string, db: LocalDatabase, catalog: LocalSupplierCatalogRepository, source: string
 const item = { name: 'Тестова позиція', sku: 'TEST', price_kopecks: 12000, qty: '2' }
+
+it.each(['item','import'])('rejects a foreign clean %s ID instead of overwriting its data', kind => {
+  const at = '2026-10-07T06:00:00Z'
+  const record = { ...item, id: 'existing-record', supplier_id: null, filename: 'original.csv' }
+  if (kind === 'item') catalog.upsertRemoteItem(record, tenant, at)
+  else catalog.upsertRemoteImport(record, tenant, at)
+  const table = kind === 'item' ? 'supplier_price_items' : 'supplier_price_imports'
+  db.prepare('UPDATE ' + table + ' SET tenant_id=? WHERE id=?').run('another-tenant', record.id)
+  const before = snapshot()
+  const changed = { ...record, name: 'Unexpected replacement', filename: 'changed.csv' }
+  expect(() => kind === 'item'
+    ? catalog.upsertRemoteItem(changed, tenant, at)
+    : catalog.upsertRemoteImport(changed, tenant, at)).toThrow(/належ|організаці/i)
+  expect(snapshot()).toEqual(before)
+})
+it.each(['item','import'])('rejects a %s copy explicitly addressed to another tenant', kind => {
+  const record = { ...item, id: 'new-record', tenant_id: 'another-tenant', supplier_id: null, filename: 'wrong.csv' }
+  const before = snapshot()
+  expect(() => kind === 'item'
+    ? catalog.upsertRemoteItem(record, tenant, '2026-10-07T06:00:00Z')
+    : catalog.upsertRemoteImport(record, tenant, '2026-10-07T06:00:00Z')).toThrow(/належ|організаці/i)
+  expect(snapshot()).toEqual(before)
+})
+it.each(['item','import'])('keeps a local unsent %s unchanged and reports that it was skipped', kind => {
+  const at = '2026-10-07T06:00:00Z'
+  const record = { ...item, id: 'dirty-record', supplier_id: null, filename: 'local.csv' }
+  if (kind === 'item') catalog.upsertRemoteItem(record, tenant, at)
+  else catalog.upsertRemoteImport(record, tenant, at)
+  const table = kind === 'item' ? 'supplier_price_items' : 'supplier_price_imports'
+  db.prepare('UPDATE ' + table + ' SET dirty_at=? WHERE id=?').run(at, record.id)
+  const before = snapshot()
+  expect(kind === 'item' ? catalog.upsertRemoteItem(record, tenant, at) : catalog.upsertRemoteImport(record, tenant, at)).toBe(false)
+  expect(snapshot()).toEqual(before)
+})
+it.each(['item','import'])('still updates a clean %s owned by the selected tenant', kind => {
+  const at = '2026-10-07T06:00:00Z'
+  const record = { ...item, id: 'owned-record', tenant_id: tenant, supplier_id: null, filename: 'original.csv', updated_at: at }
+  const apply = (value: any) => kind === 'item' ? catalog.upsertRemoteItem(value, tenant, at) : catalog.upsertRemoteImport(value, tenant, at)
+  expect(apply(record)).toBe(true)
+  expect(apply({ ...record, name: 'Оновлена назва', filename: 'new.csv', updated_at: '2026-10-07T07:00:00Z' })).toBe(true)
+  if (kind === 'item') expect(db.prepare('SELECT name FROM supplier_price_items WHERE id=?').get(record.id)).toEqual({ name: 'Оновлена назва' })
+  else expect(db.prepare('SELECT filename FROM supplier_price_imports WHERE id=?').get(record.id)).toEqual({ filename: 'new.csv' })
+})
+
+it.each(['item','import'])('rejects if the database declines a clean %s update', kind => {
+  const at = '2026-10-07T06:00:00Z'
+  const record = { ...item, id: 'skipped-record', supplier_id: null, filename: 'original.csv' }
+  const apply = (value: any) => kind === 'item' ? catalog.upsertRemoteItem(value, tenant, at) : catalog.upsertRemoteImport(value, tenant, at)
+  expect(apply(record)).toBe(true)
+  const table = kind === 'item' ? 'supplier_price_items' : 'supplier_price_imports'
+  db.exec('CREATE TRIGGER suppress_price_update BEFORE UPDATE ON ' + table + ' BEGIN SELECT RAISE(IGNORE); END;')
+  const before = snapshot()
+  expect(() => apply({ ...record, name: 'Do not save', filename: 'changed.csv', updated_at: '2026-10-07T07:00:00Z' })).toThrow(/Прайс/)
+  expect(snapshot()).toEqual(before)
+})
+
 const snapshot = () => Object.fromEntries(['suppliers','supplier_price_items','supplier_price_imports','sync_outbox','products']
   .map(table => [table, db.prepare('SELECT * FROM ' + table + ' ORDER BY rowid').all()]))
 beforeEach(() => {

@@ -1,4 +1,5 @@
 import type { LocalDatabase } from '../db/localDatabase'
+import { isDeepStrictEqual } from 'node:util'
 import { assertSupplierHasNoHistory, supplierMergeHistoryError } from './supplierMergeSafety'
 import { normalizeSupplyItem, checkedSupplyMoney } from './supplyValidation'
 import { listDeletedSupplierHistory } from './deletedSupplierHistory'
@@ -78,10 +79,29 @@ export function prepareSupplierHistory(db: LocalDatabase, tenant: string, source
 }
 
 export function applySupplierHistory(db: LocalDatabase, tenant: string, source: string, target: string, timestamp: string) {
-  db.prepare('UPDATE supply_invoices SET supplier_id=?,dirty_at=?,updated_at=? WHERE tenant_id=? AND supplier_id=?')
-    .run(target,timestamp,timestamp,tenant,source)
-  db.prepare('UPDATE supplier_payments SET supplier_id=?,dirty_at=?,updated_at=? WHERE tenant_id=? AND supplier_id=?')
-    .run(target,timestamp,timestamp,tenant,source)
-  db.prepare('UPDATE cash_operations SET supplier_id=?,dirty_at=?,updated_at=? WHERE tenant_id=? AND supplier_id=?')
-    .run(target,timestamp,timestamp,tenant,source)
+  const transfers = ['supply_invoices', 'supplier_payments', 'cash_operations'].map(table => ({
+    table, rows: db.prepare('SELECT * FROM ' + table + ' WHERE tenant_id=? AND supplier_id=?').all(tenant, source) as (Record<string, unknown> & { id: string })[],
+  }))
+  const lines = transfers[0].rows.map(row => ({
+    invoiceId: row.id, rows: db.prepare('SELECT * FROM supply_invoice_items WHERE invoice_id=? ORDER BY id').all(row.id),
+  }))
+  for (const { table, rows } of transfers) {
+    const result = db.prepare('UPDATE ' + table + ' SET supplier_id=?,dirty_at=?,updated_at=? WHERE tenant_id=? AND supplier_id=?')
+      .run(target, timestamp, timestamp, tenant, source)
+    if (result.changes !== rows.length) throw conflict()
+  }
+  // Verify again at the end of the caller's transaction, including later writes.
+  return () => {
+    for (const invoice of lines) {
+      if (!isDeepStrictEqual(db.prepare('SELECT * FROM supply_invoice_items WHERE invoice_id=? ORDER BY id').all(invoice.invoiceId), invoice.rows)) throw conflict()
+    }
+    for (const { table, rows } of transfers) {
+      if (db.prepare('SELECT 1 FROM ' + table + ' WHERE supplier_id=? LIMIT 1').get(source)) throw conflict()
+      for (const row of rows) {
+        const expected = { ...row, supplier_id: target, dirty_at: timestamp, updated_at: timestamp }
+        const actual = db.prepare('SELECT * FROM ' + table + ' WHERE id=? AND tenant_id=?').get(row.id, tenant) as Record<string, unknown> | undefined
+        if (!actual || Object.entries(expected).some(([key, value]) => actual[key] !== value)) throw conflict()
+      }
+    }
+  }
 }

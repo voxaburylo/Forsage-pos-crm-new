@@ -7,6 +7,7 @@ import { supplierApi } from './supplierApi'
 import { Layout } from '@/components/Layout'
 import { Button, Card, Input, Modal, SearchInput, Table } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
+import { catalogPriceFromHryvnia, catalogQuantity } from '@/lib/supplierCatalogNumbers'
 
 const PAGE_SIZE = 50
 
@@ -139,8 +140,14 @@ export default function SupplierPricesPage() {
   async function handleSave(event: React.FormEvent) {
     event.preventDefault()
     if (!formName.trim()) { toast.error('Назва товару обов’язкова'); return }
-    const parsedPrice = Number.parseFloat(formPrice.replace(',', '.'))
-    if (!Number.isFinite(parsedPrice) || parsedPrice < 0) { toast.error('Перевірте закупівельну ціну'); return }
+    let priceKopecks: number, qty: string
+    try {
+      priceKopecks = catalogPriceFromHryvnia(formPrice)
+      qty = catalogQuantity(formQty.trim() || '0')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Перевірте ціну та кількість')
+      return
+    }
     const sku = formSku.trim() || `AUTO-${crypto.randomUUID().replace(/-/g, '').toUpperCase()}`
     setSaving(true)
     try {
@@ -149,8 +156,8 @@ export default function SupplierPricesPage() {
         barcode: normalizeSupplierBarcode(formBarcode) || null,
         brand: formBrand.trim() || undefined,
         name: formName.trim(),
-        price_kopecks: Math.round(parsedPrice * 100),
-        qty: formQty.trim() || '0',
+        price_kopecks: priceKopecks,
+        qty,
         warehouse_name: formWarehouse.trim() || undefined,
         supplier_id: formSupplierId || null,
       }

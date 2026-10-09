@@ -45,6 +45,7 @@ import { LocalStaffRepository } from './repositories/staffRepository'
 import { LocalWarehouseRepository } from './repositories/warehouseRepository'
 import { LocalPurchaseRepository } from './repositories/localPurchaseRepository'
 import { LocalSyncRepository } from './repositories/syncRepository'
+import { createBackgroundSyncExecutor } from './repositories/syncPullWorker'
 import { LocalSupplierCatalogRepository } from './repositories/supplierCatalogRepository'
 import { LocalProblemRepository } from './repositories/problemRepository'
 import {
@@ -1077,7 +1078,7 @@ app.whenReady().then(async () => {
       return safeStorage.encryptString(text).toString('base64')
     },
     decrypt: text => safeStorage.decryptString(Buffer.from(text,'base64')),
-  }))
+  }), createBackgroundSyncExecutor(localDatabase))
   localSupplierCatalog = new LocalSupplierCatalogRepository(localDatabase)
   localProblems = new LocalProblemRepository(localDatabase)
   shiftBackups = new ShiftBackupService(localDatabase,
@@ -1316,9 +1317,15 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:supplier-catalog:delete', (_event, id: string, tenantId?: string) =>
     requireLocalSupplierCatalog().delete(id, tenantId),
   )
-  handleDesktopIpc('desktop:supplier-catalog:import-rows', (_event, filename: string, rows: any[], options: any) =>
-    requireLocalSupplierCatalog().importRows(filename, rows, options),
-  )
+  handleDesktopIpc('desktop:supplier-catalog:import-rows', (_event, filename: string, rows: any[], options: any) => {
+    if (!options?.operation_id) throw new Error('Оновіть локальну програму для безпечного імпорту прайсу.')
+    const session = requireDesktopSession()
+    return requireLocalSupplierCatalog().importRows(filename, rows, { ...options, user_id: session.id, tenant_id: session.tenant_id })
+  })
+  handleDesktopIpc('desktop:supplier-catalog:resolve-import', (_event, operationId: string) => {
+    const session = requireDesktopSession()
+    return requireLocalSupplierCatalog().resolveImport(operationId, session.id, session.tenant_id)
+  })
 
   handleDesktopIpc('desktop:auth:login', (_event, phone: string, password: string) => {
     desktopLoginGeneration++
@@ -1940,6 +1947,7 @@ app.on('before-quit', (event) => {
       cashalot?.stopWorker()
       await shiftBackups?.stop()
       await localDatabase?.waitForBackup().catch((error) => writeDesktopDiagnostic('backup-on-quit-failed', error))
+      await localDatabase?.waitForBackgroundWrite().catch((error) => writeDesktopDiagnostic('copy-on-quit-failed', error))
       localDatabase?.close()
     } catch (error) { writeDesktopDiagnostic('database-close-failed', error) }
     finally {

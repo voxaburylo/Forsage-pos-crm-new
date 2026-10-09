@@ -4,6 +4,7 @@
  */
 
 import { db } from '../../db/supabase.js'
+import { fetchSupplierCatalogCopy, mergeCatalogSupplierParents } from './supplierCatalogCopy.js'
 import { hashSecret, isSupportedSecretHash } from '../../lib/secretHash.js'
 import { AppError } from '../../middleware/errorHandler.js'
 import { listUsers } from '../adminService.js'
@@ -203,8 +204,8 @@ export async function getSyncChanges({
   includeReferences = false,
   resetGeneration = 0,
 }: SyncChangesInput) {
-  // Every query is bounded by the same immutable upper timestamp.  Rows written
-  // later are intentionally replayed by the next request.
+  // Timestamp-based deltas share this upper bound. Supplier prices/history are
+  // a single-statement snapshot in declared full/delta scope, including newer versions.
   const syncState = await captureSyncState(tenantId)
   const nextCursor = syncState.cursor
   const generationMismatch = Boolean(since && resetGeneration !== syncState.generation)
@@ -225,7 +226,6 @@ export async function getSyncChanges({
   }
   const referencesIncluded = !since || includeReferences
   const canPullSupply = canPullSupplyData(role)
-  const canPullSupplierCatalog = role === 'owner' || role === 'admin'
   const historySince = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
   const snapshotSince = referencesIncluded ? undefined : since
 
@@ -275,8 +275,7 @@ export async function getSyncChanges({
     inventorySessions,
     inventoryItems,
     deletedInventorySessions,
-    supplierPriceItems,
-    supplierPriceImports,
+    supplierCatalogSnapshot,
     shopSettings,
     secondary,
   ] = await Promise.all([
@@ -424,28 +423,7 @@ export async function getSyncChanges({
         tieBreaker: 'entity_id',
       },
     ),
-    canPullSupplierCatalog
-      ? changed(
-          () => {
-            let query = db
-              .from('supplier_price_items')
-              .select('id,tenant_id,supplier_id,sku,barcode,brand,name,price_kopecks,qty,warehouse_name,created_at,updated_at,deleted_at')
-              .eq('tenant_id', tenantId)
-            if (!since) query = query.is('deleted_at', null)
-            return query
-          },
-          since,
-        )
-      : Promise.resolve([]),
-    canPullSupplierCatalog
-      ? changed(
-          () => db
-            .from('supplier_price_imports')
-            .select('id,tenant_id,supplier_id,filename,status,total_rows,processed_rows,errors_log,created_at,updated_at')
-            .eq('tenant_id', tenantId),
-          since,
-        )
-      : Promise.resolve([]),
+    fetchSupplierCatalogCopy(tenantId, nextCursor, role, referencesIncluded ? undefined : since),
     fetchShopSettings(tenantId, role),
     fetchSecondarySyncData({
       since,
@@ -457,6 +435,7 @@ export async function getSyncChanges({
     }),
   ])
 
+  const { data: supplierCatalogCopy, parents: catalogSupplierParents } = supplierCatalogSnapshot
   const [saleItems, customerOrderItems, supplyInvoiceItems] = await Promise.all([
     childrenForParents(
       sales.map((row: any) => String(row.id)),
@@ -599,8 +578,10 @@ export async function getSyncChanges({
       }
     })
 
-  const deletedSupplierIds = supplierRows.filter((row) => row.deleted_at).map((row) => row.id)
-  const suppliers = supplierRows.filter((row) => !row.deleted_at)
+  const coherentSuppliers = mergeCatalogSupplierParents(supplierRows, catalogSupplierParents)
+  const catalogSupplierIds = new Set(catalogSupplierParents.map(row => row.id))
+  const deletedSupplierIds = coherentSuppliers.filter(row => row.deleted_at).map(row => row.id)
+  const suppliers = coherentSuppliers.filter(row => !row.deleted_at || catalogSupplierIds.has(row.id))
   const deletedCustomerOrderIds = customerOrders.filter((row) => row.deleted_at).map((row) => row.id)
   const activeCustomerOrders = sanitizeCommercialFieldsForRole(customerOrders.filter((row) => !row.deleted_at), role)
   const activeCustomerOrderItems = sanitizeCommercialFieldsForRole(
@@ -657,8 +638,7 @@ export async function getSyncChanges({
     deleted_supply_invoice_ids: deletedSupplyInvoiceIds,
     supply_invoice_items: supplyInvoiceItems.map((row) => ({ ...row, invoice: undefined })),
     supplier_payments: supplierPayments.map((row) => ({ ...row, invoice: undefined })),
-    supplier_price_items: supplierPriceItems,
-    supplier_price_imports: supplierPriceImports,
+    ...supplierCatalogCopy,
     inventory_sessions: inventorySessions,
     deleted_inventory_session_ids: deletedInventorySessions.map((row) => row.entity_id),
     inventory_items: inventoryItems.map((row) => ({ ...row, product: undefined })),
@@ -671,8 +651,8 @@ export async function getSyncChanges({
 }
 
 export async function getBootstrapSnapshot(tenantId: string) {
-  // Capture one immutable upper bound before any query starts. Keyset paging
-  // avoids OFFSET drift and the first delta safely replays later writes.
+  // Capture the delta bound before reading. Supplier prices/history use their
+  // own single-statement complete snapshot, not timestamp pagination.
   const syncState = await captureSyncState(tenantId)
   const snapshotCursor = syncState.cursor
   const bootstrapHistorySince = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
@@ -690,7 +670,7 @@ export async function getBootstrapSnapshot(tenantId: string) {
     staff,
     categories,
     brands,
-    suppliers,
+    initialSuppliers,
     shifts,
     sales,
     saleItems,
@@ -708,8 +688,7 @@ export async function getBootstrapSnapshot(tenantId: string) {
     supplierPayments,
     inventorySessions,
     inventoryItems,
-    supplierPriceItems,
-    supplierPriceImports,
+    supplierCatalogSnapshot,
     shopSettings,
     secondary,
   ] = await Promise.all([
@@ -827,15 +806,7 @@ export async function getBootstrapSnapshot(tenantId: string) {
       .select('id,session_id,product_id,expected_stock,counted_stock,was_counted,price_checked,observed_retail_price,last_counted_by,created_at,updated_at,product:products!inner(tenant_id)')
       .eq('product.tenant_id', tenantId)
       .eq('was_counted', true)),
-    bounded(() => db
-      .from('supplier_price_items')
-      .select('id,tenant_id,supplier_id,sku,barcode,brand,name,price_kopecks,qty,warehouse_name,created_at,updated_at,deleted_at')
-      .eq('tenant_id', tenantId)
-      .is('deleted_at', null)),
-    bounded(() => db
-      .from('supplier_price_imports')
-      .select('id,tenant_id,supplier_id,filename,status,total_rows,processed_rows,errors_log,created_at,updated_at')
-      .eq('tenant_id', tenantId)),
+    fetchSupplierCatalogCopy(tenantId, snapshotCursor, 'owner'),
     fetchShopSettings(tenantId, 'owner'),
     fetchSecondarySyncData({
       since: undefined,
@@ -847,6 +818,8 @@ export async function getBootstrapSnapshot(tenantId: string) {
     }),
   ])
 
+  const { data: supplierCatalogCopy, parents: catalogSupplierParents } = supplierCatalogSnapshot
+  const suppliers = mergeCatalogSupplierParents(initialSuppliers, catalogSupplierParents)
   return {
     exported_at: snapshotCursor,
     tenant_id: tenantId,
@@ -871,8 +844,7 @@ export async function getBootstrapSnapshot(tenantId: string) {
     supply_invoices: supplyInvoices,
     supply_invoice_items: supplyInvoiceItems.map((row) => ({ ...row, invoice: undefined })),
     supplier_payments: supplierPayments.map((row) => ({ ...row, invoice: undefined })),
-    supplier_price_items: supplierPriceItems,
-    supplier_price_imports: supplierPriceImports,
+    ...supplierCatalogCopy,
     inventory_sessions: inventorySessions,
     inventory_items: inventoryItems.map((row) => ({ ...row, product: undefined })),
     shop_settings: shopSettings,
@@ -898,8 +870,8 @@ export async function getBootstrapSnapshot(tenantId: string) {
       supply_invoices: supplyInvoices.length,
       supply_invoice_items: supplyInvoiceItems.length,
       supplier_payments: supplierPayments.length,
-      supplier_price_items: supplierPriceItems.length,
-      supplier_price_imports: supplierPriceImports.length,
+      supplier_price_items: supplierCatalogCopy.supplier_price_items.length,
+      supplier_price_imports: supplierCatalogCopy.supplier_price_imports.length,
       inventory_sessions: inventorySessions.length,
       inventory_items: inventoryItems.length,
       settings: shopSettings ? 1 : 0,

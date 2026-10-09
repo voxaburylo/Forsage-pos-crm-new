@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import type { PoolClient } from 'pg'
 import { runTransaction } from '../../db/pg.js'
-import { assertNoSupplierReferences } from '../supplierMergeSafety.js'
+import { assertNoSupplierReferences, verifySupplierMergeStored } from '../supplierMergeSafety.js'
+import { isDeepStrictEqual } from 'node:util'
 import type { SyncOutboxOperation } from './syncCore.js'
 import {
   invoiceId, invoiceDate, invoiceMoney, invoiceSnapshot, parseInvoiceSnapshot,
@@ -118,6 +119,7 @@ export async function applySupplierHistoryMerged(tenant: string, operation: Sync
     const expectedPaymentIds = new Set(invoices.flatMap(i => i.payments.map(p => p.id)))
     const allPayments = (await client.query('SELECT id,tenant_id FROM supplier_payments WHERE supplier_id=$1',[source.id])).rows
     if (allPayments.length !== expectedPaymentIds.size || allPayments.some(p => p.tenant_id !== tenant || !expectedPaymentIds.has(p.id))) invoiceConflict()
+    const expectedHistory: { invoice: any, payments: any[], snapshot: typeof invoices[number]['snapshot'] }[] = []
     for (const i of invoices) {
       const invoice = (await client.query('SELECT * FROM supply_invoices WHERE id=$1 FOR UPDATE',[i.id])).rows[0]
       const state = await readInvoiceState(client,tenant,invoice,i.status==='deleted')
@@ -128,16 +130,45 @@ export async function applySupplierHistoryMerged(tenant: string, operation: Sync
       if (await checkInvoiceReceipt(client,tenant,checkpoint(operation,i.id),copy,invoice,true)) invoiceConflict()
       const payments = (await client.query('SELECT * FROM supplier_payments WHERE invoice_id=$1 ORDER BY id FOR UPDATE',[i.id])).rows
       if (invoiceHash(payments.map(paymentView)) !== invoiceHash([...i.payments].sort((a,b) => a.id.localeCompare(b.id)))) invoiceConflict()
+      expectedHistory.push({
+        snapshot: { ...i.snapshot, supplier_id: target.id },
+        invoice: { ...invoice, supplier_id: target.id, updated_at: new Date(operation.created_at) },
+        payments: payments.map(payment => ({ ...payment, supplier_id: target.id, updated_at: new Date(operation.created_at) })),
+      })
     }
     // Only pointers change. Numbers, actors, timestamps of payment, line IDs and quantities stay intact.
     for (const i of invoices) {
-      await client.query('UPDATE supply_invoices SET supplier_id=$3,updated_at=$4 WHERE tenant_id=$1 AND id=$2',[tenant,i.id,target.id,operation.created_at])
-      await client.query('UPDATE supplier_payments SET supplier_id=$3,updated_at=$4 WHERE tenant_id=$1 AND invoice_id=$2',[tenant,i.id,target.id,operation.created_at])
+      const moved = await client.query('UPDATE supply_invoices SET supplier_id=$3,updated_at=$4 WHERE tenant_id=$1 AND id=$2 RETURNING id,updated_at',[tenant,i.id,target.id,operation.created_at])
+      const paid = await client.query('UPDATE supplier_payments SET supplier_id=$3,updated_at=$4 WHERE tenant_id=$1 AND invoice_id=$2 RETURNING id,updated_at',[tenant,i.id,target.id,operation.created_at])
+      if (moved.rowCount !== 1 || moved.rows[0].id !== i.id || paid.rowCount !== i.payments.length) invoiceConflict()
+      // Production sync triggers set updated_at to server time; capture that value.
+      const expected = expectedHistory.find(entry => entry.invoice.id === i.id)!
+      expected.invoice.updated_at = moved.rows[0].updated_at
+      for (const payment of expected.payments) {
+        const written = paid.rows.find(row => row.id === payment.id)
+        if (!written) invoiceConflict()
+        payment.updated_at = written.updated_at
+      }
+      if ([expected.invoice, ...expected.payments].some(row => !(row.updated_at instanceof Date)
+        || !Number.isFinite(row.updated_at.getTime()))) invoiceConflict()
       await saveInvoiceReceipt(client,tenant,checkpoint(operation,i.id),copy)
     }
-    await client.query('UPDATE suppliers SET deleted_at=$3,is_active=false,updated_at=$3 WHERE tenant_id=$1 AND id=$2',[tenant,source.id,operation.created_at])
-    await client.query(`INSERT INTO supplier_merge_receipts(tenant_id,duplicate_id,primary_id,result,merged_at,operation_id,device_id,source_sequence,history_payload)
-      VALUES($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9::jsonb)`,
+    const archived = await client.query('UPDATE suppliers SET deleted_at=$3,is_active=false,updated_at=$3 WHERE tenant_id=$1 AND id=$2 RETURNING id,updated_at',[tenant,source.id,operation.created_at])
+    if (archived.rowCount !== 1) invoiceConflict()
+    const insertedReceipt = await client.query(`INSERT INTO supplier_merge_receipts(tenant_id,duplicate_id,primary_id,result,merged_at,operation_id,device_id,source_sequence,history_payload)
+      VALUES($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9::jsonb) RETURNING duplicate_id`,
       [tenant,source.id,target.id,JSON.stringify(target),operation.created_at,operation.operation_id,operation.device_id,operation.sequence,JSON.stringify(copy)])
+    if (insertedReceipt.rowCount !== 1) invoiceConflict()
+    await verifySupplierMergeStored(client, source, target, operation.created_at, archived.rows[0].updated_at, {
+      operation_id: operation.operation_id.toLowerCase(), device_id: operation.device_id,
+      source_sequence: operation.sequence, history_payload: copy,
+    })
+    for (const expected of expectedHistory) {
+      const actual = (await client.query('SELECT * FROM supply_invoices WHERE tenant_id=$1 AND id=$2',[tenant,expected.invoice.id])).rows[0]
+      const payments = (await client.query('SELECT * FROM supplier_payments WHERE invoice_id=$1 ORDER BY id',[expected.invoice.id])).rows
+      if (!isDeepStrictEqual(actual, expected.invoice) || !isDeepStrictEqual(payments, expected.payments)
+        || snapshotHash(await readInvoiceState(client,tenant,actual,!!actual.deleted_at)) !== snapshotHash(expected.snapshot)
+        || !await checkInvoiceReceipt(client,tenant,checkpoint(operation,expected.invoice.id),copy,actual,true)) invoiceConflict()
+    }
   })
 }

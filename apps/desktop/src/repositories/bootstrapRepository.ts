@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { writePullCompletion } from './syncPullCompletion'
+import { validateSupplierCatalogManifest } from '../lib/supplierCatalogManifest'
 import type { LocalDatabase } from '../db/localDatabase'
 import type { LocalBootstrapImportResult, LocalBootstrapSnapshot, LocalSyncPullChanges, LocalSyncPullResult } from '../db/localTypes'
 import { normalizeSearchText } from './catalogRepository'
@@ -36,7 +38,8 @@ function timestamp(row: any, fallback: string): string {
 export class LocalBootstrapRepository {
   constructor(private readonly db: LocalDatabase) {}
 
-  applySyncChanges(tenantId: string, changes: LocalSyncPullChanges): LocalSyncPullResult {
+  applySyncChanges(tenantId: string, changes: LocalSyncPullChanges, finalize?: (counts: LocalSyncPullResult['counts']) => void): LocalSyncPullResult {
+    validateSupplierCatalogManifest(changes, tenantId, changes.cursor)
     const appliedAt = nowIso()
     const counts = {
       staff: 0,
@@ -321,13 +324,9 @@ export class LocalBootstrapRepository {
         if (this.deleteInventorySessionFromRemote(tenantId, sessionId)) counts.deleted_inventory_sessions++
       }
 
-      const supplierCatalog = new LocalSupplierCatalogRepository(this.db)
-      for (const item of changes.supplier_price_items ?? []) {
-        if (supplierCatalog.upsertRemoteItem(item, tenantId, appliedAt)) counts.supplier_price_items++
-      }
-      for (const record of changes.supplier_price_imports ?? []) {
-        if (supplierCatalog.upsertRemoteImport(record, tenantId, appliedAt)) counts.supplier_price_imports++
-      }
+      const catalogCopy = new LocalSupplierCatalogRepository(this.db).applyRemoteCopy(
+        changes.supplier_price_items, changes.supplier_price_imports, tenantId, appliedAt)
+      Object.assign(counts, catalogCopy.counts)
       const secondaryCounts = new LocalSecondarySyncImporter(this.db).apply(tenantId, changes, appliedAt, {
         catalogStructure: changes.catalog_structure_snapshot_included === true,
         staff: changes.staff_snapshot_included === true || changes.staff_directory_snapshot_included === true,
@@ -337,6 +336,8 @@ export class LocalBootstrapRepository {
         stockReserves: changes.stock_reserves_snapshot_included === true,
       })
       Object.assign(counts, secondaryCounts)
+      finalize?.(counts)
+      catalogCopy.verify()
     })
 
     return { applied_at: appliedAt, cursor: changes.cursor, counts }
@@ -346,6 +347,7 @@ export class LocalBootstrapRepository {
     const importedAt = nowIso()
     const cursor = snapshot.exported_at || importedAt
     const tenantId = snapshot.tenant_id
+    validateSupplierCatalogManifest(snapshot, tenantId, cursor)
     const counts = {
       staff: 0,
       staff_pins: 0,
@@ -519,13 +521,9 @@ export class LocalBootstrapRepository {
         if (this.deleteInventorySessionFromRemote(tenantId, sessionId)) counts.deleted_inventory_sessions++
       }
 
-      const supplierCatalog = new LocalSupplierCatalogRepository(this.db)
-      for (const item of snapshot.supplier_price_items ?? []) {
-        if (supplierCatalog.upsertRemoteItem(item, tenantId, importedAt)) counts.supplier_price_items++
-      }
-      for (const record of snapshot.supplier_price_imports ?? []) {
-        if (supplierCatalog.upsertRemoteImport(record, tenantId, importedAt)) counts.supplier_price_imports++
-      }
+      const catalogCopy = new LocalSupplierCatalogRepository(this.db).applyRemoteCopy(
+        snapshot.supplier_price_items, snapshot.supplier_price_imports, tenantId, importedAt)
+      Object.assign(counts, catalogCopy.counts)
       const secondaryCounts = new LocalSecondarySyncImporter(this.db).apply(tenantId, snapshot, importedAt, {
         catalogStructure: true,
         staff: true,
@@ -535,32 +533,10 @@ export class LocalBootstrapRepository {
       })
       Object.assign(counts, secondaryCounts)
 
-      this.db.prepare(`
-        INSERT INTO app_meta(key, value_json, updated_at)
-        VALUES ('last_bootstrap_snapshot', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET
-          value_json = excluded.value_json,
-          updated_at = excluded.updated_at
-      `).run(json({ exported_at: snapshot.exported_at, counts }, {}), importedAt)
-
-      this.db.prepare(`
-        INSERT INTO sync_state(scope, pull_cursor, last_attempt_at, last_success_at, last_error, updated_at)
-        VALUES ('desktop_server_pull', ?, ?, ?, NULL, ?)
-        ON CONFLICT(scope) DO UPDATE SET
-          pull_cursor = excluded.pull_cursor,
-          last_attempt_at = excluded.last_attempt_at,
-          last_success_at = excluded.last_success_at,
-          last_error = NULL,
-          updated_at = excluded.updated_at
-      `).run(cursor, importedAt, importedAt, importedAt)
-
-      this.db.prepare(`
-        INSERT INTO app_meta(key, value_json, updated_at)
-        VALUES ('desktop_last_reference_sync_at', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET
-          value_json = excluded.value_json,
-          updated_at = excluded.updated_at
-      `).run(JSON.stringify(importedAt), importedAt)
+      writePullCompletion(this.db, {
+        cursor, appliedAt: importedAt, referencesIncluded: true, bootstrap: true, counts,
+      })
+      catalogCopy.verify()
     })
 
     return { imported_at: importedAt, tenant_id: tenantId, counts }
