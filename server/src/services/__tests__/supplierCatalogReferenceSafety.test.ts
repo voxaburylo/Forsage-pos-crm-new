@@ -12,6 +12,42 @@ vi.mock('../../db/pg.js', () => ({ runTransaction: (fn: any) => state.db.transac
 })) }))
 import { applySupplierCatalogImported, applySupplierCatalogItemUpsert, applySupplierCatalogItemDeleted } from '../supplierCatalogSyncService.js'
 import { lockCatalogCopy, saveCatalogReceipt } from '../supplierCatalogReceipt.js'
+import { MVP_TENANT_ID } from '../../config/constants.js'
+
+it.each(['item','delete','add','replace'])('copies the original shop %s and keeps retries idempotent', async kind => {
+  await state.db.query('UPDATE suppliers SET tenant_id=$1 WHERE id=$2', [MVP_TENANT_ID,supplier])
+  const foreignBefore = await rows('SELECT * FROM supplier_price_items WHERE tenant_id=$1 ORDER BY id',[tenant])
+  const first = { ...itemOperation(), tenant_id:MVP_TENANT_ID }
+  if (kind === 'delete') await applySupplierCatalogItemUpsert(MVP_TENANT_ID,first)
+  const op = kind === 'item' ? first : kind === 'delete'
+    ? { ...deleteOperation(), tenant_id:MVP_TENANT_ID }
+    : { ...operation(), tenant_id:MVP_TENANT_ID }
+  if (kind === 'add' || kind === 'replace') op.payload.mode=kind
+  const apply = kind === 'item' ? applySupplierCatalogItemUpsert : kind === 'delete'
+    ? applySupplierCatalogItemDeleted : applySupplierCatalogImported
+  await apply(MVP_TENANT_ID,op)
+  const after=await snap()
+  await apply(MVP_TENANT_ID,op)
+  expect(await snap()).toEqual(after)
+  expect(await rows('SELECT * FROM supplier_price_items WHERE tenant_id=$1 ORDER BY id',[tenant])).toEqual(foreignBefore)
+  expect(await rows('SELECT tenant_id FROM supplier_catalog_copy_receipts WHERE operation_id=$1',[op.operation_id]))
+    .toEqual([{tenant_id:MVP_TENANT_ID}])
+  const item=(await rows('SELECT tenant_id,deleted_at FROM supplier_price_items WHERE id=$1',[itemId]))[0]
+  expect(item.tenant_id).toBe(MVP_TENANT_ID)
+  expect(Boolean(item.deleted_at)).toBe(kind==='delete')
+})
+it.each(['foreign-operation','unrecognized-legacy','invalid-operation-id','invalid-aggregate-id'])('does not bypass receipt checks for %s', async kind => {
+  const op={...itemOperation(),tenant_id:MVP_TENANT_ID}
+  const context=kind==='unrecognized-legacy'?'00000000-0000-0000-0000-000000000002':MVP_TENANT_ID
+  if(kind==='foreign-operation')op.tenant_id=tenant
+  if(kind==='unrecognized-legacy')op.tenant_id=context
+  if(kind==='invalid-operation-id')op.operation_id=MVP_TENANT_ID
+  if(kind==='invalid-aggregate-id')op.aggregate_id=MVP_TENANT_ID
+  const before=await snap()
+  await expect(applySupplierCatalogItemUpsert(context,op)).rejects.toMatchObject({status:400})
+  expect(await snap()).toEqual(before)
+})
+
 
 it.each(['upsert','delete','import add','import replace'])('rejects a foreign item ID during %s without any partial change', async action => {
   await state.db.query('INSERT INTO supplier_price_items(id,tenant_id,sku,name) VALUES($1,$2,$3,$4)', [itemId,randomUUID(),'FOREIGN','Private item'])

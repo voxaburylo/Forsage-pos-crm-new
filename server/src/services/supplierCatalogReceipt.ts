@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { PoolClient } from 'pg'
 import { AppError } from '../middleware/errorHandler.js'
+import { MVP_TENANT_ID } from '../config/constants.js'
 import type { SyncOutboxOperation } from './sync/syncCore.js'
 
 export type SupplierCatalogOperation = Pick<SyncOutboxOperation,
@@ -49,7 +50,7 @@ export async function lockCatalogCopy(
   operation: SupplierCatalogOperation,
   expectedType: CatalogOperationType,
 ): Promise<Receipt | null> {
-  if (!uuid(tenantId) || operation.tenant_id !== tenantId || !uuid(operation.operation_id)
+  if ((tenantId !== MVP_TENANT_ID && !uuid(tenantId)) || operation.tenant_id !== tenantId || !uuid(operation.operation_id)
     || !uuid(operation.aggregate_id) || operation.operation_type !== expectedType
     || typeof operation.device_id !== 'string' || !operation.device_id.trim()
     || !Number.isSafeInteger(operation.sequence) || operation.sequence <= 0) {
