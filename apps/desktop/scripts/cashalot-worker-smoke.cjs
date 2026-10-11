@@ -4,6 +4,9 @@ const { app, safeStorage } = require('electron')
 const assert = require('node:assert/strict')
 const { EventEmitter } = require('node:events')
 const fs = require('node:fs')
+// Emergency app.exit may run quit before the case's finally restores mocks.
+// Cleanup may use only these captured functions and the owned disposable path.
+const cleanupFs = { existsSync: fs.existsSync, realpathSync: fs.realpathSync, rmSync: fs.rmSync }
 const os = require('node:os')
 const path = require('node:path')
 const childProcess = require('node:child_process')
@@ -500,7 +503,7 @@ app.on('quit', () => {
   // This is only the unique disposable profile created above, never a shop path.
   if (path.dirname(profileRoot) === path.resolve(os.tmpdir())
     && path.basename(profileRoot).startsWith('forsage-cashalot-worker-')
-    && fs.existsSync(profileRoot) && fs.realpathSync(profileRoot) === profileRoot) {
-    try { fs.rmSync(profileRoot, { recursive: true, force: true }) } catch { /* Electron can still hold its own isolated cache. */ }
+    && cleanupFs.existsSync(profileRoot) && cleanupFs.realpathSync(profileRoot) === profileRoot) {
+    try { cleanupFs.rmSync(profileRoot, { recursive: true, force: true }) } catch { /* Electron can still hold its own isolated cache. */ }
   }
 })
