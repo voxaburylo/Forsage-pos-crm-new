@@ -9,10 +9,16 @@ const { createHash } = require('node:crypto')
 const { assertStandaloneBackup, verifyRestore } = require('./backup-restore-readiness.cjs')
 const hash = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex')
 
-function assertDisposable(root) {
+function assertOwnedRoot(root) {
   assert.equal(path.dirname(root), path.resolve(os.tmpdir()))
   assert(path.basename(root).startsWith('forsage-restore-electron-'))
   assert.equal(fs.realpathSync(root), root)
+  const stat = fs.lstatSync(root)
+  assert(stat.isDirectory() && !stat.isSymbolicLink(), 'Refuse redirected fixture root')
+}
+
+function assertDisposable(root) {
+  assertOwnedRoot(root)
   function check(directory) {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
       const file = path.join(directory, entry.name)
@@ -21,6 +27,18 @@ function assertDisposable(root) {
     }
   }
   check(root)
+}
+
+function assertSyntheticTargets(root, source, previous) {
+  assertOwnedRoot(root)
+  assert.equal(source, path.join(root, 'selected.db'))
+  assert.equal(previous, path.join(root, 'previous.db'))
+  const store = path.join(root, 'synthetic-store')
+  for (const target of [source, previous, store]) {
+    // lstat also finds dangling links; existsSync alone would accept them.
+    assert.equal(fs.lstatSync(target, { throwIfNoEntry: false }), undefined, 'Synthetic target already exists')
+  }
+  return store
 }
 
 function assertCleanRestoreExit(result) {
@@ -38,16 +56,15 @@ function assertCleanRestoreExit(result) {
 }
 
 async function createSyntheticBackups(root, compiled, source, previous) {
-  // The entire fixture is inside this invocation's owned directory.
-  assertDisposable(root)
-  assert.equal(source, path.join(root, 'selected.db'))
-  assert.equal(previous, path.join(root, 'previous.db'))
+  // Chromium is already using root/profile. Validate only our fresh database
+  // targets here; the controller still scans the whole tree after Electron exits.
+  const store = assertSyntheticTargets(root, source, previous)
   const { LocalDatabase } = require(path.join(compiled, 'db/localDatabase.js'))
   const { LocalCatalogRepository } = require(path.join(compiled, 'repositories/catalogRepository.js'))
   const { embedBackupPhotos } = require(path.join(compiled, 'backup/embeddedPhotos.js'))
   const { createVerifiedBackup } = require(path.join(compiled, 'db/verifiedBackup.js'))
   const { pathToFileURL } = require('node:url')
-  const store = path.join(root, 'synthetic-store')
+  fs.mkdirSync(store) // Exclusive creation; never reuse a pre-existing store.
   let db = new LocalDatabase(store)
   try {
     const photo = path.join(store, 'photos', 'fixture.jpg')
@@ -132,4 +149,4 @@ if (process.versions.electron && process.argv.includes('--restore-child')) {
   }
 }
 
-module.exports = { assertCleanRestoreExit }
+module.exports = { assertCleanRestoreExit, assertDisposable, assertSyntheticTargets }
