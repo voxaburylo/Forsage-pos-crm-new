@@ -165,9 +165,12 @@ app.whenReady().then(async () => {
         this.stdin.end = () => { this.ends++ }
       }
       kill() { this.kills++; return true }
+      respondWithResult(request, result) {
+        this.stdout.emit('data', line({ id: request.id, ok: true, result }))
+      }
       respond(request, number) {
-        this.stdout.emit('data', line({ id: request.id, ok: true,
-          result: { Return: true, ReceiptFiscalNum: number, FSKOReceiptLink: `https://example.invalid/${number}` } }))
+        this.respondWithResult(request,
+          { Return: true, ReceiptFiscalNum: number, FSKOReceiptLink: `https://example.invalid/${number}` })
       }
     }
     const spawnMock = (command, args, options) => {
@@ -289,9 +292,18 @@ app.whenReady().then(async () => {
         returns: Number(db.prepare('SELECT count(*) n FROM customer_returns').get().n),
         refunds: Number(db.prepare('SELECT coalesce(sum(refund_kopecks),0) n FROM customer_returns').get().n),
       })
+      const storedFiscalNumbers = () => ({
+        intent: db.prepare('SELECT fiscal_number FROM fiscal_sale_intents WHERE operation_id=?')
+          .get(request.operation_id)?.fiscal_number ?? null,
+        receipts: db.prepare(`SELECT fiscal_number FROM ${kind === 'sale' ? 'sales' : 'customer_returns'} WHERE client_operation_id=? ORDER BY id`)
+          .all(request.operation_id).map(row => row.fiscal_number),
+        payments: kind === 'sale' ? db.prepare(`SELECT p.fiscal_number FROM sale_payments p
+          JOIN sales s ON s.id=p.sale_id WHERE s.client_operation_id=? ORDER BY p.id`)
+          .all(request.operation_id).map(row => row.fiscal_number) : [],
+      })
       await run({ request, invoke, noExternalLookup, completeSale, restart, snapshot, calls, workers, expireCall,
         failCompletion, dropFailure: () => db.exec('DROP TRIGGER synthetic_completion_failure'),
-        intent: () => pos.getFiscalSaleIntent(request.operation_id), totals,
+        intent: () => pos.getFiscalSaleIntent(request.operation_id), totals, storedFiscalNumbers,
         worker: () => workers[workers.length - 1] })
       // Validate outside stdin.write: production correctly catches transport
       // throws, so assertions inside write could otherwise look like an expected
@@ -337,6 +349,35 @@ app.whenReady().then(async () => {
     }
   }
 
+  async function assertUnknownSurvivesRetryAndRestart(fixture, before, beforeTotals) {
+    equal(fixture.intent().state, 'unknown')
+    equal(fixture.snapshot(), before)
+    const sameProcessRetry = observe(fixture.invoke(fixture.noExternalLookup))
+    await flush()
+    equal(sameProcessRetry.settled, true)
+    ok(sameProcessRetry.error?.startsWith(`FISCAL_INTENT_UNKNOWN|${fixture.request.operation_id}|`))
+    await fixture.restart()
+    equal(fixture.intent().state, 'unknown')
+    equal(fixture.snapshot(), before, 'Real LocalDatabase close/reopen leaves business rows unchanged')
+    const reopenedRetry = observe(fixture.invoke(fixture.noExternalLookup))
+    await flush()
+    equal(reopenedRetry.settled, true)
+    ok(reopenedRetry.error?.startsWith(`FISCAL_INTENT_UNKNOWN|${fixture.request.operation_id}|`))
+    equal(fixture.calls(), 1, 'Retry before or after reopen never re-sends')
+    equal(fixture.totals(), beforeTotals)
+    equal(fixture.snapshot(), before)
+  }
+
+  const invalidReceiptResults = [
+    { name: 'explicit rejected receipt', result: { Return: false, ReceiptFiscalNum: 'SYNTHETIC-REJECTED', Description: 'Synthetic rejection' } },
+    { name: 'null result', result: null },
+    { name: 'empty result object', result: {} },
+    { name: 'successful flag without receipt identity', result: { Return: true } },
+    { name: 'receipt identity without success flag', result: { ReceiptFiscalNum: 'SYNTHETIC-NOT-CONFIRMED' } },
+    { name: 'array result', result: [] },
+    { name: 'numeric fiscal identity despite valid local identity', result: { Return: true, ReceiptFiscalNum: 123, ReceiptLocalNum: 'SYNTHETIC-LOCAL' } },
+  ]
+
   for (const kind of ['sale', 'return']) {
     for (const failure of ['worker-error', 'timeout']) {
       await runCase(`${kind}: ${failure}, late response and true DB reopen never repeat the operation`, kind, async fixture => {
@@ -361,18 +402,69 @@ app.whenReady().then(async () => {
         await flush()
         equal(fixture.intent().state, 'unknown', 'A late worker response cannot silently resolve persisted uncertainty')
         equal(fixture.snapshot(), before)
-        const sameProcessRetry = observe(fixture.invoke(fixture.noExternalLookup))
+        await assertUnknownSurvivesRetryAndRestart(fixture, before, beforeTotals)
+      })
+    }
+
+    for (const invalid of invalidReceiptResults) {
+      await runCase(`${kind}: ${invalid.name} stays unknown through retry/reopen`, kind, async fixture => {
+        const before = fixture.snapshot()
+        const beforeTotals = fixture.totals()
+        const current = observe(fixture.invoke())
         await flush()
-        ok(sameProcessRetry.error?.startsWith('FISCAL_INTENT_UNKNOWN|'))
+        equal(fixture.calls(), 1)
+        equal(fixture.intent().state, 'fiscalizing')
+        const worker = fixture.worker()
+        worker.respondWithResult(worker.requests[0], invalid.result)
+        await flush()
+        equal(current.settled, true)
+        ok(current.error?.startsWith(`FISCAL_INTENT_UNKNOWN|${fixture.request.operation_id}|`),
+          'Rejected/malformed receipt results cannot report fiscal success')
+        equal(fixture.intent().fiscal_result, null, 'No invalid response is persisted as a confirmed receipt')
+        equal(fixture.storedFiscalNumbers(), { intent: null, receipts: [], payments: [] })
+        equal(fixture.snapshot(), before, 'Invalid response changes no stock, money, audit or outbox rows')
+        await assertUnknownSurvivesRetryAndRestart(fixture, before, beforeTotals)
+      })
+    }
+
+    for (const fiscalNumber of ['', ' \t\n ']) {
+      await runCase(`${kind}: local receipt fallback with ${fiscalNumber ? 'whitespace' : 'empty'} fiscal number completes exactly once`, kind, async fixture => {
+        const expectedNumber = 'SYNTHETIC-LOCAL-ONLY'
+        const expectedStored = { intent: expectedNumber, receipts: [expectedNumber],
+          payments: kind === 'sale' ? [expectedNumber] : [] }
+        const current = observe(fixture.invoke())
+        await flush()
+        const worker = fixture.worker()
+        worker.respondWithResult(worker.requests[0], { Return: true, ReceiptFiscalNum: fiscalNumber,
+          ReceiptLocalNum: `  ${expectedNumber}\t ` })
+        await flush()
+        equal(current.settled, true)
+        equal(current.error, undefined)
+        equal(fixture.intent().fiscal_result.ReceiptLocalNum, expectedNumber, 'Local identity is trimmed at the service boundary')
+        if (kind === 'sale') {
+          equal(current.value.state, 'fiscalized')
+          fixture.completeSale(fixture.request, expectedNumber)
+        }
+        equal(fixture.intent().state, 'completed')
+        equal(fixture.storedFiscalNumbers(), expectedStored, 'Exact fallback number is stored on intent and business receipt')
+        equal(fixture.totals(), kind === 'sale'
+          ? { stock: 2, sales: 1, payments: 1500, returns: 0, refunds: 0 }
+          : { stock: 3, sales: 1, payments: 1500, returns: 1, refunds: 1500 })
+        const completedRows = fixture.snapshot()
+        const completedIntent = fixture.intent()
         await fixture.restart()
-        equal(fixture.intent().state, 'unknown')
-        equal(fixture.snapshot(), before, 'Real LocalDatabase close/reopen leaves business rows unchanged')
-        const reopenedRetry = observe(fixture.invoke(fixture.noExternalLookup))
+        equal(fixture.storedFiscalNumbers(), expectedStored, 'Exact fallback number survives a real database reopen')
+        const duplicate = observe(fixture.invoke(fixture.noExternalLookup))
         await flush()
-        ok(reopenedRetry.error?.startsWith('FISCAL_INTENT_UNKNOWN|'))
-        equal(fixture.calls(), 1, 'Retry before or after reopen never re-sends')
-        equal(fixture.totals(), beforeTotals)
-        equal(fixture.snapshot(), before)
+        equal(duplicate.settled, true)
+        equal(duplicate.error, undefined)
+        const duplicateIntent = kind === 'sale' ? duplicate.value : duplicate.value?.intent
+        equal(duplicateIntent?.state, 'completed')
+        equal(duplicateIntent, completedIntent)
+        if (kind === 'sale') fixture.completeSale(fixture.request, expectedNumber)
+        equal(fixture.storedFiscalNumbers(), expectedStored)
+        equal(fixture.snapshot(), completedRows, 'Retry never duplicates local-receipt stock or money movements')
+        equal(fixture.calls(), 1)
       })
     }
 

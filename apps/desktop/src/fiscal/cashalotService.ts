@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { safeStorage } from 'electron'
 import { cashalotSearchDirs, detectCashalotDir, hasCashalotDll, resolveCashalotDir } from './cashalotPaths'
+import { requireCashalotReceipt } from './cashalotReceipt'
 
 // Інтеграція з ПРРО Cashalot через COM API (AddIn.CashaLotApi).
 // COM недоступний із Node напряму, тому тримаємо довгоживучий PowerShell-процес,
@@ -586,7 +587,7 @@ export class CashalotService {
       this.config.fiscalNumberRRO,
       this.buildGoodsJson(items, comment),
       this.buildPayJson(pay),
-    ])
+    ]).then(requireCashalotReceipt)
   }
 
   fiscalizeReturnCheck(
@@ -599,7 +600,7 @@ export class CashalotService {
       this.buildGoodsJson(items),
       this.buildPayJson(pay),
       String(originalFiscalNumber),
-    ])
+    ]).then(requireCashalotReceipt)
   }
 
   /**

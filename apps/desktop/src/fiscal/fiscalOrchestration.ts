@@ -1,6 +1,7 @@
 import type { LocalFiscalReturnRequest, LocalFiscalSaleRequest } from '../db/localTypes'
 import type { LocalPosRepository } from '../repositories/posRepository'
 import type { CashalotService } from './cashalotService'
+import { cashalotReceiptNumber } from './cashalotReceipt'
 
 type FiscalPos = Pick<LocalPosRepository,
   | 'prepareFiscalSaleIntent' | 'prepareFiscalReturnIntent' | 'startFiscalSaleIntent'
@@ -99,9 +100,7 @@ export async function processFiscalReturn(
       `FISCAL_INTENT_UNKNOWN|${intent.operation_id}|Збережений результат фіскального повернення не знайдено`,
     )
   }
-  const fiscalNumber = String(
-    fiscalResult.ReceiptFiscalNum ?? fiscalResult.ReceiptLocalNum ?? '',
-  ).trim() || null
+  const fiscalNumber = cashalotReceiptNumber(fiscalResult)
   const data = pos.createReturn({
     ...request.return_input,
     client_operation_id: intent.operation_id,

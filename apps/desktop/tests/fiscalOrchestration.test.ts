@@ -48,7 +48,7 @@ class FakeWorker extends EventEmitter {
   // possible, just as in the worker lifecycle fixture.
   readonly kill = vi.fn(() => true)
 
-  respond(request: WorkerRequest, result: CashalotRetVal): void {
+  respond(request: WorkerRequest, result: unknown): void {
     this.stdout.emit('data', Buffer.from(JSON.stringify({ id: request.id, ok: true, result })).toString('base64') + '\n')
   }
 }
@@ -145,7 +145,8 @@ describe.each(['sale', 'return'] as const)('fiscal %s orchestration with persist
     // Production deliberately has two commands for a sale: fiscalize-sale,
     // then pos:checkout with the confirmed receipt. Do not merge their logic.
     const result = intent.fiscal_result!
-    const fiscalNumber = String(result.ReceiptFiscalNum ?? result.ReceiptLocalNum ?? '').trim() || null
+    const fiscalNumber = (typeof result.ReceiptFiscalNum === 'string' ? result.ReceiptFiscalNum.trim() : '')
+      || (typeof result.ReceiptLocalNum === 'string' ? result.ReceiptLocalNum.trim() : '') || null
     const fiscalQrUrl = String(result.FSKOReceiptLink ?? result.CashalotReceiptLink ?? '').trim() || null
     pos.checkout({ ...request.checkout, fiscal_number: fiscalNumber, fiscal_qr_url: fiscalQrUrl,
       payments: request.checkout.payments.map(payment => ({ ...payment, fiscal_number: fiscalNumber })) })
@@ -202,12 +203,12 @@ describe.each(['sale', 'return'] as const)('fiscal %s orchestration with persist
     expect(snapshotBusiness()).toEqual(businessBefore)
   }
 
-  function expectCompletedOnce(): void {
+  function expectCompletedOnce(expectedReceipt: CashalotRetVal = receipt, expectedNumber = receipt.ReceiptFiscalNum): void {
     const table = kind === 'sale' ? 'sales' : 'customer_returns'
     const documents = database().prepare(`SELECT id, fiscal_number FROM ${table} WHERE client_operation_id = ?`)
       .all(OPERATION) as Array<{ id: string; fiscal_number: string }>
     expect(documents).toHaveLength(1)
-    expect(documents[0].fiscal_number).toBe(receipt.ReceiptFiscalNum)
+    expect(documents[0].fiscal_number).toBe(expectedNumber)
     const id = documents[0].id
     const itemTable = kind === 'sale' ? 'sale_items' : 'customer_return_items'
     const itemColumn = kind === 'sale' ? 'sale_id' : 'return_id'
@@ -219,7 +220,7 @@ describe.each(['sale', 'return'] as const)('fiscal %s orchestration with persist
       .get(id, kind === 'sale' ? 'sale.completed' : 'return.created')).toEqual({ count: 1 })
     expect(catalog.findById(product.id)?.qty_on_hand).toBe(stockBefore + (kind === 'sale' ? -1 : 1))
     expect(pos.getExpectedCash(CASHIER)?.expected_amount).toBe(cashBefore + (kind === 'sale' ? PRICE : -PRICE))
-    expect(pos.getFiscalSaleIntent(OPERATION)).toMatchObject({ state: 'completed', fiscal_result: receipt })
+    expect(pos.getFiscalSaleIntent(OPERATION)).toMatchObject({ state: 'completed', fiscal_result: expectedReceipt })
     expect(sends()).toHaveLength(sendsBefore + 1)
   }
 
@@ -369,6 +370,112 @@ describe.each(['sale', 'return'] as const)('fiscal %s orchestration with persist
     await restart()
     expect(pos.getFiscalSaleIntent(OPERATION).state).toBe('unknown')
     await expectBlockedWithoutResend()
+  })
+
+  it.each([
+    { label: 'empty object', result: {} },
+    { label: 'null result', result: null },
+    { label: 'omitted result', result: undefined },
+    { label: 'array instead of a receipt', result: [] },
+    { label: 'primitive instead of a receipt', result: 'not-a-receipt' },
+    { label: 'success without a receipt identifier', result: { Return: true } },
+    { label: 'blank receipt identifiers', result: { Return: true, ReceiptFiscalNum: '', ReceiptLocalNum: '   ' } },
+    { label: 'receipt number without Return', result: { ReceiptFiscalNum: 'UNCONFIRMED-1' } },
+    { label: 'receipt number with null Return', result: { Return: null, ReceiptFiscalNum: 'UNCONFIRMED-1' } },
+    { label: 'receipt number with string Return', result: { Return: 'true', ReceiptFiscalNum: 'UNCONFIRMED-1' } },
+    { label: 'receipt number with numeric Return', result: { Return: 1, ReceiptFiscalNum: 'UNCONFIRMED-1' } },
+    { label: 'numeric fiscal number despite a valid local fallback',
+      result: { Return: true, ReceiptFiscalNum: 12345, ReceiptLocalNum: 'LOCAL-1' } },
+    { label: 'object local number despite a valid fiscal number',
+      result: { Return: true, ReceiptFiscalNum: 'FISCAL-1', ReceiptLocalNum: { number: 'LOCAL-1' } } },
+    { label: 'array fiscal number', result: { Return: true, ReceiptFiscalNum: ['FISCAL-1'] } },
+    { label: 'boolean local number', result: { Return: true, ReceiptLocalNum: true } },
+  ])('blocks $label without business effects or another send before/after restart', async ({ result }) => {
+    const { observation, worker, request } = await start()
+    worker.respond(request, result)
+    await flush()
+    expect(observation.settlements).toBe(1)
+    expect(observation.error).toMatch(new RegExp(`^FISCAL_INTENT_UNKNOWN\\|${OPERATION}\\|`))
+    expect(pos.getFiscalSaleIntent(OPERATION)).toMatchObject({
+      state: 'unknown', fiscal_result: null, checkout_result: null,
+    })
+    expect(database().prepare('SELECT fiscal_number FROM fiscal_sale_intents WHERE operation_id = ?').get(OPERATION))
+      .toEqual({ fiscal_number: null })
+    expect(snapshotBusiness()).toEqual(businessBefore)
+    expect(sends()).toHaveLength(sendsBefore + 1)
+    await expectBlockedWithoutResend()
+    await restart()
+    expect(pos.getFiscalSaleIntent(OPERATION)).toMatchObject({ state: 'unknown', fiscal_result: null })
+    await expectBlockedWithoutResend()
+    expect(sends()).toHaveLength(sendsBefore + 1)
+  })
+
+  it('keeps an explicit Return=false rejection unknown even if receipt-like fields are present', async () => {
+    const { observation, worker, request } = await start()
+    worker.respond(request, { Return: false, Description: 'SYNTHETIC_FISCAL_REJECTED',
+      ReceiptFiscalNum: 'MUST-NOT-BECOME-A-DOCUMENT', ReceiptLocalNum: 'MUST-NOT-BE-USED' })
+    await flush()
+    expect(observation.settlements).toBe(1)
+    expect(observation.error).toMatch(new RegExp(`^FISCAL_INTENT_UNKNOWN\\|${OPERATION}\\|`))
+    expect(observation.error).toContain('SYNTHETIC_FISCAL_REJECTED')
+    expect(pos.getFiscalSaleIntent(OPERATION)).toMatchObject({
+      state: 'unknown', fiscal_result: null, checkout_result: null,
+    })
+    expect(snapshotBusiness()).toEqual(businessBefore)
+    await expectBlockedWithoutResend()
+    await restart()
+    await expectBlockedWithoutResend()
+    expect(sends()).toHaveLength(sendsBefore + 1)
+  })
+
+  it.each([undefined, null, '', '  \t '])('accepts a confirmed local-only receipt when ReceiptFiscalNum is %s and replays it without resending', async fiscalNumber => {
+    const localNumber = `${kind.toUpperCase()}-LOCAL-1`
+    const localReceipt: CashalotRetVal = { Return: true, ReceiptLocalNum: `  ${localNumber}\t ` }
+    const { observation, worker, request } = await start()
+    worker.respond(request, { ...localReceipt, ReceiptFiscalNum: fiscalNumber })
+    await flush()
+    expect(observation.settlements).toBe(1)
+    expect(observation.error).toBeUndefined()
+    expectCompletedOnce({ Return: true }, localNumber)
+    expect(String(pos.getFiscalSaleIntent(OPERATION).fiscal_result?.ReceiptLocalNum).trim()).toBe(localNumber)
+    expect(database().prepare('SELECT fiscal_number FROM fiscal_sale_intents WHERE operation_id = ?').get(OPERATION))
+      .toEqual({ fiscal_number: localNumber })
+    const completed = pos.getFiscalSaleIntent(OPERATION)
+    const committed = snapshotBusiness()
+    getCashalot.mockImplementation(() => { throw new Error('Confirmed local receipt must not look up Cashalot') })
+    for (const reopen of [false, true]) {
+      if (reopen) await restart()
+      const retry = observe(perform(true))
+      await flush()
+      expect(retry.settlements).toBe(1)
+      expect(retry.error).toBeUndefined()
+      expect(retry.value).toEqual(completed)
+      expect(snapshotBusiness()).toEqual(committed)
+      expectCompletedOnce({ Return: true }, localNumber)
+    }
+  })
+
+  it('accepts a trimmed fiscal number with a null local number and persists the selected identity', async () => {
+    const fiscalNumber = `${kind.toUpperCase()}-TRIMMED-FISCAL-1`
+    const { observation, worker, request } = await start()
+    worker.respond(request, { Return: true, ReceiptFiscalNum: `  ${fiscalNumber}\t `, ReceiptLocalNum: null })
+    await flush()
+    expect(observation.settlements).toBe(1)
+    expect(observation.error).toBeUndefined()
+    expectCompletedOnce({ Return: true }, fiscalNumber)
+    expect(database().prepare('SELECT fiscal_number FROM fiscal_sale_intents WHERE operation_id = ?').get(OPERATION))
+      .toEqual({ fiscal_number: fiscalNumber })
+    const committed = snapshotBusiness()
+    const completed = pos.getFiscalSaleIntent(OPERATION)
+    await restart()
+    getCashalot.mockImplementation(() => { throw new Error('Completed receipt must not look up Cashalot') })
+    const retry = observe(perform(true))
+    await flush()
+    expect(retry.settlements).toBe(1)
+    expect(retry.error).toBeUndefined()
+    expect(retry.value).toEqual(completed)
+    expect(snapshotBusiness()).toEqual(committed)
+    expectCompletedOnce({ Return: true }, fiscalNumber)
   })
 
   it('keeps a timed-out intent unknown even when the worker later confirms fiscal success', async () => {

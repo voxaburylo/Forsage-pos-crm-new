@@ -11,6 +11,7 @@ import { DEFAULT_TENANT_ID } from '../../db/localTypes'
 import type { FiscalIntentRow } from './posShared'
 import { money, nowIso, operationId, payloadHash } from './posShared'
 import { LocalPosReturns } from './returns'
+import { cashalotReceiptNumber } from '../../fiscal/cashalotReceipt'
 
 export class LocalPosFiscal extends LocalPosReturns {
   prepareFiscalSaleIntent(request: LocalFiscalSaleRequest): LocalFiscalSaleIntentResult {
@@ -190,7 +191,7 @@ export class LocalPosFiscal extends LocalPosReturns {
     const id = operationId(idValue)
     if (!id) throw new Error('Номер операції каси не вказано')
     const timestamp = nowIso()
-    const fiscalNumber = String(result.ReceiptFiscalNum ?? result.ReceiptLocalNum ?? '').trim() || null
+    const fiscalNumber = cashalotReceiptNumber(result)
     const fiscalQrUrl = String(result.FSKOReceiptLink ?? result.CashalotReceiptLink ?? '').trim() || null
     const update = this.db.prepare(`
       UPDATE fiscal_sale_intents
