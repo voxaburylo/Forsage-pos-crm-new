@@ -638,7 +638,7 @@ export class LocalStaffRepository {
       JOIN sale_items item ON item.sale_id = sale.id AND item.tenant_id = sale.tenant_id AND item.deleted_at IS NULL
       LEFT JOIN products product ON product.id = item.product_id AND product.tenant_id = item.tenant_id
       LEFT JOIN staff_users cashier ON cashier.id = sale.cashier_id AND cashier.tenant_id = sale.tenant_id
-      WHERE sale.tenant_id = ? AND sale.status = 'completed' AND sale.deleted_at IS NULL
+      WHERE sale.tenant_id = ? AND sale.status IN ('completed', 'returned') AND sale.deleted_at IS NULL
         AND sale.manager_id IS NOT NULL
         AND datetime(sale.completed_at) >= datetime(?, '-1 day')
         AND datetime(sale.completed_at) < datetime(?, '+2 day')

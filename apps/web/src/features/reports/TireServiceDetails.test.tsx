@@ -60,3 +60,37 @@ it('does not invent registered cash for an older source or offer a duplicate dep
   expect(html).not.toContain('Внести готівку до каси')
   expect(html).not.toContain('Готівка за чеками, вже врахована в касі')
 })
+it('shows a dated negative commission reversal without claiming that unpaid money was advanced', () => {
+  const report = structuredClone(tireFixture)
+  report.date = '2026-09-23'
+  report.receipts = []
+  Object.assign(report.data[0], { services_qty: 0, service_revenue: 0, commission_earned: -6300,
+    earned: -6300, paid: 0, penalty: 0, balance: -6300, due: 0, payable_due: 0,
+    cash_revenue: 0, cash_register_received: 0, cash_handed_over: 0 })
+  report.salary_operations = [{ ...report.salary_operations![0], id: 'reversal', type: 'bonus',
+    source: 'commission_reversal', amount: -6300, note: 'Часткове повернення робіт',
+    work_date: '2026-09-23', created_at: '2026-09-23T08:00:00Z', fund_source: null, sale_id: 'sale' }]
+  const html = markup({ report, date: report.date, canMutate: true })
+  expect(html).toContain('Сторно нарахування за повернення')
+  expect(html).toContain('-63,00')
+  expect(html).toContain('23.09.2026')
+  expect(html).toContain('Часткове повернення робіт')
+  expect(html).not.toContain('TIRE-47')
+  expect(html).not.toContain('Виплатити з каси')
+  expect(html).not.toContain('Виплачено наперед')
+  expect(html).toContain('Від’ємний залишок зарплати')
+})
+it('keeps the original receipt and original commission visible in its own work day', () => {
+  const report = structuredClone(tireFixture)
+  Object.assign(report.data[0], { earned: 12600, paid: 0, balance: 12600, due: 12600,
+    cash_register_received: 36000, cash_handed_over: 0 })
+  report.salary_operations = [{ ...report.salary_operations![0], id: 'commission', type: 'bonus',
+    source: 'commission', amount: 12600, note: 'Початкове нарахування', work_date: report.date,
+    created_at: '2026-09-22T13:40:00Z', fund_source: null, sale_id: 'sale' }]
+  const html = markup({ report })
+  expect(html).toContain('TIRE-47')
+  expect(html).toContain('360,00')
+  expect(html).toContain('126,00')
+  expect(html).toContain('22.09.2026')
+  expect(html).not.toContain('Сторно нарахування за повернення')
+})

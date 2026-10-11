@@ -114,7 +114,7 @@ function WorkerDetails({ row, report, date, canPay, canMutate, busy, onPay }: Pr
         ? <p className="mt-3 text-xs text-gray-600">Готівка за чеками, вже врахована в касі: {formatMoney(row.cash_register_received)}. Повторне внесення не потрібне.</p>
         : <p className="mt-3 text-xs text-gray-600">Оновіть програму, щоб перевірити облік готівки. Не вносьте повторно гроші, вже прийняті за чеками.</p>}
       {row.cash_handed_over > 0 && <p className="mt-1 text-xs text-gray-600">Окремі внесення в історії: {formatMoney(row.cash_handed_over)}. Початкові операції збережено.</p>}
-      {row.balance < 0 && <p className="mt-2 text-sm text-gray-600">Виплачено наперед: {formatMoney(-row.balance)}.</p>}
+      {row.balance < 0 && <p className="mt-2 text-sm text-gray-600">Від’ємний залишок зарплати: {formatMoney(row.balance)}.</p>}
       {!row.salary_ready && <p className="mt-2 text-sm text-blue-800">Виплата за цими роботами доступна з {dayLabel(row.salary_available_on)}. Залишок зарплати не означає, що її вже можна видати сьогодні.</p>}
       {row.salary_ready && <p className="mt-2 font-bold text-emerald-800">Можна видати зараз: {formatMoney(row.payable_due)}</p>}
       {canMutate && <div className="mt-3 flex flex-wrap gap-2">

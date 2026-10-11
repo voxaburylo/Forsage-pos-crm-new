@@ -285,6 +285,77 @@ app.whenReady().then(() => {
     }
   })
 
+  runCase('partial then full service refunds preserve gross history and reverse commission on each actual day', f => {
+    const checkout = { ...f.checkout,
+      items: [{ product_id: f.product.id, description: 'Шиномонтаж', qty: 2, unit_price: 18000 }] }
+    const sale = f.pos.checkout(checkout)
+    equal(sale.total, 36000)
+    equal(f.pos.getExpectedCash(CASHIER).expected_amount, 37000)
+    const item = f.pos.getSaleForReturn(sale.sale_id).items[0]
+    equal(item.available_qty, 2)
+    const originalReceipt = f.staff.tireServiceReport(WORK_DATE).receipts[0]
+    const originalHistory = () => ({
+      sale: f.db.prepare('SELECT sale_number,total,cash_amount,completed_at,cashier_id,manager_id FROM sales WHERE id=?').get(sale.sale_id),
+      lines: f.db.prepare('SELECT * FROM sale_items WHERE sale_id=? ORDER BY id').all(sale.sale_id),
+      cash: f.db.prepare("SELECT * FROM cash_operations WHERE sale_id=? AND type='sale_cash' ORDER BY id").all(sale.sale_id),
+      commission: f.db.prepare("SELECT * FROM salary_payments WHERE commission_source_sale_id=? AND source='commission' ORDER BY id").all(sale.sale_id),
+    })
+    const initialHistory = originalHistory()
+    equal(initialHistory.cash.length, 1)
+    equal(initialHistory.cash[0].amount, 36000)
+    equal(initialHistory.commission.length, 1)
+    equal(initialHistory.commission[0].amount, 12600)
+    const completedReturns = []
+    for (const [index, workDate] of ['2026-09-23', '2026-09-24'].entries()) {
+      const timestamp = workDate + 'T09:00:00.000Z'
+      f.setTime(timestamp)
+      const request = { tenant_id: tenant, sale_id: sale.sale_id, approved_by: CASHIER,
+        shift_id: f.shift, client_operation_id: `synthetic-tire-refund-${index + 1}`,
+        is_fiscal: false, reason: 'other', refund_method: 'cash', stock_action: 'return_to_stock',
+        items: [{ sale_item_id: item.id, product_id: f.product.id, quantity: 1, condition: 'good' }] }
+      const returned = f.pos.createReturn(request)
+      equal(returned.refund_kopecks, 18000)
+      equal(returned.created_at, timestamp)
+      completedReturns.push({ request, result: returned })
+      const committed = f.snapshot()
+      for (const reopened of [false, true]) {
+        if (reopened) f.restart()
+        const originalDay = f.staff.tireServiceReport(WORK_DATE)
+        equal(originalDay.receipts, [originalReceipt], 'Full return must not hide or rewrite the original service receipt')
+        equal(pick(originalDay.data[0], ['services_qty', 'service_revenue', 'cash_revenue', 'cash_register_received', 'commission_earned', 'earned', 'cash_pending']),
+          { services_qty: 2, service_revenue: 36000, cash_revenue: 36000, cash_register_received: 36000,
+            commission_earned: 12600, earned: 12600, cash_pending: 0 })
+        equal(originalHistory(), initialHistory, 'Gross line, sale cash and initial commission evidence stay unchanged')
+        for (const prior of completedReturns) {
+          const returnDay = prior.result.created_at.slice(0, 10)
+          const dayReport = f.staff.tireServiceReport(returnDay)
+          equal(dayReport.receipts, [], 'The refund day does not acquire a second original receipt')
+          equal(pick(dayReport.data[0], ['service_revenue', 'cash_register_received', 'commission_earned', 'earned', 'paid', 'cash_pending']),
+            { service_revenue: 0, cash_register_received: 0, commission_earned: -6300,
+              earned: -6300, paid: 0, cash_pending: 0 })
+          equal(dayReport.salary_operations.map(row => pick(row, ['source', 'amount', 'sale_id', 'employee_id', 'work_date', 'created_at'])),
+            [{ source: 'commission_reversal', amount: -6300, sale_id: sale.sale_id, employee_id: WORKER,
+              work_date: returnDay, created_at: prior.result.created_at }])
+          equal(f.pos.createReturn(prior.request), prior.result, 'A replay returns the existing refund without another cash or salary movement')
+        }
+        equal(f.pos.getExpectedCash(CASHIER).expected_amount, index === 0 ? 19000 : 1000)
+        equal(f.pos.getSaleForReturn(sale.sale_id).sale.status, index === 0 ? 'completed' : 'returned')
+        equal(f.pos.getSaleForReturn(sale.sale_id).items[0].available_qty, index === 0 ? 1 : 0)
+        equal(f.catalog.findById(f.product.id).qty_on_hand, 0)
+        equal(f.db.prepare('SELECT * FROM inventory_movements WHERE source_id IN (?,?,?)')
+          .all(sale.sale_id, completedReturns[0].result.id, completedReturns[1]?.result.id ?? ''), [])
+        equal(f.db.prepare("SELECT amount,created_at FROM cash_operations WHERE type='return_cash' ORDER BY created_at,id").all()
+          .map(row => pick(row, ['amount', 'created_at'])),
+        completedReturns.map(prior => ({ amount: 18000, created_at: prior.result.created_at })))
+        equal(f.db.prepare('SELECT COUNT(*) n FROM customer_returns WHERE sale_id=?').get(sale.sale_id).n, index + 1)
+        rejectsHandover(() => f.staff.tireCashHandover(f.handover(36000)))
+        equal(f.snapshot(), committed, 'Reads, reopens, blocked handovers and refund retries leave every table unchanged')
+      }
+    }
+    equal(f.db.prepare("SELECT SUM(amount) amount FROM salary_payments WHERE commission_source_sale_id=? AND source IN ('commission','commission_reversal')")
+      .get(sale.sale_id).amount, 0, 'The two reversals exactly offset the original commission')
+  })
+
   console.log(JSON.stringify({ ok: true, runtime: 'electron-application', build, checks, cases: reports,
     realTemporaryLocalDatabase: true, realPackagedCheckout: true, shopDatabaseOpened: false,
     networkRequests: false, realComCalls: 0, realRegistryCalls: 0, realWorkerProcesses: 0, physicalPrinterJobs: 0 }))

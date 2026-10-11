@@ -140,7 +140,9 @@ async function buildTireServiceReport(tenantId: string, date: string) {
         FROM sales sale
         JOIN sale_items item ON item.sale_id = sale.id AND item.tenant_id = sale.tenant_id
         LEFT JOIN products product ON product.id = item.product_id AND product.tenant_id = item.tenant_id
-        WHERE sale.tenant_id = $1 AND sale.status = 'completed'
+        -- Original checkout history remains visible after the final return.
+        -- Refunds and commission reversals keep their own operation dates.
+        WHERE sale.tenant_id = $1 AND sale.status IN ('completed', 'returned')
           AND sale.manager_id = ANY($3::uuid[])
           AND to_jsonb(sale)->>'deleted_at' IS NULL AND to_jsonb(item)->>'deleted_at' IS NULL
           AND (sale.completed_at AT TIME ZONE 'Europe/Kyiv')::date = $2::date
