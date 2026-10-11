@@ -157,7 +157,7 @@ app.whenReady().then(() => {
       run({ get db() { return db }, get pos() { return pos }, get staff() { return staff },
         get catalog() { return catalog }, shift, product, checkout, handover, payout, restart, snapshot,
         setTime: value => { clock = NativeDate.parse(value); assert.ok(Number.isFinite(clock)) } })
-      equal(db.prepare('PRAGMA integrity_check').get(), { integrity_check: 'ok' })
+      equal(pick(db.prepare('PRAGMA integrity_check').get(), ['integrity_check']), { integrity_check: 'ok' })
       equal(db.prepare('PRAGMA foreign_key_check').all(), [])
       equal(processAttempts, 0)
       equal(networkAttempts, 0)
@@ -201,7 +201,7 @@ app.whenReady().then(() => {
     equal(f.pos.getExpectedCash(CASHIER).expected_amount, 24400)
     equal(pick(f.staff.tireServiceReport(WORK_DATE).data[0], ['earned', 'paid', 'due', 'cash_pending']),
       { earned: 12600, paid: 12600, due: 0, cash_pending: 0 })
-    equal(f.db.prepare('SELECT qty_on_hand FROM products WHERE id=?').get(f.product.id), { qty_on_hand: 0 })
+    equal(pick(f.db.prepare('SELECT qty_on_hand FROM products WHERE id=?').get(f.product.id), ['qty_on_hand']), { qty_on_hand: 0 })
     equal(f.db.prepare('SELECT * FROM inventory_movements WHERE source_id=?').all(sale.sale_id), [])
     const settled = f.snapshot()
     f.restart()
@@ -246,7 +246,8 @@ app.whenReady().then(() => {
     const request = { ...f.checkout, cashier_id: nextCashier, manager_id: WORKER, shift_id: shift,
       notes: 'Внесено вранці за вечірню роботу Андрія' }
     const sale = f.pos.checkout(request)
-    equal(f.db.prepare('SELECT cashier_id,manager_id,shift_id FROM sales WHERE id=?').get(sale.sale_id),
+    equal(pick(f.db.prepare('SELECT cashier_id,manager_id,shift_id FROM sales WHERE id=?').get(sale.sale_id),
+      ['cashier_id', 'manager_id', 'shift_id']),
       { cashier_id: nextCashier, manager_id: WORKER, shift_id: shift })
     equal(f.pos.getExpectedCash(CASHIER), null)
     equal(f.pos.getExpectedCash(nextCashier).expected_amount, 36000)
