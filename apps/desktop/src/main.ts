@@ -52,6 +52,7 @@ import {
   CashalotService,
   type CashalotConfigUpdate,
 } from './fiscal/cashalotService'
+import { fiscalizeSale, processFiscalReturn } from './fiscal/fiscalOrchestration'
 import { printLabelsTspl, type TsplPrintOptions } from './print/tsplLabelPrinter'
 import { canUseReceiptGdiFallback, printReceiptViaGdi } from './print/receiptGdiPrinter'
 import { enqueuePrinterJob, setPrinterJobGuard } from './print/printerJobQueue'
@@ -623,68 +624,6 @@ async function executeLanCommand(channel: string, args: unknown[], session: LanS
   const listener = desktopCommandHandlers.get(channel)
   if (!listener) throw new Error('Локальну команду не знайдено')
   return executeDesktopCommand(channel, listener, {} as IpcMainInvokeEvent, args, session)
-}
-
-async function processFiscalReturn(request: LocalFiscalReturnRequest) {
-  const pos = requireLocalPos()
-  let intent = pos.prepareFiscalReturnIntent(request)
-  if (intent.state === 'completed') {
-    return { intent, data: intent.checkout_result }
-  }
-  if (intent.state === 'fiscalizing' || intent.state === 'unknown') {
-    throw new Error(
-      `FISCAL_INTENT_UNKNOWN|${intent.operation_id}|Результат попереднього фіскального повернення потрібно перевірити у Cashalot`,
-    )
-  }
-
-  if (intent.state === 'prepared') {
-    const fiscal = requireCashalot()
-    if (!fiscal.isEnabled()) {
-      throw new Error('ПРРО Cashalot не налаштовано або вимкнено')
-    }
-    pos.startFiscalSaleIntent(intent.operation_id)
-    try {
-      const result = await fiscal.fiscalizeReturnCheck(
-        request.items,
-        request.pay,
-        request.original_fiscal_number,
-      )
-      intent = pos.markFiscalSaleIntentFiscalized(
-        intent.operation_id,
-        result as unknown as Record<string, unknown>,
-      )
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error)
-      try {
-        pos.markFiscalSaleIntentUnknown(intent.operation_id, detail)
-      } catch {
-        // Намір уже залишився у безпечному блокувальному стані fiscalizing/unknown.
-      }
-      throw new Error(
-        `FISCAL_INTENT_UNKNOWN|${intent.operation_id}|Не повторюйте повернення. Перевірте чек у Cashalot: ${detail}`,
-      )
-    }
-  }
-
-  const fiscalResult = intent.fiscal_result
-  if (!fiscalResult) {
-    throw new Error(
-      `FISCAL_INTENT_UNKNOWN|${intent.operation_id}|Збережений результат фіскального повернення не знайдено`,
-    )
-  }
-  const fiscalNumber = String(
-    fiscalResult.ReceiptFiscalNum ?? fiscalResult.ReceiptLocalNum ?? '',
-  ).trim() || null
-  const data = pos.createReturn({
-    ...request.return_input,
-    client_operation_id: intent.operation_id,
-    is_fiscal: true,
-    fiscal_number: fiscalNumber,
-  })
-  return {
-    intent: pos.getFiscalSaleIntent(intent.operation_id),
-    data,
-  }
 }
 
 async function createWindow(): Promise<void> {
@@ -1830,40 +1769,9 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:fiscal:service-cash', (_event, amount: number, direction: 'in' | 'out') =>
     requireCashalot().serviceCash(amount, direction),
   )
-  handleDesktopIpc('desktop:fiscal:fiscalize-sale', async (_event, request: LocalFiscalSaleRequest) => {
-    const pos = requireLocalPos()
-    const intent = pos.prepareFiscalSaleIntent(request)
-    if (intent.state === 'completed' || intent.state === 'fiscalized') return intent
-    if (intent.state === 'fiscalizing' || intent.state === 'unknown') {
-      throw new Error(
-        `FISCAL_INTENT_UNKNOWN|${intent.operation_id}|Результат попередньої фіскалізації потрібно перевірити у Cashalot`,
-      )
-    }
-
-    const fiscal = requireCashalot()
-    if (!fiscal.isEnabled()) {
-      throw new Error('ПРРО Cashalot не налаштовано або вимкнено')
-    }
-
-    pos.startFiscalSaleIntent(intent.operation_id)
-    try {
-      const result = await fiscal.fiscalizeCheck(request.items, request.pay, request.comment)
-      return pos.markFiscalSaleIntentFiscalized(
-        intent.operation_id,
-        result as unknown as Record<string, unknown>,
-      )
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error)
-      try {
-        pos.markFiscalSaleIntentUnknown(intent.operation_id, detail)
-      } catch {
-        // Намір уже залишився у безпечному блокувальному стані fiscalizing/unknown.
-      }
-      throw new Error(
-        `FISCAL_INTENT_UNKNOWN|${intent.operation_id}|Не повторюйте оплату. Перевірте чек у Cashalot: ${detail}`,
-      )
-    }
-  })
+  handleDesktopIpc('desktop:fiscal:fiscalize-sale', (_event, request: LocalFiscalSaleRequest) =>
+    fiscalizeSale(requireLocalPos(), requireCashalot, request),
+  )
   handleDesktopIpc('desktop:fiscal:get-sale-intent', (_event, operationId: string) =>
     requireLocalPos().getFiscalSaleIntent(operationId),
   )
@@ -1873,7 +1781,7 @@ app.whenReady().then(async () => {
     resolution: LocalFiscalIntentResolution,
   ) => requireLocalPos().resolveUnknownFiscalSaleIntent(operationId, resolution))
   handleDesktopIpc('desktop:fiscal:fiscalize-return', (_event, request: LocalFiscalReturnRequest) =>
-    processFiscalReturn(request),
+    processFiscalReturn(requireLocalPos(), requireCashalot, request),
   )
   handleDesktopIpc('desktop:fiscal:list-unresolved-returns', (_event, scope: LocalFiscalReturnIntentScope) =>
     requireLocalPos().listUnresolvedFiscalReturnIntents(scope),
@@ -1882,7 +1790,7 @@ app.whenReady().then(async () => {
     _event,
     operationId: string,
     scope: LocalFiscalReturnIntentScope,
-  ) => processFiscalReturn(requireLocalPos().getFiscalReturnRequest(operationId, scope)))
+  ) => processFiscalReturn(requireLocalPos(), requireCashalot, requireLocalPos().getFiscalReturnRequest(operationId, scope)))
   handleDesktopIpc('desktop:fiscal:resolve-unknown-return', (
     _event,
     operationId: string,
