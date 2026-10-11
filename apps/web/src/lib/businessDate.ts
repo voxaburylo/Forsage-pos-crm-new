@@ -56,6 +56,16 @@ export function businessDateKey(value: string | Date = new Date()): string {
   return businessDateFormatter.format(date)
 }
 
+/** Display an actual timestamp in the shop timezone, keeping the locale's date-only style. */
+export function formatBusinessDate(value: string): string {
+  return new Date(value).toLocaleDateString('uk-UA', { timeZone: BUSINESS_TIME_ZONE })
+}
+
+/** Keep the existing date/time/seconds style and invalid-date fallback; only fix the timezone. */
+export function formatBusinessDateTime(value: string): string {
+  return new Date(value).toLocaleString('uk-UA', { timeZone: BUSINESS_TIME_ZONE })
+}
+
 export function businessDateRangeUtc(startDate: string, endDate: string): { from: string; to: string } {
   const toExclusive = businessMidnightUtc(nextDateKey(endDate))
   return {

@@ -15,6 +15,7 @@ import { toast } from '@/components/ui/Toast'
 import { staffApi } from './staffApi'
 import type { EmployeeSummary, SalaryPayment, DailySummary } from './staffApi'
 import { formatMoney } from '@/lib/utils'
+import { formatBusinessDate } from '@/lib/businessDate'
 import { shiftApi } from '@/features/pos/shiftApi'
 import { normalizedStaffPhone, staffPaySettings, staffTransactionAmount } from './staffFormModel'
 import { payrollOperationLabel } from './payrollOperationLabel'
@@ -388,7 +389,7 @@ export default function StaffPage() {
                       {employeePayments.length===0?(<p className="text-xs text-gray-400 text-center py-12">Операцій у цьому місяці ще не було</p>):(
                         employeePayments.map(p=>{const conf=TYPE_CONFIG[p.type];const effect=(p.type==='penalty'||p.type==='advance')?-p.amount:p.amount;const isMinus=effect<0;return(
                           <div key={p.id} className="p-3.5 flex items-start gap-3 hover:bg-gray-50/30 transition-all">
-                            <div className="flex-1 min-w-0 space-y-0.5"><div className="flex items-center gap-2"><span className={`inline-flex items-center gap-0.5 text-[10px] font-semibold px-2 py-0.5 rounded-full ${conf.color}`}>{conf.icon} {payrollOperationLabel(p,conf.label)}</span><span className="text-[10px] text-gray-400">{METHOD_LABELS[p.method]}</span><span className="text-[10px] text-gray-400 font-mono">{new Date(p.created_at).toLocaleDateString('uk-UA')}</span></div>{p.note&&<p className="text-xs text-gray-600 leading-relaxed font-medium break-all">{p.note}</p>}</div>
+                            <div className="flex-1 min-w-0 space-y-0.5"><div className="flex items-center gap-2"><span className={`inline-flex items-center gap-0.5 text-[10px] font-semibold px-2 py-0.5 rounded-full ${conf.color}`}>{conf.icon} {payrollOperationLabel(p,conf.label)}</span><span className="text-[10px] text-gray-400">{METHOD_LABELS[p.method]}</span><span className="text-[10px] text-gray-400 font-mono">{formatBusinessDate(p.created_at)}</span></div>{p.note&&<p className="text-xs text-gray-600 leading-relaxed font-medium break-all">{p.note}</p>}</div>
                             <div className="text-right shrink-0 flex items-center gap-3"><div><p className={`text-sm font-bold ${isMinus?'text-red-500':'text-green-600'}`}>{isMinus?'\u2212':'+'}{formatMoney(Math.abs(effect))}</p></div><button onClick={()=>handleDeleteTransaction(p.id)} className="text-gray-300 hover:text-red-500 p-1 rounded transition-colors"><Trash2 size={13}/></button></div>
                           </div>
                         )})

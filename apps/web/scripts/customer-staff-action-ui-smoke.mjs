@@ -47,8 +47,8 @@ const server=await createServer({cacheDir:createSmokeCache(),configFile:false,ro
 let browser
 try{
   await server.listen();browser=await chromium.launch({headless:true});const base=server.resolvedUrls.local[0],errors=[],blocked=[]
-  async function setup(mode,route='/customers/new',salaryPayments=[]){
-    const page=await browser.newPage({viewport:{width:1400,height:1100}})
+  async function setup(mode,route='/customers/new',salaryPayments=[],{timezoneId}={}){
+    const page=await browser.newPage({viewport:{width:1400,height:1100},timezoneId})
     page.on('pageerror',e=>{errors.push(e.message);console.error(e.message)});page.on('dialog',d=>d.accept())
     await page.route('**/*',r=>new URL(r.request().url()).origin===new URL(base).origin?r.continue():(blocked.push(r.request().url()),r.abort()))
     await page.addInitScript(({mode,route,salaryPayments})=>{window.testMode=mode;window.testRoute=route;window.testSalaryPayments=salaryPayments},{mode,route,salaryPayments})
@@ -58,6 +58,29 @@ try{
   const double=locator=>locator.evaluate(element=>{element.click();element.click()})
   const count=(page,kind)=>page.evaluate(kind=>fixture.pending.filter(p=>p.kind===kind).length,kind)
   const wait=(page,kind,n=1)=>page.waitForFunction(({kind,n})=>fixture.pending.filter(p=>p.kind===kind).length===n,{kind,n})
+  const timestampCases=[
+    ['summer-before','2026-09-30T20:59:59.000Z','30.09.2026'],
+    ['summer-after','2026-09-30T21:00:00.000Z','01.10.2026'],
+    ['winter-before','2026-12-31T21:59:59.000Z','31.12.2026'],
+    ['winter-after','2026-12-31T22:00:00.000Z','01.01.2027'],
+    ['explicit-offset','2026-10-01T00:00:00+03:00','01.10.2026'],
+    ['invalid','not-a-timestamp','Invalid Date'],
+  ]
+  const timestampPayments=timestampCases.map(([id,created_at])=>({id,employee_id:'worker',employee_name:'Test Worker',
+    amount:12600,type:'advance',method:'cash',period:'2026-09',work_date:'2026-09-29',created_at,note:'Timestamp '+id}))
+  for(const timezoneId of ['America/Los_Angeles','Asia/Tokyo']){
+    const timestamps=await setup('staff','/customers/new',timestampPayments,{timezoneId})
+    await timestamps.getByRole('button',{name:/Test Worker/}).click()
+    await timestamps.getByRole('button',{name:/Виплати/}).click()
+    for(const [id,,expected] of timestampCases){
+      const row=timestamps.getByText('Timestamp '+id,{exact:true}).locator('..').locator('..')
+      assert.equal(await row.locator('span.font-mono').innerText(),expected,`${timezoneId}: ${id} displays actual creation date in Kyiv`)
+      assert.equal((await row.locator('p.text-sm.font-bold').innerText()).replace(/\s+/g,' '),'−126,00 ₴')
+    }
+    assert.deepEqual(await timestamps.evaluate(()=>fixture.salaryPayments),timestampPayments,'Date rendering leaves salary period, work date and timestamp unchanged')
+    assert.deepEqual(await timestamps.evaluate(()=>fixture.pending),[],'Viewing timestamps creates no salary operation')
+    await timestamps.close()
+  }
   const quick=await setup('quick');await quick.getByRole('button',{name:'Новий клієнт',exact:true}).click()
   await quick.getByLabel('Телефон *',{exact:true}).fill('+380671234567')
   await quick.getByLabel("Ім'я *",{exact:true}).fill('New client')
@@ -185,5 +208,5 @@ try{
   ],'Commission reversals have one negative sign and a source-aware label; legacy types retain their labels and signed effect')
   await history.close()
   assert.deepEqual(errors,[]);assert.deepEqual(blocked,[])
-  console.log('PASS: customer/vehicle/staff double clicks, busy forms/close, stale client/modal replies, garage readiness, exact salary decimals, invalid amount rejection, retained input on error, confirmation retry, signed commission reversal history and unchanged legacy salary types. No live data or services.')
+  console.log('PASS: staff actual creation dates use Kyiv at summer/winter month boundaries in LA/Tokyo PC timezones without changing work dates, periods or amounts; customer/vehicle/staff double clicks, busy forms/close, stale client/modal replies, garage readiness, exact salary decimals, invalid amount rejection, retained input on error, confirmation retry, signed commission reversal history and unchanged legacy salary types. No live data or services.')
 }finally{await browser?.close();await server.close()}

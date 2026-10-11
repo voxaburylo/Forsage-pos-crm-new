@@ -70,8 +70,9 @@ app.whenReady().then(() => {
     [require('node:dns'), 'resolve'], [global, 'fetch'],
   ]
 
-  function runCase(name, run, { openingCash = 1000 } = {}) {
+  function runCase(name, run, { openingCash = 1000, openingTime = SALE_TIME } = {}) {
     assert.ok(Number.isSafeInteger(openingCash) && openingCash >= 0, 'Synthetic opening cash must be whole nonnegative kopecks')
+    assert.ok(Number.isFinite(NativeDate.parse(openingTime)), 'Synthetic opening time must be a valid date')
     const dataRoot = path.join(profileRoot, `fixture-${reports.length}`)
     equal(cleanupFs.existsSync(dataRoot), false, 'Every case owns a fresh synthetic database')
     const firstCheck = checks
@@ -132,7 +133,7 @@ app.whenReady().then(() => {
       for (const key of Object.keys(savedProcesses)) childProcess[key] = forbidProcess
       for (const [target, key] of networkTargets) target[key] = forbidNetwork
       global.Date = FixtureDate
-      clock = NativeDate.parse(SALE_TIME)
+      clock = NativeDate.parse(openingTime)
       for (const [key, value] of Object.entries(fsGuards)) equal(fs[key], value)
       for (const key of Object.keys(savedProcesses)) equal(require('child_process')[key], forbidProcess)
       for (const [target, key] of networkTargets) equal(target[key], forbidNetwork)
@@ -448,6 +449,161 @@ app.whenReady().then(() => {
       }
     }
   }, { openingCash: 20000 })
+
+  runCase('closed cash shifts preserve accepted counts across paid September work and October refunds', f => {
+    const workDate = '2026-09-29'
+    const nextCashier = 'synthetic-october-cashier'
+    f.db.prepare(`INSERT INTO staff_users(id,tenant_id,full_name,role,is_active,base_rate,rate_period,created_at,updated_at)
+      VALUES(?,?,'Олена','cashier',1,0,'day',?,?)`).run(nextCashier, tenant, workDate + 'T08:00:00.000Z', workDate + 'T08:00:00.000Z')
+    const checkout = { ...f.checkout,
+      items: [{ product_id: f.product.id, description: 'Шиномонтаж', qty: 2, unit_price: 18000 }] }
+    f.setTime(workDate + 'T13:40:00.000Z')
+    const sale = f.pos.checkout(checkout)
+    const item = f.pos.getSaleForReturn(sale.sale_id).items[0]
+    const originalReceipt = f.staff.tireServiceReport(workDate).receipts[0]
+    const closed = [], returned = []
+    let payout, paid
+    const closedEvidence = id => ({
+      shift: f.db.prepare('SELECT * FROM shifts WHERE id=?').get(id),
+      cash: f.db.prepare('SELECT * FROM cash_operations WHERE shift_id=? ORDER BY id').all(id),
+      events: f.db.prepare("SELECT * FROM sync_outbox WHERE aggregate_type='shift' AND aggregate_id=? ORDER BY operation_id").all(id),
+      backups: f.db.prepare('SELECT * FROM shift_backups WHERE id=?').all(id),
+    })
+    const assertClosed = () => {
+      for (const previous of closed) equal(closedEvidence(previous.id), previous.evidence,
+        'Future work never rewrites accepted closed cash, shift events or its pending backup evidence')
+    }
+    const assertReplays = () => {
+      const before = f.snapshot()
+      equal(f.pos.checkout(checkout), sale)
+      if (paid) equal(f.staff.dailyPayout(payout), { ...paid, payment: { ...paid.payment } })
+      for (const previous of returned) equal(f.pos.createReturn(previous.request), previous.result)
+      for (const previous of closed) equal(f.pos.closeShift(...previous.request), { ok: true, id: previous.id })
+      assertClosed()
+      equal(f.snapshot(), before, 'Replaying old receipts, payouts, returns and closes does not touch the active or closed shifts')
+    }
+    const verifyOpen = (cashier, id, opening, sales, refunds, wages) => {
+      const report = f.pos.getShiftReport(cashier)
+      equal(report.shift.id, id)
+      equal(report.shift.cashier_id, cashier)
+      equal(pick(report, ['total_sales', 'gross_revenue', 'refund_total', 'total_revenue',
+        'payment_received_total', 'payment_refunded_total', 'payment_net_total', 'unassigned_refunds_count']),
+      { total_sales: sales ? 1 : 0, gross_revenue: sales, refund_total: refunds, total_revenue: sales - refunds,
+        payment_received_total: sales, payment_refunded_total: refunds, payment_net_total: sales - refunds,
+        unassigned_refunds_count: 0 })
+      equal(report.cash_breakdown, { opening_cash: opening, cash_sales: sales, cash_returns: refunds,
+        cash_in: 0, cash_out: wages, expected_amount: opening + sales - refunds - wages })
+      equal(f.pos.getExpectedCash(cashier), report.cash_breakdown)
+      equal(report.by_method, { cash: sales, card: 0, transfer: 0, account: 0, debt: 0 })
+      equal(report.refunds_by_method, { cash: refunds, card: 0, transfer: 0, account: 0, debt: 0 })
+      return report
+    }
+    const close = (cashier, id, actual, timestamp) => {
+      f.setTime(timestamp)
+      const request = [cashier, actual, 'Synthetic accepted drawer', id]
+      equal(f.pos.closeShift(...request), { ok: true, id })
+      equal(f.pos.getExpectedCash(cashier), null)
+      equal(f.pos.getShiftReport(cashier), null, 'The existing report API only exposes the currently open shift')
+      const evidence = closedEvidence(id)
+      equal(pick(evidence.shift, ['status', 'closing_cash', 'expected_cash', 'cash_variance', 'closed_at']),
+        { status: 'closed', closing_cash: actual, expected_cash: actual, cash_variance: 0, closed_at: timestamp })
+      equal(evidence.backups.length, 1)
+      equal(evidence.events.map(row => row.operation_type).sort(), ['shift.closed', 'shift.opened'])
+      closed.push({ id, request, evidence })
+      const before = f.snapshot()
+      f.restart()
+      equal(f.snapshot(), before)
+      assertReplays()
+    }
+    const openNext = (timestamp, expectedOpening) => {
+      f.setTime(timestamp)
+      // The application submits a counted opening amount; the repository does
+      // not automatically carry cash between shifts. Model that explicit input.
+      const accepted = closed.at(-1).evidence.shift.closing_cash
+      equal(accepted, expectedOpening)
+      const request = { cashier_id: nextCashier, opening_cash: accepted }
+      const id = f.pos.openShift(request)
+      equal(f.pos.getOpenShift(nextCashier).opened_at, timestamp)
+      const before = f.snapshot()
+      equal(f.pos.openShift(request), id)
+      assertReplays()
+      equal(f.snapshot(), before, 'Old close retries must not close the newly opened shift')
+      equal(f.pos.getOpenShift(nextCashier).id, id)
+      equal(f.pos.getExpectedCash(CASHIER), null)
+      return id
+    }
+
+    equal(pick(f.pos.getOpenShift(CASHIER), ['id', 'opening_cash', 'opened_at']),
+      { id: f.shift, opening_cash: 20000, opened_at: workDate + 'T08:00:00.000Z' })
+    verifyOpen(CASHIER, f.shift, 20000, 36000, 0, 0)
+    close(CASHIER, f.shift, 56000, workDate + 'T17:00:00.000Z')
+    const rejectsOldShiftPayout = () => {
+      const before = f.snapshot()
+      assert.throws(() => f.staff.dailyPayout({ ...f.payout, work_date: workDate,
+        operation_id: 'synthetic-closed-shift-payout' }), /Касова зміна не відкрита/); checks++
+      equal(f.snapshot(), before, 'Matured salary cannot be paid from the original closed cashier shift')
+    }
+    f.setTime('2026-10-01T08:00:00.000Z')
+    rejectsOldShiftPayout()
+    const wageShift = openNext('2026-10-01T08:00:00.000Z', 56000)
+    rejectsOldShiftPayout()
+    f.setTime('2026-10-01T09:00:00.000Z')
+    payout = { ...f.payout, shift_id: wageShift, user_id: nextCashier, work_date: workDate }
+    paid = f.staff.dailyPayout(payout)
+    equal(pick(paid.payment, ['employee_id', 'created_by', 'shift_id', 'period', 'work_date', 'amount']),
+      { employee_id: WORKER, created_by: nextCashier, shift_id: wageShift, period: '2026-09', work_date: workDate, amount: 12600 })
+    verifyOpen(nextCashier, wageShift, 56000, 0, 0, 12600)
+    assertClosed()
+    close(nextCashier, wageShift, 43400, '2026-10-01T17:00:00.000Z')
+    for (const [index, date] of ['2026-10-02', '2026-10-03'].entries()) {
+      const opening = index === 0 ? 43400 : 25400, expected = opening - 18000
+      const shift = openNext(date + 'T08:00:00.000Z', opening)
+      f.setTime(date + 'T09:00:00.000Z')
+      const request = { tenant_id: tenant, sale_id: sale.sale_id, approved_by: nextCashier,
+        shift_id: shift, client_operation_id: `synthetic-closed-shift-refund-${index + 1}`,
+        is_fiscal: false, reason: 'other', refund_method: 'cash', stock_action: 'return_to_stock',
+        items: [{ sale_item_id: item.id, product_id: f.product.id, quantity: 1, condition: 'good' }] }
+      const result = f.pos.createReturn(request)
+      returned.push({ request, result })
+      equal(pick(result, ['approved_by', 'refund_kopecks', 'created_at']),
+        { approved_by: nextCashier, refund_kopecks: 18000, created_at: date + 'T09:00:00.000Z' })
+      // The public return DTO omits shift_id; verify the actual saved link,
+      // independently of the current-shift report and its cash-row evidence.
+      equal(pick(f.db.prepare('SELECT shift_id,approved_by,created_at FROM customer_returns WHERE id=?').get(result.id),
+        ['shift_id', 'approved_by', 'created_at']),
+      { shift_id: shift, approved_by: nextCashier, created_at: date + 'T09:00:00.000Z' })
+      verifyOpen(nextCashier, shift, opening, 0, 18000, 0)
+      equal(f.staff.tireServiceReport(workDate).receipts, [originalReceipt])
+      equal(pick(f.staff.salarySummary('2026-09')[0], ['employee_id', 'earned', 'paid', 'balance']),
+        { employee_id: WORKER, earned: 12600, paid: 12600, balance: 0 })
+      equal(pick(f.staff.salarySummary('2026-10')[0], ['employee_id', 'earned', 'paid', 'balance']),
+        { employee_id: WORKER, earned: -6300 * (index + 1), paid: 0, balance: -6300 * (index + 1) })
+      equal(f.staff.tireServiceReport(date).salary_operations.map(row => pick(row,
+        ['employee_id', 'created_by', 'source', 'amount', 'work_date', 'created_at'])),
+      [{ employee_id: WORKER, created_by: nextCashier, source: 'commission_reversal', amount: -6300,
+        work_date: date, created_at: date + 'T09:00:00.000Z' }])
+      assertReplays()
+      close(nextCashier, shift, expected, date + 'T17:00:00.000Z')
+    }
+    equal(closed.map(previous => previous.evidence.shift.closing_cash), [56000, 43400, 25400, 7400])
+    equal(f.db.prepare('SELECT COUNT(*) n FROM shifts WHERE cashier_id=?').get(WORKER).n, 0,
+      'The original worker owns commission without opening any cashier shift')
+    equal(f.db.prepare("SELECT COUNT(*) n FROM shifts WHERE status='open'").get().n, 0)
+    equal(f.db.prepare('SELECT COUNT(*) n FROM shift_backups').get().n, 4)
+    equal(f.db.prepare('SELECT type,amount,user_id,employee_id,shift_id FROM cash_operations ORDER BY created_at,id').all()
+      .map(row => pick(row, ['type', 'amount', 'user_id', 'employee_id', 'shift_id'])), [
+      { type: 'sale_cash', amount: 36000, user_id: CASHIER, employee_id: null, shift_id: f.shift },
+      { type: 'salary_payout', amount: 12600, user_id: nextCashier, employee_id: WORKER, shift_id: wageShift },
+      ...returned.map(previous => ({ type: 'return_cash', amount: 18000, user_id: nextCashier,
+        employee_id: null, shift_id: previous.request.shift_id })),
+    ])
+    equal(f.pos.getSaleForReturn(sale.sale_id).sale.status, 'returned')
+    equal(f.pos.getSaleForReturn(sale.sale_id).items[0].available_qty, 0)
+    equal(f.catalog.findById(f.product.id).qty_on_hand, 0)
+    equal(f.db.prepare('SELECT * FROM inventory_movements WHERE source_id IN (?,?,?)')
+      .all(sale.sale_id, returned[0].result.id, returned[1].result.id), [])
+    assertReplays()
+  }, { openingCash: 20000, openingTime: '2026-09-29T08:00:00.000Z' })
 
   console.log(JSON.stringify({ ok: true, runtime: 'electron-application', build, checks, cases: reports,
     realTemporaryLocalDatabase: true, realPackagedCheckout: true, shopDatabaseOpened: false,

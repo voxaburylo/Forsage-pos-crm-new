@@ -15,7 +15,7 @@ import { staffApi } from '@/features/staff/staffApi'
 import type { DailySummary, EmployeeSummary, SalaryPayment, SalaryFundSource } from '@/features/staff/staffApi'
 import { shiftApi } from '@/features/pos/shiftApi'
 import { formatMoney } from '@/lib/utils'
-import { businessDateKey, shiftBusinessMonth } from '@/lib/businessDate'
+import { businessDateKey, formatBusinessDateTime, shiftBusinessMonth } from '@/lib/businessDate'
 
 type OperationType = SalaryPayment['type']
 type PaymentMethod = SalaryPayment['method']
@@ -293,7 +293,7 @@ export default function PayrollPage() {
                     <div className="min-w-0">
                       <p className="font-semibold text-gray-900">{payrollOperationLabel(payment)}</p>
                       <p className="text-xs text-gray-400">
-                        {new Date(payment.created_at).toLocaleString('uk-UA')} · {PAYMENT_LABELS[payment.method]}
+                        {formatBusinessDateTime(payment.created_at)} · {PAYMENT_LABELS[payment.method]}
                         {payment.note ? ` · ${payment.note}` : ''}
                       </p>
                     </div>
