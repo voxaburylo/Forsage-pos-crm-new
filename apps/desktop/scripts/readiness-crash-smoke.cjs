@@ -108,7 +108,7 @@ async function scenario(operation, phase) {
       inventory.countProduct(spec.session, { product_id: product.id, qty: 0.3 })
     }
     if (operation === 'invoice_cancel') supply.postInvoice(invoice.id)
-    if (['order_payment', 'order_issue', 'order_cancel', 'salary_payout', 'tire_handover', 'deposit_payout'].includes(operation)) {
+    if (['order_payment', 'order_issue', 'order_cancel', 'salary_payout', 'deposit_payout'].includes(operation)) {
       const timestamp = new Date().toISOString(), employee = randomUUID()
       db.prepare("INSERT INTO staff_users(id,tenant_id,full_name,role,is_active,base_rate,rate_period,created_at,updated_at) VALUES (?,?,?,'manager',1,0,'day',?,?)")
         .run(employee, tenant, 'Synthetic employee', timestamp, timestamp)
@@ -132,16 +132,6 @@ async function scenario(operation, phase) {
       if (operation === 'deposit_payout') {
         pos.addCustomerDeposit({ customer_id: customer, amount: 5000, method: 'cash', user_id: cashier, shift_id: shift })
         Object.assign(spec.settlement, { payout_id: randomUUID(), customer_id: customer, amount: 2000, method: 'cash' })
-      }
-      if (operation === 'tire_handover') {
-        db.prepare("UPDATE staff_users SET role='tire_worker' WHERE id=?").run(employee)
-        const workDate = '2026-09-26', completed = workDate + 'T16:00:00Z'
-        const service = new LocalCatalogRepository(db).saveProduct({ id: randomUUID(), sku: 'POS-TIRE-SERVICE', name: 'Synthetic service', is_service: true, retail_price: 36000 })
-        db.prepare("INSERT INTO sales(id,tenant_id,sale_number,cashier_id,manager_id,shift_id,status,total,payment_method,cash_amount,completed_at,created_at,updated_at) VALUES ('tire-sale',?,'TIRE-TEST',?,?,?,'completed',36000,'cash',36000,?,?,?)")
-          .run(tenant, cashier, employee, shift, completed, completed, completed)
-        db.prepare("INSERT INTO sale_items(id,tenant_id,sale_id,product_id,sku,qty,unit_price,total,created_at,updated_at) VALUES ('tire-line',?,'tire-sale',?,'POS-TIRE-SERVICE',1,36000,36000,?,?)")
-          .run(tenant, service.id, completed, completed)
-        Object.assign(spec.settlement, { operation_id: randomUUID(), employee_id: employee, work_date: workDate, amount: 1000 })
       }
       spec.customerId = customer
     }
@@ -177,7 +167,7 @@ async function scenario(operation, phase) {
       invoice_cancel: [10, 10000, 1], return: [9.8, 10200, 1], legacy_return: [9.8, 10200, 1], legacy_review: [9.8, 10200, 1],
       writeoff: [9.9, 10000, 1], inventory: [0.3, 10000, 1],
       order_payment: [10, 11000, 0], order_issue: [9, 11000, 1], order_cancel: [10, 11000, 0],
-      salary_payout: [10, 10000, 0], tire_handover: [10, 11000, 0], deposit_payout: [10, 13000, 0],
+      salary_payout: [10, 10000, 0], deposit_payout: [10, 13000, 0],
     }[operation]
     assert.equal(new LocalCatalogRepository(db).findById(product.id).qty_on_hand, expected[0])
     assert.equal(new LocalPosRepository(db).getExpectedCash(cashier).expected_amount, expected[1])
@@ -218,7 +208,6 @@ async function scenario(operation, phase) {
     if (operation === 'order_cancel' || operation === 'deposit_payout') {
       assert.equal(new LocalPosRepository(db).getCustomerDeposit(spec.customerId).balance, operation === 'order_cancel' ? 1000 : 3000)
     }
-    if (operation === 'tire_handover') assert.deepEqual(execute(db, spec), { amount: 1000, remaining: 35000 })
     console.log('PASS: ' + operation + ', kill ' + phase + ' commit, restart and retry; atomic stock/cash/outbox')
   } finally {
     if (child && !exited) { child.kill('SIGKILL'); await exitPromise }
@@ -226,8 +215,66 @@ async function scenario(operation, phase) {
     if (safeRoot(root)) fs.rmSync(root, { recursive: true, force: true })
   }
 }
+function rejectedTireHandoverScenario() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forsage-crash-test-'))
+  let db
+  try {
+    assert(safeRoot(root), 'Refusing non-test database')
+    db = new LocalDatabase(root)
+    const cashier = randomUUID(), employee = randomUUID(), timestamp = new Date().toISOString()
+    for (const [id, role] of [[cashier, 'cashier'], [employee, 'tire_worker']]) {
+      db.prepare(`INSERT INTO staff_users(id,tenant_id,full_name,role,is_active,base_rate,rate_period,created_at,updated_at)
+        VALUES (?,?,?, ?,1,0,'day',?,?)`).run(id, tenant, 'Synthetic handover ' + role, role, timestamp, timestamp)
+    }
+    const pos = new LocalPosRepository(db), staff = new LocalStaffRepository(db)
+    const shift = pos.openShift({ cashier_id: cashier, opening_cash: 10000 })
+    const service = new LocalCatalogRepository(db).saveProduct({ id: randomUUID(), sku: 'POS-TIRE-SERVICE',
+      name: 'Synthetic service', is_service: true, retail_price: 36000, purchase_price: 0, qty_on_hand: 0 })
+    staff.createCommissionRule({ user_id: employee, rule_type: 'tire_service', pct_from_revenue: 35, pct_from_profit: 0 })
+    const sale = pos.checkout({ tenant_id: tenant, client_operation_id: randomUUID(), cashier_id: cashier,
+      manager_id: employee, shift_id: shift, is_fiscal: false,
+      items: [{ product_id: service.id, qty: 1, unit_price: 36000 }], payments: [{ method: 'cash', amount: 36000 }] })
+    const completedAt = db.prepare('SELECT completed_at FROM sales WHERE id=?').get(sale.sale_id).completed_at
+    const workDate = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Kyiv' }).format(new Date(completedAt))
+    const settlement = { operation_id: randomUUID(), tenant_id: tenant, employee_id: employee,
+      user_id: cashier, shift_id: shift, work_date: workDate, amount: 1000 }
+    // New handovers are rejected before commit: there is intentionally no kill
+    // checkpoint to reach. Assert every table, including audit/idempotency/outbox,
+    // stays unchanged instead of treating the missing checkpoint as a crash bug.
+    const allRows = () => db.readSnapshot(() => Object.fromEntries(
+      db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all()
+        .map(({ name }) => [name, db.prepare(`SELECT * FROM "${name.replaceAll('"', '""')}"`).all()
+          .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))])))
+    const before = allRows()
+    assert.equal(pos.getExpectedCash(cashier).expected_amount, 46000, 'Checkout already puts tire cash in the main drawer')
+    assert.equal(before.cash_operations.filter(row => row.type === 'sale_cash' && row.sale_id === sale.sale_id).length, 1)
+    assert.equal(before.salary_payments.find(row => row.employee_id === employee && row.source === 'commission').amount, 12600)
+    for (const reopen of [false, true]) {
+      if (reopen) {
+        const previous = db, databasePath = db.databasePath, deviceId = db.deviceId
+        db.close(); db = new LocalDatabase(root)
+        assert.notEqual(db, previous)
+        assert.equal(db.databasePath, databasePath)
+        assert.equal(db.deviceId, deviceId)
+        assert.deepEqual(allRows(), before, 'Reopen must not create a handover or retry marker')
+      }
+      for (const request of [settlement, { ...settlement, operation_id: randomUUID() }]) {
+        assert.throws(() => execute(db, { operation: 'tire_handover', settlement: request }), /Повторне внесення заборонено/)
+        assert.deepEqual(allRows(), before, 'Rejected exact/fresh handover retries must not change any database row or outbox entry')
+        assert.equal(new LocalPosRepository(db).getExpectedCash(cashier).expected_amount, 46000)
+      }
+      assert.equal(db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok')
+      assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), [])
+    }
+    console.log('PASS: tire_handover rejected before/after real reopen; exact/fresh retries preserve all database rows, cash and outbox')
+  } finally {
+    db?.close()
+    if (safeRoot(root)) fs.rmSync(root, { recursive: true, force: true })
+  }
+}
 async function main() {
   if (process.argv[2] === '--worker') return worker()
-  for (const operation of ['checkout', 'fractional_checkout', 'invoice', 'receiving', 'invoice_cancel', 'invoice_delete', 'return', 'legacy_return', 'legacy_review', 'writeoff', 'inventory', 'order_payment', 'order_issue', 'order_cancel', 'salary_payout', 'tire_handover', 'deposit_payout']) for (const phase of ['before', 'after']) await scenario(operation, phase)
+  for (const operation of ['checkout', 'fractional_checkout', 'invoice', 'receiving', 'invoice_cancel', 'invoice_delete', 'return', 'legacy_return', 'legacy_review', 'writeoff', 'inventory', 'order_payment', 'order_issue', 'order_cancel', 'salary_payout', 'deposit_payout']) for (const phase of ['before', 'after']) await scenario(operation, phase)
+  rejectedTireHandoverScenario()
 }
 main().catch(error => { console.error(error); process.exitCode = 1 })
