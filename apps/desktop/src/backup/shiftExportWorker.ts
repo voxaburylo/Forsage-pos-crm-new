@@ -1,4 +1,6 @@
 import { embedBackupPhotos } from './embeddedPhotos'
+import { assertBackupContents } from '../db/backupValidation'
+import { LOCAL_MIGRATIONS } from '../db/schema'
 import { parentPort, workerData } from 'node:worker_threads'
 import { DatabaseSync } from 'node:sqlite'
 import { createHash } from 'node:crypto'
@@ -16,7 +18,8 @@ export async function exportShiftSnapshot(input: {
   await mkdir(input.output, { recursive: true })
   const db = new DatabaseSync(input.snapshot, { readOnly: true })
   try {
-    if ((db.prepare('PRAGMA quick_check').get() as any)?.quick_check !== 'ok') throw new Error('Резервна копія не пройшла перевірку SQLite')
+    assertBackupContents(db, LOCAL_MIGRATIONS.map(migration => migration.version),
+      bytes => createHash('sha256').update(bytes).digest('hex'))
     for (const table of ['products','customers','staff_users']) {
       if (db.prepare(`SELECT 1 FROM ${table} WHERE tenant_id<>? LIMIT 1`).get(input.tenantId))
         throw new Error('База містить дані кількох магазинів: повне серверне резервування зупинено для захисту доступу')

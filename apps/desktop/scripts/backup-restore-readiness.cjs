@@ -82,24 +82,39 @@ function assertDisposable(root) {
   }
   walk(root)
 }
-async function verifyRestore(source, compiledRoot = path.resolve(__dirname, '../dist')) {
-  assert(path.isAbsolute(source), 'Pass an absolute path to a standalone backup')
+function assertStandaloneBackup(source) {
+  assert(typeof source === 'string' && path.isAbsolute(source), 'Pass an absolute path to a standalone backup')
   source = fs.realpathSync(source)
   assert(!/[\\/]data[\\/]forsage\.db$/i.test(source), 'Never use the live database as a restore fixture')
   assert(fs.statSync(source).isFile(), 'Backup must be a regular file')
-  for (const suffix of ['-wal', '-shm']) assert(!fs.existsSync(source + suffix), 'Use a standalone backup without SQLite sidecars')
+  for (const suffix of ['-wal', '-shm', '-journal']) assert(!fs.existsSync(source + suffix), 'Use a standalone backup without SQLite sidecars')
+  return source
+}
+async function verifyRestore(source, compiledRoot = path.resolve(__dirname, '../dist'), previousSource) {
+  source = assertStandaloneBackup(source)
+  if (previousSource !== undefined) previousSource = assertStandaloneBackup(previousSource)
   const { LocalDatabase } = require(path.join(path.resolve(compiledRoot), 'db/localDatabase.js'))
   const { LOCAL_SCHEMA_VERSION } = require(path.join(path.resolve(compiledRoot), 'db/schema.js'))
   const beforeHash = fileHash(source)
+  const previousSourceHash = previousSource === undefined ? undefined : fileHash(previousSource)
   LocalDatabase.assertBackupIsUsable(source)
+  if (previousSource !== undefined) LocalDatabase.assertBackupIsUsable(previousSource)
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forsage-restore-readiness-'))
   let opened, probe
   const started = performance.now()
   try {
     assertDisposable(root)
-    const seed = new LocalDatabase(root)
-    seed.exec('CREATE TABLE readiness_previous(value INTEGER); INSERT INTO readiness_previous VALUES(101)')
-    seed.close()
+    const live = path.join(root, 'data', 'forsage.db')
+    if (previousSource !== undefined) {
+      fs.mkdirSync(path.dirname(live))
+      fs.copyFileSync(previousSource, live, fs.constants.COPYFILE_EXCL)
+      assert.equal(fileHash(live), previousSourceHash)
+    }
+    opened = LocalDatabase.open(root).database
+    opened.exec('CREATE TABLE readiness_previous(value INTEGER); INSERT INTO readiness_previous VALUES(101)')
+    const expectedPrevious = databaseFingerprint(opened)
+    opened.close(); opened = undefined
+    const previousHash = fileHash(live), previousBytes = fs.statSync(live).size
     const candidateName = 'Forsage-2000-01-01_readiness.db'
     const candidate = path.join(root, 'backups', candidateName)
     fs.copyFileSync(source, candidate, fs.constants.COPYFILE_EXCL)
@@ -118,7 +133,9 @@ async function verifyRestore(source, compiledRoot = path.resolve(__dirname, '../
     const sourceSchemaVersion = Number(probe.prepare('SELECT MAX(version) version FROM schema_migrations').get().version)
     const expected = databaseFingerprint(probe, photos)
     probe.close(); probe = undefined
+    const restoreStarted = performance.now()
     LocalDatabase.stageBackupForRestart(root, candidateName)
+    const restoreElapsedMs = Math.round(performance.now() - restoreStarted)
     opened = LocalDatabase.open(root).database
     for (const [original, hash] of embedded) {
       const target = path.join(root, 'photos', 'restored-' + hash + '.jpg')
@@ -134,14 +151,24 @@ async function verifyRestore(source, compiledRoot = path.resolve(__dirname, '../
     opened.close(); opened = undefined
     const quarantined = fs.readdirSync(path.join(root, 'corrupt')).filter(name => name.endsWith('.db'))
     assert.equal(quarantined.length, 1)
-    probe = new DatabaseSync(path.join(root, 'corrupt', quarantined[0]), { readOnly: true })
+    const retained = path.join(root, 'corrupt', quarantined[0])
+    assert.equal(fileHash(retained), previousHash, 'Previous database bytes differ')
+    probe = new DatabaseSync(retained, { readOnly: true })
+    assert.equal(probe.prepare('PRAGMA quick_check').get().quick_check, 'ok')
+    assert.deepEqual(databaseFingerprint(probe), expectedPrevious, 'Previous database rows differ')
     assert.equal(probe.prepare('SELECT value FROM readiness_previous').get().value, 101)
     probe.close(); probe = undefined
     assert.equal(fileHash(source), beforeHash, 'Original backup changed')
     return {
       source: path.basename(source), sourceUnchanged: true, rowsIdentical: true,
       sourceSchemaVersion, restoredSchemaVersion: LOCAL_SCHEMA_VERSION,
-      previousFixturePreserved: true, tables: Object.keys(actual).length,
+      previousFixturePreserved: true, previousRowsIdentical: true,
+      previousFixtureMode: previousSource === undefined ? 'synthetic' : 'full-backup',
+      previousSource: previousSource === undefined ? undefined : path.basename(previousSource),
+      previousSourceUnchanged: previousSource === undefined ? undefined : fileHash(previousSource) === previousSourceHash,
+      previousBytes, previousTables: Object.keys(expectedPrevious).length,
+      previousProducts: expectedPrevious.products?.rows, previousSales: expectedPrevious.sales?.rows,
+      restoreElapsedMs, tables: Object.keys(actual).length,
       embeddedPhotosVerified: embedded.size,
       externalPhotoReferences: references.filter(row => !embedded.has(row.photo_url)).length,
       products: actual.products?.rows, sales: actual.sales?.rows,
@@ -153,10 +180,12 @@ async function verifyRestore(source, compiledRoot = path.resolve(__dirname, '../
     probe?.close(); opened?.close()
     assertDisposable(root)
     fs.rmSync(root, { recursive: true, force: true })
+    assert.equal(fileHash(source), beforeHash, 'Original selected backup changed')
+    if (previousSource !== undefined) assert.equal(fileHash(previousSource), previousSourceHash, 'Original previous backup changed')
   }
 }
-module.exports = { databaseFingerprint, restoreComparisonOptions, verifyRestore }
+module.exports = { databaseFingerprint, restoreComparisonOptions, assertStandaloneBackup, verifyRestore }
 if (require.main === module) {
-  verifyRestore(process.argv[2] || '', process.argv[3]).then(result => console.log(JSON.stringify(result)))
+  verifyRestore(process.argv[2] || '', process.argv[3], process.argv[4]).then(result => console.log(JSON.stringify(result)))
     .catch(error => { console.error(error.code || error.name, String(error.message).slice(0, 250)); process.exitCode = 1 })
 }

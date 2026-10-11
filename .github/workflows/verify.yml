@@ -39,7 +39,11 @@ jobs:
       - run: node apps/desktop/scripts/build-info.cjs
       - run: node apps/desktop/scripts/verify-build.cjs
       - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/backup-worker-smoke.cjs
+      - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/backup-photos-smoke.cjs
       - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/backup-crash-smoke.cjs
+      - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/backup-restore-crash-smoke.cjs
+      - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/backup-restore-lock-smoke.cjs
+      - run: node apps/desktop/scripts/backup-restore-electron-smoke.cjs --synthetic
       - run: node apps/desktop/scripts/release-crash-smoke.cjs
       - run: node apps/desktop/scripts/readiness-crash-smoke.cjs
       - run: pnpm exec playwright install chromium

@@ -5,7 +5,11 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     // PGlite fixtures each load a PostgreSQL runtime. Bound memory on the CI runner.
-    maxWorkers: 2,
+    pool: 'forks',
+    maxWorkers: 1,
+    // Node 24 can crash while reclaiming WASM wrappers (nodejs/node#66366).
+    // Test-worker-only workaround; do not change production Node/V8 options.
+    execArgv: process.versions.node.startsWith('24.') ? ['--no-wasm-code-gc'] : [],
     hookTimeout: 60_000,
     testTimeout: 30_000,
     include: ['src/**/*.test.ts', 'src/**/*.spec.ts'],

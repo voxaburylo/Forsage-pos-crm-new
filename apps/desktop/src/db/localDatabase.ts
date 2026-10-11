@@ -1,6 +1,7 @@
 import { restoreEmbeddedPhotos } from '../backup/embeddedPhotos'
+import { assertClosedRestoreTarget, publishPreparedRestore } from './publishDatabaseRestore'
 import { createHash, randomUUID } from 'node:crypto'
-import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { constants, closeSync, copyFileSync, existsSync, fsyncSync, openSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import { LOCAL_MIGRATIONS } from './schema'
@@ -194,16 +195,31 @@ export class LocalDatabase {
     // Спершу переконуємось, що копія взагалі відкривається, і лише потім
     // чіпаємо робочу базу. Інакше невдалий відкат залишив би касу без даних.
     LocalDatabase.assertBackupIsUsable(candidate.filePath)
+    assertClosedRestoreTarget(dataRoot)
 
-    const quarantinedPath = LocalDatabase.quarantineBroken(dataRoot)
+    // Materialize photos and their rewritten URLs in a private candidate first.
+    // A valid SQLite file is not enough: disk-full, a conflicting photo or a
+    // redirected photos folder must fail before moving the authoritative DB.
+    const dataPath = path.join(dataRoot, 'data')
+    mkdirSync(dataPath, { recursive: true })
+    const prepared = path.join(dataPath, 'restore-' + randomUUID() + '.db.partial')
     try {
-      LocalDatabase.stageDatabaseFile(dataRoot, candidate.filePath)
+      copyFileSync(candidate.filePath, prepared, constants.COPYFILE_EXCL)
+      const probe = new DatabaseSync(prepared, { timeout: 5_000 })
+      try {
+        probe.exec('PRAGMA journal_mode = DELETE; PRAGMA foreign_keys = ON; PRAGMA synchronous = FULL;')
+        restoreEmbeddedPhotos(probe, dataRoot)
+      } finally { probe.close() }
+      LocalDatabase.assertBackupIsUsable(prepared)
+      const preparedHandle = openSync(prepared, 'r+')
+      try { fsyncSync(preparedHandle) } finally { closeSync(preparedHandle) }
+      publishPreparedRestore(dataRoot, prepared)
       return candidate
-    } catch (error) {
-      // Копіювання зірвалось (немає місця, файл зайнято) — повертаємо робочу
-      // базу на місце, щоб каса лишилась працездатною.
-      LocalDatabase.restoreQuarantined(dataRoot, quarantinedPath)
-      throw error
+    } finally {
+      for (const suffix of ['', '-journal', ...SIDECAR_SUFFIXES]) {
+        const temporary = prepared + suffix
+        if (existsSync(temporary)) unlinkSync(temporary)
+      }
     }
   }
 
@@ -217,60 +233,6 @@ export class LocalDatabase {
       if (version.version > buildVersion) throw new OutdatedBuildError(version.version, buildVersion)
     } finally {
       probe.close()
-    }
-  }
-
-  private static restoreQuarantined(dataRoot: string, quarantinedPath: string): void {
-    const databasePath = path.join(dataRoot, 'data', DATABASE_FILE)
-    LocalDatabase.removeDatabaseFiles(dataRoot)
-    if (existsSync(quarantinedPath)) renameSync(quarantinedPath, databasePath)
-    for (const suffix of SIDECAR_SUFFIXES) {
-      const sidecar = `${quarantinedPath}${suffix}`
-      if (existsSync(sidecar)) renameSync(sidecar, `${databasePath}${suffix}`)
-    }
-  }
-
-  /**
-   * Відкладає поточні файли бази у `corrupt/`. Нічого не видаляє: у битій базі
-   * можуть лишатись невідправлені продажі.
-   */
-  private static quarantineBroken(dataRoot: string): string {
-    const databasePath = path.join(dataRoot, 'data', DATABASE_FILE)
-    const quarantinePath = path.join(dataRoot, 'corrupt')
-    mkdirSync(quarantinePath, { recursive: true })
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-    const destination = path.join(quarantinePath, `forsage-${stamp}-${randomUUID().slice(0, 8)}.db`)
-    const moved: Array<{ from: string; to: string }> = []
-    try {
-      for (const suffix of ['', ...SIDECAR_SUFFIXES]) {
-        const from = `${databasePath}${suffix}`
-        const to = `${destination}${suffix}`
-        if (existsSync(from)) { renameSync(from, to); moved.push({ from, to }) }
-      }
-    } catch (error) {
-      // Наприклад, антивірус утримує WAL: не лишаємо головний файл окремо
-      // від його транзакцій через часткове переміщення.
-      for (const entry of moved.reverse()) renameSync(entry.to, entry.from)
-      throw error
-    }
-    return destination
-  }
-
-  private static stageDatabaseFile(dataRoot: string, sourcePath: string): void {
-    const dataPath = path.join(dataRoot, 'data')
-    mkdirSync(dataPath, { recursive: true })
-    LocalDatabase.removeDatabaseFiles(dataRoot)
-    copyFileSync(sourcePath, path.join(dataPath, DATABASE_FILE))
-  }
-
-  /**
-   * Прибирає базу разом із WAL/SHM. Без цього SQLite накотить залишковий WAL
-   * від попереднього файлу на щойно відновлений — і зіпсує його вдруге.
-   */
-  private static removeDatabaseFiles(dataRoot: string): void {
-    const databasePath = path.join(dataRoot, 'data', DATABASE_FILE)
-    for (const target of [databasePath, ...SIDECAR_SUFFIXES.map((suffix) => `${databasePath}${suffix}`)]) {
-      if (existsSync(target)) unlinkSync(target)
     }
   }
 

@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto'
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs'
 import path from 'node:path'
 import { tmpdir } from 'node:os'
 import { gunzipSync } from 'node:zlib'
 import { afterEach,beforeEach,describe,it,expect } from 'vitest'
 import * as XLSX from 'xlsx'
+import { DatabaseSync } from 'node:sqlite'
 import { LocalDatabase } from '../src/db/localDatabase'
 import { LocalCatalogRepository } from '../src/repositories/catalogRepository'
 import { LocalPosRepository } from '../src/repositories/posRepository'
@@ -85,6 +86,27 @@ describe('shift backups and full customer history',()=>{
     expect(gunzipSync(readFileSync(result.compressed))).toEqual(readFileSync(snapshot))
     expect(result.products).toBe(1);expect(result.customers).toBe(1)
     LocalDatabase.assertBackupIsUsable(snapshot)
+  })
+  it.each(['photo-checksum', 'missing-migration', 'broken-reference'])('does not publish an export from an invalid resumed snapshot: %s', async damage => {
+    const snapshot = await db.backupNow()
+    const copy = new DatabaseSync(snapshot)
+    try {
+      if (damage === 'photo-checksum') {
+        copy.exec("CREATE TABLE backup_assets(original_url TEXT PRIMARY KEY, sha256 TEXT, bytes BLOB, error TEXT)")
+        copy.prepare('INSERT INTO backup_assets VALUES(?,?,?,NULL)').run('file:///invalid.jpg', '0'.repeat(64), Buffer.from('different'))
+      } else if (damage === 'missing-migration') copy.exec('DELETE FROM schema_migrations WHERE version=2')
+      else {
+        copy.exec('PRAGMA foreign_keys=OFF; CREATE TABLE fixture_parent(id TEXT PRIMARY KEY); CREATE TABLE fixture_child(parent_id TEXT REFERENCES fixture_parent(id)); INSERT INTO fixture_child VALUES(\'missing\')')
+      }
+    } finally { copy.close() }
+    const output = path.join(root, 'invalid-exports')
+    await expect(exportShiftSnapshot({snapshot, output, tenantId:DEFAULT_TENANT_ID,
+      stamp:'invalid', closedAt:'2026-10-11T00:00:00Z', capturedAt:'2026-10-11T00:00:01Z'}))
+      .rejects.toThrow(damage === 'photo-checksum' ? 'LOCAL_BACKUP_INVALID_ASSETS'
+        : damage === 'missing-migration' ? 'LOCAL_BACKUP_INCOMPLETE_SCHEMA' : 'LOCAL_BACKUP_BROKEN_REFERENCES')
+    expect(existsSync(snapshot + '.gz')).toBe(false)
+    expect(existsSync(path.join(output, 'Товари_invalid.xlsx'))).toBe(false)
+    expect(db.prepare('PRAGMA quick_check').get()).toEqual({quick_check:'ok'})
   })
   it('pages all 231 receipts and isolates tenant/date filters',()=>{
     const customer=pos.saveCustomer({phone:'0500000001',full_name:'Історія'}).data.id

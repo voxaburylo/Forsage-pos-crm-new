@@ -1,9 +1,12 @@
 import { createRequire } from 'node:module'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, expect, it } from 'vitest'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, realpathSync } from 'node:fs'
+import path from 'node:path'
+import os from 'node:os'
 import { LOCAL_MIGRATIONS } from '../src/db/schema'
 
-const { databaseFingerprint, restoreComparisonOptions } = createRequire(import.meta.url)('../scripts/backup-restore-readiness.cjs')
+const { databaseFingerprint, restoreComparisonOptions, assertStandaloneBackup } = createRequire(import.meta.url)('../scripts/backup-restore-readiness.cjs')
 const connections: DatabaseSync[] = []
 const open = () => {
   const db = new DatabaseSync(':memory:')
@@ -11,7 +14,41 @@ const open = () => {
   connections.push(db)
   return db
 }
-afterEach(() => { for (const db of connections.splice(0)) db.close() })
+const roots: string[] = []
+afterEach(() => {
+  for (const db of connections.splice(0)) db.close()
+  for (const root of roots.splice(0)) {
+    expect(path.dirname(root)).toBe(path.resolve(os.tmpdir()))
+    expect(path.basename(root)).toMatch(/^forsage-standalone-check-/)
+    expect(realpathSync(root)).toBe(root)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+function standaloneFixture() {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'forsage-standalone-check-'))
+  roots.push(root)
+  const backup = path.join(root, 'selected.db')
+  writeFileSync(backup, 'fixture')
+  return { root, backup }
+}
+it('requires an explicit absolute standalone file for both restore inputs', () => {
+  const { backup, root } = standaloneFixture()
+  expect(assertStandaloneBackup(backup)).toBe(realpathSync(backup))
+  for (const value of ['', 'relative.db', undefined]) expect(() => assertStandaloneBackup(value)).toThrow('absolute path')
+  expect(() => assertStandaloneBackup(root)).toThrow('regular file')
+})
+it('refuses a working data/forsage.db even when it exists', () => {
+  const { root } = standaloneFixture()
+  mkdirSync(path.join(root, 'data'))
+  const live = path.join(root, 'data', 'forsage.db')
+  writeFileSync(live, 'fixture')
+  expect(() => assertStandaloneBackup(live)).toThrow('Never use the live database')
+})
+it.each(['-wal', '-shm', '-journal'])('refuses a backup with %s sidecar', suffix => {
+  const { backup } = standaloneFixture()
+  writeFileSync(backup + suffix, '')
+  expect(() => assertStandaloneBackup(backup)).toThrow('without SQLite sidecars')
+})
 
 it('compares every row independently of physical insertion order', () => {
   const left = open(), right = open()
