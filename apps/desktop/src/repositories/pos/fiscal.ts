@@ -232,30 +232,51 @@ export class LocalPosFiscal extends LocalPosReturns {
       throw new Error('Підтвердьте перевірку Cashalot, відповідального та причину')
     }
     const timestamp = nowIso()
-    const update = this.db.prepare(`
-      UPDATE fiscal_sale_intents
-      SET state = 'prepared', fiscal_result_json = NULL, fiscal_number = NULL,
-          fiscal_qr_url = NULL, fiscal_started_at = NULL, fiscalized_at = NULL,
-          manual_reset_count = manual_reset_count + 1, resolved_by = ?,
-          resolved_reason = ?, resolved_at = ?, updated_at = ?
-      WHERE operation_id = ? AND state IN ('fiscalizing', 'unknown')
-    `).run(confirmedBy, reason, timestamp, timestamp, id) as { changes: number | bigint }
-    if (Number(update.changes) === 0) {
-      throw new Error('Цей чек не можна розблокувати: він уже завершений або не був запущений')
-    }
-    const intent = this.requireFiscalIntentRow(id)
-    this.addAudit(
-      intent.tenant_id,
-      confirmedBy,
-      intent.operation_kind === 'return'
-        ? 'fiscal_return_intent.manually_reset'
-        : 'fiscal_sale_intent.manually_reset',
-      'fiscal_sale_intent',
-      id,
-      { reason, checked_at: timestamp },
-      timestamp,
-    )
-    return this.fiscalIntentResult(intent)
+    return this.db.transaction(() => {
+      const previous = this.requireFiscalIntentRow(id)
+      const invalidSavedReceipt = previous.state === 'fiscalized' && !this.savedFiscalReceipt(previous)
+      if (!invalidSavedReceipt && previous.state !== 'unknown' && previous.state !== 'fiscalizing') {
+        throw new Error('Цей чек не можна розблокувати: він уже завершений або не був запущений')
+      }
+      // Even a damaged intent cannot authorize a second receipt when a local
+      // business document or completion result already proves completion.
+      const localDocument = this.db.prepare(`
+        SELECT 1 FROM sales WHERE tenant_id = ? AND client_operation_id = ?
+        UNION ALL
+        SELECT 1 FROM customer_returns WHERE tenant_id = ? AND client_operation_id = ?
+        LIMIT 1
+      `).get(previous.tenant_id, id, previous.tenant_id, id)
+      if (previous.checkout_result_json != null || localDocument) {
+        throw new Error('Ця операція вже має локальний документ або результат. Повторна фіскалізація заборонена')
+      }
+      const update = this.db.prepare(`
+        UPDATE fiscal_sale_intents
+        SET state = 'prepared', fiscal_result_json = NULL, fiscal_number = NULL,
+            fiscal_qr_url = NULL, fiscal_started_at = NULL, fiscalized_at = NULL,
+            manual_reset_count = manual_reset_count + 1, resolved_by = ?,
+            resolved_reason = ?, resolved_at = ?, updated_at = ?
+        WHERE operation_id = ? AND state = ?
+      `).run(confirmedBy, reason, timestamp, timestamp, id, previous.state) as { changes: number | bigint }
+      if (Number(update.changes) !== 1) {
+        throw new Error('Стан операції змінився. Перевірте результат у Cashalot')
+      }
+      const intent = this.requireFiscalIntentRow(id)
+      this.addAudit(
+        intent.tenant_id,
+        confirmedBy,
+        intent.operation_kind === 'return'
+          ? 'fiscal_return_intent.manually_reset'
+          : 'fiscal_sale_intent.manually_reset',
+        'fiscal_sale_intent',
+        id,
+        { reason, checked_at: timestamp, previous_fiscal_evidence: {
+          state: previous.state, fiscal_result_json: previous.fiscal_result_json,
+          fiscal_number: previous.fiscal_number, last_error: previous.last_error,
+        } },
+        timestamp,
+      )
+      return this.fiscalIntentResult(intent)
+    })
   }
 
   getFiscalSaleIntent(idValue: string): LocalFiscalSaleIntentResult {
@@ -301,18 +322,19 @@ export class LocalPosFiscal extends LocalPosReturns {
           `).get(saleId, tenantId) as { sale_number: string } | undefined
         : undefined
       const items = Array.isArray(returnInput.items) ? returnInput.items : []
+      const effective = this.fiscalIntentResult(row)
       return {
         operation_id: row.operation_id,
         tenant_id: row.tenant_id,
         cashier_id: row.cashier_id,
-        state: row.state as Exclude<LocalFiscalSaleIntentState, 'completed'>,
+        state: effective.state as Exclude<LocalFiscalSaleIntentState, 'completed'>,
         sale_id: saleId,
         sale_number: sale?.sale_number ?? null,
         refund_kopecks: money(Number(fiscalPay.check_total ?? 0)),
         refund_method: String(returnInput.refund_method ?? 'cash'),
         item_count: items.length,
-        fiscal_number: row.fiscal_number ?? null,
-        last_error: row.last_error ?? null,
+        fiscal_number: row.state === 'fiscalized' ? cashalotReceiptNumber(effective.fiscal_result) : row.fiscal_number ?? null,
+        last_error: effective.last_error,
         created_at: row.created_at,
         updated_at: row.updated_at,
         can_cancel: row.state === 'prepared',

@@ -236,6 +236,7 @@ export class LocalPosSales extends LocalPosCustomers {
       const existing = this.existingCheckoutResult(tenantId, clientOperationId, checkoutHash)
       if (existing) return existing
     }
+    this.assertNoFiscalIntentDowngrade(clientOperationId, input.is_fiscal)
     if (input.is_fiscal === true) {
       if (!clientOperationId) throw new Error('FISCAL_OPERATION_ID_REQUIRED')
       this.assertFiscalIntentCanCheckout(clientOperationId, checkoutHash, input.fiscal_number)
@@ -246,6 +247,7 @@ export class LocalPosSales extends LocalPosCustomers {
         const existing = this.existingCheckoutResult(tenantId, clientOperationId, checkoutHash)
         if (existing) return existing
       }
+      this.assertNoFiscalIntentDowngrade(clientOperationId, input.is_fiscal)
       this.assertCheckoutReady(input)
       if (input.is_fiscal === true && clientOperationId) {
         this.assertFiscalIntentCanCheckout(clientOperationId, checkoutHash, input.fiscal_number)

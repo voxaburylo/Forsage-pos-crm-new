@@ -301,9 +301,33 @@ app.whenReady().then(async () => {
           JOIN sales s ON s.id=p.sale_id WHERE s.client_operation_id=? ORDER BY p.id`)
           .all(request.operation_id).map(row => row.fiscal_number) : [],
       })
+      // Historical fixtures deliberately bypass today's result validator. Only
+      // this case's synthetic intent is altered; business documents stay real.
+      const seedLegacyFiscalized = (result, storedNumber) => {
+        if (kind === 'sale') pos.prepareFiscalSaleIntent(request)
+        else pos.prepareFiscalReturnIntent(request)
+        const timestamp = new Date().toISOString()
+        const changed = db.prepare(`UPDATE fiscal_sale_intents SET state='fiscalized', fiscal_result_json=?,
+          fiscal_number=?, fiscal_started_at=?, fiscalized_at=? WHERE operation_id=? AND state='prepared'`)
+          .run(JSON.stringify(result), storedNumber, timestamp, timestamp, request.operation_id)
+        equal(Number(changed.changes), 1, 'Legacy fixture changes exactly one owned prepared intent')
+      }
+      const rawIntent = () => db.prepare('SELECT * FROM fiscal_sale_intents WHERE operation_id=?').get(request.operation_id)
+      const directComplete = fiscalNumber => kind === 'sale' ? completeSale(request, fiscalNumber) : pos.createReturn({
+        ...request.return_input, client_operation_id: request.operation_id, is_fiscal: true, fiscal_number: fiscalNumber,
+      })
+      const replaceCompletedLegacyResult = result => {
+        const changed = db.prepare("UPDATE fiscal_sale_intents SET fiscal_result_json=? WHERE operation_id=? AND state='completed'")
+          .run(JSON.stringify(result), request.operation_id)
+        equal(Number(changed.changes), 1, 'Only an already completed synthetic legacy intent is changed')
+      }
       await run({ request, invoke, noExternalLookup, completeSale, restart, snapshot, calls, workers, expireCall,
         failCompletion, dropFailure: () => db.exec('DROP TRIGGER synthetic_completion_failure'),
         intent: () => pos.getFiscalSaleIntent(request.operation_id), totals, storedFiscalNumbers,
+        seedLegacyFiscalized, rawIntent, directComplete, replaceCompletedLegacyResult,
+        unresolvedReturn: () => kind === 'return'
+          ? pos.listUnresolvedFiscalReturnIntents({ tenant_id: tenant, cashier_id: 'synthetic-cashier' })
+            .find(item => item.operation_id === request.operation_id) : null,
         worker: () => workers[workers.length - 1] })
       // Validate outside stdin.write: production correctly catches transport
       // throws, so assertions inside write could otherwise look like an expected
@@ -377,8 +401,136 @@ app.whenReady().then(async () => {
     { name: 'array result', result: [] },
     { name: 'numeric fiscal identity despite valid local identity', result: { Return: true, ReceiptFiscalNum: 123, ReceiptLocalNum: 'SYNTHETIC-LOCAL' } },
   ]
+  const invalidLegacyReceipts = [
+    { name: 'empty historical result', result: {}, storedNumber: null },
+    { name: 'stored/result number mismatch', result: { ReceiptFiscalNum: 'SYNTHETIC-LEGACY-RESULT' }, storedNumber: 'SYNTHETIC-LEGACY-STORED' },
+  ]
+  const validLegacyReceipts = [
+    { name: 'fiscal number without Return flag', result: { ReceiptFiscalNum: 'SYNTHETIC-LEGACY-FISCAL' },
+      storedNumber: 'SYNTHETIC-LEGACY-FISCAL', number: 'SYNTHETIC-LEGACY-FISCAL' },
+    { name: 'whitespace fiscal number with local fallback', result: { ReceiptFiscalNum: ' \t ', ReceiptLocalNum: '  SYNTHETIC-LEGACY-LOCAL\t' },
+      storedNumber: 'SYNTHETIC-LEGACY-LOCAL', number: 'SYNTHETIC-LEGACY-LOCAL' },
+    { name: 'valid result with absent stored number', result: { ReceiptFiscalNum: 'SYNTHETIC-LEGACY-NULL-STORED' },
+      storedNumber: null, number: 'SYNTHETIC-LEGACY-NULL-STORED' },
+  ]
 
   for (const kind of ['sale', 'return']) {
+    for (const legacy of invalidLegacyReceipts) {
+      await runCase(`${kind}: unfinished legacy ${legacy.name} is read-only blocked`, kind, async fixture => {
+        fixture.seedLegacyFiscalized(legacy.result, legacy.storedNumber)
+        const originalRow = fixture.rawIntent()
+        const before = fixture.snapshot()
+        const beforeTotals = fixture.totals()
+        equal(originalRow.state, 'fiscalized', 'The historical stored state is intentionally not migrated')
+        for (let pass = 0; pass < 2; pass++) {
+          if (pass) await fixture.restart()
+          equal(fixture.intent().state, 'unknown', 'Invalid unfinished legacy result exposes an effective unknown state')
+          if (kind === 'return') {
+            equal(fixture.unresolvedReturn()?.state, 'unknown', 'Recovery list also exposes effective unknown')
+            equal(fixture.unresolvedReturn()?.can_cancel, false)
+          }
+          const attempt = observe(fixture.invoke(fixture.noExternalLookup))
+          await flush()
+          equal(attempt.settled, true)
+          ok(attempt.error?.startsWith(`FISCAL_INTENT_UNKNOWN|${fixture.request.operation_id}|`))
+          assert.throws(() => fixture.directComplete(legacy.storedNumber || 'SYNTHETIC-ATTEMPT'),
+            error => error.message.startsWith(`FISCAL_INTENT_UNKNOWN|${fixture.request.operation_id}|`))
+          checks++
+          equal(fixture.rawIntent(), originalRow, 'Reads, blocked completion and reopen preserve every original intent column')
+          equal(fixture.snapshot(), before, 'Blocked legacy intent cannot change money/stock/audit/outbox')
+          equal(fixture.totals(), beforeTotals)
+          equal(fixture.calls(), 0, 'Legacy retry cannot issue a second external request')
+          equal(fixture.workers.length, 0)
+        }
+      })
+    }
+
+    for (const legacy of validLegacyReceipts) {
+      await runCase(`${kind}: valid legacy ${legacy.name} completes without worker`, kind, async fixture => {
+        fixture.seedLegacyFiscalized(legacy.result, legacy.storedNumber)
+        const originalRow = fixture.rawIntent()
+        equal(fixture.intent().state, 'fiscalized')
+        equal(fixture.rawIntent(), originalRow, 'Reading a valid legacy result does not rewrite it')
+        const resumed = observe(fixture.invoke(fixture.noExternalLookup))
+        await flush()
+        equal(resumed.settled, true)
+        equal(resumed.error, undefined)
+        if (kind === 'sale') fixture.directComplete(legacy.number)
+        equal(fixture.intent().state, 'completed')
+        equal(fixture.storedFiscalNumbers().receipts, [legacy.number], 'Legacy completion uses the exact canonical receipt number')
+        equal(fixture.storedFiscalNumbers().payments, kind === 'sale' ? [legacy.number] : [])
+        equal(fixture.totals(), kind === 'sale'
+          ? { stock: 2, sales: 1, payments: 1500, returns: 0, refunds: 0 }
+          : { stock: 3, sales: 1, payments: 1500, returns: 1, refunds: 1500 })
+        const completedRow = fixture.rawIntent()
+        const completedIntent = fixture.intent()
+        const completedBusiness = fixture.snapshot()
+        await fixture.restart()
+        const duplicate = observe(fixture.invoke(fixture.noExternalLookup))
+        await flush()
+        equal(duplicate.settled, true)
+        equal(duplicate.error, undefined)
+        const duplicateIntent = kind === 'sale' ? duplicate.value : duplicate.value?.intent
+        equal(duplicateIntent?.state, 'completed')
+        equal(duplicateIntent, completedIntent)
+        fixture.directComplete(legacy.number)
+        equal(fixture.rawIntent(), completedRow)
+        equal(fixture.snapshot(), completedBusiness)
+        equal(fixture.calls(), 0)
+        equal(fixture.workers.length, 0)
+      })
+    }
+
+    await runCase(`${kind}: valid legacy result with NULL stored number rejects a wrong completion number`, kind, async fixture => {
+      fixture.seedLegacyFiscalized({ ReceiptFiscalNum: 'SYNTHETIC-LEGACY-CORRECT' }, null)
+      const originalRow = fixture.rawIntent()
+      const before = fixture.snapshot()
+      for (let pass = 0; pass < 2; pass++) {
+        if (pass) await fixture.restart()
+        equal(fixture.intent().state, 'fiscalized')
+        assert.throws(() => fixture.directComplete('SYNTHETIC-LEGACY-WRONG'),
+          error => error.message.startsWith('FISCAL_INTENT_CONFLICT|'))
+        checks++
+        equal(fixture.rawIntent(), originalRow, 'Rejected wrong number does not repair or rewrite historical intent')
+        equal(fixture.snapshot(), before)
+        equal(fixture.calls(), 0)
+        equal(fixture.workers.length, 0)
+      }
+    })
+
+    await runCase(`${kind}: already completed legacy empty result remains idempotent`, kind, async fixture => {
+      const number = 'SYNTHETIC-COMPLETED-LEGACY'
+      fixture.seedLegacyFiscalized({ ReceiptFiscalNum: number }, number)
+      const resumed = observe(fixture.invoke(fixture.noExternalLookup))
+      await flush()
+      equal(resumed.settled, true)
+      equal(resumed.error, undefined)
+      if (kind === 'sale') fixture.directComplete(number)
+      equal(fixture.intent().state, 'completed')
+      fixture.replaceCompletedLegacyResult({})
+      const originalRow = fixture.rawIntent()
+      const originalIntent = fixture.intent()
+      const before = fixture.snapshot()
+      equal(originalIntent.state, 'completed')
+      equal(originalIntent.fiscal_result, {})
+      for (let pass = 0; pass < 2; pass++) {
+        if (pass) await fixture.restart()
+        const duplicate = observe(fixture.invoke(fixture.noExternalLookup))
+        await flush()
+        equal(duplicate.settled, true)
+        equal(duplicate.error, undefined)
+        const duplicateIntent = kind === 'sale' ? duplicate.value : duplicate.value?.intent
+        equal(duplicateIntent, originalIntent)
+        equal(duplicateIntent?.state, 'completed')
+        if (kind === 'return') equal(duplicate.value.data, originalIntent.checkout_result)
+        fixture.directComplete(number)
+        equal(fixture.rawIntent(), originalRow)
+        equal(fixture.snapshot(), before, 'Already completed receipt is never re-applied or invalidated')
+        equal(fixture.calls(), 0)
+        equal(fixture.workers.length, 0)
+      }
+    })
+
     for (const failure of ['worker-error', 'timeout']) {
       await runCase(`${kind}: ${failure}, late response and true DB reopen never repeat the operation`, kind, async fixture => {
         const before = fixture.snapshot()

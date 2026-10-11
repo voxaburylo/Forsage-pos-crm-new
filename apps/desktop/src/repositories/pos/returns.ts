@@ -176,6 +176,7 @@ export class LocalPosReturns extends LocalPosSales {
       if (existing) return existing
     }
 
+    this.assertNoFiscalIntentDowngrade(clientOperationId, input.is_fiscal)
     if (input.is_fiscal === true) {
       if (!clientOperationId) throw new Error('FISCAL_OPERATION_ID_REQUIRED')
       this.assertReturnReady(input)
@@ -190,6 +191,7 @@ export class LocalPosReturns extends LocalPosSales {
         const existing = this.existingReturnResult(tenantId, clientOperationId, returnHash)
         if (existing) return existing
       }
+      this.assertNoFiscalIntentDowngrade(clientOperationId, input.is_fiscal)
       if (input.is_fiscal === true && clientOperationId) {
         this.assertFiscalIntentCanReturn(clientOperationId, returnHash, input.fiscal_number)
       }

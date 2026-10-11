@@ -31,6 +31,32 @@ const CALL_TIMEOUT_MS = 180_000
 type WorkerRequest = { id: string; method: string; comMethod: string; args: string[]; config: { cashalotDir: string } }
 type Observation = { settlements: number; value?: LocalFiscalSaleIntentResult; error?: string; done: Promise<void> }
 
+const invalidSavedReceipts: Array<{ label: string; json: string | null; storedNumber: string | null }> = [
+  { label: 'SQL NULL result', json: null, storedNumber: null },
+  { label: 'empty persisted text', json: '', storedNumber: null },
+  { label: 'malformed JSON', json: '{"ReceiptFiscalNum":', storedNumber: null },
+  { label: 'JSON null', json: 'null', storedNumber: null },
+  { label: 'array result', json: '[]', storedNumber: null },
+  { label: 'string result', json: '"LEGACY-1"', storedNumber: null },
+  { label: 'boolean result', json: 'true', storedNumber: null },
+  { label: 'numeric result', json: '12345', storedNumber: null },
+  { label: 'empty object', json: '{}', storedNumber: null },
+  { label: 'success without identity', json: '{"Return":true}', storedNumber: null },
+  { label: 'blank identities', json: JSON.stringify({ ReceiptFiscalNum: ' \t ', ReceiptLocalNum: '' }), storedNumber: null },
+  { label: 'explicit rejection', json: '{"Return":false,"ReceiptFiscalNum":"LEGACY-1"}', storedNumber: 'LEGACY-1' },
+  { label: 'null Return', json: '{"Return":null,"ReceiptFiscalNum":"LEGACY-1"}', storedNumber: 'LEGACY-1' },
+  { label: 'string Return', json: '{"Return":"true","ReceiptFiscalNum":"LEGACY-1"}', storedNumber: 'LEGACY-1' },
+  { label: 'numeric Return', json: '{"Return":1,"ReceiptFiscalNum":"LEGACY-1"}', storedNumber: 'LEGACY-1' },
+  { label: 'numeric fiscal identity with string local fallback',
+    json: '{"ReceiptFiscalNum":12345,"ReceiptLocalNum":"LOCAL-1"}', storedNumber: 'LOCAL-1' },
+  { label: 'object local identity with string fiscal number',
+    json: '{"ReceiptFiscalNum":"LEGACY-1","ReceiptLocalNum":{"number":"LOCAL-1"}}', storedNumber: 'LEGACY-1' },
+  { label: 'array fiscal identity', json: '{"ReceiptFiscalNum":["LEGACY-1"]}', storedNumber: 'LEGACY-1' },
+  { label: 'boolean local identity', json: '{"ReceiptLocalNum":true}', storedNumber: null },
+  { label: 'column-only identity without evidence', json: '{}', storedNumber: 'ORPHAN-1' },
+  { label: 'persisted identity conflict', json: '{"ReceiptFiscalNum":"LEGACY-1"}', storedNumber: 'DIFFERENT-1' },
+]
+
 class FakeWorker extends EventEmitter {
   readonly pid = 81001
   exitCode: number | null = null
@@ -203,7 +229,11 @@ describe.each(['sale', 'return'] as const)('fiscal %s orchestration with persist
     expect(snapshotBusiness()).toEqual(businessBefore)
   }
 
-  function expectCompletedOnce(expectedReceipt: CashalotRetVal = receipt, expectedNumber = receipt.ReceiptFiscalNum): void {
+  function expectCompletedOnce(
+    expectedReceipt: object = receipt,
+    expectedNumber = receipt.ReceiptFiscalNum,
+    expectedSendCount = sendsBefore + 1,
+  ): void {
     const table = kind === 'sale' ? 'sales' : 'customer_returns'
     const documents = database().prepare(`SELECT id, fiscal_number FROM ${table} WHERE client_operation_id = ?`)
       .all(OPERATION) as Array<{ id: string; fiscal_number: string }>
@@ -221,7 +251,42 @@ describe.each(['sale', 'return'] as const)('fiscal %s orchestration with persist
     expect(catalog.findById(product.id)?.qty_on_hand).toBe(stockBefore + (kind === 'sale' ? -1 : 1))
     expect(pos.getExpectedCash(CASHIER)?.expected_amount).toBe(cashBefore + (kind === 'sale' ? PRICE : -PRICE))
     expect(pos.getFiscalSaleIntent(OPERATION)).toMatchObject({ state: 'completed', fiscal_result: expectedReceipt })
-    expect(sends()).toHaveLength(sendsBefore + 1)
+    expect(sends()).toHaveLength(expectedSendCount)
+  }
+
+  function rawSavedIntent(): Record<string, unknown> {
+    return database().prepare('SELECT * FROM fiscal_sale_intents WHERE operation_id = ?')
+      .get(OPERATION) as Record<string, unknown>
+  }
+
+  function seedSavedFiscalized(json: string | null, storedNumber: string | null): Record<string, unknown> {
+    if (kind === 'sale') pos.prepareFiscalSaleIntent(saleRequest)
+    else pos.prepareFiscalReturnIntent(returnRequest)
+    // Model a row written by an older release, not a new service acknowledgement.
+    // Only the disposable fixture database can receive this synthetic damage.
+    database().prepare(`UPDATE fiscal_sale_intents SET state = 'fiscalized',
+      fiscal_result_json = ?, fiscal_number = ?, last_error = 'Legacy diagnostic evidence',
+      fiscal_started_at = '2025-01-01T10:00:00.000Z', fiscalized_at = '2025-01-01T10:00:01.000Z'
+      WHERE operation_id = ?`).run(json, storedNumber, OPERATION)
+    return rawSavedIntent()
+  }
+
+  function directComplete(fiscalNumber: string | null, isFiscal: unknown = true): unknown {
+    if (kind === 'sale') {
+      return pos.checkout({ ...saleRequest.checkout, is_fiscal: isFiscal, fiscal_number: fiscalNumber,
+        payments: saleRequest.checkout.payments.map(payment => ({ ...payment, fiscal_number: fiscalNumber })),
+      } as Parameters<LocalPosRepository['checkout']>[0])
+    }
+    return pos.createReturn({ ...returnRequest.return_input, client_operation_id: OPERATION,
+      is_fiscal: isFiscal, fiscal_number: fiscalNumber })
+  }
+
+  function resetSavedIntent(overrides: Record<string, unknown> = {}): LocalFiscalSaleIntentResult {
+    const resolution = { cashalot_checked: true, confirmed_by: CASHIER,
+      reason: 'Cashalot checked: synthetic receipt was not registered', ...overrides }
+    if (kind === 'sale') return pos.resolveUnknownFiscalSaleIntent(OPERATION, resolution)
+    return pos.resolveUnknownFiscalReturnIntent(OPERATION,
+      { tenant_id: DEFAULT_TENANT_ID, cashier_id: CASHIER, ...resolution })
   }
 
   beforeEach(async () => {
@@ -370,6 +435,240 @@ describe.each(['sale', 'return'] as const)('fiscal %s orchestration with persist
     await restart()
     expect(pos.getFiscalSaleIntent(OPERATION).state).toBe('unknown')
     await expectBlockedWithoutResend()
+  })
+
+  it.each(invalidSavedReceipts)('quarantines saved $label without rewriting evidence or resending after restart', async ({ json, storedNumber }) => {
+    const saved = seedSavedFiscalized(json, storedNumber)
+    getCashalot.mockClear()
+    getCashalot.mockImplementation(() => { throw new Error('Saved invalid receipt must never look up Cashalot') })
+    for (const reopen of [false, true]) {
+      if (reopen) await restart()
+      const effective = pos.getFiscalSaleIntent(OPERATION)
+      expect(effective).toMatchObject({ state: 'unknown', fiscal_result: null, checkout_result: null })
+      expect(effective.last_error).toBeTruthy()
+      expect(rawSavedIntent()).toEqual(saved)
+      const prepared = kind === 'sale'
+        ? pos.prepareFiscalSaleIntent(saleRequest) : pos.prepareFiscalReturnIntent(returnRequest)
+      expect(prepared).toEqual(effective)
+      if (kind === 'return') {
+        expect(pos.listUnresolvedFiscalReturnIntents({ tenant_id: DEFAULT_TENANT_ID, cashier_id: CASHIER }))
+          .toEqual([expect.objectContaining({ operation_id: OPERATION, state: 'unknown', can_cancel: false,
+            last_error: effective.last_error })])
+      }
+      // Test the actual sale command, not a client-side dereference of its result.
+      const retry = observe(kind === 'sale'
+        ? fiscalizeSale(pos, getCashalot, saleRequest) : perform(true))
+      await flush()
+      expect(retry.settlements).toBe(1)
+      expect(retry.error).toMatch(new RegExp(`^FISCAL_INTENT_UNKNOWN\\|${OPERATION}\\|`))
+      expect(getCashalot).not.toHaveBeenCalled()
+      expect(sends()).toHaveLength(sendsBefore)
+      expect(rawSavedIntent()).toEqual(saved)
+      expect(snapshotBusiness()).toEqual(businessBefore)
+    }
+  })
+
+  it.each(invalidSavedReceipts.filter(({ label }) => [
+    'SQL NULL result', 'empty object', 'explicit rejection',
+    'numeric fiscal identity with string local fallback', 'persisted identity conflict',
+  ].includes(label)))('direct completion cannot bypass saved $label even with a caller-supplied number', async ({ json, storedNumber }) => {
+    const saved = seedSavedFiscalized(json, storedNumber)
+    for (const reopen of [false, true]) {
+      if (reopen) await restart()
+      expect(() => directComplete(storedNumber || 'CALLER-INVENTED-1'))
+        .toThrow(new RegExp(`^FISCAL_INTENT_UNKNOWN\\|${OPERATION}\\|`))
+      expect(rawSavedIntent()).toEqual(saved)
+      expect(snapshotBusiness()).toEqual(businessBefore)
+      expect(sends()).toHaveLength(sendsBefore)
+    }
+  })
+
+  it.each([
+    { label: 'false', value: false }, { label: 'undefined', value: undefined },
+    { label: 'numeric one', value: 1 }, { label: 'string true', value: 'true' },
+  ])('cannot downgrade an existing fiscal intent using is_fiscal=$label', async ({ value }) => {
+    const saved = seedSavedFiscalized('{"ReceiptFiscalNum":"LEGACY-1"}', 'LEGACY-1')
+    for (const reopen of [false, true]) {
+      if (reopen) await restart()
+      // An explicit undefined must not use directComplete's default argument.
+      const complete = kind === 'sale'
+        ? () => pos.checkout({ ...saleRequest.checkout, is_fiscal: value, fiscal_number: 'LEGACY-1',
+        } as Parameters<LocalPosRepository['checkout']>[0])
+        : () => pos.createReturn({ ...returnRequest.return_input, client_operation_id: OPERATION,
+          is_fiscal: value, fiscal_number: 'LEGACY-1' })
+      expect(complete).toThrow(/^FISCAL_INTENT_CONFLICT\|/)
+      expect(rawSavedIntent()).toEqual(saved)
+      expect(snapshotBusiness()).toEqual(businessBefore)
+      expect(sends()).toHaveLength(sendsBefore)
+    }
+  })
+
+  it.each([null, '', 'WRONG-1'])('requires the confirmed receipt identity at direct completion, not %s', async suppliedNumber => {
+    const saved = seedSavedFiscalized('{"ReceiptFiscalNum":"LEGACY-1"}', null)
+    for (const reopen of [false, true]) {
+      if (reopen) await restart()
+      expect(() => directComplete(suppliedNumber)).toThrow(/^FISCAL_INTENT_CONFLICT\|/)
+      expect(rawSavedIntent()).toEqual(saved)
+      expect(snapshotBusiness()).toEqual(businessBefore)
+      expect(sends()).toHaveLength(sendsBefore)
+    }
+  })
+
+  it.each([
+    { label: 'legacy fiscal identity', result: { ReceiptFiscalNum: 'LEGACY-1' }, storedNumber: 'LEGACY-1', number: 'LEGACY-1' },
+    { label: 'legacy local-only identity', result: { ReceiptLocalNum: 'LOCAL-1' }, storedNumber: 'LOCAL-1', number: 'LOCAL-1' },
+    { label: 'legacy local fallback and empty stored identity', result: { ReceiptFiscalNum: ' \t ', ReceiptLocalNum: ' LOCAL-1\t ' }, storedNumber: '', number: 'LOCAL-1' },
+    { label: 'legacy fiscal identity and missing stored identity', result: { ReceiptFiscalNum: 'LEGACY-1', ReceiptLocalNum: null }, storedNumber: null, number: 'LEGACY-1' },
+    { label: 'matching padded stored and result identity', result: { ReceiptFiscalNum: ' LEGACY-1\t ' }, storedNumber: '  LEGACY-1 ', number: 'LEGACY-1' },
+  ])('locally completes $label once after restart without requiring Return or a new fiscal call', async ({ result, storedNumber, number }) => {
+    const json = JSON.stringify({ ...result, Description: 'Preserved old response metadata' })
+    const saved = seedSavedFiscalized(json, storedNumber)
+    expect(pos.getFiscalSaleIntent(OPERATION).state).toBe('fiscalized')
+    expect(rawSavedIntent()).toEqual(saved)
+    await restart()
+    expect(rawSavedIntent()).toEqual(saved)
+    getCashalot.mockClear()
+    getCashalot.mockImplementation(() => { throw new Error('Valid saved receipt must complete locally') })
+    const recovered = observe(perform(true))
+    await flush()
+    expect(recovered.settlements).toBe(1)
+    expect(recovered.error).toBeUndefined()
+    expectCompletedOnce(result, number, sendsBefore)
+    expect(rawSavedIntent().fiscal_result_json).toBe(json)
+    const completed = pos.getFiscalSaleIntent(OPERATION)
+    const committed = snapshotBusiness()
+    for (const reopen of [false, true]) {
+      if (reopen) await restart()
+      const retry = observe(perform(true))
+      await flush()
+      expect(retry.settlements).toBe(1)
+      expect(retry.error).toBeUndefined()
+      expect(retry.value).toEqual(completed)
+      expectCompletedOnce(result, number, sendsBefore)
+      expect(snapshotBusiness()).toEqual(committed)
+      expect(getCashalot).not.toHaveBeenCalled()
+    }
+  })
+
+  it('only explicitly resets invalid saved evidence after operator confirmation and preserves that evidence in one audit', async () => {
+    const saved = seedSavedFiscalized('{"ReceiptFiscalNum":', 'ORPHAN-1')
+    await restart()
+    for (const missingConfirmation of [
+      { cashalot_checked: false }, { confirmed_by: '' }, { reason: 'short' },
+    ]) {
+      expect(() => resetSavedIntent(missingConfirmation)).toThrow()
+      expect(rawSavedIntent()).toEqual(saved)
+      expect(snapshotBusiness()).toEqual(businessBefore)
+    }
+    const resolved = resetSavedIntent()
+    expect(resolved).toMatchObject({ state: 'prepared', fiscal_result: null, checkout_result: null })
+    const current = rawSavedIntent()
+    expect(current).toMatchObject({ state: 'prepared', fiscal_result_json: null, fiscal_number: null,
+      fiscal_started_at: null, fiscalized_at: null, manual_reset_count: 1, resolved_by: CASHIER,
+      resolved_reason: 'Cashalot checked: synthetic receipt was not registered' })
+    const audits = database().prepare(`SELECT * FROM audit_log WHERE entity_type = 'fiscal_sale_intent'
+      AND entity_id = ?`).all(OPERATION) as Array<{ action: string; after_json: string; user_id: string }>
+    expect(audits).toHaveLength(1)
+    expect(audits[0]).toMatchObject({ user_id: CASHIER,
+      action: kind === 'sale' ? 'fiscal_sale_intent.manually_reset' : 'fiscal_return_intent.manually_reset' })
+    expect(JSON.parse(audits[0].after_json)).toMatchObject({
+      reason: current.resolved_reason,
+      previous_fiscal_evidence: { state: saved.state, fiscal_result_json: saved.fiscal_result_json,
+        fiscal_number: saved.fiscal_number, last_error: saved.last_error },
+    })
+    const afterReset = snapshotBusiness()
+    expect(afterReset.audit_log).toHaveLength(businessBefore.audit_log.length + 1)
+    expect({ ...afterReset, audit_log: businessBefore.audit_log }).toEqual(businessBefore)
+    expect(sends()).toHaveLength(sendsBefore)
+    await restart()
+    expect(rawSavedIntent()).toEqual(current)
+    expect(snapshotBusiness()).toEqual(afterReset)
+    // Reset authorizes a later explicit retry; it must not send as a side effect.
+    expect(sends()).toHaveLength(sendsBefore)
+  })
+
+  it.each(['fiscalized', 'unknown'] as const)('rolls back the entire %s manual reset if its audit cannot persist', async state => {
+    seedSavedFiscalized('{}', 'ORPHAN-1')
+    database().prepare('UPDATE fiscal_sale_intents SET state = ? WHERE operation_id = ?').run(state, OPERATION)
+    const saved = rawSavedIntent()
+    database().exec(`CREATE TRIGGER fixture_reset_audit_failure BEFORE INSERT ON audit_log
+      WHEN NEW.entity_type = 'fiscal_sale_intent' AND NEW.entity_id = '${OPERATION}'
+      BEGIN SELECT RAISE(ABORT, 'synthetic manual reset audit failure'); END`)
+    expect(() => resetSavedIntent()).toThrow('synthetic manual reset audit failure')
+    expect(rawSavedIntent()).toEqual(saved)
+    expect(snapshotBusiness()).toEqual(businessBefore)
+    database().exec('DROP TRIGGER fixture_reset_audit_failure')
+    await restart()
+    expect(rawSavedIntent()).toEqual(saved)
+    expect(sends()).toHaveLength(sendsBefore)
+    await expectBlockedWithoutResend()
+  })
+
+  it('refuses a manual reset of valid fiscalized evidence or an existing local completion result', async () => {
+    const valid = seedSavedFiscalized('{"ReceiptFiscalNum":"LEGACY-1"}', 'LEGACY-1')
+    expect(() => resetSavedIntent()).toThrow()
+    expect(rawSavedIntent()).toEqual(valid)
+    database().prepare(`UPDATE fiscal_sale_intents SET state = 'unknown', fiscal_result_json = '{}',
+      checkout_result_json = '{}' WHERE operation_id = ?`).run(OPERATION)
+    const completedEvidence = rawSavedIntent()
+    expect(() => resetSavedIntent()).toThrow()
+    expect(rawSavedIntent()).toEqual(completedEvidence)
+    expect(snapshotBusiness()).toEqual(businessBefore)
+    await restart()
+    expect(() => resetSavedIntent()).toThrow()
+    expect(rawSavedIntent()).toEqual(completedEvidence)
+    expect(snapshotBusiness()).toEqual(businessBefore)
+    expect(sends()).toHaveLength(sendsBefore)
+  })
+
+  it.each([false, true])('refuses manual reset when an existing business document contradicts a damaged intent (deleted: %s)', async deleted => {
+    const { observation, worker, request } = await start()
+    worker.respond(request, receipt)
+    await flush()
+    expect(observation.error).toBeUndefined()
+    expectCompletedOnce()
+    database().prepare(`UPDATE fiscal_sale_intents SET state = 'unknown', fiscal_result_json = '{}',
+      checkout_result_json = NULL WHERE operation_id = ?`).run(OPERATION)
+    if (deleted) {
+      const table = kind === 'sale' ? 'sales' : 'customer_returns'
+      database().prepare(`UPDATE ${table} SET deleted_at = '2025-01-01T11:00:00.000Z'
+        WHERE client_operation_id = ?`).run(OPERATION)
+    }
+    const saved = rawSavedIntent()
+    const committed = snapshotBusiness()
+    for (const reopen of [false, true]) {
+      if (reopen) await restart()
+      expect(() => resetSavedIntent()).toThrow()
+      expect(rawSavedIntent()).toEqual(saved)
+      expect(snapshotBusiness()).toEqual(committed)
+      expect(sends()).toHaveLength(sendsBefore + 1)
+    }
+  })
+
+  it('does not retroactively invalidate or rewrite completed historical documents with damaged saved results', async () => {
+    const { observation, worker, request } = await start()
+    worker.respond(request, receipt)
+    await flush()
+    expect(observation.error).toBeUndefined()
+    expectCompletedOnce()
+    database().prepare(`UPDATE fiscal_sale_intents SET fiscal_result_json = '{broken'
+      WHERE operation_id = ?`).run(OPERATION)
+    const saved = rawSavedIntent()
+    const committed = snapshotBusiness()
+    getCashalot.mockClear()
+    getCashalot.mockImplementation(() => { throw new Error('Historical completed receipt must not look up Cashalot') })
+    for (const reopen of [false, true]) {
+      if (reopen) await restart()
+      const retry = observe(perform(true))
+      await flush()
+      expect(retry.settlements).toBe(1)
+      expect(retry.error).toBeUndefined()
+      expect(retry.value).toMatchObject({ state: 'completed', fiscal_result: null })
+      expect(rawSavedIntent()).toEqual(saved)
+      expect(snapshotBusiness()).toEqual(committed)
+      expect(getCashalot).not.toHaveBeenCalled()
+      expect(sends()).toHaveLength(sendsBefore + 1)
+    }
   })
 
   it.each([

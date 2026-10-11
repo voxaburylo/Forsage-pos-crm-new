@@ -11,8 +11,42 @@ import { DEFAULT_TENANT_ID } from '../../db/localTypes'
 import type { FiscalIntentRow } from './posShared'
 import { operationId } from './posShared'
 import { LocalPosBase } from './base'
+import { cashalotReceiptNumber, readSavedCashalotReceipt } from '../../fiscal/cashalotReceipt'
+
+const INVALID_SAVED_RECEIPT = 'Збережений результат ПРРО неповний або суперечливий. Не повторюйте операцію; перевірте чек у Cashalot'
 
 export class LocalPosFiscalGuards extends LocalPosBase {
+  protected savedFiscalReceipt(row: FiscalIntentRow): Record<string, unknown> | null {
+    let result: unknown
+    try { result = JSON.parse(row.fiscal_result_json ?? 'null') } catch { return null }
+    const receipt = readSavedCashalotReceipt(result)
+    if (!receipt) return null
+    if (row.fiscal_number != null) {
+      if (typeof row.fiscal_number !== 'string') return null
+      const stored = row.fiscal_number.trim()
+      if (stored && stored !== cashalotReceiptNumber(receipt)) return null
+    }
+    return receipt
+  }
+
+  protected assertNoFiscalIntentDowngrade(id: string | null, isFiscal: unknown): void {
+    if (id && isFiscal !== true && this.getFiscalIntentRow(id)) {
+      throw new Error('FISCAL_INTENT_CONFLICT|Фіскальну операцію не можна завершити як нефіскальну')
+    }
+  }
+
+  private assertSavedReceiptNumber(intent: FiscalIntentRow, supplied: string | null | undefined): void {
+    const receipt = this.savedFiscalReceipt(intent)
+    if (!receipt) {
+      throw new Error(`FISCAL_INTENT_UNKNOWN|${intent.operation_id}|${INVALID_SAVED_RECEIPT}`)
+    }
+    // The result is the identity evidence even when an old version left the
+    // denormalized column empty. Never accept a caller-invented replacement.
+    if (cashalotReceiptNumber(receipt) !== supplied) {
+      throw new Error('FISCAL_INTENT_CONFLICT|Фіскальний номер не відповідає збереженому результату ПРРО')
+    }
+  }
+
   protected assertFiscalIntentCanReturn(
     id: string,
     returnHash: string,
@@ -31,9 +65,7 @@ export class LocalPosFiscalGuards extends LocalPosBase {
     if (intent.state === 'completed') {
       throw new Error('Завершене фіскальне повернення не знайдено у локальній базі')
     }
-    if (intent.fiscal_number && intent.fiscal_number !== (fiscalNumber ?? null)) {
-      throw new Error('FISCAL_INTENT_CONFLICT|Фіскальний номер повернення не відповідає результату ПРРО')
-    }
+    this.assertSavedReceiptNumber(intent, fiscalNumber)
     return intent
   }
 
@@ -81,13 +113,17 @@ export class LocalPosFiscalGuards extends LocalPosBase {
       if (!value) return null
       try { return JSON.parse(value) } catch { return null }
     }
+    const savedReceipt = row.state === 'fiscalized' ? this.savedFiscalReceipt(row) : null
+    const invalidSavedReceipt = row.state === 'fiscalized' && !savedReceipt
+    // Projection only: do not repair or erase historical evidence while reading.
+    // Completed documents keep their original idempotent replay contract.
     return {
       operation_id: row.operation_id,
-      state: row.state,
+      state: invalidSavedReceipt ? 'unknown' : row.state,
       payload_hash: row.payload_hash,
-      fiscal_result: parse(row.fiscal_result_json),
+      fiscal_result: row.state === 'fiscalized' ? savedReceipt : parse(row.fiscal_result_json),
       checkout_result: parse(row.checkout_result_json),
-      last_error: row.last_error ?? null,
+      last_error: invalidSavedReceipt ? INVALID_SAVED_RECEIPT : row.last_error ?? null,
     }
   }
 
@@ -97,7 +133,7 @@ export class LocalPosFiscalGuards extends LocalPosBase {
     fiscalNumber: string | null | undefined,
   ): FiscalIntentRow {
     const intent = this.requireFiscalIntentRow(id)
-    if (intent.checkout_hash !== checkoutHash) {
+    if (intent.operation_kind !== 'sale' || intent.checkout_hash !== checkoutHash) {
       throw new Error('FISCAL_INTENT_CONFLICT|Дані чека відрізняються від підготовленої операції')
     }
     if (intent.state === 'fiscalizing' || intent.state === 'unknown') {
@@ -109,9 +145,7 @@ export class LocalPosFiscalGuards extends LocalPosBase {
     if (intent.state === 'completed') {
       throw new Error('Завершений фіскальний чек не знайдено у продажах')
     }
-    if (intent.fiscal_number && intent.fiscal_number !== (fiscalNumber ?? null)) {
-      throw new Error('FISCAL_INTENT_CONFLICT|Фіскальний номер не відповідає результату ПРРО')
-    }
+    this.assertSavedReceiptNumber(intent, fiscalNumber)
     return intent
   }
 
