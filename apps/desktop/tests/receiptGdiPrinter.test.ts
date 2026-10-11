@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { POWER_SHELL_TEST_TIMEOUT_MS, runPowerShellProbe } from './powerShellProbe'
 import { describe, expect, it, vi } from 'vitest'
 vi.mock('electron', () => ({ app: { getPath: () => '' } }))
 import { canUseReceiptGdiFallback, RECEIPT_GDI_SCRIPT } from '../src/print/receiptGdiPrinter'
@@ -58,8 +58,5 @@ try {
  'GDI_PIXEL_EXACT_2_PAGES'
 } finally {$image.Dispose()}
 `
-  const result=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{encoding:'utf8',windowsHide:true,timeout:15_000})
-  expect(result.stderr).toBe('')
-  expect(result.status).toBe(0)
-  expect(result.stdout).toContain('GDI_PIXEL_EXACT_2_PAGES')
-}, 20_000)
+  expect(runPowerShellProbe(script)).toContain('GDI_PIXEL_EXACT_2_PAGES')
+}, POWER_SHELL_TEST_TIMEOUT_MS)

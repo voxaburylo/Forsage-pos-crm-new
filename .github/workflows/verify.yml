@@ -11,7 +11,8 @@ concurrency:
 jobs:
   verify:
     runs-on: windows-latest
-    timeout-minutes: 25
+    # Allow for serial SQLite/PGlite and native/UI probes on slower hosted runners.
+    timeout-minutes: 45
     env:
       VITE_SUPABASE_URL: https://example.supabase.co
       VITE_SUPABASE_ANON_KEY: test-anon-key
