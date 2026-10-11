@@ -700,7 +700,7 @@ export class LocalSyncRepository {
         }
 
         const nextAttemptAt = new Date(Date.now() + this.retryDelayMs(result.sequence)).toISOString()
-        this.db.prepare(`
+        const failure = this.db.prepare(`
           UPDATE sync_outbox
           SET status = 'failed',
               attempts = attempts + 1,
@@ -708,8 +708,9 @@ export class LocalSyncRepository {
               next_attempt_at = ?
           WHERE sequence = ?
             AND operation_id = ?
+            AND status <> 'synced'
         `).run(result.error ?? 'Помилка синхронізації', nextAttemptAt, result.sequence, result.operation_id)
-        rejected.push(result.sequence)
+        if (failure.changes > 0) rejected.push(result.sequence)
       }
       // All statuses must be final before dirty flags are inspected. Otherwise
       // a reverse-ordered acknowledgement batch can leave a newer dirty_at orphaned.
@@ -764,12 +765,13 @@ export class LocalSyncRepository {
 
   markBatchFailed(sequences: number[], error: string): void {
     if (sequences.length === 0) return
+    const rejected: number[] = []
     this.db.transaction(() => {
       for (const sequence of sequences) {
         // Затримку рахуємо по кожному рядку окремо: давно застрягле не має
         // повертатися через 15 секунд і ганяти сервер по колу.
         const nextAttemptAt = new Date(Date.now() + this.retryDelayMs(sequence)).toISOString()
-        this.db.prepare(`
+        const failure = this.db.prepare(`
           UPDATE sync_outbox
           SET status = 'failed',
               attempts = attempts + 1,
@@ -778,9 +780,10 @@ export class LocalSyncRepository {
           WHERE sequence = ?
             AND status <> 'synced'
         `).run(error, nextAttemptAt, sequence)
+        if (failure.changes > 0) rejected.push(sequence)
       }
     })
-    this.recordRejectedOperations(sequences)
+    this.recordRejectedOperations(rejected)
   }
 
 

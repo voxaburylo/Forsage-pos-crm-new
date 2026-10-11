@@ -1372,25 +1372,10 @@ export class LocalCatalogRepository {
   private addProductOutbox(operationType: 'product.upsert' | 'product.deleted', productId: string, payload: LocalProductUpsert): void {
     const timestamp = nowIso()
     const tenantId = payload.tenant_id ?? DEFAULT_TENANT_ID
-    if (operationType === 'product.upsert' && payload.stock_correction !== true) {
-      const existing = this.db.prepare(`
-        SELECT sequence FROM sync_outbox
-        WHERE tenant_id = ? AND aggregate_type = 'product' AND aggregate_id = ?
-          AND operation_type = 'product.upsert'
-          AND status IN ('pending', 'failed')
-          AND COALESCE(json_extract(payload_json, '$.stock_correction'), 0) <> 1
-        ORDER BY sequence DESC LIMIT 1
-      `).get(tenantId, productId) as { sequence: number } | undefined
-      if (existing) {
-        this.db.prepare(`
-          UPDATE sync_outbox
-          SET payload_json = ?, status = 'pending', attempts = 0,
-              next_attempt_at = NULL, last_error = NULL, created_at = ?
-          WHERE sequence = ?
-        `).run(JSON.stringify(payload), timestamp, existing.sequence)
-        return
-      }
-    }
+    // A pending/failed payload may already have reached the server. Never reuse
+    // its identity for a new edit: a late acknowledgement would lose that edit.
+    // A fresh sequence also keeps edits after corrections/deletions in order.
+    // Retire obsolete versions without mutating their payloads or identities.
 
     this.db.prepare(`
       INSERT INTO sync_outbox (
@@ -1402,5 +1387,30 @@ export class LocalCatalogRepository {
       randomUUID(), tenantId, this.db.deviceId, productId,
       operationType, JSON.stringify(payload), timestamp,
     )
+    if (operationType === 'product.upsert' && payload.stock_correction !== true) {
+      // Replace only obsolete ordinary card versions, not stock corrections,
+      // deletions, in-flight work or unreadable payloads. This runs in the
+      // caller's transaction, so a failed old card cannot block its new fix.
+      const versions = this.db.prepare(`
+        SELECT sequence, payload_json FROM sync_outbox
+        WHERE tenant_id = ? AND aggregate_type = 'product' AND aggregate_id = ?
+          AND operation_type = 'product.upsert' AND status IN ('pending', 'failed')
+        ORDER BY sequence DESC
+      `).all(tenantId, productId) as Array<{ sequence: number; payload_json: string }>
+      const retire = this.db.prepare(`
+        UPDATE sync_outbox
+        SET status = 'synced', synced_at = ?, next_attempt_at = NULL,
+            last_error = 'Замінено новішою версією товару'
+        WHERE sequence = ? AND status IN ('pending', 'failed')
+      `)
+      // The first row is the operation just appended by this transaction.
+      for (const version of versions.slice(1)) {
+        let previous: unknown
+        try { previous = JSON.parse(version.payload_json) } catch { continue }
+        if (!previous || typeof previous !== 'object' || Array.isArray(previous)
+          || (previous as { stock_correction?: unknown }).stock_correction === true) continue
+        retire.run(timestamp, version.sequence)
+      }
+    }
   }
 }
