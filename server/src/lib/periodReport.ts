@@ -16,6 +16,21 @@ export const INCOMPLETE_PERIOD = 'Фінансовий звіт містить �
 function invalid(): never { throw new Error(INCOMPLETE_PERIOD) }
 const money = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0
 function sum(a: number, b: number) { const n = a + b; if (!Number.isSafeInteger(n)) invalid(); return n }
+// Cost is measured in thousandths of a kopeck until the report boundary.
+// Keep Math.round's tie direction, including negative refund-only periods,
+// without losing precision in quantity * unit cost.
+function roundedCost(scaled: bigint) {
+  const remainder = scaled % 1000n
+  const rounded = scaled / 1000n + (remainder >= 500n ? 1n : remainder < -500n ? -1n : 0n)
+  const result = Number(rounded)
+  if (!Number.isSafeInteger(result)) invalid()
+  return result
+}
+function addCost(a: bigint, b: bigint) {
+  const result = a + b
+  roundedCost(result) // Reject unsafe costs even when later returns could cancel them.
+  return result
+}
 function qty(n: number) {
   if (typeof n !== 'number' || !Number.isFinite(n) || n < .001) invalid()
   const scaled = Math.round(n * 1000)
@@ -54,14 +69,14 @@ export function aggregatePeriod(data: PeriodSnapshot, from: string, to: string) 
     if (orderSales.has(order.sale_id)) invalid()
     orderSales.add(order.sale_id)
   }
-  const costs = new Map<string,number>(), lineTotals = new Map<string,number>()
+  const costs = new Map<string,bigint>(), lineTotals = new Map<string,number>()
   for (const line of lines.values()) {
     if (!sales.has(line.sale_id) || !money(line.cost) || !money(line.total)) invalid()
-    const cost = Math.round(qty(line.qty) * line.cost / 1000)
-    costs.set(line.sale_id,sum(costs.get(line.sale_id) ?? 0,cost))
+    const cost = BigInt(qty(line.qty)) * BigInt(line.cost)
+    costs.set(line.sale_id,addCost(costs.get(line.sale_id) ?? 0n,cost))
     lineTotals.set(line.sale_id,sum(lineTotals.get(line.sale_id) ?? 0,line.total))
   }
-  let revenue = 0, profit = 0, returnsTotal = 0
+  let revenue = 0, returnsTotal = 0, netCost = 0n
   const selected: Sale[] = []
   for (const sale of sales.values()) {
     if (!money(sale.total) || typeof sale.selected !== 'boolean' || !['completed','returned'].includes(sale.status)
@@ -70,7 +85,8 @@ export function aggregatePeriod(data: PeriodSnapshot, from: string, to: string) 
       || (sale.customer_id !== null && sale.customer?.id !== sale.customer_id)) invalid()
     periodDate(sale.completed_at)
     if (!sale.selected) continue
-    selected.push(sale); revenue = sum(revenue,sale.total); profit = sum(profit,sale.total - costs.get(sale.id)!)
+    selected.push(sale); revenue = sum(revenue,sale.total)
+    netCost = addCost(netCost,costs.get(sale.id)!)
     const row = day(sale.completed_at); row.sales++; row.gross_revenue = sum(row.gross_revenue,sale.total)
     if (orderSales.has(sale.id)) continue // Payments are counted on their own dates.
     const methods = ['cash','card','transfer','debt']
@@ -87,7 +103,7 @@ export function aggregatePeriod(data: PeriodSnapshot, from: string, to: string) 
     if (!money(parts.debt) || Object.values(parts).reduce(sum,0) !== sale.total) invalid()
     for (const kind of ['cash','card','transfer','debt'] as const) byMethod[kind] = sum(byMethod[kind],parts[kind])
   }
-  const refundAmounts = new Map<string,number>(), restoredCosts = new Map<string,number>(), returnedQty = new Map<string,number>()
+  const refundAmounts = new Map<string,number>(), restoredCosts = new Map<string,bigint>(), returnedQty = new Map<string,number>()
   for (const line of data.refundLines) {
     const refund = refunds.get(line.return_id), source = lines.get(line.sale_item_id)
     if (!refund || !source || source.sale_id !== refund.sale_id || !money(line.total_kopecks)) invalid()
@@ -95,13 +111,13 @@ export function aggregatePeriod(data: PeriodSnapshot, from: string, to: string) 
     if (accumulated > qty(source.qty)) invalid()
     returnedQty.set(source.id,accumulated)
     refundAmounts.set(refund.id,sum(refundAmounts.get(refund.id) ?? 0,line.total_kopecks))
-    restoredCosts.set(refund.id,sum(restoredCosts.get(refund.id) ?? 0,Math.round(units * source.cost / 1000)))
+    restoredCosts.set(refund.id,addCost(restoredCosts.get(refund.id) ?? 0n,BigInt(units) * BigInt(source.cost)))
   }
   for (const refund of refunds.values()) {
     if (!sales.has(refund.sale_id) || !money(refund.amount) || refundAmounts.get(refund.id) !== refund.amount
       || !['return_to_stock','write_off','send_to_supplier'].includes(refund.stock_action)) invalid()
     returnsTotal = sum(returnsTotal,refund.amount)
-    profit = sum(profit,-refund.amount + (refund.stock_action === 'return_to_stock' ? restoredCosts.get(refund.id)! : 0))
+    if (refund.stock_action === 'return_to_stock') netCost = addCost(netCost,-restoredCosts.get(refund.id)!)
     const row = day(refund.created_at); row.returns_total = sum(row.returns_total,refund.amount)
   }
   for (const payment of data.payments) {
@@ -112,9 +128,11 @@ export function aggregatePeriod(data: PeriodSnapshot, from: string, to: string) 
   }
   for (const row of daily.values()) row.revenue = sum(row.gross_revenue,-row.returns_total)
   selected.sort((a,b) => Date.parse(b.completed_at)-Date.parse(a.completed_at) || a.id.localeCompare(b.id))
+  const netRevenue = sum(revenue,-returnsTotal)
+  const profit = sum(netRevenue,-roundedCost(netCost))
   return {
     total_sales: selected.length, total_revenue: revenue, returns_count: refunds.size, returns_total: returnsTotal,
-    net_revenue: sum(revenue,-returnsTotal), profit, by_method: byMethod,
+    net_revenue: netRevenue, profit, by_method: byMethod,
     payment_received_total: [byMethod.cash,byMethod.card,byMethod.transfer,byMethod.account].reduce(sum,0),
     sales: selected.map(s => ({ id:s.id,sale_number:s.sale_number,total:s.total,payment_method:s.payment_method,
       status:s.status,completed_at:s.completed_at,customer:s.customer })),
