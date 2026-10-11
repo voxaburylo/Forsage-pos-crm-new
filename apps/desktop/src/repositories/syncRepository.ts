@@ -12,6 +12,7 @@ import { readServerResetGeneration } from './localTenantReset'
 import { recoverInventoryDocumentCopies } from './inventoryCopyRecovery'
 import { attachBalanceSnapshots } from './balanceSnapshot'
 import { matchesCompletedInventory } from './inventoryCopyValidation'
+import { supersededProductSequences, type ProductOutboxVersion } from './productOutboxCoalescing'
 
 const SERVER_PULL_SCOPE = 'desktop_server_pull'
 const LAST_REFERENCE_SYNC_KEY = 'desktop_last_reference_sync_at'
@@ -1297,34 +1298,10 @@ export class LocalSyncRepository {
         AND operation_type IN ('product.upsert', 'product.deleted')
         AND status IN ('pending', 'failed')
       ORDER BY aggregate_id, sequence DESC
-    `).all() as Array<{
-      sequence: number
-      aggregate_id: string
-      operation_type: 'product.upsert' | 'product.deleted'
-      payload_json: string
-    }>
+    `).all() as ProductOutboxVersion[]
     if (rows.length < 2) return
 
-    const superseded: number[] = []
-    for (const aggregateId of new Set(rows.map((row) => row.aggregate_id))) {
-      const operations = rows.filter((row) => row.aggregate_id === aggregateId)
-      const newest = operations[0]
-      const keep = new Set<number>([newest.sequence])
-      if (newest.operation_type === 'product.upsert') {
-        const latestCorrection = operations.find((row) => {
-          if (row.operation_type !== 'product.upsert') return false
-          try {
-            return JSON.parse(row.payload_json)?.stock_correction === true
-          } catch {
-            return false
-          }
-        })
-        if (latestCorrection) keep.add(latestCorrection.sequence)
-      }
-      for (const row of operations) {
-        if (!keep.has(row.sequence)) superseded.push(row.sequence)
-      }
-    }
+    const superseded = supersededProductSequences(rows)
     if (superseded.length === 0) return
 
     const timestamp = nowIso()
