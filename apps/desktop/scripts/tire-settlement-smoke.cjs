@@ -206,7 +206,9 @@ app.whenReady().then(() => {
     const settled = f.snapshot()
     f.restart()
     equal(f.pos.checkout(f.checkout), sale)
-    equal(f.staff.dailyPayout(f.payout), paid)
+    // The persisted replay is JSON; the original payment is a native SQLite
+    // row with a null prototype. Compare every field, not runtime prototypes.
+    equal(f.staff.dailyPayout(f.payout), { ...paid, payment: { ...paid.payment } })
     rejectsHandover(() => f.staff.tireCashHandover(f.handover(36000)))
     equal(f.snapshot(), settled, 'No duplicate receipt, salary, cash, stock, audit or outbox')
     equal(f.pos.getExpectedCash(CASHIER).expected_amount, 24400)
