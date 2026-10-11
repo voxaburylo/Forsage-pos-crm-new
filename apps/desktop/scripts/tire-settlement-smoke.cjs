@@ -70,7 +70,8 @@ app.whenReady().then(() => {
     [require('node:dns'), 'resolve'], [global, 'fetch'],
   ]
 
-  function runCase(name, run) {
+  function runCase(name, run, { openingCash = 1000 } = {}) {
+    assert.ok(Number.isSafeInteger(openingCash) && openingCash >= 0, 'Synthetic opening cash must be whole nonnegative kopecks')
     const dataRoot = path.join(profileRoot, `fixture-${reports.length}`)
     equal(cleanupFs.existsSync(dataRoot), false, 'Every case owns a fresh synthetic database')
     const firstCheck = checks
@@ -140,7 +141,7 @@ app.whenReady().then(() => {
         db.prepare(`INSERT INTO staff_users(id,tenant_id,full_name,role,is_active,base_rate,rate_period,created_at,updated_at)
           VALUES(?,?,?,?,1,0,'day',?,?)`).run(id, tenant, name, role, SALE_TIME, SALE_TIME)
       }
-      shift = pos.openShift({ cashier_id: CASHIER, opening_cash: 1000 })
+      shift = pos.openShift({ cashier_id: CASHIER, opening_cash: openingCash })
       product = catalog.upsertProduct({ id: 'synthetic-tire-service', sku: 'POS-TIRE-SERVICE',
         name: 'Шиномонтаж', is_service: true, retail_price: 36000, purchase_price: 0, qty_on_hand: 0 })
       staff.createCommissionRule({ user_id: WORKER, rule_type: 'tire_service', pct_from_revenue: 35, pct_from_profit: 0 })
@@ -355,6 +356,98 @@ app.whenReady().then(() => {
     equal(f.db.prepare("SELECT SUM(amount) amount FROM salary_payments WHERE commission_source_sale_id=? AND source IN ('commission','commission_reversal')")
       .get(sale.sale_id).amount, 0, 'The two reversals exactly offset the original commission')
   })
+
+  runCase('already paid September work keeps its payout while October refunds reverse commission on their own dates', f => {
+    const workDate = '2026-09-29'
+    const saleTime = workDate + 'T13:40:00.000Z'
+    const payoutTime = '2026-10-01T09:00:00.000Z'
+    f.setTime(saleTime)
+    equal(f.pos.getExpectedCash(CASHIER).expected_amount, 20000)
+    const checkout = { ...f.checkout,
+      items: [{ product_id: f.product.id, description: 'Шиномонтаж', qty: 2, unit_price: 18000 }] }
+    const sale = f.pos.checkout(checkout)
+    equal(sale.total, 36000)
+    equal(f.pos.getExpectedCash(CASHIER).expected_amount, 56000)
+    const item = f.pos.getSaleForReturn(sale.sale_id).items[0]
+    const originalReceipt = f.staff.tireServiceReport(workDate).receipts[0]
+    equal(originalReceipt.completed_at, saleTime)
+    equal(pick(f.staff.salarySummary('2026-09')[0], ['earned', 'paid', 'balance']),
+      { earned: 12600, paid: 0, balance: 12600 })
+    const payout = { ...f.payout, work_date: workDate }
+    f.setTime(payoutTime)
+    equal(f.staff.tireServiceReport(workDate).data[0].salary_ready, true)
+    const paid = f.staff.dailyPayout(payout)
+    const replayPayout = { ...paid, payment: { ...paid.payment } }
+    equal(paid.amount, 12600)
+    equal(pick(paid.payment, ['period', 'work_date', 'created_at', 'amount']),
+      { period: '2026-09', work_date: workDate, created_at: payoutTime, amount: 12600 })
+    equal(f.pos.getExpectedCash(CASHIER).expected_amount, 43400)
+    const paidHistory = () => ({
+      receiptLines: f.db.prepare('SELECT * FROM sale_items WHERE sale_id=? ORDER BY id').all(sale.sale_id),
+      customerCash: f.db.prepare("SELECT * FROM cash_operations WHERE sale_id=? AND type='sale_cash' ORDER BY id").all(sale.sale_id),
+      initialCommission: f.db.prepare("SELECT * FROM salary_payments WHERE commission_source_sale_id=? AND source='commission' ORDER BY id").all(sale.sale_id),
+      payout: f.db.prepare('SELECT * FROM salary_payments WHERE id=?').get(paid.payment.id),
+      payoutCash: f.db.prepare('SELECT * FROM cash_operations WHERE id=?').get(paid.payment.cash_operation_id),
+    })
+    const initialPaidHistory = paidHistory()
+    equal(pick(initialPaidHistory.payoutCash, ['type', 'amount', 'work_date', 'created_at']),
+      { type: 'salary_payout', amount: 12600, work_date: workDate, created_at: payoutTime })
+    const paidSnapshot = f.snapshot()
+    f.restart()
+    equal(f.staff.dailyPayout(payout), replayPayout)
+    equal(f.pos.checkout(checkout), sale)
+    equal(f.snapshot(), paidSnapshot, 'A restart does not pay the September wage twice')
+    const completedReturns = []
+    for (const [index, returnDate] of ['2026-10-02', '2026-10-03'].entries()) {
+      const timestamp = returnDate + 'T09:00:00.000Z'
+      f.setTime(timestamp)
+      const request = { tenant_id: tenant, sale_id: sale.sale_id, approved_by: CASHIER,
+        shift_id: f.shift, client_operation_id: `synthetic-paid-tire-refund-${index + 1}`,
+        is_fiscal: false, reason: 'other', refund_method: 'cash', stock_action: 'return_to_stock',
+        items: [{ sale_item_id: item.id, product_id: f.product.id, quantity: 1, condition: 'good' }] }
+      const returned = f.pos.createReturn(request)
+      equal(returned.refund_kopecks, 18000)
+      equal(returned.created_at, timestamp)
+      completedReturns.push({ request, result: returned })
+      const committed = f.snapshot()
+      for (const reopened of [false, true]) {
+        if (reopened) f.restart()
+        const originalDay = f.staff.tireServiceReport(workDate)
+        equal(originalDay.receipts, [originalReceipt], 'Later refunds preserve the original gross service and customer cash')
+        equal(pick(originalDay.data[0], ['service_revenue', 'cash_register_received', 'earned', 'paid', 'balance', 'due']),
+          { service_revenue: 36000, cash_register_received: 36000, earned: 12600, paid: 12600, balance: 0, due: 0 })
+        equal(pick(f.staff.salarySummary('2026-09')[0], ['earned', 'paid', 'balance']),
+          { earned: 12600, paid: 12600, balance: 0 }, 'October payment creation time does not move its September work-date accounting')
+        equal(pick(f.staff.salarySummary('2026-10')[0], ['earned', 'paid', 'balance']),
+          { earned: -6300 * (index + 1), paid: 0, balance: -6300 * (index + 1) })
+        equal(f.staff.dailySummary('2026-10-01'), [], 'No wage is silently reattributed to the payout calendar date')
+        equal(paidHistory(), initialPaidHistory, 'Refund commission adjustments never rewrite or reverse the already paid wage cash row')
+        for (const prior of completedReturns) {
+          const date = prior.result.created_at.slice(0, 10)
+          const report = f.staff.tireServiceReport(date)
+          equal(report.receipts, [])
+          equal(pick(report.data[0], ['earned', 'paid', 'balance', 'cash_register_received']),
+            { earned: -6300, paid: 0, balance: -6300, cash_register_received: 0 })
+          equal(report.salary_operations.map(row => pick(row, ['source', 'amount', 'work_date', 'created_at', 'sale_id'])),
+            [{ source: 'commission_reversal', amount: -6300, work_date: date,
+              created_at: prior.result.created_at, sale_id: sale.sale_id }])
+          equal(f.pos.createReturn(prior.request), prior.result)
+        }
+        equal(f.staff.dailyPayout(payout), replayPayout)
+        equal(f.pos.checkout(checkout), sale)
+        equal(f.pos.getExpectedCash(CASHIER).expected_amount, index === 0 ? 25400 : 7400)
+        equal(f.pos.getSaleForReturn(sale.sale_id).sale.status, index === 0 ? 'completed' : 'returned')
+        equal(f.pos.getSaleForReturn(sale.sale_id).items[0].available_qty, index === 0 ? 1 : 0)
+        equal(f.catalog.findById(f.product.id).qty_on_hand, 0)
+        equal(f.db.prepare("SELECT COUNT(*) n FROM cash_operations WHERE type='salary_payout'").get().n, 1)
+        equal(f.db.prepare("SELECT COUNT(*) n, SUM(amount) amount FROM cash_operations WHERE type='return_cash'").get().amount,
+          18000 * (index + 1))
+        equal(f.db.prepare('SELECT COUNT(*) n FROM customer_returns WHERE sale_id=?').get(sale.sale_id).n, index + 1)
+        rejectsHandover(() => f.staff.tireCashHandover({ ...f.handover(36000), work_date: workDate }))
+        equal(f.snapshot(), committed, 'All report reads and retries preserve every table after actual close/reopen')
+      }
+    }
+  }, { openingCash: 20000 })
 
   console.log(JSON.stringify({ ok: true, runtime: 'electron-application', build, checks, cases: reports,
     realTemporaryLocalDatabase: true, realPackagedCheckout: true, shopDatabaseOpened: false,

@@ -4,6 +4,7 @@ import { useLatestRequest } from '@/hooks/useLatestRequest'
 import { useScopedAction } from '@/hooks/useScopedAction'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { staffTransactionAmount } from '@/features/staff/staffFormModel'
+import { payrollOperationLabel } from '@/features/staff/payrollOperationLabel'
 import { ChevronLeft, ChevronRight, CreditCard, Trash2 } from 'lucide-react'
 import { AnalyticsLayout as Layout } from '@/features/analytics/AnalyticsLayout'
 import { Button, Card, Modal } from '@/components/ui'
@@ -18,13 +19,6 @@ import { businessDateKey, shiftBusinessMonth } from '@/lib/businessDate'
 
 type OperationType = SalaryPayment['type']
 type PaymentMethod = SalaryPayment['method']
-const OPERATION_LABELS: Record<OperationType, string> = {
-  salary: 'Ставка',
-  bonus: 'Премія',
-  advance: 'Виплата / аванс',
-  penalty: 'Штраф',
-}
-
 const PAYMENT_LABELS: Record<PaymentMethod, string> = {
   cash: 'Готівка',
   card: 'Картка',
@@ -297,7 +291,7 @@ export default function PayrollPage() {
                 ) : selectedPayments.slice(0, historyLimit).map((payment) => (
                   <div key={payment.id} className="analytics-payment-row flex items-center justify-between gap-3 px-4 py-3 text-sm">
                     <div className="min-w-0">
-                      <p className="font-semibold text-gray-900">{OPERATION_LABELS[payment.type]}</p>
+                      <p className="font-semibold text-gray-900">{payrollOperationLabel(payment)}</p>
                       <p className="text-xs text-gray-400">
                         {new Date(payment.created_at).toLocaleString('uk-UA')} · {PAYMENT_LABELS[payment.method]}
                         {payment.note ? ` · ${payment.note}` : ''}

@@ -5,7 +5,7 @@ import { useAuthStore } from '@/stores/authStore'
 import { collectSalaryHistory } from './salaryHistory'
 
 export interface EmployeeSummary { employee_id:string; employee_name:string; salary:number; bonus:number; advance:number; penalty:number; earned:number; paid:number; balance:number; total:number }
-export interface SalaryPayment { id:string; employee_id:string; employee_name:string; amount:number; type:'salary'|'bonus'|'advance'|'penalty'; method:'cash'|'card'|'transfer'; period:string; note:string|null; created_at:string }
+export interface SalaryPayment { id:string; employee_id:string; employee_name:string; amount:number; type:'salary'|'bonus'|'advance'|'penalty'; source?:string|null; method:'cash'|'card'|'transfer'; period:string; note:string|null; created_at:string }
 export interface DailySummary { employee_id:string; employee_name:string; earned:number; paid:number; penalty:number; balance:number }
 export interface TireServiceReportRow {
   employee_id: string

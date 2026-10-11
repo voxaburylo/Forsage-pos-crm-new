@@ -27,13 +27,21 @@ fixture.mount=()=>root.render(<MemoryRouter key={++version} initialEntries={['/a
 fixture.unmount=()=>root.render(<p>Test destination</p>);fixture.mount();
 `
 const bootstrap=`
-window.fixture={mode:window.testMode??'payroll',desktop:window.testDesktop??true,failRead:window.testFail??false,delaySummary:false,pending:[],reads:[],errors:[],messages:[]};
+window.fixture={mode:window.testMode??'payroll',desktop:window.testDesktop??true,failRead:window.testFail??false,paidRefunds:window.testPaidRefunds??false,delaySummary:false,pending:[],reads:[],errors:[],messages:[]};
 fixture.users=['a','b'].map(id=>({id,full_name:'Worker '+id,is_active:true,role:'tire_worker'}));
 fixture.defer=(kind,body)=>new Promise((resolve,reject)=>fixture.pending.push({kind,body,resolve,reject}));
-fixture.rows=()=>fixture.users.map(u=>({employee_id:u.id,earned:12650,paid:0,balance:12650}));
+fixture.rows=period=>fixture.users.map(u=>fixture.paidRefunds?{employee_id:u.id,earned:u.id==='a'?(period==='2026-10'?-12600:12600):500,paid:u.id==='a'&&period!=='2026-10'?12600:0,balance:u.id==='a'?(period==='2026-10'?-12600:0):500}:{employee_id:u.id,earned:12650,paid:0,balance:12650});
+fixture.refundPayments=period=>period==='2026-10'?[
+ {id:'return-1',employee_id:'a',amount:-6300,type:'bonus',source:'commission_reversal',method:'cash',created_at:'2026-10-02T09:00:00Z',note:'First October return'},
+ {id:'return-2',employee_id:'a',amount:-6300,type:'bonus',source:'commission_reversal',method:'cash',created_at:'2026-10-03T09:00:00Z',note:'Second October return'},
+ {id:'legacy-b',employee_id:'b',amount:500,type:'bonus',method:'cash',created_at:'2026-10-03T09:00:00Z',note:'Legacy manual bonus'},
+]:[
+ {id:'commission-a',employee_id:'a',amount:12600,type:'bonus',source:'commission',method:'cash',created_at:'2026-09-29T09:00:00Z',note:'September work'},
+ {id:'advance-a',employee_id:'a',amount:12600,type:'advance',source:'daily_payout',method:'cash',created_at:'2026-10-01T09:00:00Z',note:'October payout for September work'},
+];
 fixture.staff={
- summary:async period=>{fixture.reads.push({kind:'summary',period});if(fixture.failRead)throw Error('Test payroll unavailable');if(fixture.delaySummary)return fixture.defer('summary',{period});return {data:fixture.rows()}},
- listSalary:async()=>({data:[{id:'payment-a',employee_id:'a',amount:500,type:'salary',method:'cash',created_at:'2026-09-22T10:00:00Z',note:'Test operation'}]}),
+ summary:async period=>{fixture.reads.push({kind:'summary',period});if(fixture.failRead)throw Error('Test payroll unavailable');if(fixture.delaySummary)return fixture.defer('summary',{period});return {data:fixture.rows(period)}},
+ listSalary:async period=>{fixture.reads.push({kind:'salary',period});return {data:fixture.paidRefunds?fixture.refundPayments(period):[{id:'payment-a',employee_id:'a',amount:500,type:'salary',method:'cash',created_at:'2026-09-22T10:00:00Z',note:'Test operation'}]}},
  dailySummary:async date=>{fixture.reads.push({kind:'daily',date});return {data:fixture.rows()}},
  createSalary:body=>fixture.defer('salary',body),dailyPayout:body=>fixture.defer('payout',body),deleteSalary:id=>fixture.defer('delete',{id}),
  tireServiceReport:async date=>{fixture.reads.push({kind:'tire',date});if(fixture.failRead)throw Error('Test tire report unavailable');return {date,details_version:1,data:[{employee_id:'a',employee_name:'Worker a',services_qty:1,service_revenue:10000,commission_earned:1260,daily_rate:0,earned:1260,paid:0,penalty:0,balance:1260,due:1260,cash_revenue:10000,cash_handed_over:0,cash_pending:10000,salary_available_on:'2026-09-24',salary_ready:true,payable_due:1260}],receipts:[],salary_operations:[],cash_handovers:[],totals:{services_qty:1,service_revenue:10000,cash_revenue:10000,cash_handed_over:0,cash_pending:10000,due:1260,payable_due:1260}}},
@@ -48,12 +56,12 @@ const server=await createServer({cacheDir:createSmokeCache(),configFile:false,ro
 let browser
 try{
   await server.listen();browser=await chromium.launch({headless:true});const base=server.resolvedUrls.local[0],errors=[],blocked=[]
-  async function setup(mode='payroll',desktop=true,fail=false){
+  async function setup(mode='payroll',desktop=true,fail=false,paidRefunds=false){
     const page=await browser.newPage({viewport:{width:1440,height:1100},timezoneId:'America/Los_Angeles'})
     await page.clock.install({time:new Date('2026-09-25T22:30:00Z')})
     page.on('pageerror',e=>{errors.push(e.message);console.error(e.message)});page.on('dialog',d=>d.accept())
     await page.route('**/*',r=>new URL(r.request().url()).origin===new URL(base).origin?r.continue():(blocked.push(r.request().url()),r.abort()))
-    await page.addInitScript(({mode,desktop,fail})=>{window.testMode=mode;window.testDesktop=desktop;window.testFail=fail},{mode,desktop,fail})
+    await page.addInitScript(({mode,desktop,fail,paidRefunds})=>{window.testMode=mode;window.testDesktop=desktop;window.testFail=fail;window.testPaidRefunds=paidRefunds},{mode,desktop,fail,paidRefunds})
     await page.goto(base+'payroll-test');await page.waitForFunction(()=>typeof fixture.mount==='function');return page
   }
   const double=l=>l.evaluate(e=>{e.click();e.click()})
@@ -61,6 +69,44 @@ try{
   const wait=(p,kind,n=1)=>p.waitForFunction(({kind,n})=>fixture.pending.filter(p=>p.kind===kind).length===n,{kind,n})
   const resolve=(p,kind,data)=>p.evaluate(({kind,data})=>fixture.pending.find(p=>p.kind===kind).resolve(data),{kind,data})
   const open=(p,id='a')=>p.getByRole('row').filter({hasText:'Worker '+id}).getByRole('button',{name:'Операції',exact:true}).click()
+
+  // Actual monthly UI with synthetic responses: not a second accounting engine.
+  for(const desktop of [true,false]){
+    const month=await setup('payroll',desktop,false,true);await open(month)
+    const operation=(note)=>month.locator('.analytics-payment-row').filter({hasText:note})
+    const selectedAmount=label=>month.getByRole('dialog').getByText(label,{exact:true}).locator('..').locator('strong')
+    const normalizedAmount=async locator=>(await locator.innerText()).replace(/\s+/g,' ')
+    assert.equal(await normalizedAmount(selectedAmount('Нараховано')),'126,00 ₴')
+    assert.equal(await normalizedAmount(selectedAmount('Виплачено')),'126,00 ₴')
+    assert.equal(await normalizedAmount(selectedAmount('До виплати')),'0,00 ₴')
+    assert.equal(await month.locator('.analytics-payment-row').count(),2)
+    assert.equal(await operation('September work').filter({hasText:'Нарахування за чек'}).count(),1)
+    const payout=operation('October payout for September work')
+    assert.equal(await payout.locator('p').first().innerText(),'Виплата / аванс')
+    assert.match(await payout.innerText(),/01\.10\.2026/,'Actual payout date stays in October while earning period is September')
+    assert.equal(await normalizedAmount(payout.locator('strong')),'126,00 ₴')
+    await month.keyboard.press('Escape');await month.getByLabel('Наступний місяць').click();await open(month)
+    assert.equal(await month.locator('.analytics-payment-row').count(),2)
+    for(const [note,date] of [['First October return','02.10.2026'],['Second October return','03.10.2026']]){
+      const row=operation(note)
+      assert.equal(await row.locator('p').first().innerText(),'Сторно нарахування за повернення')
+      assert.ok((await row.innerText()).includes(date));assert.equal(await normalizedAmount(row.locator('strong')),'-63,00 ₴')
+    }
+    const balance=month.getByRole('dialog').getByText('До виплати',{exact:true}).locator('..').locator('strong')
+    assert.equal(await normalizedAmount(balance),'-126,00 ₴','Negative month balance must not be clamped or made positive')
+    assert.equal(await normalizedAmount(selectedAmount('Нараховано')),'-126,00 ₴')
+    assert.equal(await normalizedAmount(selectedAmount('Виплачено')),'0,00 ₴')
+    assert.deepEqual(await month.evaluate(()=>fixture.reads.filter(r=>r.kind==='summary'||r.kind==='salary')),[
+      {kind:'summary',period:'2026-09'},{kind:'salary',period:'2026-09'},
+      {kind:'summary',period:'2026-10'},{kind:'salary',period:'2026-10'},
+    ])
+    assert.equal(await payout.count(),0,'Paid September work is not repeated as an October payout')
+    await month.keyboard.press('Escape');await open(month,'b')
+    assert.equal(await operation('Legacy manual bonus').locator('p').first().innerText(),'Премія')
+    assert.equal(await month.locator('.analytics-payment-row').count(),1,'Selected employee remains isolated')
+    assert.equal(await month.evaluate(()=>fixture.pending.length),0,'Read-only inspection issues no writes')
+    await month.close()
+  }
 
   const p=await setup();await open(p)
   assert.equal(await p.evaluate(()=>fixture.reads.find(r=>r.kind==='daily').date),'2026-09-26','Kyiv work day, not PC date')
@@ -150,5 +196,5 @@ try{
   assert.equal(await count(tirePreflight,'payout'),0);assert.equal(await count(tirePreflight,'handover'),0);await tirePreflight.close()
 
   assert.deepEqual(errors,[]);assert.deepEqual(blocked,[])
-  console.log('PASS: payroll and tire salary single writes, no duplicate tire deposit action even for stale reports, exact comma amounts, Kyiv date, failed refresh/retry without replay, staff form isolation, stale month/preflight/replies, cancellation errors, read-only web. No live data.')
+  console.log('PASS: paid September work and October refunds keep signed balances, source labels, dates and employee isolation in desktop/web monthly UI; payroll and tire salary single writes, no duplicate tire deposit action even for stale reports, exact comma amounts, Kyiv date, failed refresh/retry without replay, staff form isolation, stale month/preflight/replies, cancellation errors, read-only web. No live data.')
 }finally{await browser?.close();await server.close()}

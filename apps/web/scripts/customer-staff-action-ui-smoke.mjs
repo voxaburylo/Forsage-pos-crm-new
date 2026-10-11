@@ -30,14 +30,14 @@ import Form from'/src/features/customers/CustomerFormPage.tsx';import{QuickCusto
 function App(){const[open,setOpen]=useState(true),[id,setId]=useState('a'),[mounted,setMounted]=useState(true);const navigate=useNavigate(),location=useLocation();useEffect(()=>{fixture.go=navigate;fixture.show=setOpen;fixture.switchCustomer=setId;fixture.unmount=()=>setMounted(false)},[navigate]);const close=()=>{fixture.closes++;setOpen(false)};return <><div data-testid="location">{location.pathname}</div>{mounted&&(fixture.mode==='quick'?<QuickCustomerModal open={open} onClose={close} onCreated={c=>fixture.selected.push(c)}/>:fixture.mode==='edit'?<QuickCustomerEditModal open={open} customer={fixture.customer(id)} onClose={close} onSaved={c=>fixture.selected.push(c)}/>:fixture.mode==='confirm'?<ConfirmDialog open={open} title="Test confirmation" onClose={close} onConfirm={()=>fixture.defer('confirm',{})}/>:fixture.mode==='staff'?<Staff/>:<Routes><Route path='/customers/new' element={<Form/>}/><Route path='/customers/:id/edit' element={<Form/>}/><Route path='*' element={<p>Destination</p>}/></Routes>)}</>}
 createRoot(document.getElementById('root')).render(<MemoryRouter initialEntries={[fixture.route]}><App/></MemoryRouter>);`
 const bootstrap=`
-window.fixture={mode:window.testMode,route:window.testRoute??'/customers/new',pending:[],reads:[],errors:[],warnings:[],messages:[],selected:[],closes:0};
+window.fixture={mode:window.testMode,route:window.testRoute??'/customers/new',pending:[],reads:[],errors:[],warnings:[],messages:[],selected:[],closes:0,salaryPayments:window.testSalaryPayments??[]};
 fixture.customer=id=>({id,phone:'+38067111111'+(id==='a'?'1':'2'),full_name:'Client '+id,email:'',notes:'',tags:[],card_barcode:null,discount_pct:0,client_status:'client',loyalty_mode:'discount',bonus_balance:0,debt_balance:0,updated_at:'version-'+id});
 fixture.defer=(kind,body)=>new Promise((resolve,reject)=>fixture.pending.push({kind,body,resolve,reject}));
 fixture.customers={list:async()=>({data:[]}),get:id=>fixture.mode==='full'?new Promise((resolve,reject)=>fixture.reads.push({id,resolve,reject})):Promise.resolve({data:fixture.customer(id)}),create:body=>fixture.defer('customer-create',body),update:(id,body)=>fixture.defer('customer-update',{id,...body})};
 fixture.vehicles={list:id=>fixture.defer('garage',{id}),create:(id,body)=>fixture.defer('car-create',{id,...body}),update:(id,carId,body)=>fixture.defer('car-update',{id,carId,...body}),delete:(id,carId)=>fixture.defer('car-delete',{id,carId})};
 fixture.worker={id:'worker',full_name:'Test Worker',phone:'+380674444444',email:'',role:'cashier',is_active:true,base_rate:10000,rate_period:'day'};
 fixture.admin={listUsers:async()=>({data:[fixture.worker]}),createUser:body=>fixture.defer('staff-create',body),saveUserSettings:(id,body,rules)=>fixture.defer('staff-settings',{id,body,rules}),resetPassword:(id,password)=>fixture.defer('password',{id,password}),deleteUser:id=>fixture.defer('archive',{id}),restoreUser:id=>fixture.defer('restore',{id})};
-fixture.staff={summary:async()=>({data:[]}),listSalary:async()=>({data:[]}),dailySummary:async()=>({data:[{employee_id:'worker',earned:12600,paid:0,balance:12600}]}),setPin:(id,pin)=>fixture.defer('pin',{id,pin}),createSalary:body=>fixture.defer('salary',body),dailyPayout:body=>fixture.defer('payout',body),deleteSalary:id=>fixture.defer('salary-delete',{id})};
+fixture.staff={summary:async()=>({data:[]}),listSalary:async()=>({data:fixture.salaryPayments}),dailySummary:async()=>({data:[{employee_id:'worker',earned:12600,paid:0,balance:12600}]}),setPin:(id,pin)=>fixture.defer('pin',{id,pin}),createSalary:body=>fixture.defer('salary',body),dailyPayout:body=>fixture.defer('payout',body),deleteSalary:id=>fixture.defer('salary-delete',{id})};
 `
 const server=await createServer({cacheDir:createSmokeCache(),configFile:false,root:path.join(root,'apps/web'),logLevel:'error',esbuild:{jsx:'automatic'},resolve:{alias:{'@':path.join(root,'apps/web/src')}},server:{host:'127.0.0.1',port:0},plugins:[tailwindcss(),{
   name:'customer-staff-actions',enforce:'pre',resolveId(id){if(id==='virtual:actions.tsx'||Object.hasOwn(mocks,id))return '\0'+id},
@@ -47,11 +47,11 @@ const server=await createServer({cacheDir:createSmokeCache(),configFile:false,ro
 let browser
 try{
   await server.listen();browser=await chromium.launch({headless:true});const base=server.resolvedUrls.local[0],errors=[],blocked=[]
-  async function setup(mode,route='/customers/new'){
+  async function setup(mode,route='/customers/new',salaryPayments=[]){
     const page=await browser.newPage({viewport:{width:1400,height:1100}})
     page.on('pageerror',e=>{errors.push(e.message);console.error(e.message)});page.on('dialog',d=>d.accept())
     await page.route('**/*',r=>new URL(r.request().url()).origin===new URL(base).origin?r.continue():(blocked.push(r.request().url()),r.abort()))
-    await page.addInitScript(({mode,route})=>{window.testMode=mode;window.testRoute=route},{mode,route})
+    await page.addInitScript(({mode,route,salaryPayments})=>{window.testMode=mode;window.testRoute=route;window.testSalaryPayments=salaryPayments},{mode,route,salaryPayments})
     await page.goto(base+'actions-test');await page.waitForFunction(()=>typeof fixture.go==='function')
     return page
   }
@@ -126,6 +126,7 @@ try{
     await payout.waitForFunction(()=>fixture.messages.some(m=>m.includes('Видано')));await payout.close()
   }
   const access=await setup('staff');await access.getByRole('button',{name:/Test Worker/}).click()
+  await access.getByRole('dialog').waitFor()
   assert.equal(await access.getByPlaceholder('0000',{exact:true}).count(),0, 'PIN editor removed')
   await access.getByPlaceholder('Мінімум 8 символів',{exact:true}).fill('synthetic-password')
   await double(access.getByPlaceholder('Мінімум 8 символів',{exact:true}).locator('..').getByRole('button'));await wait(access,'password')
@@ -154,6 +155,35 @@ try{
   assert.equal(await confirm.getByRole('dialog').count(),1)
   await confirm.getByRole('button',{name:'Підтвердити',exact:true}).click();await wait(confirm,'confirm',3)
   await confirm.evaluate(()=>fixture.pending[2].resolve());await confirm.getByRole('dialog').waitFor({state:'detached'});await confirm.close()
+  const salaryPayments=[
+    {id:'reversal',type:'bonus',source:'commission_reversal',amount:-6300,note:'Synthetic commission reversal'},
+    {id:'legacy-bonus',type:'bonus',amount:1000,note:'Synthetic legacy positive bonus'},
+    {id:'legacy-rate',type:'salary',amount:2000,note:'Synthetic legacy salary'},
+    {id:'legacy-advance',type:'advance',amount:3000,note:'Synthetic legacy advance'},
+    {id:'legacy-penalty',type:'penalty',amount:4000,note:'Synthetic legacy penalty'},
+  ].map(row=>({...row,employee_id:'worker',employee_name:'Test Worker',method:'cash',period:'2026-10',created_at:'2026-10-02T09:00:00.000Z'}))
+  const history=await setup('staff','/customers/new',salaryPayments)
+  await history.getByRole('button',{name:/Test Worker/}).click()
+  await history.getByRole('button',{name:/Виплати/}).click()
+  const rendered=[]
+  for(const payment of salaryPayments){
+    const row=history.getByText(payment.note,{exact:true}).locator('..').locator('..')
+    const amount=row.locator('p.text-sm.font-bold')
+    rendered.push({id:payment.id,label:await row.locator('span.inline-flex').innerText(),
+      amount:(await amount.innerText()).replace(/\s+/g,' '),
+      red:await amount.evaluate(element=>element.classList.contains('text-red-500')),
+      green:await amount.evaluate(element=>element.classList.contains('text-green-600'))})
+  }
+  assert.deepEqual(await history.evaluate(()=>fixture.salaryPayments),salaryPayments,'Rendering never rewrites salary amounts or sources')
+  assert.deepEqual(await history.evaluate(()=>fixture.pending),[],'Viewing signed salary history creates no money operation')
+  assert.deepEqual(rendered,[
+    {id:'reversal',label:'Сторно нарахування за повернення',amount:'−63,00 ₴',red:true,green:false},
+    {id:'legacy-bonus',label:'Премія',amount:'+10,00 ₴',red:false,green:true},
+    {id:'legacy-rate',label:'Ставка',amount:'+20,00 ₴',red:false,green:true},
+    {id:'legacy-advance',label:'Виплата',amount:'−30,00 ₴',red:true,green:false},
+    {id:'legacy-penalty',label:'Штраф',amount:'−40,00 ₴',red:true,green:false},
+  ],'Commission reversals have one negative sign and a source-aware label; legacy types retain their labels and signed effect')
+  await history.close()
   assert.deepEqual(errors,[]);assert.deepEqual(blocked,[])
-  console.log('PASS: customer/vehicle/staff double clicks, busy forms/close, stale client/modal replies, garage readiness, exact salary decimals, invalid amount rejection, retained input on error, confirmation retry. No live data or services.')
+  console.log('PASS: customer/vehicle/staff double clicks, busy forms/close, stale client/modal replies, garage readiness, exact salary decimals, invalid amount rejection, retained input on error, confirmation retry, signed commission reversal history and unchanged legacy salary types. No live data or services.')
 }finally{await browser?.close();await server.close()}
