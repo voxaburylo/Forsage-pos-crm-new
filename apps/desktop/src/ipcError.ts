@@ -46,6 +46,7 @@ const INTERNAL_CODE_MESSAGES: Record<string, string> = {
   LOCAL_RETURN_OPERATION_CONFLICT: 'Цей номер операції вже використано для іншого повернення.',
   FISCAL_SERVICE_NOT_READY: 'Фіскальний сервіс ще не готовий. Перевірте налаштування ПРРО.',
   FISCAL_ENCRYPTION_UNAVAILABLE: 'Недоступне захищене сховище для ПРРО. Перезапустіть програму.',
+  FISCAL_CONFIG_BUSY: 'ПРРО виконує або очікує операцію. Налаштування не змінено; дочекайтеся результату Cashalot.',
   FISCAL_RRO_NOT_CONFIGURED: 'Не вказано фіскальний номер РРО в налаштуваннях ПРРО.',
   FISCAL_CALL_TIMEOUT: 'ПРРО не відповів вчасно. Перевірте Cashalot і повторіть.',
   FISCAL_CALL_FAILED: 'Помилка обміну з ПРРО. Перевірте Cashalot і повторіть.',

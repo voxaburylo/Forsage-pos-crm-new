@@ -206,6 +206,9 @@ export class CashalotService {
   private stdoutBuffer = ''
   private pending = new Map<string, { resolve: (r: WorkerResponse) => void; timer: NodeJS.Timeout }>()
   private queue: Promise<unknown> = Promise.resolve()
+  private queuedCalls = 0
+  // A timeout settles the caller, not necessarily the operation inside COM.
+  private workerRequestsInFlight = new Set<string>()
 
   constructor(dataRoot: string) {
     this.configPath = path.join(dataRoot, 'fiscal.json')
@@ -267,8 +270,28 @@ export class CashalotService {
     }
   }
 
-  private saveConfig(): void {
-    fs.writeFileSync(this.configPath, JSON.stringify(this.config, null, 2), 'utf8')
+  private saveConfig(config: CashalotConfig = this.config): void {
+    const temporary = `${this.configPath}.${randomUUID()}.tmp`
+    let descriptor: number | undefined
+    let ownsTemporary = false
+    try {
+      descriptor = fs.openSync(temporary, 'wx', 0o600)
+      ownsTemporary = true
+      fs.writeFileSync(descriptor, JSON.stringify(config, null, 2), 'utf8')
+      fs.fsyncSync(descriptor)
+      fs.closeSync(descriptor)
+      descriptor = undefined
+      // Same-directory replacement: never truncate or delete the old config.
+      fs.renameSync(temporary, this.configPath)
+      ownsTemporary = false
+    } finally {
+      if (descriptor !== undefined) {
+        try { fs.closeSync(descriptor) } catch { /* Preserve the original failure. */ }
+      }
+      if (ownsTemporary) {
+        try { fs.unlinkSync(temporary) } catch { /* Only this save's own file. */ }
+      }
+    }
   }
 
   private isComRegistered(): boolean {
@@ -288,42 +311,54 @@ export class CashalotService {
 
   getPublicConfig(): CashalotPublicConfig {
     this.ensureCashalotDirResolved()
+    return this.publicConfigFor(this.config)
+  }
+
+  private publicConfigFor(config: CashalotConfig): CashalotPublicConfig {
     return {
-      enabled: this.config.enabled,
-      cashalotDir: this.config.cashalotDir,
-      fiscalNumberRRO: this.config.fiscalNumberRRO,
-      certificateDir: this.config.certificateDir,
-      hasPassword: this.config.encryptedKeyPassword !== null,
+      enabled: config.enabled,
+      cashalotDir: config.cashalotDir,
+      fiscalNumberRRO: config.fiscalNumberRRO,
+      certificateDir: config.certificateDir,
+      hasPassword: config.encryptedKeyPassword !== null,
       comRegistered: this.isComRegistered(),
-      dllFound: hasCashalotDll(this.config.cashalotDir),
+      dllFound: hasCashalotDll(config.cashalotDir),
     }
   }
 
   updateConfig(update: CashalotConfigUpdate): CashalotPublicConfig {
+    if (this.queuedCalls > 0 || this.workerRequestsInFlight.size > 0) throw new Error('FISCAL_CONFIG_BUSY')
+    const next = { ...this.config }
     // Явна заміна папки має пріоритет і не потребує проби старого UNC-шляху.
-    if (update.cashalotDir === undefined) this.ensureCashalotDirResolved()
-    if (update.enabled !== undefined) this.config.enabled = update.enabled === true
-    if (update.cashalotDir !== undefined) {
-      this.config.cashalotDir = String(update.cashalotDir || detectCashalotDir())
-      this.cashalotDirResolved = true
+    if (update.cashalotDir === undefined && !this.cashalotDirResolved) {
+      next.cashalotDir = resolveCashalotDir(next.cashalotDir)
     }
-    if (update.fiscalNumberRRO !== undefined) this.config.fiscalNumberRRO = String(update.fiscalNumberRRO || '').trim()
+    if (update.enabled !== undefined) next.enabled = update.enabled === true
+    if (update.cashalotDir !== undefined) {
+      next.cashalotDir = String(update.cashalotDir || detectCashalotDir())
+    }
+    if (update.fiscalNumberRRO !== undefined) next.fiscalNumberRRO = String(update.fiscalNumberRRO || '').trim()
     if (update.certificateDir !== undefined) {
-      this.config.certificateDir = update.certificateDir ? String(update.certificateDir) : null
+      next.certificateDir = update.certificateDir ? String(update.certificateDir) : null
     }
     if (update.keyPassword !== undefined) {
       if (!update.keyPassword) {
-        this.config.encryptedKeyPassword = null
+        next.encryptedKeyPassword = null
       } else if (safeStorage.isEncryptionAvailable()) {
-        this.config.encryptedKeyPassword = safeStorage.encryptString(String(update.keyPassword)).toString('base64')
+        next.encryptedKeyPassword = safeStorage.encryptString(String(update.keyPassword)).toString('base64')
       } else {
         throw new Error('FISCAL_ENCRYPTION_UNAVAILABLE')
       }
     }
-    this.saveConfig()
+    // Even diagnostics must finish before publication: failure must mean that
+    // neither disk, memory nor the existing COM worker has changed.
+    const result = this.publicConfigFor(next)
+    this.saveConfig(next)
+    this.config = next
+    this.cashalotDirResolved = true
     // Перезапускаємо воркер, щоб нові параметри застосувались до COM-об'єкта.
     this.stopWorker()
-    return this.getPublicConfig()
+    return result
   }
 
   isEnabled(): boolean {
@@ -348,6 +383,7 @@ export class CashalotService {
 
     worker.stdout.setEncoding('utf8')
     worker.stdout.on('data', (chunk: string) => {
+      if (this.worker !== worker) return
       this.stdoutBuffer += chunk
       let newlineIndex = this.stdoutBuffer.indexOf('\n')
       while (newlineIndex >= 0) {
@@ -358,12 +394,9 @@ export class CashalotService {
       }
     })
     worker.on('exit', () => {
-      for (const [, entry] of this.pending) {
-        clearTimeout(entry.timer)
-        entry.resolve({ id: '', ok: false, error: 'FISCAL_WORKER_EXITED' })
-      }
-      this.pending.clear()
-      if (this.worker === worker) this.worker = null
+      if (this.worker !== worker) return
+      this.worker = null
+      this.clearWorkerRequests()
     })
 
     this.worker = worker
@@ -378,6 +411,9 @@ export class CashalotService {
     } catch {
       return
     }
+    if (!response || Array.isArray(response) || typeof response.id !== 'string' || !response.id
+      || typeof response.ok !== 'boolean') return
+    this.workerRequestsInFlight.delete(response.id)
     const entry = this.pending.get(response.id)
     if (!entry) return
     this.pending.delete(response.id)
@@ -394,7 +430,16 @@ export class CashalotService {
       }, CALL_TIMEOUT_MS)
       this.pending.set(request.id, { resolve, timer })
       const encoded = Buffer.from(JSON.stringify(request), 'utf8').toString('base64')
-      worker.stdin.write(encoded + '\n')
+      this.workerRequestsInFlight.add(request.id)
+      try {
+        worker.stdin.write(encoded + '\n')
+      } catch {
+        clearTimeout(timer)
+        this.pending.delete(request.id)
+        // Transmission outcome is uncertain; keep settings locked until the
+        // worker responds/exits or the application deliberately stops it.
+        resolve({ id: request.id, ok: false, error: 'FISCAL_CALL_FAILED' })
+      }
     })
   }
 
@@ -426,7 +471,9 @@ export class CashalotService {
       }
       return result
     }
-    const chained = this.queue.then(run, run)
+    // Count before the first microtask, including calls waiting behind another.
+    this.queuedCalls++
+    const chained = this.queue.then(run, run).finally(() => { this.queuedCalls-- })
     this.queue = chained.catch(() => {})
     return chained
   }
@@ -565,14 +612,26 @@ Add-Type -TypeDefinition $src
     })
   }
 
+  private clearWorkerRequests(): void {
+    for (const [id, entry] of this.pending) {
+      clearTimeout(entry.timer)
+      entry.resolve({ id, ok: false, error: 'FISCAL_WORKER_EXITED' })
+    }
+    this.pending.clear()
+    this.workerRequestsInFlight.clear()
+    this.stdoutBuffer = ''
+  }
+
   stopWorker(): void {
-    if (!this.worker) return
+    const worker = this.worker
+    this.worker = null
+    this.clearWorkerRequests()
+    if (!worker) return
     try {
-      this.worker.stdin.end()
-      this.worker.kill()
+      worker.stdin.end()
     } catch {
       // процес уже міг завершитись
     }
-    this.worker = null
+    try { worker.kill() } catch { /* The process may already have exited. */ }
   }
 }

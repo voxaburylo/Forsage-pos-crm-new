@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { localizeDesktopIpcError } from '../src/ipcError'
 
 describe('localizeDesktopIpcError', () => {
+  it('explains why settings cannot interrupt an unresolved fiscal operation', () => {
+    expect(localizeDesktopIpcError(new Error('FISCAL_CONFIG_BUSY')).message)
+      .toBe('ПРРО виконує або очікує операцію. Налаштування не змінено; дочекайтеся результату Cashalot.')
+  })
   it.each(['LOCAL_SALE_INVALID_AMOUNT', 'LOCAL_SALE_INVALID_DISCOUNT', 'LOCAL_SALE_INVALID_BONUS',
     'LOCAL_SALE_INVALID_PAYMENT_METHOD', 'LOCAL_BACKUP_CORRUPT', 'LOCAL_BACKUP_BROKEN_REFERENCES',
     'LOCAL_BACKUP_TIMEOUT', 'LOCAL_BACKUP_INCOMPLETE', 'LOCAL_ASYNC_TRANSACTION_FORBIDDEN'])('explains safety failure %s', code => {

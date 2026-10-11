@@ -4,7 +4,10 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
-  fs: { readFileSync: vi.fn(), writeFileSync: vi.fn(), statSync: vi.fn(), existsSync: vi.fn() },
+  fs: {
+    readFileSync: vi.fn(), writeFileSync: vi.fn(), statSync: vi.fn(), existsSync: vi.fn(),
+    openSync: vi.fn(), fsyncSync: vi.fn(), closeSync: vi.fn(), renameSync: vi.fn(), unlinkSync: vi.fn(),
+  },
   storage: { isEncryptionAvailable: vi.fn(), encryptString: vi.fn(), decryptString: vi.fn() },
   processes: {
     spawn: vi.fn(), spawnSync: vi.fn(), exec: vi.fn(), execSync: vi.fn(),
@@ -71,6 +74,7 @@ describe('Cashalot startup stays passive while disabled', () => {
       return configText
     })
     mocks.fs.writeFileSync.mockImplementation(() => undefined)
+    mocks.fs.openSync.mockReturnValue(79)
     mocks.fs.statSync.mockImplementation((target: unknown) => {
       const name = String(target)
       const file = [...installedDirs].some(dir => name === path.join(dir, CASHALOT_DLL))
@@ -116,6 +120,9 @@ describe('Cashalot startup stays passive while disabled', () => {
     expect(mocks.fs.statSync).not.toHaveBeenCalled()
     expect(mocks.fs.existsSync).not.toHaveBeenCalled()
     expect(mocks.fs.writeFileSync).not.toHaveBeenCalled()
+    for (const name of ['openSync', 'fsyncSync', 'closeSync', 'renameSync', 'unlinkSync'] as const) {
+      expect(mocks.fs[name]).not.toHaveBeenCalled()
+    }
     expectNoProcesses()
     expectNoEncryption()
   }
@@ -208,7 +215,9 @@ describe('Cashalot startup stays passive while disabled', () => {
     })
     expect(mocks.fs.writeFileSync).toHaveBeenCalledTimes(1)
     const [target, stored, encoding] = mocks.fs.writeFileSync.mock.calls[0]
-    expect([target, encoding]).toEqual([CONFIG_PATH, 'utf8'])
+    expect([target, encoding]).toEqual([79, 'utf8'])
+    expect(mocks.fs.openSync).toHaveBeenCalledWith(expect.stringContaining(CONFIG_PATH + '.'), 'wx', 0o600)
+    expect(mocks.fs.renameSync).toHaveBeenCalledWith(mocks.fs.openSync.mock.calls[0][0], CONFIG_PATH)
     expect(JSON.parse(String(stored))).toEqual({ ...SAVED_FIELDS, enabled: true, cashalotDir: INSTALLED })
     expect(mocks.processes.spawn).not.toHaveBeenCalled()
     expectNoEncryption()
