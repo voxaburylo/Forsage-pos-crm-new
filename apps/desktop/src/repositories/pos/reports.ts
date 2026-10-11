@@ -11,16 +11,21 @@ import { businessDateKey, nowIso } from './posShared'
 import { LocalPosFiscal } from './fiscal'
 import { readSoldItems } from './soldItemsReport'
 import { readPeriodReport } from './periodReport'
+import { normalizeReportDateRange } from '../../lib/reportDateRange'
 
 export class LocalPosReports extends LocalPosFiscal {
   salesPeriodReport(input: { tenant_id?: string; date_from: string; date_to: string }) {
     return readPeriodReport(this.db,input.tenant_id ?? DEFAULT_TENANT_ID,input.date_from,input.date_to)
   }
   dashboardSummary(input: { tenant_id?: string; date_from: string; date_to: string }): any {
+    const range = normalizeReportDateRange(input.date_from, input.date_to)
+    return this.db.readSnapshot(() => this.readDashboardSummary({ ...input, date_from: range.from, date_to: range.to }))
+  }
+
+  private readDashboardSummary(input: { tenant_id?: string; date_from: string; date_to: string }): any {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
-    const dateFrom = String(input.date_from ?? '').trim()
-    const dateTo = String(input.date_to ?? '').trim()
-    if (!dateFrom || !dateTo) throw new Error('Analytics period is required')
+    const dateFrom = input.date_from
+    const dateTo = input.date_to
 
     const stats = this.db.prepare(`
       WITH scope(tenant_id, now_at) AS (VALUES (?, ?))
@@ -65,7 +70,7 @@ export class LocalPosReports extends LocalPosFiscal {
            AND o.deleted_at IS NULL
            AND o.status NOT IN ('completed', 'canceled', 'cancelled', 'archived')
            AND o.pickup_deadline_at IS NOT NULL
-           AND o.pickup_deadline_at < scope.now_at) AS overdue_orders,
+           AND julianday(o.pickup_deadline_at) < julianday(scope.now_at)) AS overdue_orders,
         (SELECT COUNT(*)
          FROM customers c
          WHERE c.tenant_id = scope.tenant_id
@@ -83,7 +88,12 @@ export class LocalPosReports extends LocalPosFiscal {
       SELECT
         s.id,
         COALESCE(s.completed_at, s.created_at) AS occurred_at,
-        COALESCE(s.total, 0) AS revenue,
+        s.total AS revenue,
+        COUNT(CASE WHEN si.deleted_at IS NULL THEN si.id END) AS line_count,
+        SUM(CASE WHEN si.deleted_at IS NULL THEN si.total ELSE 0 END) AS lines_total,
+        SUM(CASE WHEN si.deleted_at IS NULL AND si.id IS NOT NULL AND (
+          si.purchase_price IS NULL OR si.purchase_price < 0 OR si.qty <= 0
+          OR si.total < 0 OR si.total != CAST(si.total AS INTEGER)) THEN 1 ELSE 0 END) AS invalid_lines,
         COALESCE(SUM(
           CASE WHEN si.deleted_at IS NULL
             THEN COALESCE(si.purchase_price, 0) * COALESCE(si.qty, 0)
@@ -103,8 +113,8 @@ export class LocalPosReports extends LocalPosFiscal {
       WHERE s.tenant_id = ?
         AND s.deleted_at IS NULL
         AND s.status IN ('completed', 'returned')
-        AND COALESCE(s.completed_at, s.created_at) >= ?
-        AND COALESCE(s.completed_at, s.created_at) <= ?
+        AND julianday(COALESCE(s.completed_at, s.created_at)) >= julianday(?)
+        AND julianday(COALESCE(s.completed_at, s.created_at)) <= julianday(?)
       GROUP BY s.id, s.completed_at, s.created_at, s.total
       ORDER BY COALESCE(s.completed_at, s.created_at) ASC
     `).all(tenantId, dateFrom, dateTo) as Array<{
@@ -113,14 +123,24 @@ export class LocalPosReports extends LocalPosFiscal {
       revenue: number
       cogs: number
       zero_cost_lines: number
+      line_count: number
+      lines_total: number
+      invalid_lines: number
     }>
 
     let totalRevenue = 0
     let totalCogs = 0
     const daily = new Map<string, { date: string; revenue: number; profit: number }>()
     for (const sale of sales) {
-      const revenue = Number(sale.revenue ?? 0)
-      const cogs = Number(sale.cogs ?? 0)
+      // A receipt without its original lines does not prove zero purchase cost.
+      // Fail visibly, like the detailed reports, instead of overstating profit.
+      if (!Number.isSafeInteger(sale.revenue) || sale.revenue < 0 || !sale.line_count || sale.invalid_lines
+        || !Number.isSafeInteger(sale.lines_total) || sale.lines_total < sale.revenue
+        || !Number.isFinite(sale.cogs) || sale.cogs < 0) {
+        throw new Error('Дані статистики неповні або не узгоджені. Потрібна перевірка чеків і повернень.')
+      }
+      const revenue = sale.revenue
+      const cogs = sale.cogs
       const date = businessDateKey(sale.occurred_at)
       totalRevenue += revenue
       totalCogs += cogs
@@ -134,14 +154,28 @@ export class LocalPosReports extends LocalPosFiscal {
     // Returns belong to their own day, including returns of an earlier-period sale.
     // Only goods actually restored to stock reverse their cost of goods sold.
     const refunds = this.db.prepare(`SELECT r.id, r.created_at, r.refund_kopecks,
+      COUNT(ri.id) line_count, SUM(ri.total_kopecks) lines_total,
+      SUM(CASE WHEN si.id IS NULL OR s.id IS NULL OR si.purchase_price IS NULL OR si.purchase_price < 0
+        OR ri.product_id IS NOT si.product_id OR ri.quantity <= 0
+        OR ri.total_kopecks < 0 OR ri.total_kopecks != CAST(ri.total_kopecks AS INTEGER) THEN 1 ELSE 0 END) invalid_lines,
       COALESCE(SUM(CASE WHEN r.stock_action = 'return_to_stock' THEN ri.quantity * COALESCE(si.purchase_price, 0) ELSE 0 END), 0) cogs
       FROM customer_returns r
       LEFT JOIN customer_return_items ri ON ri.return_id = r.id AND ri.tenant_id = r.tenant_id AND ri.deleted_at IS NULL
-      LEFT JOIN sale_items si ON si.id = ri.sale_item_id AND si.tenant_id = r.tenant_id
-      WHERE r.tenant_id = ? AND r.deleted_at IS NULL AND r.status = 'completed' AND r.created_at >= ? AND r.created_at <= ?
-      GROUP BY r.id`).all(tenantId, dateFrom, dateTo) as Array<{ created_at: string; refund_kopecks: number; cogs: number }>
+      LEFT JOIN sale_items si ON si.id = ri.sale_item_id AND si.tenant_id = r.tenant_id AND si.sale_id = r.sale_id
+      LEFT JOIN sales s ON s.id = r.sale_id AND s.tenant_id = r.tenant_id
+        AND s.deleted_at IS NULL AND s.status IN ('completed', 'returned')
+      WHERE r.tenant_id = ? AND r.deleted_at IS NULL AND r.status = 'completed'
+        AND julianday(r.created_at) >= julianday(?) AND julianday(r.created_at) <= julianday(?)
+      GROUP BY r.id`).all(tenantId, dateFrom, dateTo) as Array<{
+        created_at: string; refund_kopecks: number; cogs: number; line_count: number; lines_total: number; invalid_lines: number
+      }>
     const grossRevenue = totalRevenue
     for (const refund of refunds) {
+      if (!Number.isSafeInteger(refund.refund_kopecks) || refund.refund_kopecks < 0 || !refund.line_count || refund.invalid_lines
+        || !Number.isSafeInteger(refund.lines_total) || refund.lines_total !== refund.refund_kopecks
+        || !Number.isFinite(refund.cogs) || refund.cogs < 0) {
+        throw new Error('Дані статистики неповні або не узгоджені. Потрібна перевірка чеків і повернень.')
+      }
       totalRevenue -= Number(refund.refund_kopecks)
       totalCogs -= Number(refund.cogs)
       const date = businessDateKey(refund.created_at)

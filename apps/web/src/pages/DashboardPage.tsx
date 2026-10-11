@@ -80,7 +80,7 @@ export default function DashboardPage() {
           })
           if (!isCurrent()) return
           const data = parseDashboardData({ ...summary.analytics, inventory: summary.inventory,
-            low_stock: summary.low_stock, overdue_count: summary.overdue_count, debt: summary.debt })
+            low_stock: summary.low_stock, overdue_count: summary.overdue_count, debt: summary.debt }, { ...range, canSeeProfit })
           setAnalytics(data)
           setLowStock(data.low_stock)
           setOverdueCount(data.overdue_count)
@@ -94,7 +94,7 @@ export default function DashboardPage() {
           `/api/v1/analytics/dashboard?startDate=${range.startDate}&endDate=${range.endDate}`,
         )
         if (!isCurrent()) return
-        const data = parseDashboardData(response.data)
+        const data = parseDashboardData(response.data, { ...range, canSeeProfit })
         setAnalytics(data)
         setLowStock(data.low_stock)
         setOverdueCount(data.overdue_count)
@@ -104,6 +104,8 @@ export default function DashboardPage() {
           setAnalytics(null)
           setLoadError(error instanceof Error && error.message === 'DESKTOP_UPDATE_REQUIRED'
             ? 'Оновіть локальну програму. Ця версія не може сформувати повну статистику.'
+            : error instanceof Error && /INCOMPLETE_DASHBOARD|Дані статистики неповні/.test(error.message)
+              ? 'Дані статистики за цей період неповні або неузгоджені. Суми не показано. Потрібна перевірка чеків і повернень.'
             : 'Не вдалося завантажити статистику. Суми не показано, щоб не видати неповні дані за нулі. Відкрийте розділ повторно.')
         }
       } finally {

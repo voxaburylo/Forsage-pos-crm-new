@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { validStaffRange } from './staffData'
 
 const amount = z.number().finite()
 const count = z.number().int().nonnegative()
@@ -9,7 +10,7 @@ const schema = z.object({
   total_receipts: count,
   average_receipt: amount,
   daily: z.array(z.object({
-    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    date: z.string().refine(value => validStaffRange(value, value)),
     revenue: amount,
     profit: amount,
   })),
@@ -40,8 +41,25 @@ export function parseDashboardTires(value: unknown): DashboardTireWorker[] {
 
 // Missing sections are not a zero balance. Both local and web reads must
 // provide a complete, finite result before the statistics page displays it.
-export function parseDashboardData(value: unknown): DashboardData {
+export function parseDashboardData(value: unknown, expected: {
+  startDate?: string; endDate?: string; canSeeProfit?: boolean
+} = {}): DashboardData {
   const result = schema.safeParse(value)
   if (!result.success) throw new Error('INCOMPLETE_DASHBOARD')
-  return result.data
+  const report = result.data
+  // Costs may contain fractional kopecks for fractional stock quantities.
+  // Preserve that precision; tolerate only floating-point summation noise.
+  const equal = (a: number, b: number) => Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) < 0.000001
+  const { startDate, endDate } = expected
+  if (new Set(report.daily.map(day => day.date)).size !== report.daily.length
+    || !equal(report.daily.reduce((sum, day) => sum + day.revenue, 0), report.total_revenue)
+    || !equal(report.daily.reduce((sum, day) => sum + day.profit, 0), report.gross_profit)
+    || report.average_receipt !== (report.total_receipts ? Math.round(report.total_revenue / report.total_receipts) : 0)
+    // The web server intentionally masks all profit fields for non-owner roles.
+    || (expected.canSeeProfit !== false && !equal(report.total_revenue - report.cogs, report.gross_profit))
+    || ((startDate !== undefined || endDate !== undefined) && (!startDate || !endDate
+      || !validStaffRange(startDate, endDate) || report.daily.some(day => day.date < startDate || day.date > endDate)))) {
+    throw new Error('INCOMPLETE_DASHBOARD')
+  }
+  return report
 }

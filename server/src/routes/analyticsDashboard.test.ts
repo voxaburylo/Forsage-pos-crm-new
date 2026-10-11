@@ -27,13 +27,13 @@ beforeAll(async () => {
       qty_on_hand numeric DEFAULT 0, reorder_point numeric DEFAULT 0, is_active boolean DEFAULT true,
       deleted_at timestamptz, is_service boolean DEFAULT false);
     CREATE TABLE sales (id text PRIMARY KEY, tenant_id text, total int, status text,
-      completed_at timestamptz, created_at timestamptz);
+      completed_at timestamptz, created_at timestamptz, deleted_at timestamptz);
     CREATE TABLE sale_items (id text PRIMARY KEY, tenant_id text, sale_id text, product_id text,
-      qty numeric, cost_price int);
+      qty numeric, cost_price int, total int, deleted_at timestamptz);
     CREATE TABLE returns (id text PRIMARY KEY, tenant_id text, sale_id text, status text,
-      created_at timestamptz, stock_action text, refund_kopecks int, refund_amount int);
+      created_at timestamptz, stock_action text, refund_kopecks int, refund_amount int, deleted_at timestamptz);
     CREATE TABLE return_items (id text PRIMARY KEY, tenant_id text, return_id text, sale_item_id text,
-      quantity numeric, total_kopecks int);
+      quantity numeric, total_kopecks int, product_id text, deleted_at timestamptz);
     CREATE TABLE cash_operations (id text, tenant_id text, type text, expense_category_id text,
       created_at timestamptz, amount int);
     CREATE TABLE customers (id text, tenant_id text, deleted_at timestamptz, debt_balance int);
@@ -50,14 +50,14 @@ beforeEach(async () => {
 async function sale(id = 'sale', opts: { tenant?: string; at?: string; total?: number; cost?: number; qty?: number; status?: string } = {}) {
   const { tenant = 'shop', at = '2026-10-01T10:00:00Z', total = 10000, cost = 6000, qty = 1, status = 'completed' } = opts
   await state.db.query('INSERT INTO products (id,tenant_id,purchase_price,retail_price) VALUES ($1,$2,99000,10000)', [id, tenant])
-  await state.db.query('INSERT INTO sales VALUES ($1,$2,$3,$4,$5,$5)', [id, tenant, total, status, at])
-  await state.db.query('INSERT INTO sale_items VALUES ($1,$2,$3,$4,$5,$6)', [id, tenant, id, id, qty, cost])
+  await state.db.query('INSERT INTO sales (id,tenant_id,total,status,completed_at,created_at) VALUES ($1,$2,$3,$4,$5,$5)', [id, tenant, total, status, at])
+  await state.db.query('INSERT INTO sale_items (id,tenant_id,sale_id,product_id,qty,cost_price,total) VALUES ($1,$2,$3,$4,$5,$6,$7)', [id, tenant, id, id, qty, cost, total])
 }
 async function refund(id = 'refund', opts: { saleId?: string; tenant?: string; at?: string; amount?: number; qty?: number; action?: string; status?: string } = {}) {
   const { saleId = 'sale', tenant = 'shop', at = '2026-10-01T11:00:00Z', amount = 10000, qty = 1,
     action = 'return_to_stock', status = 'completed' } = opts
-  await state.db.query('INSERT INTO returns VALUES ($1,$2,$3,$4,$5,$6,$7,$7)', [id, tenant, saleId, status, at, action, amount])
-  await state.db.query('INSERT INTO return_items VALUES ($1,$2,$3,$4,$5,$6)', [id, tenant, id, saleId, qty, amount])
+  await state.db.query('INSERT INTO returns (id,tenant_id,sale_id,status,created_at,stock_action,refund_kopecks,refund_amount) VALUES ($1,$2,$3,$4,$5,$6,$7,$7)', [id, tenant, saleId, status, at, action, amount])
+  await state.db.query('INSERT INTO return_items (id,tenant_id,return_id,sale_item_id,quantity,total_kopecks,product_id) VALUES ($1,$2,$3,$4,$5,$6,$4)', [id, tenant, id, saleId, qty, amount])
 }
 
 describe('actual dashboard route against isolated PostgreSQL', () => {
@@ -85,8 +85,9 @@ describe('actual dashboard route against isolated PostgreSQL', () => {
     })
   it('does not multiply the refund header when several returned lines are present', async () => {
     await sale('sale', { qty: 2, total: 20000 })
-    await refund('one', { amount: 20000 })
-    await state.db.query('INSERT INTO return_items VALUES ($1,$2,$3,$4,$5,$6)', ['two', 'shop', 'one', 'sale', 1, 10000])
+    await refund('one', { amount: 10000 })
+    await state.db.exec('UPDATE returns SET refund_kopecks=20000,refund_amount=20000')
+    await state.db.query('INSERT INTO return_items (id,tenant_id,return_id,sale_item_id,quantity,total_kopecks,product_id) VALUES ($1,$2,$3,$4,$5,$6,$4)', ['two', 'shop', 'one', 'sale', 1, 10000])
     expect(await dashboard()).toMatchObject({ total_revenue: 0, cogs: 0, gross_profit: 0, total_receipts: 1 })
   })
   it('keeps archived product history and uses captured fractional purchase cost', async () => {
@@ -97,7 +98,7 @@ describe('actual dashboard route against isolated PostgreSQL', () => {
   it('ignores drafts, canceled refunds and all foreign-tenant rows', async () => {
     await sale(); await sale('draft', { status: 'draft' }); await sale('other', { tenant: 'elsewhere' })
     await refund('canceled', { status: 'canceled' }); await refund('foreign', { tenant: 'elsewhere' })
-    await state.db.exec("INSERT INTO sale_items VALUES ('foreign-line','elsewhere','sale','sale',500,6000)")
+    await state.db.exec("INSERT INTO sale_items (id,tenant_id,sale_id,product_id,qty,cost_price,total) VALUES ('foreign-line','elsewhere','sale','sale',500,6000,10000)")
     expect(await dashboard()).toMatchObject({ total_revenue: 10000, cogs: 6000, total_receipts: 1 })
   })
   it('rejects an unmatched returned line rather than assuming a zero cost', async () => {
@@ -110,6 +111,7 @@ describe('actual dashboard route against isolated PostgreSQL', () => {
     await state.db.exec('UPDATE returns SET refund_kopecks=NULL')
     expect((await dashboard()).total_revenue).toBe(0)
     await state.db.exec('UPDATE returns SET refund_kopecks=0')
+    await state.db.exec('UPDATE return_items SET total_kopecks=0')
     expect((await dashboard()).total_revenue).toBe(10000)
   })
   it.each([
@@ -151,8 +153,10 @@ describe('actual dashboard route against isolated PostgreSQL', () => {
     expect(state.calls).toBe(1)
   })
   it('reads over 1000 receipts without a REST row-limit truncation', async () => {
-    await state.db.exec(`INSERT INTO sales SELECT 's'||n,'shop',100,'completed','2026-10-01T12:00:00Z','2026-10-01T12:00:00Z'
-      FROM generate_series(1,1505) n;`)
+    await state.db.exec(`INSERT INTO sales (id,tenant_id,total,status,completed_at,created_at)
+      SELECT 's'||n,'shop',100,'completed','2026-10-01T12:00:00Z','2026-10-01T12:00:00Z' FROM generate_series(1,1505) n;
+      INSERT INTO sale_items (id,tenant_id,sale_id,qty,cost_price,total)
+      SELECT 'si'||n,'shop','s'||n,1,50,100 FROM generate_series(1,1505) n;`)
     expect(await dashboard()).toMatchObject({ total_revenue: 150500, total_receipts: 1505 })
   })
   it('reports an empty day as a genuine zero but propagates a database failure', async () => {
@@ -166,5 +170,30 @@ describe('actual dashboard route against isolated PostgreSQL', () => {
     try { expect((await dashboard()).total_revenue).toBe(5000) }
     finally { await state.db.exec('ROLLBACK') }
     expect((await state.db.query('SELECT total FROM sales')).rows).toEqual([{ total: 10000 }])
+  })
+  it.each([
+    'DELETE FROM sale_items', 'UPDATE sale_items SET deleted_at=now()',
+    'UPDATE sale_items SET cost_price=NULL', 'UPDATE sale_items SET cost_price=-1',
+    'UPDATE sale_items SET qty=0', 'UPDATE sale_items SET total=-1', 'UPDATE sale_items SET total=9999',
+  ])('rejects incomplete sale evidence without showing a fabricated profit: %s', async fault => {
+    await sale(); await state.db.exec(fault)
+    await state.db.exec('BEGIN READ ONLY')
+    try { await expect(dashboard()).rejects.toMatchObject({ code: 'INCOMPLETE_REPORT', status: 409 }) }
+    finally { await state.db.exec('ROLLBACK') }
+    expect((await dashboard('2026-10-02')).total_revenue).toBe(0)
+  })
+  it.each([
+    'DELETE FROM return_items', 'UPDATE return_items SET deleted_at=now()',
+    'UPDATE return_items SET total_kopecks=9999', 'UPDATE return_items SET quantity=0',
+    "UPDATE return_items SET product_id='wrong'", "UPDATE returns SET sale_id='wrong'",
+    'UPDATE sale_items SET cost_price=NULL', 'UPDATE sale_items SET cost_price=-1',
+  ])('rejects incomplete older-sale return evidence: %s', async fault => {
+    await sale('sale', { at: '2026-09-01T12:00:00Z' }); await refund(); await state.db.exec(fault)
+    await expect(dashboard()).rejects.toMatchObject({ code: 'INCOMPLETE_REPORT', status: 409 })
+  })
+  it('does not count archived receipts or returns', async () => {
+    await sale('archived'); await sale(); await refund('archived-refund')
+    await state.db.exec("UPDATE sales SET deleted_at=now() WHERE id='archived'; UPDATE returns SET deleted_at=now()")
+    expect(await dashboard()).toMatchObject({ total_revenue: 10000, total_receipts: 1, gross_profit: 4000 })
   })
 })

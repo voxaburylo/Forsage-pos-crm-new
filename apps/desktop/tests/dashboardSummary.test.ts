@@ -156,4 +156,52 @@ describe('local dashboard summary', () => {
     db.prepare(`UPDATE sales SET completed_at = '2020-01-01T12:00:00.000Z' WHERE id = ?`).run(sale.sale_id)
     expect(pos.dashboardSummary(range).analytics).toMatchObject({ total_revenue: -200, cogs: -80, gross_profit: -120 })
   })
+
+  it.each(['missing-lines', 'archived-lines', 'zero-qty', 'negative-cost', 'uncovered-total', 'negative-line-total', 'fractional-revenue'])(
+    'rejects an incomplete receipt rather than inventing a dashboard profit: %s', fault => {
+      const product = catalog.upsertProduct({ id: randomUUID(), sku: 'DAMAGED', name: 'Damaged receipt fixture', qty_on_hand: 4, purchase_price: 40, retail_price: 100 })
+      const sale = pos.checkout({ cashier_id: cashierId, shift_id: shiftId,
+        items: [{ product_id: product.id, qty: 1, unit_price: 100 }], payments: [{ method: 'cash', amount: 100 }] })
+      if (fault === 'missing-lines') db.prepare('DELETE FROM sale_items WHERE sale_id=?').run(sale.sale_id)
+      if (fault === 'archived-lines') db.prepare('UPDATE sale_items SET deleted_at=? WHERE sale_id=?').run(new Date().toISOString(), sale.sale_id)
+      if (fault === 'zero-qty') db.prepare('UPDATE sale_items SET qty=0 WHERE sale_id=?').run(sale.sale_id)
+      if (fault === 'negative-cost') db.prepare('UPDATE sale_items SET purchase_price=-1 WHERE sale_id=?').run(sale.sale_id)
+      if (fault === 'uncovered-total') db.prepare('UPDATE sale_items SET total=50 WHERE sale_id=?').run(sale.sale_id)
+      if (fault === 'negative-line-total') db.prepare('UPDATE sale_items SET total=-1 WHERE sale_id=?').run(sale.sale_id)
+      if (fault === 'fractional-revenue') db.prepare('UPDATE sales SET total=99.5 WHERE id=?').run(sale.sale_id)
+      db.prepare('PRAGMA query_only=ON').run()
+      const range = { date_from: new Date(Date.now() - 60_000).toISOString(), date_to: new Date(Date.now() + 60_000).toISOString() }
+      expect(() => pos.dashboardSummary(range)).toThrow(/неповні або не узгоджені/)
+      // A bad historic receipt outside the requested period does not block today's valid zero report.
+      const after = new Date(Date.now() + 120_000).toISOString()
+      expect(pos.dashboardSummary({ date_from: after, date_to: after }).analytics.total_revenue).toBe(0)
+    })
+
+  it.each(['missing-lines', 'mismatched-total', 'wrong-original-sale', 'wrong-product', 'zero-quantity', 'negative-cost'])(
+    'rejects an incomplete return of an older receipt: %s', fault => {
+      const product = catalog.upsertProduct({ id: randomUUID(), sku: 'DAMAGED-RETURN', name: 'Return fixture', qty_on_hand: 4, purchase_price: 40, retail_price: 100 })
+      const sale = pos.checkout({ cashier_id: cashierId, shift_id: shiftId,
+        items: [{ product_id: product.id, qty: 1, unit_price: 100 }], payments: [{ method: 'cash', amount: 100 }] })
+      const item = pos.getSaleForReturn(sale.sale_id).items[0]
+      const result = pos.createReturn({ sale_id: sale.sale_id, approved_by: cashierId, shift_id: shiftId,
+        refund_method: 'cash', stock_action: 'return_to_stock',
+        items: [{ sale_item_id: item.id, product_id: product.id, quantity: 1 }] })
+      db.prepare("UPDATE sales SET completed_at='2020-01-01T12:00:00.000Z' WHERE id=?").run(sale.sale_id)
+      if (fault === 'missing-lines') db.prepare('DELETE FROM customer_return_items WHERE return_id=?').run(result.id)
+      if (fault === 'mismatched-total') db.prepare('UPDATE customer_returns SET refund_kopecks=99 WHERE id=?').run(result.id)
+      if (fault === 'wrong-original-sale') {
+        const otherSale = pos.checkout({ cashier_id: cashierId, shift_id: shiftId,
+          items: [{ product_id: product.id, qty: 1, unit_price: 100 }], payments: [{ method: 'cash', amount: 100 }] })
+        db.prepare('UPDATE customer_returns SET sale_id=? WHERE id=?').run(otherSale.sale_id, result.id)
+      }
+      if (fault === 'wrong-product') {
+        const other = catalog.upsertProduct({ id: randomUUID(), sku: 'OTHER', name: 'Other product', qty_on_hand: 1, purchase_price: 40, retail_price: 100 })
+        db.prepare('UPDATE customer_return_items SET product_id=? WHERE return_id=?').run(other.id, result.id)
+      }
+      if (fault === 'zero-quantity') db.prepare('UPDATE customer_return_items SET quantity=0 WHERE return_id=?').run(result.id)
+      if (fault === 'negative-cost') db.prepare('UPDATE sale_items SET purchase_price=-1 WHERE id=?').run(item.id)
+      db.prepare('PRAGMA query_only=ON').run()
+      const range = { date_from: new Date(Date.now() - 60_000).toISOString(), date_to: new Date(Date.now() + 60_000).toISOString() }
+      expect(() => pos.dashboardSummary(range)).toThrow(/неповні або не узгоджені/)
+    })
 })

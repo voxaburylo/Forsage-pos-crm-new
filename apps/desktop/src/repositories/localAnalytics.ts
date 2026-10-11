@@ -1,6 +1,7 @@
 import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID } from '../db/localTypes'
 import { allocateReceiptRevenue } from '../lib/receiptRevenue'
+import { normalizeReportDateRange } from '../lib/reportDateRange'
 
 interface AnalyticsInput {
   kind: 'abc' | 'staff'
@@ -38,12 +39,12 @@ function validCalendarDate(value: string): boolean {
 }
 
 export function localAnalytics(db: LocalDatabase, input: AnalyticsInput): any[] {
+  const range = normalizeReportDateRange(input.from, input.to)
   if (!validCalendarDate(input.startDate) || !validCalendarDate(input.endDate) || input.startDate > input.endDate
-    || !['abc', 'staff'].includes(input.kind) || !Number.isFinite(Date.parse(input.from))
-    || !Number.isFinite(Date.parse(input.to)) || Date.parse(input.from) > Date.parse(input.to)) {
+    || !['abc', 'staff'].includes(input.kind)) {
     throw new Error('Некоректний період')
   }
-  return db.readSnapshot(() => readLocalAnalytics(db, input))
+  return db.readSnapshot(() => readLocalAnalytics(db, { ...input, from: range.from, to: range.to }))
 }
 
 function readLocalAnalytics(db: LocalDatabase, input: AnalyticsInput): any[] {
@@ -54,7 +55,7 @@ function readLocalAnalytics(db: LocalDatabase, input: AnalyticsInput): any[] {
     SELECT s.id FROM sales s LEFT JOIN sale_items si
       ON si.sale_id=s.id AND si.tenant_id=s.tenant_id AND si.deleted_at IS NULL
     WHERE s.tenant_id=? AND s.deleted_at IS NULL AND s.status IN ('completed','returned')
-      AND COALESCE(s.completed_at,s.created_at)>=? AND COALESCE(s.completed_at,s.created_at)<=?
+      AND julianday(COALESCE(s.completed_at,s.created_at))>=julianday(?) AND julianday(COALESCE(s.completed_at,s.created_at))<=julianday(?)
     GROUP BY s.id HAVING COUNT(si.id)=0 OR SUM(CASE WHEN si.purchase_price IS NULL
       OR si.purchase_price<0 OR si.qty<=0 THEN 1 ELSE 0 END)>0 LIMIT 1
   `).get(tenant, input.from, input.to)
@@ -64,7 +65,7 @@ function readLocalAnalytics(db: LocalDatabase, input: AnalyticsInput): any[] {
     LEFT JOIN sale_items si ON si.id=ri.sale_item_id AND si.tenant_id=r.tenant_id AND si.sale_id=r.sale_id
     LEFT JOIN sales s ON s.id=r.sale_id AND s.tenant_id=r.tenant_id AND s.status IN ('completed','returned')
     WHERE r.tenant_id=? AND r.deleted_at IS NULL AND r.status='completed'
-      AND r.created_at>=? AND r.created_at<=?
+      AND julianday(r.created_at)>=julianday(?) AND julianday(r.created_at)<=julianday(?)
     GROUP BY r.id HAVING COUNT(ri.id)=0 OR SUM(ri.total_kopecks)<>r.refund_kopecks
       OR SUM(CASE WHEN si.id IS NULL OR s.id IS NULL OR si.purchase_price IS NULL
         OR si.purchase_price<0 OR ri.product_id IS NOT si.product_id OR ri.quantity<=0
@@ -76,9 +77,9 @@ function readLocalAnalytics(db: LocalDatabase, input: AnalyticsInput): any[] {
   const duplicateOrderLink = db.prepare(`
     SELECT o.sale_id FROM customer_orders o JOIN sales s ON s.id=o.sale_id AND s.tenant_id=o.tenant_id
     WHERE o.tenant_id=? AND s.status IN ('completed','returned') AND (
-      (COALESCE(s.completed_at,s.created_at)>=? AND COALESCE(s.completed_at,s.created_at)<=?)
+      (julianday(COALESCE(s.completed_at,s.created_at))>=julianday(?) AND julianday(COALESCE(s.completed_at,s.created_at))<=julianday(?))
       OR EXISTS (SELECT 1 FROM customer_returns r WHERE r.sale_id=s.id AND r.tenant_id=s.tenant_id
-        AND r.deleted_at IS NULL AND r.status='completed' AND r.created_at>=? AND r.created_at<=?))
+        AND r.deleted_at IS NULL AND r.status='completed' AND julianday(r.created_at)>=julianday(?) AND julianday(r.created_at)<=julianday(?)))
     GROUP BY o.sale_id HAVING COUNT(*)>1 LIMIT 1
   `).get(tenant, input.from, input.to, input.from, input.to)
   if (duplicateOrderLink) throw new Error('Один чек прив’язаний до кількох замовлень. Звіт потребує перевірки.')
@@ -90,7 +91,7 @@ function readLocalAnalytics(db: LocalDatabase, input: AnalyticsInput): any[] {
     LEFT JOIN customer_orders o ON o.sale_id=s.id AND o.tenant_id=s.tenant_id
     WHERE si.tenant_id=? AND si.deleted_at IS NULL AND s.deleted_at IS NULL
       AND s.status IN ('completed','returned')
-      AND COALESCE(s.completed_at,s.created_at)>=? AND COALESCE(s.completed_at,s.created_at)<=?
+      AND julianday(COALESCE(s.completed_at,s.created_at))>=julianday(?) AND julianday(COALESCE(s.completed_at,s.created_at))<=julianday(?)
   `).all(tenant, input.from, input.to) as unknown as SaleLine[]
 
   // Use the same integer allocation as the sold-items report. Allocate before
@@ -124,7 +125,7 @@ function readLocalAnalytics(db: LocalDatabase, input: AnalyticsInput): any[] {
     JOIN sales s ON s.id=si.sale_id AND s.tenant_id=si.tenant_id
     LEFT JOIN customer_orders o ON o.sale_id=s.id AND o.tenant_id=s.tenant_id
     WHERE ri.tenant_id=? AND ri.deleted_at IS NULL AND r.deleted_at IS NULL AND r.status='completed'
-      AND r.created_at>=? AND r.created_at<=?
+      AND julianday(r.created_at)>=julianday(?) AND julianday(r.created_at)<=julianday(?)
   `).all(tenant, input.from, input.to) as unknown as Entry[]
   entries.push(...returns)
 

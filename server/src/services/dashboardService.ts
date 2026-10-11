@@ -21,6 +21,7 @@ interface Snapshot {
   daily: DayRow[]
   expenses: number
   invalid_return_items: number
+  invalid_receipts: number
   overview: Record<string, number>
 }
 
@@ -29,27 +30,35 @@ interface Snapshot {
 const dashboardSql = `
   WITH selected_sales AS (
     SELECT id, tenant_id, total, COALESCE(completed_at, created_at) occurred_at
-    FROM sales WHERE tenant_id=$1 AND status IN ('completed','returned')
+    FROM sales WHERE tenant_id=$1 AND deleted_at IS NULL AND status IN ('completed','returned')
       AND COALESCE(completed_at, created_at) >= $2::timestamptz
       AND COALESCE(completed_at, created_at) < $3::timestamptz
   ), sale_costs AS (
-    SELECT si.sale_id, SUM(si.qty * COALESCE(si.cost_price, 0)) cogs
-    FROM sale_items si
-    JOIN selected_sales s ON s.id=si.sale_id AND s.tenant_id=si.tenant_id
-    WHERE si.tenant_id=$1 GROUP BY si.sale_id
+    SELECT s.id sale_id, SUM(si.qty * COALESCE(si.cost_price, 0)) cogs,
+      COUNT(si.id) line_count, SUM(si.total) lines_total,
+      COUNT(si.id) FILTER (WHERE si.cost_price IS NULL OR si.cost_price < 0
+        OR si.qty IS NULL OR si.qty <= 0 OR si.total IS NULL OR si.total < 0) invalid_items
+    FROM selected_sales s
+    LEFT JOIN sale_items si ON s.id=si.sale_id AND s.tenant_id=si.tenant_id AND si.deleted_at IS NULL
+    GROUP BY s.id
   ), selected_returns AS (
     SELECT id, tenant_id, sale_id, created_at, stock_action,
-      COALESCE(refund_kopecks, refund_amount, 0) refund_total
-    FROM returns WHERE tenant_id=$1 AND status='completed'
+      COALESCE(refund_kopecks, refund_amount) refund_total
+    FROM returns WHERE tenant_id=$1 AND deleted_at IS NULL AND status='completed'
       AND created_at >= $2::timestamptz AND created_at < $3::timestamptz
   ), return_costs AS (
     SELECT r.id,
       COALESCE(SUM(CASE WHEN r.stock_action='return_to_stock'
         THEN ri.quantity * COALESCE(si.cost_price, 0) ELSE 0 END), 0) cogs,
-      COUNT(ri.id) FILTER (WHERE si.id IS NULL) invalid_items
+      COUNT(ri.id) line_count, SUM(ri.total_kopecks) lines_total,
+      COUNT(ri.id) FILTER (WHERE si.id IS NULL OR s.id IS NULL OR si.cost_price IS NULL OR si.cost_price < 0
+        OR ri.product_id IS DISTINCT FROM si.product_id OR ri.quantity IS NULL OR ri.quantity <= 0
+        OR ri.total_kopecks IS NULL OR ri.total_kopecks < 0) invalid_items
     FROM selected_returns r
-    LEFT JOIN return_items ri ON ri.return_id=r.id AND ri.tenant_id=r.tenant_id
+    LEFT JOIN return_items ri ON ri.return_id=r.id AND ri.tenant_id=r.tenant_id AND ri.deleted_at IS NULL
     LEFT JOIN sale_items si ON si.id=ri.sale_item_id AND si.tenant_id=r.tenant_id AND si.sale_id=r.sale_id
+    LEFT JOIN sales s ON s.id=r.sale_id AND s.tenant_id=r.tenant_id
+      AND s.deleted_at IS NULL AND s.status IN ('completed','returned')
     GROUP BY r.id
   ), movements AS (
     SELECT s.occurred_at, s.total revenue, COALESCE(c.cogs,0) cogs,
@@ -87,7 +96,11 @@ const dashboardSql = `
   SELECT
     COALESCE((SELECT jsonb_agg(to_jsonb(d) ORDER BY d.date) FROM daily d),'[]'::jsonb) daily,
     (SELECT to_jsonb(o) FROM overview o) overview,
-    (SELECT COALESCE(SUM(invalid_items),0)::integer FROM return_costs) invalid_return_items,
+    (SELECT COUNT(*)::integer FROM sale_costs c JOIN selected_sales s ON s.id=c.sale_id
+      WHERE c.line_count=0 OR c.invalid_items>0 OR c.lines_total<s.total OR s.total IS NULL OR s.total<0) invalid_receipts,
+    (SELECT COUNT(*)::integer FROM return_costs c JOIN selected_returns r ON r.id=c.id
+      WHERE c.line_count=0 OR c.invalid_items>0 OR c.lines_total IS DISTINCT FROM r.refund_total
+        OR r.refund_total IS NULL OR r.refund_total<0) invalid_return_items,
     (SELECT COALESCE(SUM(amount),0)::double precision FROM cash_operations
       WHERE tenant_id=$1 AND type='out' AND expense_category_id IS NOT NULL
         AND created_at >= $2::timestamptz AND created_at < $3::timestamptz) expenses
@@ -107,8 +120,8 @@ export async function getDashboard(query: unknown, tenantId: string, role: strin
   if (!snapshot || !Array.isArray(snapshot.daily) || !snapshot.overview) {
     throw new AppError('INCOMPLETE_REPORT', 'Не вдалося отримати повну статистику', 503)
   }
-  if (Number(snapshot.invalid_return_items) > 0) {
-    throw new AppError('INCOMPLETE_REPORT', 'У поверненні немає зв’язку з початковим чеком. Статистику не розраховано.', 409)
+  if (Number(snapshot.invalid_return_items) > 0 || Number(snapshot.invalid_receipts) > 0) {
+    throw new AppError('INCOMPLETE_REPORT', 'Дані статистики неповні або не узгоджені. Потрібна перевірка чеків і повернень.', 409)
   }
   const canSeeProfit = ['owner', 'admin'].includes(role)
   const sum = (field: keyof Omit<DayRow, 'date'>) => snapshot.daily.reduce((total, day) => total + Number(day[field]), 0)

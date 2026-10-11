@@ -1,15 +1,13 @@
 import type { LocalDatabase } from '../../db/localDatabase'
-import { aggregateSoldItems, validSoldDateRange, type SoldSnapshot } from '../../lib/soldItems'
+import { aggregateSoldItems, type SoldSnapshot } from '../../lib/soldItems'
+import { normalizeReportDateRange } from '../../lib/reportDateRange'
 import { soldItemSuppliers } from './soldItemSuppliers'
 
 export function readSoldItems(db: LocalDatabase, tenantId: string, from: string, to: string) {
   // IPC historically accepts inclusive UTC bounds. Normalize them once and
   // compare actual instants (legacy rows may omit milliseconds/use an offset).
-  const valid = (value: string) => typeof value === 'string'
-    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(value)
-    && Number.isFinite(Date.parse(value)) && validSoldDateRange(value.slice(0,10),value.slice(0,10))
-  if (!valid(from) || !valid(to) || Date.parse(from)>Date.parse(to)) throw new Error('Некоректний період звіту')
-  const args = [tenantId,new Date(from).toISOString(),new Date(to).toISOString()]
+  const range = normalizeReportDateRange(from, to)
+  const args = [tenantId, range.from, range.to]
   return db.readSnapshot(() => {
     const scope = `WITH selected_returns AS (
       SELECT r.id,r.sale_id,r.refund_kopecks amount FROM customer_returns r

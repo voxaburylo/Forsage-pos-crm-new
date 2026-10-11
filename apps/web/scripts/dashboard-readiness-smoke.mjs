@@ -10,8 +10,8 @@ const { createServer } = await import(pathToFileURL(require.resolve('vite')).hre
 const { chromium } = await import('playwright')
 const { default: tailwindcss } = await import(pathToFileURL(require.resolve('@tailwindcss/vite')).href)
 const mocks = {
-  '@/lib/api': 'export const api={get:()=>window.fixture.read(false)}',
-  '@/lib/desktopBridge': 'export const desktopBridge=()=>window.fixture.desktop==="old"?{pos:{}}:window.fixture.desktop?{pos:{dashboardSummary:()=>window.fixture.read(true)}}:undefined',
+  '@/lib/api': 'export const api={get:url=>window.fixture.read(false,url)}',
+  '@/lib/desktopBridge': 'export const desktopBridge=()=>window.fixture.desktop==="old"?{pos:{}}:window.fixture.desktop?{pos:{dashboardSummary:request=>window.fixture.read(true,request)}}:undefined',
   '@/stores/authStore': 'export const useAuthStore=fn=>fn({session:{user:{app_metadata:{role:window.fixture.role}}}})',
   '@/features/staff/staffApi': 'export const staffApi={tireServiceReport:()=>window.fixture.readTires()}',
   '@/lib/utils': "export const formatMoney=n=>(n/100).toFixed(2)+' грн'",
@@ -28,12 +28,16 @@ import '/src/index.css';
 import '/src/features/analytics/analyticsLayout.css';
 const root=createRoot(document.getElementById('root'));
 const f=window.fixture={mode:'error',role:'owner',desktop:false,tireMode:'ok',pending:[],tirePending:[],key:0,
- data:{total_revenue:12345,cogs:6000,gross_profit:6345,total_receipts:2,average_receipt:6173,daily:[],
+ data:{total_revenue:12345,cogs:6000,gross_profit:6345,total_receipts:2,average_receipt:6173,
+ daily:[{date:'2026-10-03',revenue:12345,profit:6345}],
  low_stock:2,overdue_count:1,debt:{count:1,total:999},inventory:{purchase_value:20000,retail_value:40000}}};
-f.read=local=>{
+f.read=(local,request)=>{
  const data=structuredClone(f.data);
+ const start=local?request.date_from.slice(0,10):new URL(request,'http://127.0.0.1').searchParams.get('startDate');
+ data.daily=data.daily.map(day=>({...day,date:f.dayOverride??start}));
  const result=local?{analytics:data,low_stock:data.low_stock,overdue_count:data.overdue_count,debt:data.debt,inventory:data.inventory}:{data};
  if(f.mode==='error')return Promise.reject(Error('offline'));
+ if(f.mode==='incomplete')return Promise.reject(Error('Error invoking remote method: Дані статистики неповні або не узгоджені.'));
  if(f.mode==='pending')return new Promise(resolve=>f.pending.push(()=>resolve(result)));
  return Promise.resolve(result);
 };
@@ -101,11 +105,30 @@ try {
   console.log('PASS: incomplete data is not accepted as an apparently complete report')
 
   await page.evaluate(() => {
-    fixture.data.inventory={purchase_value:20000,retail_value:40000};fixture.desktop=false;
+    fixture.data.inventory={purchase_value:20000,retail_value:40000};
+    fixture.data.daily[0].revenue=12344;fixture.render();
+  })
+  await page.getByRole('alert').filter({hasText:'Дані статистики за цей період неповні'}).waitFor()
+  assert.equal(await page.getByText('123.45 грн',{exact:true}).count(),0)
+  await page.evaluate(() => { fixture.data.daily[0].revenue=12345;fixture.dayOverride='2026-10-04';fixture.render() })
+  await page.getByRole('alert').filter({hasText:'Дані статистики за цей період неповні'}).waitFor()
+  assert.equal(await page.getByText('123.45 грн',{exact:true}).count(),0)
+  console.log('PASS: inconsistent totals and rows outside the requested day are not displayed')
+
+  await page.evaluate(() => { fixture.dayOverride=undefined;fixture.mode='incomplete';fixture.render() })
+  await page.getByRole('alert').filter({hasText:'Потрібна перевірка чеків і повернень'}).waitFor()
+  assert.equal(await page.getByText('123.45 грн',{exact:true}).count(),0)
+  console.log('PASS: incomplete historic receipts are distinguished from a temporary loading failure')
+
+  await page.evaluate(() => {
+    fixture.dayOverride=undefined;fixture.desktop=false;
     fixture.role='cashier';fixture.mode='pending';fixture.render();
   })
   await page.waitForFunction(() => fixture.pending.length===1)
-  await page.evaluate(() => { fixture.mode='ok';fixture.data.total_revenue=77777 })
+  await page.evaluate(() => {
+    fixture.mode='ok';fixture.data.total_revenue=77777;fixture.data.average_receipt=38889;
+    fixture.data.cogs=0;fixture.data.gross_profit=0;fixture.data.daily[0].revenue=77777;fixture.data.daily[0].profit=0;
+  })
   await page.getByRole('button',{name:'7 днів',exact:true}).click()
   await page.getByText('777.77 грн',{exact:true}).first().waitFor()
   await page.evaluate(() => fixture.pending.shift()())

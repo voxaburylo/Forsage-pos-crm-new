@@ -1,13 +1,10 @@
 import type { LocalDatabase } from '../../db/localDatabase'
 import { aggregatePeriod, periodDate, type PeriodSnapshot } from '../../lib/periodReport'
-import { validSoldDateRange } from '../../lib/soldItems'
+import { normalizeReportDateRange } from '../../lib/reportDateRange'
 
 export function readPeriodReport(db: LocalDatabase,tenantId: string,from: string,to: string) {
-  const valid = (value: string) => typeof value === 'string'
-    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(value)
-    && Number.isFinite(Date.parse(value)) && validSoldDateRange(value.slice(0,10),value.slice(0,10))
-  if (!valid(from) || !valid(to) || Date.parse(from)>Date.parse(to)) throw new Error('Некоректний період звіту')
-  const args = [tenantId,new Date(from).toISOString(),new Date(to).toISOString()]
+  const range = normalizeReportDateRange(from, to)
+  const args = [tenantId, range.from, range.to]
   return db.readSnapshot(() => {
     const scope = `WITH selected_sales AS (
       SELECT id FROM sales WHERE tenant_id=?1 AND deleted_at IS NULL AND status IN ('completed','returned')
