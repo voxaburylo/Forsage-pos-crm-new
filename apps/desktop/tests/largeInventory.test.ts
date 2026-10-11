@@ -11,6 +11,7 @@ describe('complete large inventory reads', () => {
   let db: LocalDatabase
   let inventory: LocalInventoryRepository
   const size = 10005
+  // Creating this 10k-row fixture can exceed the default 10s hook budget on CI.
   beforeEach(() => {
     root = mkdtempSync(path.join(tmpdir(), 'forsage-large-inventory-'))
     db = new LocalDatabase(root)
@@ -28,7 +29,7 @@ describe('complete large inventory reads', () => {
         item.run(id, tenant, id)
       }
     })
-  })
+  }, 60_000)
   afterEach(() => { vi.restoreAllMocks(); db.close(); rmSync(root, { recursive: true, force: true }) })
 
   it('returns every counted row and price issue with a bounded number of queries', () => {
