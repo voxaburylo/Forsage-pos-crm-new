@@ -207,6 +207,8 @@ export class CashalotService {
   private pending = new Map<string, { resolve: (r: WorkerResponse) => void; timer: NodeJS.Timeout }>()
   private queue: Promise<unknown> = Promise.resolve()
   private queuedCalls = 0
+  private queueEpoch = 0
+  private workerTransportFailed = false
   // A timeout settles the caller, not necessarily the operation inside COM.
   private workerRequestsInFlight = new Set<string>()
 
@@ -372,17 +374,40 @@ export class CashalotService {
   }
 
   private ensureWorker(): ChildProcessWithoutNullStreams {
-    if (this.worker && this.worker.exitCode === null) return this.worker
+    if (this.worker && this.worker.exitCode === null) {
+      if (this.workerTransportFailed || this.workerRequestsInFlight.size > 0) {
+        throw new Error('FISCAL_CALL_FAILED')
+      }
+      return this.worker
+    }
 
-    fs.writeFileSync(this.workerScriptPath, WORKER_SCRIPT, 'utf8')
-    const worker = spawn('powershell.exe', [
-      '-NoProfile', '-NoLogo', '-NonInteractive', '-Sta',
-      '-ExecutionPolicy', 'Bypass',
-      '-File', this.workerScriptPath,
-    ], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+    let worker: ChildProcessWithoutNullStreams
+    try {
+      fs.writeFileSync(this.workerScriptPath, WORKER_SCRIPT, 'utf8')
+      worker = spawn('powershell.exe', [
+        '-NoProfile', '-NoLogo', '-NonInteractive', '-Sta',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', this.workerScriptPath,
+      ], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+    } catch {
+      // A failed start must not turn the already queued next call into a retry.
+      this.queueEpoch++
+      throw new Error('FISCAL_CALL_FAILED')
+    }
 
-    worker.stdout.setEncoding('utf8')
-    worker.stdout.on('data', (chunk: string) => {
+    this.worker = worker
+    this.workerTransportFailed = false
+    this.stdoutBuffer = ''
+    // Keep listeners on detached workers: late EventEmitter error events must
+    // be harmless, but must never settle requests owned by a replacement.
+    worker.on('error', () => this.handleWorkerError(worker, worker.pid === undefined))
+    for (const stream of [worker.stdin, worker.stdout, worker.stderr]) {
+      stream?.on('error', () => this.handleWorkerError(worker))
+    }
+
+    // Failed spawn can return a ChildProcess without its requested pipes.
+    worker.stdout?.setEncoding('utf8')
+    worker.stdout?.on('data', (chunk: string) => {
       if (this.worker !== worker) return
       this.stdoutBuffer += chunk
       let newlineIndex = this.stdoutBuffer.indexOf('\n')
@@ -395,13 +420,31 @@ export class CashalotService {
     })
     worker.on('exit', () => {
       if (this.worker !== worker) return
+      this.queueEpoch++
       this.worker = null
+      this.workerTransportFailed = false
       this.clearWorkerRequests()
     })
 
-    this.worker = worker
-    this.stdoutBuffer = ''
     return worker
+  }
+
+  private handleWorkerError(worker: ChildProcessWithoutNullStreams, failedToSpawn = false): void {
+    if (this.worker !== worker) return
+    if (!this.workerTransportFailed) this.queueEpoch++
+    this.workerTransportFailed = true
+    this.settlePendingRequests('FISCAL_CALL_FAILED')
+    if (failedToSpawn) {
+      // Node may emit error without exit when no process was ever spawned.
+      // This evidence is stronger than an earlier pipe error.
+      this.worker = null
+      this.workerTransportFailed = false
+      this.workerRequestsInFlight.clear()
+      this.stdoutBuffer = ''
+    }
+    // With a live process, delivery remains uncertain. Do not kill, retry or
+    // reuse its broken transport; a matching late response or exit can clear
+    // the settings lock. Only an explicit stop/configuration change resets it.
   }
 
   private handleWorkerLine(line: string): void {
@@ -426,6 +469,10 @@ export class CashalotService {
     return new Promise<WorkerResponse>((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(request.id)
+        // Caller timeout does not stop COM. Cancel unsent calls and refuse new
+        // sends while this request is unresolved, without breaking a healthy
+        // transport that may still deliver its late response.
+        this.queueEpoch++
         resolve({ id: request.id, ok: false, error: 'FISCAL_CALL_TIMEOUT' })
       }, CALL_TIMEOUT_MS)
       this.pending.set(request.id, { resolve, timer })
@@ -434,11 +481,7 @@ export class CashalotService {
       try {
         worker.stdin.write(encoded + '\n')
       } catch {
-        clearTimeout(timer)
-        this.pending.delete(request.id)
-        // Transmission outcome is uncertain; keep settings locked until the
-        // worker responds/exits or the application deliberately stops it.
-        resolve({ id: request.id, ok: false, error: 'FISCAL_CALL_FAILED' })
+        this.handleWorkerError(worker)
       }
     })
   }
@@ -449,7 +492,9 @@ export class CashalotService {
    * методів на кшталт GetCurrentStatus, де Return=false = «зміна не відкрита», не помилка).
    */
   private call(comMethod: string, args: string[], throwOnReject = true): Promise<CashalotRetVal> {
+    const epoch = this.queueEpoch
     const run = async (): Promise<CashalotRetVal> => {
+      if (epoch !== this.queueEpoch) throw new Error('FISCAL_WORKER_EXITED')
       if (!this.config.fiscalNumberRRO) throw new Error('FISCAL_RRO_NOT_CONFIGURED')
       this.ensureCashalotDirResolved()
       const response = await this.sendRequest({
@@ -612,19 +657,27 @@ Add-Type -TypeDefinition $src
     })
   }
 
-  private clearWorkerRequests(): void {
+  private settlePendingRequests(error: string): void {
     for (const [id, entry] of this.pending) {
       clearTimeout(entry.timer)
-      entry.resolve({ id, ok: false, error: 'FISCAL_WORKER_EXITED' })
+      entry.resolve({ id, ok: false, error })
     }
     this.pending.clear()
+  }
+
+  private clearWorkerRequests(): void {
+    this.settlePendingRequests('FISCAL_WORKER_EXITED')
     this.workerRequestsInFlight.clear()
     this.stdoutBuffer = ''
   }
 
   stopWorker(): void {
+    // Invalidate calls queued before this stop, including the first microtask
+    // when no worker exists yet. A later explicit call uses the new epoch.
+    this.queueEpoch++
     const worker = this.worker
     this.worker = null
+    this.workerTransportFailed = false
     this.clearWorkerRequests()
     if (!worker) return
     try {
