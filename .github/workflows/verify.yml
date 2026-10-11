@@ -86,6 +86,7 @@ jobs:
       - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/order-resources-smoke.cjs
       - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/staff-lifecycle-smoke.cjs
       - run: pnpm --filter desktop exec electron scripts/daily-access-smoke.cjs
+      - run: node apps/desktop/scripts/blackbox-storage-smoke.cjs
       - run: pnpm --filter desktop exec electron scripts/blackbox-ui-smoke.cjs
       - run: pnpm --filter desktop exec electron scripts/print-render-smoke.cjs --software
       - run: node apps/web/scripts/receipt-layout-ui-smoke.mjs
