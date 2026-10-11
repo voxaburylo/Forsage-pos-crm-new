@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { safeStorage } from 'electron'
-import { detectCashalotDir, hasCashalotDll, resolveCashalotDir } from './cashalotPaths'
+import { cashalotSearchDirs, detectCashalotDir, hasCashalotDll, resolveCashalotDir } from './cashalotPaths'
 
 // Інтеграція з ПРРО Cashalot через COM API (AddIn.CashaLotApi).
 // COM недоступний із Node напряму, тому тримаємо довгоживучий PowerShell-процес,
@@ -201,6 +201,7 @@ export class CashalotService {
   private readonly configPath: string
   private readonly workerScriptPath: string
   private config: CashalotConfig
+  private cashalotDirResolved = false
   private worker: ChildProcessWithoutNullStreams | null = null
   private stdoutBuffer = ''
   private pending = new Map<string, { resolve: (r: WorkerResponse) => void; timer: NodeJS.Timeout }>()
@@ -210,7 +211,16 @@ export class CashalotService {
     this.configPath = path.join(dataRoot, 'fiscal.json')
     this.workerScriptPath = path.join(dataRoot, 'cashalot-worker.ps1')
     this.config = this.loadConfig()
-    this.healCashalotDir()
+    if (this.config.enabled) this.healCashalotDir()
+  }
+
+  // Вимкнений ПРРО не перевіряє DLL/мережеві папки під час запуску каси.
+  // Старе визначення шляху виконуємо один раз при першому зверненні до ПРРО,
+  // лише в пам'яті — читання налаштувань не повинно переписувати fiscal.json.
+  private ensureCashalotDirResolved(): void {
+    if (this.cashalotDirResolved) return
+    this.config.cashalotDir = resolveCashalotDir(this.config.cashalotDir)
+    this.cashalotDirResolved = true
   }
 
   /**
@@ -232,17 +242,24 @@ export class CashalotService {
   private loadConfig(): CashalotConfig {
     try {
       const raw = JSON.parse(fs.readFileSync(this.configPath, 'utf8'))
+      const enabled = raw.enabled === true
+      const storedDir = typeof raw.cashalotDir === 'string' ? raw.cashalotDir : null
+      const cashalotDir = enabled
+        ? resolveCashalotDir(storedDir)
+        : storedDir?.trim() ? storedDir : cashalotSearchDirs()[0]
+      this.cashalotDirResolved = enabled
       return {
-        enabled: raw.enabled === true,
-        cashalotDir: resolveCashalotDir(typeof raw.cashalotDir === 'string' ? raw.cashalotDir : null),
+        enabled,
+        cashalotDir,
         fiscalNumberRRO: typeof raw.fiscalNumberRRO === 'string' ? raw.fiscalNumberRRO : '',
         certificateDir: typeof raw.certificateDir === 'string' && raw.certificateDir ? raw.certificateDir : null,
         encryptedKeyPassword: typeof raw.encryptedKeyPassword === 'string' ? raw.encryptedKeyPassword : null,
       }
     } catch {
+      this.cashalotDirResolved = false
       return {
         enabled: false,
-        cashalotDir: detectCashalotDir(),
+        cashalotDir: cashalotSearchDirs()[0],
         fiscalNumberRRO: '',
         certificateDir: null,
         encryptedKeyPassword: null,
@@ -270,6 +287,7 @@ export class CashalotService {
   }
 
   getPublicConfig(): CashalotPublicConfig {
+    this.ensureCashalotDirResolved()
     return {
       enabled: this.config.enabled,
       cashalotDir: this.config.cashalotDir,
@@ -282,8 +300,13 @@ export class CashalotService {
   }
 
   updateConfig(update: CashalotConfigUpdate): CashalotPublicConfig {
+    // Явна заміна папки має пріоритет і не потребує проби старого UNC-шляху.
+    if (update.cashalotDir === undefined) this.ensureCashalotDirResolved()
     if (update.enabled !== undefined) this.config.enabled = update.enabled === true
-    if (update.cashalotDir !== undefined) this.config.cashalotDir = String(update.cashalotDir || detectCashalotDir())
+    if (update.cashalotDir !== undefined) {
+      this.config.cashalotDir = String(update.cashalotDir || detectCashalotDir())
+      this.cashalotDirResolved = true
+    }
     if (update.fiscalNumberRRO !== undefined) this.config.fiscalNumberRRO = String(update.fiscalNumberRRO || '').trim()
     if (update.certificateDir !== undefined) {
       this.config.certificateDir = update.certificateDir ? String(update.certificateDir) : null
@@ -383,6 +406,7 @@ export class CashalotService {
   private call(comMethod: string, args: string[], throwOnReject = true): Promise<CashalotRetVal> {
     const run = async (): Promise<CashalotRetVal> => {
       if (!this.config.fiscalNumberRRO) throw new Error('FISCAL_RRO_NOT_CONFIGURED')
+      this.ensureCashalotDirResolved()
       const response = await this.sendRequest({
         id: randomUUID(),
         method: 'call',
@@ -492,6 +516,7 @@ export class CashalotService {
    * нативний DllRegisterServer збірки.
    */
   registerCom(): Promise<{ registered: boolean }> {
+    this.ensureCashalotDirResolved()
     const dllPath = path.join(this.config.cashalotDir, 'CashalotApi64.dll')
     if (!fs.existsSync(dllPath)) return Promise.reject(new Error('FISCAL_DLL_NOT_FOUND: ' + dllPath))
 
