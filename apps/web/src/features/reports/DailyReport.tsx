@@ -283,27 +283,6 @@ export default function DailyReport() {
     }
   }, [canSeeTireReport, tireDate])
 
-  async function handOverTireCash(row: TireServiceReportRow) {
-    if (!isDesktopRuntime() || !canSeeTireReport || tireLoading || tireError || tireReport?.date !== tireDate || row.cash_pending <= 0) return
-    const attempt = tireAction.begin()
-    if (!attempt) return
-    try {
-      const { data: shift } = await shiftApi.current({ silent: true })
-      if (!attempt.isCurrent()) return
-      if (!shift?.id) { toast.error('Спочатку відкрийте касову зміну'); return }
-      if (!window.confirm(`Внести ${formatMoney(row.cash_pending)} каси шиномонтажу за ${tireDate} від ${row.employee_name} у поточну зміну?`)) return
-      await staffApi.tireCashHandover({
-        employee_id: row.employee_id, employee_name: row.employee_name, work_date: tireDate,
-        shift_id: shift.id, amount: row.cash_pending, operation_id: crypto.randomUUID(),
-      })
-      if (!attempt.isCurrent()) return
-      toast.success('Касу шиномонтажу внесено в поточну зміну')
-      await loadTireReport()
-    } catch (error) {
-      if (attempt.isCurrent()) toast.error(error instanceof Error ? error.message : 'Не вдалося внести касу шиномонтажу')
-    } finally { attempt.finish() }
-  }
-
   async function payTireSalary(row: TireServiceReportRow, fundSource: SalaryFundSource) {
     if (!isDesktopRuntime() || !canSeeFullReports || tireLoading || tireError || tireReport?.date !== tireDate || !row.salary_ready || row.payable_due <= 0) return
     const attempt = tireAction.begin()
@@ -790,7 +769,7 @@ export default function DailyReport() {
         </>
       )}
 
-      {/* Шиномонтаж — чеки, відкладена каса та зарплата */}
+      {/* Шиномонтаж — чеки, касова історія та зарплата */}
       {tab === 'tire' && canSeeTireReport && <TireServiceDetails
         report={tireReport} date={tireDate} today={todayKey} employeeId={tireEmployeeId}
         loading={tireLoading} error={tireError}
@@ -798,7 +777,7 @@ export default function DailyReport() {
         onEmployee={id => { if (!tireAction.isBusy()) setTireEmployeeId(id) }}
         onRefresh={() => { if (!tireAction.isBusy()) void loadTireReport() }} canPay={canSeeFullReports} canMutate={isDesktopRuntime()}
         busy={tireAction.busy}
-        onHandOver={handOverTireCash} onPay={payTireSalary}
+        onPay={payTireSalary}
       />}
       {/* 7 днів — графік */}
       {tab === 'weekly' && (

@@ -54,7 +54,9 @@ describe('readiness: order and payroll settlements stay atomic and replay-safe',
     return { operation_id: randomUUID(), employee_id: 'worker', method: 'cash' as const, fund_source: 'cashbox' as const,
       shift_id: shift, work_date: workDate, user_id: 'cashier', ...overrides }
   }
-  // Synthetic late-day service; cash has not yet been handed over to the shop.
+  // Legacy synthetic history. Real checkout cash posting is covered separately
+  // by tireServiceCheckoutSettlement.test.ts; do not use this fixture to infer
+  // that a new completed POS receipt still needs a cash handover.
   function tireWork() {
     const timestamp = workDate + 'T16:30:00Z'
     const service = new LocalCatalogRepository(db).upsertProduct({ id: randomUUID(), sku: 'POS-TIRE-SERVICE', name: 'Шиномонтаж', is_service: true, retail_price: 36000 }).id
@@ -65,6 +67,14 @@ describe('readiness: order and payroll settlements stay atomic and replay-safe',
   }
   function handover(overrides = {}) {
     return { operation_id: randomUUID(), employee_id: 'tire', work_date: workDate, shift_id: shift, amount: 1000, user_id: 'cashier', ...overrides }
+  }
+  function historicalHandover(request: ReturnType<typeof handover>) {
+    const timestamp = new Date().toISOString()
+    db.prepare(`INSERT INTO cash_operations
+      (id,tenant_id,shift_id,user_id,type,source,amount,employee_id,work_date,notes,created_at,updated_at)
+      VALUES (?,?,?,?,'cash_in','cashbox',?,?,?,'Legacy tire handover',?,?)`)
+      .run(request.operation_id, tenant, request.shift_id, request.user_id, request.amount,
+        request.employee_id, request.work_date, timestamp, timestamp)
   }
 
   it.each(['sell_price', 'buy_price', 'core_deposit_amount'])('rejects a fractional kopeck in order %s before saving', field => {
@@ -238,15 +248,16 @@ describe('readiness: order and payroll settlements stay atomic and replay-safe',
   })
   it('replays the original partial tire cash handover result after another payment and restart', () => {
     tireWork(); const request = handover()
+    historicalHandover(request)
     const first = staff.tireCashHandover(request)
     expect(first).toEqual({ amount: 1000, remaining: 35000 })
-    staff.tireCashHandover(handover({ amount: 2000 }))
+    historicalHandover(handover({ amount: 2000 }))
     const before = snapshot(); restart()
     expect(staff.tireCashHandover(request)).toEqual(first); expect(snapshot()).toEqual(before)
-    expect(staff.tireServiceReport(workDate).data[0].cash_pending).toBe(33000)
+    expect(staff.tireServiceReport(workDate).data[0]).toMatchObject({ cash_pending: 0, cash_handed_over: 3000 })
   })
   it('rejects a changed handover request that reuses the same operation ID', () => {
-    tireWork(); const request = handover(); staff.tireCashHandover(request)
+    tireWork(); const request = handover(); historicalHandover(request); staff.tireCashHandover(request)
     const before = snapshot(); restart()
     expect(() => staff.tireCashHandover({ ...request, amount: 2000 })).toThrow()
     expect(snapshot()).toEqual(before)
@@ -263,6 +274,7 @@ describe('readiness: order and payroll settlements stay atomic and replay-safe',
   })
   it('safely adopts a pre-upgrade handover and rejects a deleted one without reposting it', () => {
     tireWork(); const request = handover()
+    historicalHandover(request)
     staff.tireCashHandover(request)
     db.prepare('DELETE FROM app_meta WHERE key=?').run('mutation:tire-handover:' + tenant + ':' + request.operation_id)
     restart()
@@ -274,10 +286,11 @@ describe('readiness: order and payroll settlements stay atomic and replay-safe',
     expect(() => staff.tireCashHandover(request)).toThrow()
     expect(snapshot()).toEqual(before)
   })
-  it('rolls back a failed handover and permits the exact retry', () => {
-    tireWork(); const request = handover(), before = snapshot()
-    db.exec("CREATE TRIGGER settlement_handover_failure BEFORE INSERT ON sync_outbox WHEN NEW.operation_type='cash_operation.created' BEGIN SELECT RAISE(ABORT, 'test handover failure'); END")
-    expect(() => staff.tireCashHandover(request)).toThrow('test handover failure')
+  it('rolls back failed historical handover replay adoption and permits the exact retry without reposting cash', () => {
+    tireWork(); const request = handover(); historicalHandover(request)
+    const before = snapshot()
+    db.exec("CREATE TRIGGER settlement_handover_failure BEFORE INSERT ON app_meta WHEN NEW.key LIKE 'mutation:tire-handover:%' BEGIN SELECT RAISE(ABORT, 'test handover replay failure'); END")
+    expect(() => staff.tireCashHandover(request)).toThrow('test handover replay failure')
     expect(snapshot()).toEqual(before)
     db.exec('DROP TRIGGER settlement_handover_failure'); restart()
     expect(staff.tireCashHandover(request)).toEqual({ amount: 1000, remaining: 35000 })
@@ -292,17 +305,17 @@ describe('readiness: order and payroll settlements stay atomic and replay-safe',
     expect(() => staff.tireCashHandover(handover({ user_id: 'other' }))).toThrow()
     expect(snapshot()).toEqual(before)
   })
-  it('does not pay tire salary before its existing two-day maturity even after full handover', () => {
-    tireWork(); staff.tireCashHandover(handover({ amount: 36000 }))
+  it('does not pay tire salary before its existing two-day maturity even with a historical full handover', () => {
+    tireWork(); historicalHandover(handover({ amount: 36000 }))
     vi.setSystemTime(new Date('2026-09-27T10:00:00Z'))
     const before = snapshot()
     expect(() => staff.dailyPayout(payout({ employee_id: 'tire' }))).toThrow('2026-09-28')
     expect(snapshot()).toEqual(before)
   })
-  it('keeps a late handover on its work date and allows only one mature salary payout', () => {
+  it('preserves a historical late handover on its work date and allows only one mature salary payout', () => {
     tireWork()
-    expect(() => staff.dailyPayout(payout({ employee_id: 'tire' }))).toThrow('внесіть')
-    staff.tireCashHandover(handover({ amount: 36000 }))
+    expect(() => staff.dailyPayout(payout({ employee_id: 'tire' }))).toThrow('недостатньо готівки')
+    historicalHandover(handover({ amount: 36000 }))
     const request = payout({ employee_id: 'tire' })
     const first = staff.dailyPayout(request)
     expect(first.amount).toBe(12600)

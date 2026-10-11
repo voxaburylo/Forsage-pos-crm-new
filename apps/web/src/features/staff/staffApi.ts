@@ -21,6 +21,7 @@ export interface TireServiceReportRow {
   balance: number
   due: number
   cash_revenue: number
+  cash_register_received?: number
   cash_handed_over: number
   cash_pending: number
   salary_available_on: string
@@ -31,6 +32,7 @@ export interface TireServiceReceipt {
   id: string; sale_number: string; completed_at: string
   employee_id: string; employee_name: string
   services_qty: number; service_revenue: number; cash_revenue: number
+  cash_register_received?: number
   payment_method: string; total: number
   cashier_id?: string; cashier_name?: string | null; notes?: string | null
   services?: Array<{ id: string; description: string; qty: number; unit_price: number; total: number }>
@@ -48,7 +50,7 @@ export interface TireCashHandover {
 export interface TireServiceReport {
   data: TireServiceReportRow[]; receipts: TireServiceReceipt[]; date: string
   details_version?: number; salary_operations?: TireSalaryOperation[]; cash_handovers?: TireCashHandover[]
-  totals: { services_qty: number; service_revenue: number; cash_revenue: number; cash_handed_over: number; cash_pending: number; due: number; payable_due: number }
+  totals: { services_qty: number; service_revenue: number; cash_revenue: number; cash_register_received?: number; cash_handed_over: number; cash_pending: number; due: number; payable_due: number }
 }
 export interface TireCashHandoverInput {
   employee_id: string; employee_name: string; work_date: string

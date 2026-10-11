@@ -17,7 +17,7 @@ const mocks={
   '@/features/reports/reportApi':'export const reportApi={}',
   '@/components/ui/Toast':'export const toast={error:m=>fixture.toasts.push(m),success:m=>fixture.toasts.push(m)};export function ToastContainer(){return null}',
 }
-const row={employee_id:'worker',employee_name:'Андрій',services_qty:61,service_revenue:2196000,commission_earned:768600,daily_rate:0,earned:768600,paid:0,penalty:0,balance:768600,due:768600,cash_revenue:2196000,cash_handed_over:0,cash_pending:2196000,salary_available_on:'2026-09-24',salary_ready:false,payable_due:0}
+const row={employee_id:'worker',employee_name:'Андрій',services_qty:61,service_revenue:2196000,commission_earned:768600,daily_rate:0,earned:768600,paid:0,penalty:0,balance:768600,due:768600,cash_revenue:2196000,cash_register_received:2196000,cash_handed_over:0,cash_pending:0,salary_available_on:'2026-09-24',salary_ready:false,payable_due:0}
 const fixture={fail:false,requests:[],toasts:[],report:{date:'2026-09-22',details_version:1,data:[row,{...row,employee_id:'worker2',employee_name:'Петро'}],
   receipts:Array.from({length:61},(_,i)=>({id:'sale-'+i,sale_number:'TIRE-'+i,completed_at:'2026-09-22T13:40:00Z',employee_id:'worker',employee_name:'Андрій',services_qty:1,service_revenue:36000,cash_revenue:36000,payment_method:'cash',total:36000,cashier_name:'Никита',notes:'Шиномонтаж: заміна 4 коліс R16. '+ 'ДовгийКоментар'.repeat(15),commission_earned:12600,services:[{id:'line-'+i,description:'Балансування',qty:1,unit_price:36000,total:36000}]})),
   salary_operations:[],cash_handovers:[],totals:{services_qty:61,service_revenue:2196000,cash_revenue:2196000,cash_handed_over:0,cash_pending:2196000,due:768600,payable_due:0}}}
@@ -58,6 +58,9 @@ try{
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true,'Mobile report must not scroll horizontally')
   assert.equal(await page.getByRole('button',{name:'Виплатити з каси'}).count(),0)
   assert.equal(await page.getByRole('button',{name:'Внести готівку до каси'}).count(),0)
+  assert.equal((await andrii.innerText()).includes('Готівка за чеками, вже врахована в касі'),true)
+  assert.equal((await andrii.innerText()).includes('Повторне внесення не потрібне'),true)
+  assert.equal((await andrii.innerText()).includes('ще передати'),false)
   await page.getByLabel('Дата робіт шиномонтажу').fill('2026-09-20');await page.waitForFunction(()=>typeof fixture.release==='function')
   await page.getByLabel('Дата робіт шиномонтажу').fill('2026-09-21')
   await page.getByRole('heading',{name:'Розрахунок зарплати за 21.09.2026'}).waitFor()

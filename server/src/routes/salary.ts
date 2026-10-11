@@ -7,6 +7,7 @@ import { supabaseAdmin } from '../db/supabaseAdmin.js'
 import { pool, runTransaction } from '../db/pg.js'
 import * as adminService from '../services/adminService.js'
 import { kyivDateKey } from '../lib/businessDate.js'
+import { allocateReceiptRevenue } from '../lib/receiptRevenue.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -111,7 +112,7 @@ async function buildTireServiceReport(tenantId: string, date: string) {
     .filter((user) => user.is_active && user.role === 'tire_worker')
   const workerIds = workers.map((worker) => worker.id)
   if (workerIds.length === 0) {
-    return { data: [], receipts: [], salary_operations: [], cash_handovers: [], details_version: 1, date, totals: { services_qty: 0, service_revenue: 0, cash_revenue: 0, cash_handed_over: 0, cash_pending: 0, due: 0, payable_due: 0 } }
+    return { data: [], receipts: [], salary_operations: [], cash_handovers: [], details_version: 1, date, totals: { services_qty: 0, service_revenue: 0, cash_revenue: 0, cash_register_received: 0, cash_handed_over: 0, cash_pending: 0, due: 0, payable_due: 0 } }
   }
   const [salaryResult, receiptResult, handoverResult, operationsResult, cashDetailsResult] = await Promise.all([
     pool.query(`
@@ -130,24 +131,23 @@ async function buildTireServiceReport(tenantId: string, date: string) {
         SELECT sale.id, sale.sale_number, sale.completed_at, sale.manager_id AS employee_id,
           sale.payment_method, sale.total, sale.cash_amount, sale.cashier_id, sale.notes,
           json_agg(json_build_object('id', item.id, 'description', COALESCE(NULLIF(item.description, ''), product.name, 'Послуги шиномонтажу'),
-            'qty', item.qty, 'unit_price', item.unit_price, 'total', item.total) ORDER BY item.id) AS services,
-          COALESCE(SUM(item.qty), 0)::float AS services_qty,
-          COALESCE(SUM(item.total), 0)::bigint AS service_revenue
+            'qty', item.qty, 'unit_price', item.unit_price, 'total', item.total) ORDER BY item.id)
+            FILTER (WHERE COALESCE(NULLIF(item.sku, ''), product.sku, '') = 'POS-TIRE-SERVICE') AS services,
+          COALESCE(SUM(item.qty) FILTER (WHERE COALESCE(NULLIF(item.sku, ''), product.sku, '') = 'POS-TIRE-SERVICE'), 0)::float AS services_qty,
+          COALESCE(SUM(item.total) FILTER (WHERE COALESCE(NULLIF(item.sku, ''), product.sku, '') = 'POS-TIRE-SERVICE'), 0)::bigint AS service_revenue,
+          json_agg(json_build_object('id', item.id, 'total', item.total, 'qty', item.qty,
+            'core_deposit_amount', COALESCE(item.core_deposit_amount, 0)) ORDER BY item.id) AS allocation_lines
         FROM sales sale
         JOIN sale_items item ON item.sale_id = sale.id AND item.tenant_id = sale.tenant_id
         LEFT JOIN products product ON product.id = item.product_id AND product.tenant_id = item.tenant_id
         WHERE sale.tenant_id = $1 AND sale.status = 'completed'
           AND sale.manager_id = ANY($3::uuid[])
-          AND COALESCE(NULLIF(item.sku, ''), product.sku, '') = 'POS-TIRE-SERVICE'
           AND to_jsonb(sale)->>'deleted_at' IS NULL AND to_jsonb(item)->>'deleted_at' IS NULL
           AND (sale.completed_at AT TIME ZONE 'Europe/Kyiv')::date = $2::date
         GROUP BY sale.id
+        HAVING bool_or(COALESCE(NULLIF(item.sku, ''), product.sku, '') = 'POS-TIRE-SERVICE')
       )
-      SELECT *, CASE WHEN total > 0 THEN
-        LEAST(service_revenue, ROUND(service_revenue::numeric *
-          CASE WHEN payment_method = 'cash' THEN COALESCE(NULLIF(cash_amount, 0), total) ELSE COALESCE(cash_amount, 0) END / total
-        ))::bigint ELSE 0 END AS cash_revenue
-      FROM service_sales ORDER BY completed_at, id
+      SELECT * FROM service_sales ORDER BY completed_at, id
     `, [tenantId, date, workerIds]),
     pool.query(`
       SELECT employee_id::text, COALESCE(SUM(amount), 0)::bigint AS amount
@@ -176,16 +176,29 @@ async function buildTireServiceReport(tenantId: string, date: string) {
   const salaryOperations = operationsResult.rows.map(row => ({ ...row, amount: Number(row.amount), cashier_name: names.get(row.created_by) ?? null }))
   const cashHandovers = cashDetailsResult.rows.map(row => ({ ...row, amount: Number(row.amount), cashier_name: names.get(row.created_by) ?? null }))
   const workerNames = new Map(workers.map((worker) => [worker.id, worker.full_name]))
-  const receipts = receiptResult.rows.map((row) => ({
-    id: row.id, sale_number: row.sale_number, completed_at: row.completed_at,
-    employee_id: row.employee_id, employee_name: workerNames.get(row.employee_id) ?? 'Шиномонтажник',
-    services_qty: Number(row.services_qty ?? 0), service_revenue: Number(row.service_revenue ?? 0),
-    cash_revenue: Number(row.cash_revenue ?? 0), payment_method: row.payment_method, total: Number(row.total ?? 0),
-    cashier_id: row.cashier_id, cashier_name: names.get(row.cashier_id) ?? null, notes: row.notes ?? null,
-    services: row.services ?? [],
-    commission_earned: salaryOperations.filter(operation => operation.sale_id === row.id && operation.employee_id === row.employee_id && operation.source === 'commission')
-      .reduce((sum, operation) => sum + operation.amount, 0),
-  }))
+  const receipts = receiptResult.rows.map((row) => {
+    // Allocate the receipt discount and then its actual cash across ALL items.
+    // Gross service values remain unchanged; POS has already received this cash.
+    const total = Number(row.total ?? 0)
+    const lines = (row.allocation_lines as Array<{ id: string; total: number; qty: number; core_deposit_amount: number }>).map(item => ({
+      id: item.id, total: Number(item.total), coreTotal: Math.round(Number(item.core_deposit_amount ?? 0) * Number(item.qty)),
+    }))
+    const net = allocateReceiptRevenue(total, lines)
+    const cashAmount = row.payment_method === 'cash' ? Number(row.cash_amount ?? 0) || total : Number(row.cash_amount ?? 0)
+    const cash = allocateReceiptRevenue(Math.min(cashAmount, total), lines.map(item => ({ id: item.id, total: net.get(item.id)! })))
+    const services = row.services ?? []
+    const cashRevenue = services.reduce((sum: number, item: { id: string }) => sum + cash.get(item.id)!, 0)
+    return {
+      id: row.id, sale_number: row.sale_number, completed_at: row.completed_at,
+      employee_id: row.employee_id, employee_name: workerNames.get(row.employee_id) ?? 'Шиномонтажник',
+      services_qty: Number(row.services_qty ?? 0), service_revenue: Number(row.service_revenue ?? 0),
+      cash_revenue: cashRevenue, cash_register_received: cashRevenue, payment_method: row.payment_method, total,
+      cashier_id: row.cashier_id, cashier_name: names.get(row.cashier_id) ?? null, notes: row.notes ?? null,
+      services,
+      commission_earned: salaryOperations.filter(operation => operation.sale_id === row.id && operation.employee_id === row.employee_id && operation.source === 'commission')
+        .reduce((sum, operation) => sum + operation.amount, 0),
+    }
+  })
   const salaryByWorker = new Map(salaryResult.rows.map((row) => [row.employee_id, row]))
   const handedByWorker = new Map(handoverResult.rows.map((row) => [row.employee_id, Number(row.amount ?? 0)]))
   const salaryAvailableOn = plusDays(date, 2)
@@ -196,7 +209,9 @@ async function buildTireServiceReport(tenantId: string, date: string) {
     const serviceRevenue = workerReceipts.reduce((sum, receipt) => sum + receipt.service_revenue, 0)
     const cashRevenue = workerReceipts.reduce((sum, receipt) => sum + receipt.cash_revenue, 0)
     const cashHandedOver = handedByWorker.get(worker.id) ?? 0
-    const cashPending = Math.max(0, cashRevenue - cashHandedOver)
+    // These are completed cashier POS receipts, not cash held by the worker.
+    // Historical handovers remain visible, but must never demand another cash-in.
+    const cashPending = 0
     const recordedDailyRate = Number(salary.daily_rate ?? 0)
     const projectedDailyRate = recordedDailyRate === 0 && worker.rate_period === 'day' && workerReceipts.length > 0
       ? Number(worker.base_rate ?? 0)
@@ -210,7 +225,7 @@ async function buildTireServiceReport(tenantId: string, date: string) {
     return {
       employee_id: worker.id, employee_name: worker.full_name,
       services_qty: workerReceipts.reduce((sum, receipt) => sum + receipt.services_qty, 0),
-      service_revenue: serviceRevenue, cash_revenue: cashRevenue, cash_handed_over: cashHandedOver, cash_pending: cashPending,
+      service_revenue: serviceRevenue, cash_revenue: cashRevenue, cash_register_received: cashRevenue, cash_handed_over: cashHandedOver, cash_pending: cashPending,
       commission_earned: Number(salary.commission_earned ?? 0), daily_rate: recordedDailyRate + projectedDailyRate,
       daily_rate_projected: projectedDailyRate,
       earned, paid, penalty, balance, due, salary_available_on: salaryAvailableOn,
@@ -221,6 +236,7 @@ async function buildTireServiceReport(tenantId: string, date: string) {
     services_qty: data.reduce((sum, row) => sum + row.services_qty, 0),
     service_revenue: data.reduce((sum, row) => sum + row.service_revenue, 0),
     cash_revenue: data.reduce((sum, row) => sum + row.cash_revenue, 0),
+    cash_register_received: data.reduce((sum, row) => sum + row.cash_register_received, 0),
     cash_handed_over: data.reduce((sum, row) => sum + row.cash_handed_over, 0),
     cash_pending: data.reduce((sum, row) => sum + row.cash_pending, 0),
     due: data.reduce((sum, row) => sum + row.due, 0),
@@ -341,48 +357,25 @@ router.post('/tire-cash-handover', requireRole('owner', 'admin', 'cashier'), asy
     const parsed = tireCashHandoverSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані внесення', 422, parsed.error.flatten())
     const input = parsed.data
-    const worker = (await adminService.listUsers(req.user!.tenant_id))
-      .find((user) => user.id === input.employee_id && user.is_active && user.role === 'tire_worker')
-    if (!worker) throw new AppError('NOT_FOUND', 'Шиномонтажника не знайдено', 404)
-    const result = await runTransaction(async (client) => {
-      const shift = await client.query(`SELECT id FROM shifts WHERE id=$1 AND tenant_id=$2 AND status='open' FOR UPDATE`, [input.shift_id, req.user!.tenant_id])
-      if (!shift.rowCount) throw new AppError('SHIFT_CLOSED', 'Спочатку відкрийте касову зміну', 409)
-      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
-        `${req.user!.tenant_id}:${input.employee_id}:${input.work_date}`,
-      ])
-      const locked = await client.query(`
-        WITH service_sales AS (
-          SELECT sale.total, sale.cash_amount, sale.payment_method, SUM(item.total)::bigint AS service_revenue
-          FROM sales sale
-          JOIN sale_items item ON item.sale_id=sale.id AND item.tenant_id=sale.tenant_id
-          JOIN products product ON product.id=item.product_id AND product.tenant_id=item.tenant_id
-          WHERE sale.tenant_id=$1 AND sale.manager_id=$2 AND sale.status='completed'
-            AND product.sku='POS-TIRE-SERVICE'
-            AND (sale.completed_at AT TIME ZONE 'Europe/Kyiv')::date=$3::date
-          GROUP BY sale.id
-        ), required AS (
-          SELECT COALESCE(SUM(CASE WHEN total > 0 THEN LEAST(service_revenue, ROUND(service_revenue::numeric *
-            CASE WHEN payment_method='cash' THEN COALESCE(NULLIF(cash_amount,0),total) ELSE COALESCE(cash_amount,0) END / total
-          ))::bigint ELSE 0 END),0)::bigint AS amount FROM service_sales
-        ), handed AS (
-          SELECT COALESCE(SUM(amount),0)::bigint AS amount FROM cash_operations
-          WHERE tenant_id=$1 AND employee_id=$2 AND work_date=$3 AND type='in' AND source='cashbox'
-        )
-        SELECT GREATEST(0, required.amount-handed.amount)::bigint AS pending FROM required, handed
-      `, [req.user!.tenant_id, input.employee_id, input.work_date])
-      const pending = Number(locked.rows[0]?.pending ?? 0)
-      if (pending <= 0) throw new AppError('NOTHING_TO_HAND_OVER', 'Каса за цей день уже внесена', 409)
-      if (input.amount > pending) throw new AppError('HANDOVER_TOO_LARGE', `Залишилось внести ${(pending / 100).toFixed(2)} грн`, 409)
-      const inserted = await client.query(`
-        INSERT INTO cash_operations
-          (id, tenant_id, shift_id, type, amount, note, source, created_by, employee_id, work_date)
-        VALUES ($1,$2,$3,'in',$4,$5,'cashbox',$6,$7,$8)
-        ON CONFLICT (id) DO NOTHING RETURNING id
-      `, [input.operation_id, req.user!.tenant_id, input.shift_id, input.amount,
-        `Каса шиномонтажу за ${input.work_date}: ${worker.full_name}`, req.user!.id, input.employee_id, input.work_date])
-      return { amount: input.amount, remaining: Math.max(0, pending - input.amount), created: Boolean(inserted.rowCount) }
-    })
-    res.status(result.created ? 201 : 200).json({ data: result })
+    // Old clients may retry a committed handover. Acknowledge only its exact
+    // immutable identity; never write a second receipt for cash already in POS.
+    const existing = await pool.query(`
+      SELECT c.*, to_jsonb(c)->>'deleted_at' AS deleted_at
+      FROM cash_operations c WHERE c.id=$1 AND c.tenant_id=$2
+    `, [input.operation_id, req.user!.tenant_id])
+    const previous = existing.rows[0]
+    if (!previous) throw new AppError('NOTHING_TO_HAND_OVER', 'Готівку за чек уже прийнято в основну касу. Повторне внесення не потрібне', 409)
+    const previousDate = previous.work_date instanceof Date ? previous.work_date.toISOString().slice(0, 10) : String(previous.work_date)
+    if (previous.type !== 'in' || previous.source !== 'cashbox' || previous.deleted_at
+      || Number(previous.amount) !== input.amount || previousDate !== input.work_date
+      || previous.employee_id !== input.employee_id.toLowerCase() || previous.shift_id !== input.shift_id.toLowerCase()
+      || previous.created_by !== req.user!.id.toLowerCase()) {
+      throw new AppError('HANDOVER_OPERATION_CONFLICT', 'Цей ідентифікатор внесення вже використано з іншими даними', 409)
+    }
+    const report = await buildTireServiceReport(req.user!.tenant_id, input.work_date)
+    const row = report.data.find(worker => worker.employee_id === input.employee_id.toLowerCase())
+    res.status(200).json({ data: { amount: input.amount,
+      remaining: Math.max(0, (row?.cash_revenue ?? 0) - (row?.cash_handed_over ?? 0)), created: false } })
   } catch (err) { next(err) }
 })
 

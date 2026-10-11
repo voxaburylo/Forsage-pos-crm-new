@@ -29,7 +29,6 @@ interface Props {
   date: string; today: string; employeeId: string; loading: boolean; error: boolean
   onDate: (date: string) => void; onEmployee: (id: string) => void; onRefresh: () => void
   canPay: boolean; canMutate: boolean; busy: boolean
-  onHandOver: (row: TireServiceReportRow) => void
   onPay: (row: TireServiceReportRow, source: SalaryFundSource) => void
 }
 export function TireServiceDetails(props: Props) {
@@ -57,7 +56,7 @@ export function TireServiceDetails(props: Props) {
       </>}
   </section>
 }
-function WorkerDetails({ row, report, date, canPay, canMutate, busy, onHandOver, onPay }: Props & { row: TireServiceReportRow; report: TireServiceReport }) {
+function WorkerDetails({ row, report, date, canPay, canMutate, busy, onPay }: Props & { row: TireServiceReportRow; report: TireServiceReport }) {
   const [receiptLimit, setReceiptLimit] = useState(50)
   const [operationLimit, setOperationLimit] = useState(50)
   const receipts = report.receipts.filter(receipt => receipt.employee_id === row.employee_id)
@@ -111,12 +110,14 @@ function WorkerDetails({ row, report, date, canPay, canMutate, busy, onHandOver,
         <AmountRow label="Уже виплачено" value={-row.paid} />
         <AmountRow label="Залишилося виплатити" value={row.due} strong />
       </dl>
-      <p className="mt-3 text-xs text-gray-600">Готівка від робіт: {formatMoney(row.cash_revenue)} · передано до каси: {formatMoney(row.cash_handed_over)} · ще передати: {formatMoney(row.cash_pending)}.</p>
+      {row.cash_register_received !== undefined
+        ? <p className="mt-3 text-xs text-gray-600">Готівка за чеками, вже врахована в касі: {formatMoney(row.cash_register_received)}. Повторне внесення не потрібне.</p>
+        : <p className="mt-3 text-xs text-gray-600">Оновіть програму, щоб перевірити облік готівки. Не вносьте повторно гроші, вже прийняті за чеками.</p>}
+      {row.cash_handed_over > 0 && <p className="mt-1 text-xs text-gray-600">Окремі внесення в історії: {formatMoney(row.cash_handed_over)}. Початкові операції збережено.</p>}
       {row.balance < 0 && <p className="mt-2 text-sm text-gray-600">Виплачено наперед: {formatMoney(-row.balance)}.</p>}
-      {!row.salary_ready && <p className="mt-2 text-sm text-blue-800">Виплата за цими роботами доступна з {dayLabel(row.salary_available_on)} після передачі всієї готівки. Залишок зарплати не означає, що її вже можна видати сьогодні.</p>}
+      {!row.salary_ready && <p className="mt-2 text-sm text-blue-800">Виплата за цими роботами доступна з {dayLabel(row.salary_available_on)}. Залишок зарплати не означає, що її вже можна видати сьогодні.</p>}
       {row.salary_ready && <p className="mt-2 font-bold text-emerald-800">Можна видати зараз: {formatMoney(row.payable_due)}</p>}
       {canMutate && <div className="mt-3 flex flex-wrap gap-2">
-        {row.cash_pending > 0 && <button type="button" disabled={busy} onClick={() => onHandOver(row)} className="rounded-lg bg-yellow-400 px-3 py-2 text-sm font-semibold disabled:opacity-50">Внести готівку до каси</button>}
         {canPay && row.salary_ready && row.payable_due > 0 && <>
           <button type="button" disabled={busy} onClick={() => onPay(row, 'cashbox')} className="rounded-lg bg-gray-900 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">Виплатити з каси</button>
           <button type="button" disabled={busy} onClick={() => onPay(row, 'owner_funds')} className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm disabled:opacity-50">Виплатити коштами власника</button>

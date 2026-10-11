@@ -632,38 +632,48 @@ export class LocalStaffRepository {
         sale.payment_method, sale.total, sale.cash_amount, sale.notes, sale.cashier_id,
         cashier.full_name AS cashier_name,
         json_group_array(json_object('id', item.id, 'description', COALESCE(NULLIF(item.description, ''), product.name, 'Послуги шиномонтажу'),
-          'qty', item.qty, 'unit_price', item.unit_price, 'total', item.total)) AS services_json,
-        COALESCE(SUM(item.qty), 0) AS services_qty,
-        COALESCE(SUM(item.total), 0) AS service_revenue
+          'sku', COALESCE(NULLIF(item.sku, ''), product.sku, ''), 'core_deposit_amount', item.core_deposit_amount,
+          'qty', item.qty, 'unit_price', item.unit_price, 'total', item.total)) AS items_json
       FROM sales sale
       JOIN sale_items item ON item.sale_id = sale.id AND item.tenant_id = sale.tenant_id AND item.deleted_at IS NULL
       LEFT JOIN products product ON product.id = item.product_id AND product.tenant_id = item.tenant_id
       LEFT JOIN staff_users cashier ON cashier.id = sale.cashier_id AND cashier.tenant_id = sale.tenant_id
       WHERE sale.tenant_id = ? AND sale.status = 'completed' AND sale.deleted_at IS NULL
         AND sale.manager_id IS NOT NULL
-        AND COALESCE(NULLIF(item.sku, ''), product.sku, '') = 'POS-TIRE-SERVICE'
         AND datetime(sale.completed_at) >= datetime(?, '-1 day')
         AND datetime(sale.completed_at) < datetime(?, '+2 day')
       GROUP BY sale.id
+      HAVING SUM(CASE WHEN COALESCE(NULLIF(item.sku, ''), product.sku, '') = 'POS-TIRE-SERVICE' THEN 1 ELSE 0 END) > 0
       ORDER BY datetime(sale.completed_at), sale.id
     `).all(tenantId, workDate, workDate) as any[]
     const workerNames = new Map(workers.map((worker) => [String(worker.employee_id), String(worker.employee_name)]))
     const receipts = candidateReceipts
       .filter((row) => businessDate(String(row.completed_at)) === workDate && workerNames.has(String(row.employee_id)))
       .map((row) => {
-        const serviceRevenue = money(row.service_revenue)
+        const items = JSON.parse(row.items_json) as Array<{
+          id: string; description: string; sku: string; qty: number; unit_price: number; total: number; core_deposit_amount: number | null
+        }>
+        const services = items.filter(item => item.sku === 'POS-TIRE-SERVICE')
+        const serviceRevenue = services.reduce((sum, item) => sum + money(item.total), 0)
         const saleTotal = money(row.total)
         const cashAmount = row.payment_method === 'cash'
           ? money(row.cash_amount) || saleTotal
           : money(row.cash_amount)
-        const cashRevenue = saleTotal > 0 ? Math.min(serviceRevenue, Math.round(serviceRevenue * cashAmount / saleTotal)) : 0
+        // Allocate the receipt discount across ALL lines before taking the
+        // service's cash share. Filtering first overstates discounted/mixed cash.
+        const netRevenue = allocateReceiptRevenue(saleTotal, items.map(item => ({
+          id: item.id, total: money(item.total), coreTotal: Math.round(money(item.core_deposit_amount) * Number(item.qty)),
+        })))
+        const cashByItem = allocateReceiptRevenue(Math.min(cashAmount, saleTotal),
+          items.map(item => ({ id: item.id, total: netRevenue.get(item.id)! })))
+        const cashRevenue = services.reduce((sum, item) => sum + cashByItem.get(item.id)!, 0)
         return {
           id: row.id, sale_number: row.sale_number, completed_at: row.completed_at,
           employee_id: row.employee_id, employee_name: workerNames.get(String(row.employee_id)) ?? 'Шиномонтажник',
-          services_qty: Number(row.services_qty ?? 0), service_revenue: serviceRevenue,
-          cash_revenue: cashRevenue, payment_method: row.payment_method, total: saleTotal,
+          services_qty: services.reduce((sum, item) => sum + Number(item.qty), 0), service_revenue: serviceRevenue,
+          cash_revenue: cashRevenue, cash_register_received: cashRevenue, payment_method: row.payment_method, total: saleTotal,
           cashier_id: row.cashier_id, cashier_name: row.cashier_name ?? null, notes: row.notes ?? null,
-          services: JSON.parse(row.services_json),
+          services: services.map(({ id, description, qty, unit_price, total }) => ({ id, description, qty, unit_price, total })),
           commission_earned: salaryOperations.filter(operation => operation.sale_id === row.id
             && operation.employee_id === row.employee_id && operation.source === 'commission')
             .reduce((sum, operation) => sum + money(operation.amount), 0),
@@ -696,7 +706,10 @@ export class LocalStaffRepository {
       const serviceRevenue = workerReceipts.reduce((sum, receipt) => sum + receipt.service_revenue, 0)
       const cashRevenue = workerReceipts.reduce((sum, receipt) => sum + receipt.cash_revenue, 0)
       const cashHandedOver = handedByWorker.get(String(worker.employee_id)) ?? 0
-      const cashPending = Math.max(0, cashRevenue - cashHandedOver)
+      // A completed POS checkout already posts sale_cash to the main drawer.
+      // Historical manual handovers remain visible, but never create a second
+      // obligation to deposit the same customer payment.
+      const cashPending = 0
       const recordedDailyRate = money(salary.daily_rate)
       const projectedDailyRate = recordedDailyRate === 0 && worker.rate_period === 'day' && workerReceipts.length > 0
         ? money(worker.base_rate)
@@ -710,7 +723,8 @@ export class LocalStaffRepository {
       return {
         employee_id: worker.employee_id, employee_name: worker.employee_name,
         services_qty: workerReceipts.reduce((sum, receipt) => sum + receipt.services_qty, 0),
-        service_revenue: serviceRevenue, cash_revenue: cashRevenue, cash_handed_over: cashHandedOver, cash_pending: cashPending,
+        service_revenue: serviceRevenue, cash_revenue: cashRevenue, cash_register_received: cashRevenue,
+        cash_handed_over: cashHandedOver, cash_pending: cashPending,
         commission_earned: money(salary.commission_earned), daily_rate: recordedDailyRate + projectedDailyRate,
         daily_rate_projected: projectedDailyRate,
         earned, paid, penalty, balance, due, salary_available_on: salaryAvailableOn,
@@ -722,6 +736,7 @@ export class LocalStaffRepository {
         services_qty: data.reduce((sum, row) => sum + row.services_qty, 0),
         service_revenue: data.reduce((sum, row) => sum + row.service_revenue, 0),
         cash_revenue: data.reduce((sum, row) => sum + row.cash_revenue, 0),
+        cash_register_received: data.reduce((sum, row) => sum + row.cash_register_received, 0),
         cash_handed_over: data.reduce((sum, row) => sum + row.cash_handed_over, 0),
         cash_pending: data.reduce((sum, row) => sum + row.cash_pending, 0),
         due: data.reduce((sum, row) => sum + row.due, 0),
@@ -754,40 +769,11 @@ export class LocalStaffRepository {
       }
       const row = this.tireServiceReport(input.work_date, tenantId).data
         .find((item: any) => item.employee_id === input.employee_id)
-      return { amount, remaining: money(row?.cash_pending) }
+      // Pre-upgrade rows without a cached receipt retain the old adoption
+      // response. This is not an instruction to accept another handover.
+      return { amount, remaining: Math.max(0, money(row?.cash_revenue) - money(row?.cash_handed_over)) }
     }
-    const employee = this.requireUser(input.employee_id, tenantId)
-    if (employee.role !== 'tire_worker') throw new Error('Оберіть шиномонтажника')
-    const shift = this.db.prepare(`
-      SELECT id, cashier_id FROM shifts WHERE id = ? AND tenant_id = ? AND status = 'open' AND deleted_at IS NULL LIMIT 1
-    `).get(input.shift_id, tenantId) as { id: string; cashier_id: string } | undefined
-    if (!shift) throw new Error('Спочатку відкрийте касову зміну')
-    if (input.user_id && shift.cashier_id !== input.user_id) throw new Error('Операція доступна тільки у власній касовій зміні')
-    const report = this.tireServiceReport(input.work_date, tenantId)
-    const row = report.data.find((item: any) => item.employee_id === input.employee_id)
-    const pending = money(row?.cash_pending)
-    if (pending <= 0) throw new Error('Каса за цей день уже внесена')
-    if (amount > pending) throw new Error(`Залишилось внести ${(pending / 100).toFixed(2)} грн`)
-    const timestamp = nowIso()
-    this.db.transaction(() => {
-      this.db.prepare(`
-        INSERT INTO cash_operations (
-          id, tenant_id, shift_id, user_id, type, source, amount, employee_id, work_date, notes,
-          dirty_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, 'cash_in', 'cashbox', ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        input.operation_id, tenantId, input.shift_id, input.user_id ?? null, amount, employee.id, input.work_date,
-        `Каса шиномонтажу за ${input.work_date}: ${input.employee_name || employee.full_name}`,
-        timestamp, timestamp, timestamp,
-      )
-      this.addOutbox(tenantId, 'cash_operation', input.operation_id, 'cash_operation.created', {
-        id: input.operation_id, shift_id: input.shift_id, type: 'in', amount, source: 'cashbox',
-        employee_id: employee.id, work_date: input.work_date, user_id: input.user_id ?? null,
-        note: `Каса шиномонтажу за ${input.work_date}: ${input.employee_name || employee.full_name}`,
-        created_at: timestamp,
-      }, timestamp)
-    })
-    return { amount, remaining: Math.max(0, pending - amount) }
+    throw new Error('Готівку шиномонтажу вже враховано в касі під час оформлення чека. Повторне внесення заборонено.')
   }
   createSalary(input: {
     operation_id?: string

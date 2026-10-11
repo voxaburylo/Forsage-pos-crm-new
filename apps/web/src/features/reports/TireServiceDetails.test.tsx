@@ -11,7 +11,7 @@ export const tireFixture: TireServiceReport = {
   cash_handovers:[], totals:{services_qty:2,service_revenue:36000,cash_revenue:36000,cash_handed_over:36000,cash_pending:0,due:2600,payable_due:2600},
 }
 function markup(overrides: Partial<Parameters<typeof TireServiceDetails>[0]> = {}) {
-  return renderToStaticMarkup(<TireServiceDetails report={tireFixture} date="2026-09-22" today="2026-09-25" employeeId="" loading={false} error={false} onDate={()=>{}} onEmployee={()=>{}} onRefresh={()=>{}} canPay={true} canMutate={false} busy={false} onHandOver={()=>{}} onPay={()=>{}} {...overrides} />)
+  return renderToStaticMarkup(<TireServiceDetails report={tireFixture} date="2026-09-22" today="2026-09-25" employeeId="" loading={false} error={false} onDate={()=>{}} onEmployee={()=>{}} onRefresh={()=>{}} canPay={true} canMutate={false} busy={false} onPay={()=>{}} {...overrides} />)
 }
 it('shows work, cashier, comment, actual payout time, owner funds and the calculation after all operations', () => {
   const html = markup()
@@ -38,5 +38,25 @@ it('distinguishes accrued salary from payable salary and disables actions while 
   Object.assign(report.data[0],{salary_ready:false,payable_due:0,cash_pending:36000})
   const html = markup({report,canMutate:true,busy:true})
   expect(html).toContain('24.09.2026');expect(html).not.toContain('Виплатити з каси')
-  expect(html).toContain('disabled=""'); expect(html).toContain('Внести готівку до каси')
+  expect(html).toContain('disabled=""'); expect(html).not.toContain('Внести готівку до каси')
+})
+it('shows already registered POS cash separately from historical handovers without another deposit action', () => {
+  const report = structuredClone(tireFixture)
+  Object.assign(report.data[0], { cash_register_received: 30000, cash_revenue: 30000, cash_handed_over: 10000 })
+  const html = markup({report,canMutate:true})
+  expect(html).toContain('Готівка за чеками, вже врахована в касі')
+  expect(html).toContain('300,00')
+  expect(html).toContain('Окремі внесення в історії')
+  expect(html).toContain('Повторне внесення не потрібне')
+  expect(html).not.toContain('ще передати')
+  expect(html).not.toContain('Внести готівку до каси')
+  expect(html).toContain('Виплатити з каси')
+})
+it('does not invent registered cash for an older source or offer a duplicate deposit', () => {
+  const report = structuredClone(tireFixture)
+  Object.assign(report.data[0], {cash_pending:36000})
+  const html = markup({report,canMutate:true})
+  expect(html).toContain('Оновіть програму, щоб перевірити облік готівки')
+  expect(html).not.toContain('Внести готівку до каси')
+  expect(html).not.toContain('Готівка за чеками, вже врахована в касі')
 })

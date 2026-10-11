@@ -130,8 +130,9 @@ try{
   await periods.evaluate(()=>fixture.pending.filter(p=>p.kind==='summary')[0].resolve({data:fixture.rows().map(r=>({...r,earned:99900}))}))
   await periods.waitForTimeout(50);assert.equal((await periods.locator('body').innerText()).includes('999'),false);await periods.close()
 
-  for(const [kind,fund] of [['handover',null],['payout','cashbox'],['payout','owner_funds']]){
-    const tire=await setup('tire');const name=kind==='handover'?'Внести готівку до каси':fund==='cashbox'?'Виплатити з каси':'Виплатити коштами власника'
+  for(const [kind,fund] of [['payout','cashbox'],['payout','owner_funds']]){
+    const tire=await setup('tire');const name=fund==='cashbox'?'Виплатити з каси':'Виплатити коштами власника'
+    assert.equal(await tire.getByRole('button',{name:'Внести готівку до каси'}).count(),0,'Even stale reports must not offer duplicate cash deposits')
     await double(tire.getByRole('button',{name,exact:true}));await wait(tire,'shift')
     assert.equal(await tire.getByLabel('Дата робіт шиномонтажу').isDisabled(),true)
     await resolve(tire,'shift',{data:{id:'shift-test'}});await wait(tire,kind)
@@ -143,11 +144,11 @@ try{
     assert.equal(await tire.evaluate(()=>fixture.reads.length),readCount,'Late mutation cannot start old report read')
     assert.deepEqual(await tire.evaluate(()=>fixture.messages),[]);await tire.close()
   }
-  const tirePreflight=await setup('tire');await tirePreflight.getByRole('button',{name:'Внести готівку до каси'}).click();await wait(tirePreflight,'shift')
+  const tirePreflight=await setup('tire');await tirePreflight.getByRole('button',{name:'Виплатити з каси',exact:true}).click();await wait(tirePreflight,'shift')
   await tirePreflight.evaluate(()=>fixture.unmount());await tirePreflight.getByText('Test destination').waitFor()
   await resolve(tirePreflight,'shift',{data:{id:'shift-test'}});await tirePreflight.waitForTimeout(50)
-  assert.equal(await count(tirePreflight,'handover'),0);await tirePreflight.close()
+  assert.equal(await count(tirePreflight,'payout'),0);assert.equal(await count(tirePreflight,'handover'),0);await tirePreflight.close()
 
   assert.deepEqual(errors,[]);assert.deepEqual(blocked,[])
-  console.log('PASS: payroll and tire cash single writes, exact comma amounts, Kyiv date, failed refresh/retry without replay, staff form isolation, stale month/preflight/replies, cancellation errors, read-only web. No live data.')
+  console.log('PASS: payroll and tire salary single writes, no duplicate tire deposit action even for stale reports, exact comma amounts, Kyiv date, failed refresh/retry without replay, staff form isolation, stale month/preflight/replies, cancellation errors, read-only web. No live data.')
 }finally{await browser?.close();await server.close()}

@@ -10,7 +10,7 @@ vi.mock('../adminService.js',()=>({listUsers:async()=>[
 vi.mock('../../db/pg.js',()=>({runTransaction:vi.fn(),pool:{query:async(sql:string,params:unknown[])=>{
   state.queries.push({sql,params})
   if(sql.includes('FROM salary_payments p') && sql.includes('SUM(')) return {rows:[{employee_id:'worker',earned:'12600',paid:'10000',penalty:'0',commission_earned:'12600',daily_rate:'0'}]}
-  if(sql.includes('WITH service_sales')) return {rows:[{id:'sale',sale_number:'TIRE-47',completed_at:'2026-09-22T13:40:00Z',employee_id:'worker',payment_method:'cash',total:36000,services_qty:2,service_revenue:'36000',cash_revenue:'36000',cashier_id:'cashier',notes:'R16',services:[{id:'line',description:'Балансування',qty:2,unit_price:18000,total:36000}]}]}
+  if(sql.includes('WITH service_sales')) return {rows:[{id:'sale',sale_number:'TIRE-47',completed_at:'2026-09-22T13:40:00Z',employee_id:'worker',payment_method:'cash',total:36000,services_qty:2,service_revenue:'36000',cash_amount:36000,cashier_id:'cashier',notes:'R16',services:[{id:'line',description:'Балансування',qty:2,unit_price:18000,total:36000}],allocation_lines:[{id:'line',qty:2,total:36000,core_deposit_amount:0}]}]}
   if(sql.includes('FROM salary_payments p')) return {rows:[{id:'commission',employee_id:'worker',type:'bonus',source:'commission',amount:'12600',sale_id:'sale',created_by:'cashier',created_at:'2026-09-22T13:40:00Z',work_date:'2026-09-22'}]}
   if(sql.includes('SUM(amount)')) return {rows:[{employee_id:'worker',amount:'36000'}]}
   if(state.fail) throw new Error('Report details unavailable')
