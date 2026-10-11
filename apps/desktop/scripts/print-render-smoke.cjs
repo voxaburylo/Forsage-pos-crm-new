@@ -3,7 +3,7 @@ const { app, BrowserWindow, session } = require('electron')
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), assert = require('node:assert/strict')
 const dist = path.resolve(__dirname, process.argv.includes('--staged') ? '../release/staged/win-unpacked/resources/app.asar/dist' : process.argv.includes('--packaged') ? '../release/win-unpacked/resources/app.asar/dist' : '../dist')
 const { loadPrintHtml } = require(path.join(dist, 'print/loadPrintHtml.js'))
-const { getPrintSession } = require(path.join(dist, 'print/printSession.js'))
+const { getPrintSession, isPrintSession } = require(path.join(dist, 'print/printSession.js'))
 const { renderReceiptRaster } = require(path.join(dist, 'print/receiptRaster.js'))
 const { printLabelsTspl } = require(path.join(dist, 'print/tsplLabelPrinter.js'))
 const { RendererRecovery } = require(path.join(dist, 'rendererRecovery.js'))
@@ -15,8 +15,21 @@ app.on('child-process-gone', (_event, details) => console.log('child-process-gon
 const deadline = setTimeout(() => { console.error('Print smoke timed out'); app.exit(1) }, 60000)
 app.whenReady().then(async () => {
   session.defaultSession.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] }, (_details, done) => done({ cancel: true }))
+  let printWindows = 0
+  app.on('web-contents-created', (_event, contents) => {
+    if (isPrintSession(contents.session)) printWindows++
+  })
+  const ordinary = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } })
+  assert.equal(isPrintSession(ordinary.webContents.session), false)
+  await assert.rejects(loadPrintHtml(ordinary, '<p>must not load in shop session</p>'), /PRINT_SESSION_REQUIRED/)
+  assert.equal(printWindows, 0, 'ordinary startup must not be classified as printing')
+  ordinary.destroy()
+  console.log('Ordinary window rejected by print boundary before first print')
   for (const offscreen of [false, true]) {
     const window = new BrowserWindow({ show: false, width: 400, height: 600, webPreferences: { session: getPrintSession(), sandbox: true, contextIsolation: true, nodeIntegration: false, offscreen, backgroundThrottling: false } })
+    assert.equal(isPrintSession(window.webContents.session), true, 'first print window must be recognised during construction')
+    assert.equal(printWindows, offscreen ? 2 : 1, 'native creation hook must recognise every print window')
+    assert.equal(isPrintSession(session.defaultSession), false)
     window.webContents.on('did-fail-load', (_e, code, description, _url, main) => console.log('did-fail-load', code, description, main))
     window.webContents.on('render-process-gone', (_e, d) => console.log('render-process-gone', d.reason, d.exitCode))
     try {

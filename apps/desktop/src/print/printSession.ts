@@ -4,6 +4,11 @@ export const PRINT_DOCUMENT_SCHEME = 'forsage-print'
 const documents = new Map<string, string>()
 let printSession: Session | undefined
 
+// Window classification must not create print services during normal UI startup.
+export function isPrintSession(candidate: Session): boolean {
+  return printSession !== undefined && candidate === printSession
+}
+
 // Only print windows use this memory-only session. No shop cookies, storage,
 // temporary customer files, external requests or page scripts are needed.
 export function getPrintSession(): Session {

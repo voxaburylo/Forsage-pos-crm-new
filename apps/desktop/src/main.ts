@@ -60,7 +60,7 @@ import { setPrintProcessReporter } from './print/printProcess'
 import { assertPrinterRole, type PrinterRole } from './print/printerRole'
 import { withPrintTimeout } from './print/printTimeout'
 import { loadPrintHtml } from './print/loadPrintHtml'
-import { getPrintSession } from './print/printSession'
+import { getPrintSession, isPrintSession } from './print/printSession'
 import { assertPrintRuntimeFiles } from './print/printRuntime'
 import { isLanProxyChannel, LocalNetworkCoordinator, type LanSession } from './lan/localNetwork'
 import { LanOrderQueue } from './lan/orderQueue'
@@ -99,7 +99,7 @@ let diagnosticCommandSequence = 0
 let audioServiceUnavailable = false
 blackBox?.record('rendering-policy', { reason: process.platform === 'win32' ? 'software' : 'system-default' })
 app.on('web-contents-created', (_event, contents) => {
-  if (contents.session !== getPrintSession()) return
+  if (!isPrintSession(contents.session)) return
   contents.setWindowOpenHandler(() => ({ action: 'deny' }))
   contents.on('render-process-gone', (_goneEvent, details) => {
     if (details.reason !== 'clean-exit' && details.reason !== 'killed') blackBox?.record('print-renderer-process-gone', details)
