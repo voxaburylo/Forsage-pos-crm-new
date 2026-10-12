@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   Plus, Trash2, Percent,
   DollarSign, Award, AlertTriangle, ArrowDownRight,
@@ -20,6 +20,8 @@ import { shiftApi } from '@/features/pos/shiftApi'
 import { normalizedStaffPhone, staffPaySettings, staffTransactionAmount } from './staffFormModel'
 import { payrollOperationLabel } from './payrollOperationLabel'
 import { useScopedAction } from '@/hooks/useScopedAction'
+import { useBusinessDay } from '@/hooks/useBusinessDay'
+import { useLatestRequest } from '@/hooks/useLatestRequest'
 
 type BadgeColor = 'green' | 'orange' | 'red' | 'blue' | 'gray' | 'yellow'
 const ROLE_COLORS: Record<UserRole, BadgeColor> = { owner:'yellow', admin:'blue', manager:'green', cashier:'gray', storekeeper:'orange', sto_viewer:'gray', tire_worker:'orange' } as const
@@ -46,14 +48,17 @@ function periodLabel(p:string) {
 export default function StaffPage() {
   const [users, setUsers] = useState<AdminUser[]>([])
   const [showArchived, setShowArchived] = useState(false)
-  const loadGeneration = useRef(0)
+  const businessDay = useBusinessDay()
   const [period, setPeriod] = useState(currentPeriod())
+  const requests = useLatestRequest([period, businessDay])
   const [summary, setSummary] = useState<EmployeeSummary[]>([])
   const [payments, setPayments] = useState<SalaryPayment[]>([])
   const [rules, setRules] = useState<CommissionRule[]>([])
   const [dailySummary, setDailySummary] = useState<DailySummary[]>([])
+  const [loadedDailyDate, setLoadedDailyDate] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [payrollReady, setPayrollReady] = useState(false)
+  const dailyReady = payrollReady && !loading && loadedDailyDate === businessDay && loadedDailyDate === localDate()
   const [editRulesLoaded, setEditRulesLoaded] = useState(false)
   const action = useScopedAction('staff')
   const saving = action.busy
@@ -68,28 +73,35 @@ export default function StaffPage() {
   const [actionForm, setActionForm] = useState({type:'salary' as 'salary'|'bonus'|'advance'|'penalty',method:'cash' as 'cash'|'card'|'transfer',amount:'',note:'',period:currentPeriod()})
 
   const loadData = useCallback(async () => {
-    const generation = ++loadGeneration.current
+    // A pre-midnight action may call this closure after it commits. Refresh the
+    // actual current day, without changing that action's captured work_date.
+    const workDate = localDate()
+    const latest = requests.begin()
+    const isCurrent = () => latest() && workDate === localDate()
     setLoading(true)
     setPayrollReady(false)
+    setLoadedDailyDate(null)
+    setDailySummary([])
     try {
-      const [usersRes,summaryRes,paymentsRes,rulesRes,dailyRes] = await Promise.allSettled([adminApi.listUsers(true),staffApi.summary(period),staffApi.listSalary(period),commissionApi.listRules(),staffApi.dailySummary(localDate())])
-      if(generation!==loadGeneration.current)return
+      const [usersRes,summaryRes,paymentsRes,rulesRes,dailyRes] = await Promise.allSettled([adminApi.listUsers(true),staffApi.summary(period),staffApi.listSalary(period),commissionApi.listRules(),staffApi.dailySummary(workDate)])
+      if(!isCurrent())return
       if(usersRes.status==='rejected')throw usersRes.reason
       setUsers(usersRes.value.data)
       setSummary(summaryRes.status==='fulfilled'?summaryRes.value.data??[]:[])
       setPayments(paymentsRes.status==='fulfilled'?paymentsRes.value.data??[]:[])
       setRules(rulesRes.status==='fulfilled'?rulesRes.value.data??[]:[])
       setDailySummary(dailyRes.status==='fulfilled'?dailyRes.value.data??[]:[])
+      setLoadedDailyDate(dailyRes.status==='fulfilled'?workDate:null)
       setPayrollReady([summaryRes,paymentsRes,rulesRes,dailyRes].every(result=>result.status==='fulfilled'))
       if([summaryRes,paymentsRes,rulesRes,dailyRes].some(result=>result.status==='rejected'))toast.warning('Команду завантажено, але частина даних зарплати недоступна. Оновіть сторінку перед редагуванням оплати.')
-    } catch { if(generation===loadGeneration.current)toast.error('Помилка завантаження даних') } finally { if(generation===loadGeneration.current)setLoading(false) }
-  },[period])
-  useEffect(()=>{void loadData();return()=>{loadGeneration.current++}},[loadData])
+    } catch { if(isCurrent())toast.error('Помилка завантаження даних') } finally { if(isCurrent())setLoading(false) }
+  },[period,businessDay,requests])
+  useEffect(()=>{void loadData()},[loadData])
 
   const employeeSummary = useMemo(()=>{ if(!selectedUser) return null; return summary.find(s=>s.employee_id===selectedUser.id)||null },[selectedUser,summary])
   const employeePayments = useMemo(()=>{ if(!selectedUser) return []; return payments.filter(p=>p.employee_id===selectedUser.id) },[selectedUser,payments])
   const employeeRules = useMemo(()=>{ if(!selectedUser) return []; return rules.filter(r=>r.user_id===selectedUser.id) },[selectedUser,rules])
-  const employeeToday = useMemo(()=>{ if(!selectedUser) return null; return dailySummary.find(s=>s.employee_id===selectedUser.id)||null },[selectedUser,dailySummary])
+  const employeeToday = useMemo(()=>{ if(!selectedUser||!dailyReady) return null; return dailySummary.find(s=>s.employee_id===selectedUser.id)||null },[selectedUser,dailySummary,dailyReady])
   // Власник керує зарплатою, але не є працівником, якому магазин винен ЗП.
   // Його старі комісійні записи лишаються в аудиті, проте не показуються як борг.
   const payrollUsers = useMemo(()=>users.filter((user)=>user.role!=='owner').filter(user=>Boolean(user.deleted_at)===showArchived),[users,showArchived])
@@ -196,9 +208,14 @@ export default function StaffPage() {
     }, 'Помилка збереження операції')
   }
   async function handleDailyPayout(fundSource:'cashbox'|'owner_funds') {
-    if (!selectedUser) return
+    if (!selectedUser || action.isBusy()) return
+    const workDate = localDate()
+    if (!dailyReady || loadedDailyDate !== workDate) {
+      toast.error('Розрахунок за сьогодні ще не оновлено. Дочекайтеся актуальних даних перед виплатою.')
+      void loadData()
+      return
+    }
     await performAction(async isCurrent => {
-      const workDate = localDate()
       const shift = await shiftApi.current()
       if (!isCurrent()) return
       const shiftId = (shift as any)?.data?.id ?? null
@@ -223,7 +240,7 @@ export default function StaffPage() {
     )},
     { key:'role' as const, header:'Роль', render:(u:AdminUser)=>(<Badge color={ROLE_COLORS[u.role as UserRole]||'gray'}>{ROLE_LABELS[u.role as UserRole]||u.role}</Badge>) },
     { key:'base_rate' as const, header:'Ставка', render:(u:AdminUser)=>(<span className="text-sm font-medium text-gray-700">{u.base_rate?`${formatMoney(u.base_rate)} / ${u.rate_period==='day'?'день':'місяць'}`:'—'}</span>) },
-    { key:'today' as const, header:'Сьогодні', render:(u:AdminUser)=>{const s=dailySummary.find(x=>x.employee_id===u.id);return <span className={`text-sm font-bold ${s?.balance?'text-amber-700':'text-gray-300'}`}>{s?formatMoney(s.balance):'—'}</span>} },
+    { key:'today' as const, header:'Сьогодні', render:(u:AdminUser)=>{const s=dailyReady?dailySummary.find(x=>x.employee_id===u.id):undefined;return <span className={`text-sm font-bold ${s?.balance?'text-amber-700':'text-gray-300'}`}>{s?formatMoney(s.balance):'—'}</span>} },
     { key:'summary' as const, header:`Баланс (${periodLabel(period)})`, render:(u:AdminUser)=>{const s=summary.find(x=>x.employee_id===u.id);if(!s)return<span className="text-xs text-gray-300">—</span>;return(<div className="text-right"><p className={`text-sm font-bold ${s.balance>=0?'text-green-600':'text-red-500'}`}>{s.balance>=0?'+':''}{formatMoney(s.balance)}</p><p className="text-[10px] text-gray-400">Нарах: {formatMoney(s.earned)} · Випл: {formatMoney(s.paid)}</p></div>)} },
     { key:'is_active' as const, header:'Статус', render:(u:AdminUser)=>(<Badge color={u.is_active?'green':'red'}>{u.deleted_at?'Архів':u.is_active?'Активний':'Неактивний'}</Badge>) },
     { key:'actions' as const, header:'', render:(u:AdminUser)=>(
@@ -349,13 +366,13 @@ export default function StaffPage() {
                     <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-4">
                       <div className="mb-3 flex items-center justify-between">
                         <div><p className="text-xs font-bold uppercase tracking-wider text-emerald-800">Заробіток сьогодні</p><p className="mt-1 text-xs text-emerald-700">Ставка за день + автоматичний відсоток</p></div>
-                        <p className="text-xl font-bold text-emerald-800">{formatMoney(employeeToday?.balance??0)}</p>
+                        <p className="text-xl font-bold text-emerald-800">{dailyReady?formatMoney(employeeToday?.balance??0):'—'}</p>
                       </div>
                       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                        <Button type="button" onClick={()=>handleDailyPayout('cashbox')} loading={saving} disabled={(employeeToday?.balance??0)<=0 && !(selectedUser.base_rate>0 && selectedUser.rate_period==='day')} className="w-full">
+                        <Button type="button" onClick={()=>handleDailyPayout('cashbox')} loading={saving} disabled={!dailyReady || ((employeeToday?.balance??0)<=0 && !(selectedUser.base_rate>0 && selectedUser.rate_period==='day'))} className="w-full">
                           Видати з каси
                         </Button>
-                        <button type="button" onClick={()=>handleDailyPayout('owner_funds')} disabled={saving || ((employeeToday?.balance??0)<=0 && !(selectedUser.base_rate>0 && selectedUser.rate_period==='day'))} className="w-full rounded-lg bg-amber-400 px-3 py-2 text-sm font-bold text-black hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-50">
+                        <button type="button" onClick={()=>handleDailyPayout('owner_funds')} disabled={saving || !dailyReady || ((employeeToday?.balance??0)<=0 && !(selectedUser.base_rate>0 && selectedUser.rate_period==='day'))} className="w-full rounded-lg bg-amber-400 px-3 py-2 text-sm font-bold text-black hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-50">
                           Кошти власника
                         </button>
                       </div>

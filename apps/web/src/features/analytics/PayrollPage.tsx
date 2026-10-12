@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useLatestRequest } from '@/hooks/useLatestRequest'
 import { useScopedAction } from '@/hooks/useScopedAction'
+import { useBusinessDay } from '@/hooks/useBusinessDay'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { staffTransactionAmount } from '@/features/staff/staffFormModel'
 import { payrollOperationLabel } from '@/features/staff/payrollOperationLabel'
@@ -39,6 +40,7 @@ function periodLabel(period: string): string {
 }
 
 export default function PayrollPage() {
+  const businessDay = useBusinessDay()
   const [period, setPeriod] = useState(currentPeriod())
   const [users, setUsers] = useState<AdminUser[]>([])
   const [summary, setSummary] = useState<EmployeeSummary[]>([])
@@ -51,7 +53,9 @@ export default function PayrollPage() {
   const canWrite = isDesktopRuntime()
   const [loadError, setLoadError] = useState('')
   const [loadedPeriod, setLoadedPeriod] = useState<string | null>(null)
+  const [loadedDailyDate, setLoadedDailyDate] = useState<string | null>(null)
   const ready = !loading && !loadError && loadedPeriod === period
+    && loadedDailyDate === businessDay && loadedDailyDate === localDate()
   const [historyLimit, setHistoryLimit] = useState(50)
   useEffect(() => { setHistoryLimit(50) }, [selected?.id, period])
   const [form, setForm] = useState({
@@ -61,19 +65,23 @@ export default function PayrollPage() {
     note: '',
   })
 
-  const requests = useLatestRequest(period)
+  const requests = useLatestRequest([period, businessDay])
   const load = useCallback(async () => {
-    const isCurrent = requests.begin()
+    // Old action callbacks must refresh today's data, not their captured day.
+    const workDate = localDate()
+    const latest = requests.begin()
+    const isCurrent = () => latest() && workDate === localDate()
     setSummary([]); setPayments([]); setDaily([])
     setLoading(true)
     setLoadError('')
     setLoadedPeriod(null)
+    setLoadedDailyDate(null)
     try {
       const [usersResult, summaryResult, paymentsResult, dailyResult] = await Promise.all([
         adminApi.listUsers(),
         staffApi.summary(period),
         staffApi.listSalary(period),
-        staffApi.dailySummary(localDate()),
+        staffApi.dailySummary(workDate),
       ])
       if (!isCurrent()) return
       setUsers((usersResult.data ?? []).filter((user) => user.is_active && user.role !== 'owner'))
@@ -81,6 +89,7 @@ export default function PayrollPage() {
       setPayments(paymentsResult.data ?? [])
       setDaily(dailyResult.data ?? [])
       setLoadedPeriod(period)
+      setLoadedDailyDate(workDate)
     } catch (error) {
       if (isCurrent()) {
         const message = error instanceof Error ? error.message : 'Не вдалося завантажити зарплату'
@@ -90,7 +99,7 @@ export default function PayrollPage() {
     } finally {
       if (isCurrent()) setLoading(false)
     }
-  }, [period])
+  }, [period, businessDay, requests])
 
   useEffect(() => {
     void load()
@@ -132,12 +141,12 @@ export default function PayrollPage() {
   }
 
   async function createOperation() {
-    if (!selected || !canWrite || !ready) return
+    const workDate = localDate()
+    if (!selected || !canWrite || !ready || loadedDailyDate !== workDate) return
     const attempt = action.begin()
     if (!attempt) return
     try {
       const amount = staffTransactionAmount(form.amount)
-      const workDate = localDate()
       const shiftId = form.type === 'advance' && form.method === 'cash'
         ? await currentShiftId()
         : null
@@ -165,11 +174,11 @@ export default function PayrollPage() {
   }
 
   async function payDaily(fundSource: SalaryFundSource) {
-    if (!selected || !canWrite || !ready) return
+    const workDate = localDate()
+    if (!selected || !canWrite || !ready || loadedDailyDate !== workDate) return
     const attempt = action.begin()
     if (!attempt) return
     try {
-      const workDate = localDate()
       if (fundSource === 'owner_funds' && !window.confirm('Виплатити заробіток власними коштами? Залишок каси не зміниться.')) return
       const shiftId = await currentShiftId()
       if (!attempt.isCurrent()) return
@@ -192,7 +201,7 @@ export default function PayrollPage() {
   }
 
   async function deleteOperation(id: string) {
-    if (!canWrite || !ready) return
+    if (!canWrite || !ready || loadedDailyDate !== localDate()) return
     const attempt = action.begin()
     if (!attempt) return
     try {
