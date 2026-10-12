@@ -30,7 +30,9 @@ describe('complete large inventory reads', () => {
       }
     })
   }, 60_000)
-  afterEach(() => { vi.restoreAllMocks(); db.close(); rmSync(root, { recursive: true, force: true }) })
+  // Closing/checkpointing and removing this large fixture needs the same bounded
+  // CI disk budget as setup; the inventory assertions keep their test timeouts.
+  afterEach(() => { vi.restoreAllMocks(); db.close(); rmSync(root, { recursive: true, force: true }) }, 60_000)
 
   it('returns every counted row and price issue with a bounded number of queries', () => {
     const queries = vi.spyOn(db, 'prepare')
