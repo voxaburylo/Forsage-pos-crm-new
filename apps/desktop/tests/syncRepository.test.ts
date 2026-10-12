@@ -139,4 +139,29 @@ describe('LocalSyncRepository.listPending', () => {
 
     expect(repository.listPending(10).map((row) => row.operation_id)).toEqual([freshSale, oldFailure])
   })
+
+  it.each(['product.upsert', 'product.deleted'])('does not bypass an older failed product with a newer %s', operationType => {
+    insertOperation({ aggregateType: 'product', aggregateId: 'product-a', operationType: 'product.upsert',
+      payload: {}, status: 'failed', nextAttemptAt: new Date(Date.now() + 60_000).toISOString() })
+    insertOperation({ aggregateType: 'product', aggregateId: 'product-a', operationType, payload: {} })
+    expect(repository.listPending(100)).toEqual([])
+  })
+
+  it.each(['brand', 'category'])('keeps a catalog copy behind its failed %s prerequisite', entity => {
+    insertOperation({ aggregateType: entity, aggregateId: 'reference-a', operationType: `${entity}.upsert`,
+      payload: {}, status: 'failed', nextAttemptAt: new Date(Date.now() + 60_000).toISOString() })
+    insertOperation({ aggregateType: 'product', aggregateId: 'product-a', operationType: 'product.upsert',
+      payload: { [`${entity}_id`]: 'reference-a' } })
+    expect(repository.listPending(100)).toEqual([])
+  })
+
+  it.each(['correction', 'deletion'])('does not let a %s overtake an older failed stock document', kind => {
+    insertOperation({ aggregateType: 'supply_invoice', aggregateId: 'invoice-a', operationType: 'supplier_invoice.posted',
+      payload: { items: [{ product_id: 'product-a' }] }, status: 'failed',
+      nextAttemptAt: new Date(Date.now() + 60_000).toISOString() })
+    insertOperation({ aggregateType: 'product', aggregateId: 'product-a',
+      operationType: kind === 'correction' ? 'product.upsert' : 'product.deleted',
+      payload: kind === 'correction' ? { stock_correction: true, qty_on_hand: 5 } : {} })
+    expect(repository.listPending(100)).toEqual([])
+  })
 })

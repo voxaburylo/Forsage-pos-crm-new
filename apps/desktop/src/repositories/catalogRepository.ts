@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { catalogLanguageTokenGroups } from '../lib/catalogLanguageSearch'
 import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID, type LocalProduct, type LocalProductUpsert } from '../db/localTypes'
+import { readProductCatalogSnapshot } from './productCatalogSnapshot'
 
 function nowIso(): string {
   return new Date().toISOString()
@@ -239,6 +240,14 @@ export class LocalCatalogRepository {
       throw new Error('LOCAL_PRODUCT_STALE|Товар уже змінено іншою операцією. Ваші правки не записано. Повторіть збереження з актуальної картки.')
     input = { ...input }
     delete input.expected_updated_at
+    if (storedById && !storedById.deleted_at) {
+      // Optional fields omitted by a partial editor are not requests to erase
+      // prices, identifiers or photos. Explicit null/zero/false/[] still apply.
+      input = {
+        ...readProductCatalogSnapshot(this.db, storedById.id, tenantId),
+        ...Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined)),
+      } as LocalProductUpsert
+    }
 
     // Для накладної повторний код постачальника повинен прив'язатися до вже
     // відомої активної картки. Звичайне створення товару й надалі показує
@@ -266,9 +275,8 @@ export class LocalCatalogRepository {
       : input
     const product = this.upsertProduct(safeInput)
     this.addProductOutbox('product.upsert', product.id, {
-      ...safeInput,
-      brand_id: product.brand_id ?? null,
-      category_id: product.category_id ?? null,
+      ...readProductCatalogSnapshot(this.db, product.id, tenantId),
+      ...(safeInput.stock_correction === true ? { stock_correction: true } : {}),
     })
     return product
   }

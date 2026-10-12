@@ -16,6 +16,7 @@ function readSupplyWriteSnapshot(db: LocalDatabase, id: string, tenant: string, 
     products: plain(db.prepare('SELECT * FROM products WHERE id IN (SELECT value FROM json_each(?)) ORDER BY id').all(JSON.stringify(productIds))),
     movements: plain(db.prepare('SELECT * FROM inventory_movements WHERE source_id=? ORDER BY id').all(id)),
     queue: plain(db.prepare("SELECT * FROM sync_outbox WHERE aggregate_type='supply_invoice' AND aggregate_id=? ORDER BY sequence").all(id)),
+    productQueue: plain(db.prepare("SELECT * FROM sync_outbox WHERE tenant_id=? AND aggregate_type='product' AND aggregate_id IN (SELECT value FROM json_each(?)) ORDER BY sequence").all(tenant, JSON.stringify(productIds))),
     supplierChanges: db.prepare('SELECT * FROM app_meta WHERE key=?').get('invoice-supplier-changes:' + tenant + ':' + id),
     cash: plain(db.prepare(`SELECT DISTINCT c.* FROM supplier_payments p JOIN cash_operations c
       ON c.tenant_id=p.tenant_id AND c.supplier_id IS p.supplier_id AND c.shift_id IS p.shift_id

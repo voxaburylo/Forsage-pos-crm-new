@@ -630,7 +630,16 @@ export class LocalSyncRepository {
         continue
       }
       const keys = outboxDependencyKeys(row, payload)
+      // A failed document may be waiting for this very catalog card after
+      // coalescing retired an older copy. The prerequisite must be allowed to
+      // arrive; otherwise the invoice and its missing product wait forever.
+      // Keep the aggregate barrier (older versions of the same card), brand /
+      // category barriers, and all stock-correction/deletion barriers intact.
+      const catalogCopy = row.aggregate_type === 'product' && row.operation_type === 'product.upsert'
+        && payload?.stock_correction !== true
+      const ownReference = `${row.tenant_id}:reference:product:${row.aggregate_id}`
       const blocked = keys.some((key) => {
+        if (catalogCopy && key === ownReference) return false
         const sequence = blockedAt.get(key)
         return sequence !== undefined && sequence < row.sequence
       })

@@ -10,6 +10,7 @@ import { addStockQuantity, stockQuantity, subtractStockQuantity } from './stockQ
 import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID } from '../db/localTypes'
 import { LocalCatalogRepository } from './catalogRepository'
+import { queueProductCatalogSnapshot } from './productCatalogSnapshot'
 import { readOpenCashBalance } from './cashBalance'
 import { idempotentMutation } from './idempotentMutation'
 import { readSupplyWriteState, assertCleanDraft, assertPostedSupplyMovements, verifySupplyWrite, verifyDeletedSupplyWrite, supplyWriteConflict } from './supplyWriteSafety'
@@ -785,8 +786,14 @@ export class LocalSupplyRepository {
         invoice_snapshot: invoiceCopySnapshot(invoice), created_at: timestamp,
       }
       const operationId = this.addOutbox(tenantId, 'supply_invoice', id, 'supplier_invoice.posted', payload, timestamp)
+      // Posting changes the card's current purchase price as well as stock.
+      // The document mirror deliberately does not replay catalog mutations.
+      // Queue one full card per product after all repeated invoice rows, in
+      // this same transaction, so cancellation/retry cannot duplicate stock.
+      const productCopies = productIds.map(productId => queueProductCatalogSnapshot(this.db, productId, tenantId, timestamp))
       verifySupplyWrite(this.db, {
         ...before,
+        productQueue: [...before.productQueue, ...productCopies],
         header: {...before.header, status: 'posted', total, posted_by: input.user_id ?? null, posted_at: timestamp, dirty_at: timestamp, updated_at: timestamp},
         products: before.products.map(row => products.get(row.id)),
         movements: movements.sort((a,b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
