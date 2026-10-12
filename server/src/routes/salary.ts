@@ -283,7 +283,7 @@ router.get('/', requireRole('owner', 'admin'), async (req, res, next) => {
 // GET /api/v1/salary/summary — зведення по співробітниках за місяць
 router.get('/summary', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
-    const period = (req.query.period as string) ?? new Date().toISOString().slice(0, 7)
+    const period = (req.query.period as string) ?? kyivDateKey().slice(0, 7)
 
     const data = await allSalarySummaryRows(req.user!.tenant_id, 'period', period)
 
@@ -510,12 +510,13 @@ router.post('/', requireRole('owner', 'admin'), async (req, res, next) => {
       throw new AppError('OWNER_NOT_PAYROLL_EMPLOYEE', 'Власник не входить до зарплатної відомості працівників', 409)
     }
 
-    const period = parsed.data.period ?? new Date().toISOString().slice(0, 7)
+    const today = kyivDateKey()
+    const period = parsed.data.period ?? today.slice(0, 7)
 
     if (parsed.data.type === 'advance' && parsed.data.method === 'cash' && !parsed.data.shift_id) {
       throw new AppError('SHIFT_REQUIRED', 'Для виплати готівкою потрібна відкрита касова зміна', 422)
     }
-    const workDate = parsed.data.work_date ?? new Date().toISOString().slice(0, 10)
+    const workDate = parsed.data.work_date ?? today
     const data = await runTransaction(async (client) => {
       let cashOperationId: string | null = null
       if (parsed.data.type === 'advance' && parsed.data.method === 'cash') {
@@ -547,7 +548,7 @@ router.post('/', requireRole('owner', 'admin'), async (req, res, next) => {
 // GET /api/v1/salary/commission-preview — зведення комісій по менеджерах за місяць
 router.get('/commission-preview', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
-    const period = (req.query.period as string) ?? new Date().toISOString().slice(0, 7)
+    const period = (req.query.period as string) ?? kyivDateKey().slice(0, 7)
     const userId = req.query.user_id as string | undefined
     const tenantId = req.user!.tenant_id
 
