@@ -316,7 +316,7 @@ export class LocalBootstrapRepository {
 
       for (const item of changes.inventory_items ?? []) {
         if (!this.refExists('inventory_sessions', tenantId, item.session_id)) continue
-        if (!this.refExists('products', tenantId, item.product_id)) continue
+        if (!this.refExistsIncludingDeleted('products', tenantId, item.product_id)) continue
         this.upsertInventoryItem(tenantId, item, appliedAt)
         counts.inventory_items++
       }
@@ -513,7 +513,7 @@ export class LocalBootstrapRepository {
 
       for (const item of snapshot.inventory_items ?? []) {
         if (!this.refExists('inventory_sessions', tenantId, item.session_id)) continue
-        if (!this.refExists('products', tenantId, item.product_id)) continue
+        if (!this.refExistsIncludingDeleted('products', tenantId, item.product_id)) continue
         this.upsertInventoryItem(tenantId, item, importedAt)
         counts.inventory_items++
       }
@@ -1348,12 +1348,16 @@ export class LocalBootstrapRepository {
       LIMIT 1
     `).get(item.sale_id, tenantId) as { dirty_at: string | null } | undefined
     if (!sale || sale.dirty_at) return
-    const product = this.db.prepare(`
+    // A catalog tombstone hides a card from new sales, not from an old receipt.
+    // Keep its original identity/cost without resurrecting the card or stock.
+    const product = typeof item.product_id === 'string' ? this.db.prepare(`
       SELECT id, sku, name FROM products
-      WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+      WHERE id = ? AND tenant_id = ?
       LIMIT 1
-    `).get(item.product_id, tenantId) as { id: string; sku: string; name: string } | undefined
-    if (!product) return
+    `).get(item.product_id, tenantId) as { id: string; sku: string; name: string } | undefined : undefined
+    // Explicit null is a valid free-price line. A missing/unknown non-null
+    // reference is not: never acknowledge it as a successfully copied receipt.
+    if (item.product_id !== null && !product) throw new Error('У копії чека відсутній пов’язаний товар. Імпорт зупинено без втрати рядків; потрібна повна копія історії.')
     const updatedAt = timestamp(item, importedAt)
     const hasPurchasePrice = Object.prototype.hasOwnProperty.call(item, 'purchase_price')
       || Object.prototype.hasOwnProperty.call(item, 'cost_price')
@@ -1382,9 +1386,9 @@ export class LocalBootstrapRepository {
       item.id,
       tenantId,
       item.sale_id,
-      product.id,
-      item.description ?? item.product?.name ?? product.name,
-      item.sku ?? item.product?.sku ?? product.sku,
+      product?.id ?? null,
+      item.description ?? item.product?.name ?? product?.name ?? null,
+      item.sku ?? item.product?.sku ?? product?.sku ?? null,
       item.qty ?? 0,
       item.unit_price ?? 0,
       item.purchase_price ?? item.cost_price ?? 0,

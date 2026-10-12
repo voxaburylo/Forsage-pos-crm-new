@@ -5,6 +5,7 @@
 
 import { db } from '../../db/supabase.js'
 import { fetchSupplierCatalogCopy, mergeCatalogSupplierParents } from './supplierCatalogCopy.js'
+import { includeHistoricalProductParents } from './historicalProductParents.js'
 import { hashSecret, isSupportedSecretHash } from '../../lib/secretHash.js'
 import { AppError } from '../../middleware/errorHandler.js'
 import { listUsers } from '../adminService.js'
@@ -820,6 +821,10 @@ export async function getBootstrapSnapshot(tenantId: string) {
 
   const { data: supplierCatalogCopy, parents: catalogSupplierParents } = supplierCatalogSnapshot
   const suppliers = mergeCatalogSupplierParents(initialSuppliers, catalogSupplierParents)
+  const historicalProducts = await includeHistoricalProductParents(tenantId, products,
+    [saleItems, customerOrderItems, supplyInvoiceItems, inventoryItems,
+      secondary.customer_return_items, secondary.writeoff_items, secondary.stock_reserves,
+      secondary.warehouse_movements], snapshotCursor)
   return {
     exported_at: snapshotCursor,
     tenant_id: tenantId,
@@ -832,7 +837,7 @@ export async function getBootstrapSnapshot(tenantId: string) {
     shifts,
     sales,
     sale_items: saleItems.map((row) => ({ ...row, sale: undefined })),
-    products,
+    products: historicalProducts,
     product_barcodes: productBarcodes,
     product_aliases: productAliases,
     product_cross_numbers: productCrossNumbers,
@@ -858,7 +863,7 @@ export async function getBootstrapSnapshot(tenantId: string) {
       shifts: shifts.length,
       sales: sales.length,
       sale_items: saleItems.length,
-      products: products.length,
+      products: historicalProducts.length,
       product_barcodes: productBarcodes.length,
       product_aliases: productAliases.length,
       product_cross_numbers: productCrossNumbers.length,
