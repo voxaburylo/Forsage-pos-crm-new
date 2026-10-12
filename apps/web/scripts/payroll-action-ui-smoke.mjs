@@ -87,7 +87,7 @@ try{
       const row=timestamps.locator('.analytics-payment-row').filter({hasText:'Timestamp '+id})
       const details=await row.locator('p').nth(1).innerText()
       assert.equal(details.split(' · ')[0],expected,`${timezoneId}: ${id} displays actual creation time in Kyiv`)
-      assert.equal((await row.locator('strong').innerText()).replace(/\s+/g,' '),'126,00 ₴')
+      assert.equal((await row.locator('strong').innerText()).replace(/\s+/g,' '),'−126,00 ₴','Advance reduces the worker balance; stored payment stays positive')
     }
     assert.deepEqual(await timestamps.evaluate(()=>fixture.salaryPayments),timestampPayments,'Date rendering leaves source data unchanged')
     assert.deepEqual(await timestamps.evaluate(()=>fixture.reads.filter(r=>r.kind==='summary'||r.kind==='salary')),[
@@ -111,13 +111,13 @@ try{
     const payout=operation('October payout for September work')
     assert.equal(await payout.locator('p').first().innerText(),'Виплата / аванс')
     assert.match(await payout.innerText(),/01\.10\.2026/,'Actual payout date stays in October while earning period is September')
-    assert.equal(await normalizedAmount(payout.locator('strong')),'126,00 ₴')
+    assert.equal(await normalizedAmount(payout.locator('strong')),'−126,00 ₴')
     await month.keyboard.press('Escape');await month.getByLabel('Наступний місяць').click();await open(month)
     assert.equal(await month.locator('.analytics-payment-row').count(),2)
     for(const [note,date] of [['First October return','02.10.2026'],['Second October return','03.10.2026']]){
       const row=operation(note)
       assert.equal(await row.locator('p').first().innerText(),'Сторно нарахування за повернення')
-      assert.ok((await row.innerText()).includes(date));assert.equal(await normalizedAmount(row.locator('strong')),'-63,00 ₴')
+      assert.ok((await row.innerText()).includes(date));assert.equal(await normalizedAmount(row.locator('strong')),'−63,00 ₴')
     }
     const balance=month.getByRole('dialog').getByText('До виплати',{exact:true}).locator('..').locator('strong')
     assert.equal(await normalizedAmount(balance),'-126,00 ₴','Negative month balance must not be clamped or made positive')
