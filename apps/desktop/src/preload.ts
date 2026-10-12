@@ -173,6 +173,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     tireCashHandover: (input: unknown) => ipcRenderer.invoke('desktop:staff:tire-cash-handover', input),
     createSalary: (input: unknown) => ipcRenderer.invoke('desktop:staff:create-salary', input),
     dailyPayout: (input: unknown) => ipcRenderer.invoke('desktop:staff:daily-payout', input),
+    resolveOperation: (kind: 'salary' | 'daily-salary', operationId: string) => ipcRenderer.invoke('desktop:staff:resolve-operation', kind, operationId),
     deleteSalary: (id: string) => ipcRenderer.invoke('desktop:staff:delete-salary', id),
   },  warehouse: {
     listConsumptions: (input: unknown) => ipcRenderer.invoke('desktop:warehouse:list-consumptions', input),

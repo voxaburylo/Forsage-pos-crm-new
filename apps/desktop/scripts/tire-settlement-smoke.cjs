@@ -605,6 +605,90 @@ app.whenReady().then(() => {
     assertReplays()
   }, { openingCash: 20000, openingTime: '2026-09-29T08:00:00.000Z' })
 
+  for (const kind of ['salary', 'daily-salary']) {
+    runCase(`${kind}: lost committed reply resolves once; absent and corrupt attempts stay safe across native reopen`, f => {
+      // General payroll fixture: the existing cashier is the authenticated owner,
+      // and the recipient has an ordinary daily rate (not tyre-service maturity).
+      f.db.prepare("UPDATE staff_users SET role='owner' WHERE id=?").run(CASHIER)
+      f.db.prepare("UPDATE staff_users SET role='cashier',base_rate=12650 WHERE id=?").run(WORKER)
+      const beforeMidnight = '2026-09-30T20:59:59.000Z'
+      const afterMidnight = '2026-09-30T21:00:00.000Z'
+      const operationId = `synthetic-recovery-${kind}`
+      const absentId = `synthetic-absent-${kind}`
+      const receiptKey = id => `mutation:${kind}:${tenant}:${id}`
+      const request = { operation_id: operationId, tenant_id: tenant,
+        employee_id: WORKER, employee_name: 'Synthetic salary recipient', user_id: CASHIER,
+        method: 'cash', shift_id: f.shift, work_date: '2026-09-30' }
+      const write = id => kind === 'salary'
+        ? f.staff.createSalary({ ...request, operation_id: id, amount: 12650, type: 'advance',
+          period: '2026-09', note: 'Synthetic retained form' })
+        : f.staff.dailyPayout({ ...request, operation_id: id, fund_source: 'cashbox' })
+      const businessSnapshot = () => {
+        const { app_meta, ...business } = f.snapshot()
+        return business
+      }
+      equal(f.pos.getExpectedCash(CASHIER).expected_amount, 50000)
+      let saved
+      // Model the boundary precisely: real repository commit, lost delivery of
+      // its result. This is repository/packaged evidence, not a renderer IPC test.
+      assert.throws(() => {
+        saved = write(operationId)
+        throw new Error('SYNTHETIC_SALARY_REPLY_LOST_AFTER_COMMIT')
+      }, /SYNTHETIC_SALARY_REPLY_LOST_AFTER_COMMIT/); checks++
+      const persistedResult = JSON.parse(JSON.stringify(saved))
+      const payment = kind === 'salary' ? persistedResult : persistedResult.payment
+      equal(pick(payment, ['amount', 'period', 'work_date', 'created_at', 'created_by']),
+        { amount: 12650, period: '2026-09', work_date: '2026-09-30',
+          created_at: beforeMidnight, created_by: CASHIER })
+      equal(f.pos.getExpectedCash(CASHIER).expected_amount, 37350)
+      equal(f.db.prepare("SELECT COUNT(*) n FROM cash_operations WHERE type='salary_payout'").get().n, 1)
+      equal(f.db.prepare('SELECT COUNT(*) n FROM salary_payments').get().n, kind === 'salary' ? 1 : 2)
+      const committed = f.snapshot()
+      f.setTime(afterMidnight)
+      for (const reopened of [false, true]) {
+        if (reopened) f.restart()
+        equal(f.staff.resolveOperation(kind, operationId, CASHIER, tenant),
+          { status: 'committed', result: persistedResult })
+        equal(f.staff.resolveOperation(kind, operationId, CASHIER, tenant),
+          { status: 'committed', result: persistedResult }, 'Repeated resolution returns the original outcome')
+        equal(f.pos.getExpectedCash(CASHIER).expected_amount, 37350)
+        equal(f.snapshot(), committed, 'Resolving a lost committed reply never adds salary, cash, outbox or receipt writes')
+      }
+
+      const beforeFence = businessSnapshot()
+      const oldMeta = f.snapshot().app_meta
+      equal(f.staff.resolveOperation(kind, absentId, CASHIER, tenant), { status: 'not_committed' })
+      equal(businessSnapshot(), beforeFence, 'An absence check creates no financial/business writes')
+      const fence = f.db.prepare('SELECT key,value_json,updated_at FROM app_meta WHERE key=?').get(receiptKey(absentId))
+      equal(pick(fence, ['key', 'value_json', 'updated_at']), {
+        key: receiptKey(absentId), value_json: JSON.stringify({ cancelled: true, cancelled_by: CASHIER }), updated_at: afterMidnight,
+      })
+      equal(f.snapshot().app_meta.filter(row => row.key !== receiptKey(absentId)), oldMeta,
+        'The cancellation fence is the only metadata change')
+      const fenced = f.snapshot()
+      for (const reopened of [false, true]) {
+        if (reopened) f.restart()
+        equal(f.staff.resolveOperation(kind, absentId, CASHIER, tenant), { status: 'not_committed' })
+        assert.throws(() => write(absentId), /закрито без проведення/); checks++
+        equal(f.pos.getExpectedCash(CASHIER).expected_amount, 37350)
+        equal(f.snapshot(), fenced, 'A delayed original request remains blocked after real native reopen')
+      }
+
+      // Existing receipt corruption must stay unknown: no cancellation marker,
+      // no guessed success and no attempted re-payment while examining evidence.
+      f.db.prepare('UPDATE app_meta SET value_json=? WHERE key=?').run('{synthetic-corrupt-receipt', receiptKey(operationId))
+      const damaged = f.snapshot()
+      for (const reopened of [false, true]) {
+        if (reopened) f.restart()
+        assert.throws(() => f.staff.resolveOperation(kind, operationId, CASHIER, tenant), /Пошкоджений/); checks++
+        equal(f.pos.getExpectedCash(CASHIER).expected_amount, 37350)
+        equal(f.snapshot(), damaged, 'Damaged committed evidence remains untouched before and after reopen')
+      }
+      equal(f.db.prepare("SELECT COUNT(*) n FROM cash_operations WHERE type='salary_payout'").get().n, 1)
+      equal(f.db.prepare('SELECT COUNT(*) n FROM salary_payments').get().n, kind === 'salary' ? 1 : 2)
+    }, { openingCash: 50000, openingTime: '2026-09-30T20:59:59.000Z' })
+  }
+
   console.log(JSON.stringify({ ok: true, runtime: 'electron-application', build, checks, cases: reports,
     realTemporaryLocalDatabase: true, realPackagedCheckout: true, shopDatabaseOpened: false,
     networkRequests: false, realComCalls: 0, realRegistryCalls: 0, realWorkerProcesses: 0, physicalPrinterJobs: 0 }))

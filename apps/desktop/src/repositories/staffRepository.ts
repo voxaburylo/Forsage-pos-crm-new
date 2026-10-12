@@ -775,6 +775,66 @@ export class LocalStaffRepository {
     }
     throw new Error('Готівку шиномонтажу вже враховано в касі під час оформлення чека. Повторне внесення заборонено.')
   }
+  // Resolve on the authoritative SQLite without replaying a financial write.
+  // Missing receipts are fenced in the same transaction, including delayed LAN requests.
+  resolveOperation(kind: 'salary' | 'daily-salary', operationId: string, userId: string, tenantId = DEFAULT_TENANT_ID): { status: 'committed'; result: any } | { status: 'not_committed' } {
+    if (!['salary', 'daily-salary'].includes(kind) || typeof operationId !== 'string'
+      || !operationId.trim() || operationId.length > 200 || typeof userId !== 'string' || !userId.trim()
+      || typeof tenantId !== 'string' || !tenantId.trim()) throw new Error('Некоректна операція зарплати')
+    const record = (value: unknown): value is Record<string, any> => Boolean(value && typeof value === 'object' && !Array.isArray(value))
+    const damaged = (): never => { throw new Error('Пошкоджений запис результату операції зарплати. Попередню спробу збережено для перевірки.') }
+    return this.db.transaction(() => {
+      if (!this.db.prepare('SELECT id FROM staff_users WHERE id = ? AND tenant_id = ?').get(userId, tenantId)) {
+        throw new Error('Операція належить іншому працівнику або магазину')
+      }
+      const key = 'mutation:' + kind + ':' + tenantId + ':' + operationId
+      const row = this.db.prepare('SELECT value_json FROM app_meta WHERE key = ?').get(key) as { value_json: string } | undefined
+      if (row) {
+        let saved: unknown
+        try { saved = JSON.parse(row.value_json) } catch { damaged() }
+        if (!record(saved)) return damaged()
+        if (saved.cancelled === true) {
+          if (Object.keys(saved).sort().join(',') !== 'cancelled,cancelled_by'
+            || typeof saved.cancelled_by !== 'string' || !saved.cancelled_by.trim()) return damaged()
+          if (saved.cancelled_by !== userId) throw new Error('Операція належить іншому працівнику')
+          return { status: 'not_committed' as const }
+        }
+        if (Object.keys(saved).sort().join(',') !== 'fingerprint,result'
+          || typeof saved.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(saved.fingerprint)
+          || !record(saved.result)) return damaged()
+        const result = saved.result
+        const payment = kind === 'salary' ? result : result.payment
+        if (!record(payment) || typeof payment.id !== 'string' || !payment.id.trim()
+          || !Number.isSafeInteger(payment.amount) || payment.amount <= 0) return damaged()
+        // A soft-deleted committed payment remains committed history, never "not committed".
+        const document = this.db.prepare(`
+          SELECT id, employee_id, employee_name, amount, type, method, period, note,
+                 work_date, source, shift_id, cash_operation_id, created_at,
+                 commission_source_sale_id, commission_source_order_id, commission_source_return_id, created_by
+          FROM salary_payments WHERE id = ? AND tenant_id = ?
+        `).get(payment.id, tenantId) as Record<string, unknown> | undefined
+        if (!document || document.created_by !== userId) {
+          throw new Error('Операція належить іншому працівнику або її документ недоступний')
+        }
+        if (Object.entries(document).some(([field, value]) => payment[field] !== value)
+          || document.source !== (kind === 'salary' ? 'manual' : 'daily_payout')) return damaged()
+        if (kind === 'daily-salary' && (Object.keys(result).sort().join(',') !== 'amount,earned,payment,penalty,previously_paid'
+          || document.type !== 'advance' || result.amount !== payment.amount
+          || ![result.amount, result.earned, result.previously_paid, result.penalty].every(Number.isSafeInteger)
+          || result.previously_paid < 0 || result.penalty < 0
+          || result.amount !== result.earned - result.previously_paid - result.penalty)) return damaged()
+        return { status: 'committed' as const, result }
+      }
+      const value = JSON.stringify({ cancelled: true, cancelled_by: userId }), timestamp = nowIso()
+      const inserted = this.db.prepare('INSERT INTO app_meta(key, value_json, updated_at) VALUES (?, ?, ?)').run(key, value, timestamp)
+      const stored = this.db.prepare('SELECT value_json, updated_at FROM app_meta WHERE key = ?').get(key) as { value_json: string; updated_at: string } | undefined
+      if (inserted.changes !== 1 || stored?.value_json !== value || stored.updated_at !== timestamp) {
+        throw new Error('Не вдалося зберегти заборону повторної операції зарплати. Перевірку не завершено.')
+      }
+      return { status: 'not_committed' as const }
+    })
+  }
+
   createSalary(input: {
     operation_id?: string
     tenant_id?: string

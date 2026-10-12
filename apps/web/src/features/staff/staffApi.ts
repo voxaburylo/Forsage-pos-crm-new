@@ -1,8 +1,8 @@
 import { api } from '@/lib/api'
 import { desktopBridge } from '@/lib/desktopBridge'
-import { durableLocalRequest } from '@/lib/durableLocalRequest'
 import { useAuthStore } from '@/stores/authStore'
 import { collectSalaryHistory } from './salaryHistory'
+import { submitSalaryRequest, type SalaryRequestKind } from './salaryRequest'
 
 export interface EmployeeSummary { employee_id:string; employee_name:string; salary:number; bonus:number; advance:number; penalty:number; earned:number; paid:number; balance:number; total:number }
 export interface SalaryPayment { id:string; employee_id:string; employee_name:string; amount:number; type:'salary'|'bonus'|'advance'|'penalty'; source?:string|null; method:'cash'|'card'|'transfer'; period:string; note:string|null; created_at:string }
@@ -64,6 +64,29 @@ export interface DailyPayoutInput {
 
 function localStaff() { return desktopBridge()?.staff }
 
+function salaryRequestSession() {
+  const session = useAuthStore.getState().session
+  const userId = session?.user?.id
+  if (!userId) throw new Error('Увійдіть у програму для збереження зарплати.')
+  const tenantId = session.user.app_metadata?.tenant_id
+  return { userId, sameSession: () => {
+    const current = useAuthStore.getState().session
+    return current?.user?.id === userId && current.user.app_metadata?.tenant_id === tenantId
+  } }
+}
+
+function localSalaryRequest(kind: SalaryRequestKind, body: unknown, local: NonNullable<ReturnType<typeof localStaff>>,
+  send: (body: Record<string, unknown>) => Promise<unknown>) {
+  const session = salaryRequestSession()
+  // Keep the established scope so an upgrade also reconciles older pending attempts.
+  const payload = kind === 'daily-salary' ? { ...body as object, user_id: session.userId } : body
+  return submitSalaryRequest(kind, kind + ':' + session.userId, payload, {
+    send: (operation_id, request) => send({ ...request as object, operation_id }),
+    resolve: local.resolveOperation ? operationId => local.resolveOperation!(kind, operationId) : undefined,
+    sameSession: () => session.sameSession() && localStaff() === local,
+  })
+}
+
 export const staffApi = {
   async summary(period: string): Promise<{ data: EmployeeSummary[] }> {
     const local = localStaff()?.salarySummary
@@ -110,16 +133,14 @@ export const staffApi = {
     await api.post('/api/v1/auth/set-pin', { user_id: userId, pin })
   },
   async createSalary(body: any): Promise<{ data: SalaryPayment }> {
-    const local = localStaff()?.createSalary
-    if (local) return { data: await durableLocalRequest('salary:' + useAuthStore.getState().session?.user?.id, body, operation_id => local({ ...body, operation_id })) as SalaryPayment }
+    const local = localStaff()
+    if (local?.createSalary) return { data: await localSalaryRequest('salary', body, local, local.createSalary) as unknown as SalaryPayment }
     return api.post<{ data: SalaryPayment }>('/api/v1/salary', body)
   },
   async dailyPayout(body: DailyPayoutInput): Promise<{ data: { amount: number; fund_source?: SalaryFundSource } }> {
-    const local = localStaff()?.dailyPayout
-    if (local) {
-      const user_id = useAuthStore.getState().session?.user?.id
-      const payload = { ...body, user_id }
-      return { data: await durableLocalRequest('daily-salary:' + user_id, payload, operation_id => local({ ...payload, operation_id })) as { amount: number; fund_source?: SalaryFundSource } }
+    const local = localStaff()
+    if (local?.dailyPayout) {
+      return { data: await localSalaryRequest('daily-salary', body, local, local.dailyPayout) as { amount: number; fund_source?: SalaryFundSource } }
     }
     return api.post<{ data: { amount: number; fund_source?: SalaryFundSource } }>('/api/v1/salary/daily-payout', body)
   },

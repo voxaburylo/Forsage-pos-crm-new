@@ -1361,6 +1361,10 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:staff:tire-cash-handover', (_event, input: any) => requireLocalStaff().tireCashHandover({ ...input, user_id: requireDesktopSession().id }))
   handleDesktopIpc('desktop:staff:create-salary', (_event, input: any) => requireLocalStaff().createSalary({ ...input, user_id: requireDesktopSession().id }))
   handleDesktopIpc('desktop:staff:daily-payout', (_event, input: any) => requireLocalStaff().dailyPayout({ ...input, user_id: requireDesktopSession().id }))
+  handleDesktopIpc('desktop:staff:resolve-operation', (_event, kind: 'salary' | 'daily-salary', operationId: string) => {
+    const session = requireDesktopSession()
+    return requireLocalStaff().resolveOperation(kind, operationId, session.id, session.tenant_id)
+  })
   handleDesktopIpc('desktop:staff:delete-salary', (_event, id: string) => requireLocalStaff().deleteSalary(id))
   for (const kind of ['movement', 'reserve', 'consumption'] as const) {
     handleDesktopIpc('desktop:warehouse:resolve-' + kind, (_event, operationId: string) =>
