@@ -6,6 +6,7 @@ const os = require('node:os')
 const assert = require('node:assert/strict')
 const { spawn } = require('node:child_process')
 const { createRequire } = require('node:module')
+const { finished } = require('node:stream/promises')
 const { build, Platform, Arch } = require('electron-builder')
 const builderRequire = createRequire(require.resolve('electron-builder'))
 const libraryRequire = createRequire(builderRequire.resolve('app-builder-lib'))
@@ -83,7 +84,8 @@ if(!app.requestSingleInstanceLock()){
   const electronRoot = path.dirname(require('electron'))
   fs.cpSync(electronRoot, runtime, { recursive: true })
   fs.renameSync(path.join(runtime, 'electron.exe'), path.join(runtime, 'ForsagePortableProbe.exe'))
-  await asar.createPackage(appSource, path.join(runtime, 'resources/app.asar'))
+  const archiveWriter = await asar.createPackage(appSource, path.join(runtime, 'resources/app.asar'))
+  await finished(archiveWriter)
   const output = path.join(root, 'output')
   await build({ projectDir: appSource, prepackaged: runtime, targets: Platform.WINDOWS.createTarget('portable', Arch.x64), config: {
     appId: 'ua.forsage.portable-lifecycle-probe', productName: 'ForsagePortableProbe',

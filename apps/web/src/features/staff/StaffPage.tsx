@@ -15,7 +15,7 @@ import { toast } from '@/components/ui/Toast'
 import { staffApi } from './staffApi'
 import type { EmployeeSummary, SalaryPayment, DailySummary } from './staffApi'
 import { formatMoney } from '@/lib/utils'
-import { formatBusinessDate } from '@/lib/businessDate'
+import { businessDateKey, formatBusinessDate } from '@/lib/businessDate'
 import { shiftApi } from '@/features/pos/shiftApi'
 import { normalizedStaffPhone, staffPaySettings, staffTransactionAmount } from './staffFormModel'
 import { payrollOperationLabel } from './payrollOperationLabel'
@@ -35,8 +35,7 @@ const METHOD_LABELS: Record<string,string> = { cash:'Готівка', card:'Ка
 
 function currentPeriod() { return localDate().slice(0,7) }
 function localDate() {
-  const d = new Date()
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+  return businessDateKey()
 }
 function periodLabel(p:string) {
   const [y,m] = p.split('-')
@@ -185,12 +184,13 @@ export default function StaffPage() {
   async function handleAddTransaction() {
     if (!selectedUser) return
     await performAction(async isCurrent => {
+      const workDate = localDate()
       const amount = staffTransactionAmount(actionForm.amount)
       const shift = actionForm.type === 'advance' && actionForm.method === 'cash' ? await shiftApi.current() : null
       if (!isCurrent()) return
       const shiftId = (shift as any)?.data?.id ?? null
       if (actionForm.type === 'advance' && actionForm.method === 'cash' && !shiftId) throw new Error('Спочатку відкрийте касову зміну')
-      await staffApi.createSalary({employee_id:selectedUser.id,employee_name:selectedUser.full_name||selectedUser.email,amount,type:actionForm.type,method:actionForm.method,period:actionForm.period||period,note:actionForm.note||null,shift_id:shiftId,work_date:localDate()})
+      await staffApi.createSalary({employee_id:selectedUser.id,employee_name:selectedUser.full_name||selectedUser.email,amount,type:actionForm.type,method:actionForm.method,period:actionForm.period||period,note:actionForm.note||null,shift_id:shiftId,work_date:workDate})
       if (!isCurrent()) return
       toast.success('Операцію збережено'); setActionForm({...actionForm,amount:'',note:''}); await loadData()
     }, 'Помилка збереження операції')
@@ -198,12 +198,13 @@ export default function StaffPage() {
   async function handleDailyPayout(fundSource:'cashbox'|'owner_funds') {
     if (!selectedUser) return
     await performAction(async isCurrent => {
+      const workDate = localDate()
       const shift = await shiftApi.current()
       if (!isCurrent()) return
       const shiftId = (shift as any)?.data?.id ?? null
       if (!shiftId) throw new Error('Спочатку відкрийте касову зміну')
       if (fundSource === 'owner_funds' && !window.confirm(`Внести власні кошти власника та виплатити заробіток ${selectedUser.full_name}? Залишок каси не зміниться.`)) return
-      const result = await staffApi.dailyPayout({employee_id:selectedUser.id,employee_name:selectedUser.full_name||selectedUser.email,method:'cash',fund_source:fundSource,shift_id:shiftId,work_date:localDate()})
+      const result = await staffApi.dailyPayout({employee_id:selectedUser.id,employee_name:selectedUser.full_name||selectedUser.email,method:'cash',fund_source:fundSource,shift_id:shiftId,work_date:workDate})
       if (!isCurrent()) return
       toast.success(fundSource==='owner_funds'?`Видано власними коштами ${formatMoney(result.data.amount)}`:`Видано з каси ${formatMoney(result.data.amount)}`); await loadData()
     }, 'Помилка виплати')

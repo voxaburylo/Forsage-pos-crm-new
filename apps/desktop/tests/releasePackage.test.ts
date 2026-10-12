@@ -2,7 +2,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
-import { afterEach, expect, it } from 'vitest'
+import { Writable } from 'node:stream'
+import { finished } from 'node:stream/promises'
+import { afterEach, expect, it, vi } from 'vitest'
 
 const require = createRequire(import.meta.url)
 const { writeBuildInfo } = require('../scripts/build-info.cjs')
@@ -26,16 +28,50 @@ async function fixture(includeWorkers = true, includeSyncWorker = true) {
   }
   const info = writeBuildInfo(project, new Date('2026-10-02T10:00:00Z'))
   const archive = path.join(root, 'app.asar')
-  await asar.createPackage(project, archive)
+  const output = await asar.createPackage(project, archive)
+  // ASAR resolves with its writer before the final bytes have finished writing.
+  await finished(output)
   return { project, dist, archive, info }
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const root of roots.splice(0)) {
     if (path.dirname(root) === path.resolve(tmpdir()) && path.basename(root).startsWith('forsage-package-test-')) {
       rmSync(root, { recursive: true, force: true })
     }
   }
+})
+
+it('waits for the returned archive writer before exposing the fixture', async () => {
+  const createPackage = asar.createPackage.bind(asar)
+  let releaseWrite!: () => void
+  let signalWriterReturned!: () => void
+  const writerReturned = new Promise<void>(resolve => { signalWriterReturned = resolve })
+  const writer = new Writable({ final(callback) { releaseWrite = callback } })
+  vi.spyOn(asar, 'createPackage').mockImplementation(async (project, archive) => {
+    const output = await createPackage(project, archive)
+    await finished(output)
+    // Hold completion explicitly, independent of filesystem speed or CI load.
+    writer.end()
+    signalWriterReturned()
+    return writer
+  })
+  let ready = false
+  const pending = fixture().then(value => { ready = true; return value })
+  try {
+    await writerReturned
+    // A turn boundary lets every promise callback run; _final remains gated.
+    await new Promise<void>(resolve => setImmediate(resolve))
+    expect(writer.writableFinished).toBe(false)
+    expect(ready).toBe(false)
+  } finally {
+    releaseWrite?.()
+    await pending
+  }
+  const f = await pending
+  expect(writer.writableFinished).toBe(true)
+  expect(verifyPackage(f.archive, f.project)).toEqual(f.info)
 })
 
 it('accepts only the complete package of the selected verified build', async () => {

@@ -30,14 +30,14 @@ import Form from'/src/features/customers/CustomerFormPage.tsx';import{QuickCusto
 function App(){const[open,setOpen]=useState(true),[id,setId]=useState('a'),[mounted,setMounted]=useState(true);const navigate=useNavigate(),location=useLocation();useEffect(()=>{fixture.go=navigate;fixture.show=setOpen;fixture.switchCustomer=setId;fixture.unmount=()=>setMounted(false)},[navigate]);const close=()=>{fixture.closes++;setOpen(false)};return <><div data-testid="location">{location.pathname}</div>{mounted&&(fixture.mode==='quick'?<QuickCustomerModal open={open} onClose={close} onCreated={c=>fixture.selected.push(c)}/>:fixture.mode==='edit'?<QuickCustomerEditModal open={open} customer={fixture.customer(id)} onClose={close} onSaved={c=>fixture.selected.push(c)}/>:fixture.mode==='confirm'?<ConfirmDialog open={open} title="Test confirmation" onClose={close} onConfirm={()=>fixture.defer('confirm',{})}/>:fixture.mode==='staff'?<Staff/>:<Routes><Route path='/customers/new' element={<Form/>}/><Route path='/customers/:id/edit' element={<Form/>}/><Route path='*' element={<p>Destination</p>}/></Routes>)}</>}
 createRoot(document.getElementById('root')).render(<MemoryRouter initialEntries={[fixture.route]}><App/></MemoryRouter>);`
 const bootstrap=`
-window.fixture={mode:window.testMode,route:window.testRoute??'/customers/new',pending:[],reads:[],errors:[],warnings:[],messages:[],selected:[],closes:0,salaryPayments:window.testSalaryPayments??[]};
+window.fixture={mode:window.testMode,route:window.testRoute??'/customers/new',pending:[],reads:[],salaryReads:[],errors:[],warnings:[],messages:[],selected:[],closes:0,salaryPayments:window.testSalaryPayments??[]};
 fixture.customer=id=>({id,phone:'+38067111111'+(id==='a'?'1':'2'),full_name:'Client '+id,email:'',notes:'',tags:[],card_barcode:null,discount_pct:0,client_status:'client',loyalty_mode:'discount',bonus_balance:0,debt_balance:0,updated_at:'version-'+id});
 fixture.defer=(kind,body)=>new Promise((resolve,reject)=>fixture.pending.push({kind,body,resolve,reject}));
 fixture.customers={list:async()=>({data:[]}),get:id=>fixture.mode==='full'?new Promise((resolve,reject)=>fixture.reads.push({id,resolve,reject})):Promise.resolve({data:fixture.customer(id)}),create:body=>fixture.defer('customer-create',body),update:(id,body)=>fixture.defer('customer-update',{id,...body})};
 fixture.vehicles={list:id=>fixture.defer('garage',{id}),create:(id,body)=>fixture.defer('car-create',{id,...body}),update:(id,carId,body)=>fixture.defer('car-update',{id,carId,...body}),delete:(id,carId)=>fixture.defer('car-delete',{id,carId})};
 fixture.worker={id:'worker',full_name:'Test Worker',phone:'+380674444444',email:'',role:'cashier',is_active:true,base_rate:10000,rate_period:'day'};
 fixture.admin={listUsers:async()=>({data:[fixture.worker]}),createUser:body=>fixture.defer('staff-create',body),saveUserSettings:(id,body,rules)=>fixture.defer('staff-settings',{id,body,rules}),resetPassword:(id,password)=>fixture.defer('password',{id,password}),deleteUser:id=>fixture.defer('archive',{id}),restoreUser:id=>fixture.defer('restore',{id})};
-fixture.staff={summary:async()=>({data:[]}),listSalary:async()=>({data:fixture.salaryPayments}),dailySummary:async()=>({data:[{employee_id:'worker',earned:12600,paid:0,balance:12600}]}),setPin:(id,pin)=>fixture.defer('pin',{id,pin}),createSalary:body=>fixture.defer('salary',body),dailyPayout:body=>fixture.defer('payout',body),deleteSalary:id=>fixture.defer('salary-delete',{id})};
+fixture.staff={summary:async period=>{fixture.salaryReads.push({kind:'summary',period});return {data:[]}},listSalary:async period=>{fixture.salaryReads.push({kind:'history',period});return {data:fixture.salaryPayments}},dailySummary:async date=>{fixture.salaryReads.push({kind:'daily',date});return {data:[{employee_id:'worker',earned:12600,paid:0,balance:12600}]}},setPin:(id,pin)=>fixture.defer('pin',{id,pin}),createSalary:body=>fixture.defer('salary',body),dailyPayout:body=>fixture.defer('payout',body),deleteSalary:id=>fixture.defer('salary-delete',{id})};
 `
 const server=await createServer({cacheDir:createSmokeCache(),configFile:false,root:path.join(root,'apps/web'),logLevel:'error',esbuild:{jsx:'automatic'},resolve:{alias:{'@':path.join(root,'apps/web/src')}},server:{host:'127.0.0.1',port:0},plugins:[tailwindcss(),{
   name:'customer-staff-actions',enforce:'pre',resolveId(id){if(id==='virtual:actions.tsx'||Object.hasOwn(mocks,id))return '\0'+id},
@@ -47,8 +47,9 @@ const server=await createServer({cacheDir:createSmokeCache(),configFile:false,ro
 let browser
 try{
   await server.listen();browser=await chromium.launch({headless:true});const base=server.resolvedUrls.local[0],errors=[],blocked=[]
-  async function setup(mode,route='/customers/new',salaryPayments=[],{timezoneId}={}){
+  async function setup(mode,route='/customers/new',salaryPayments=[],{timezoneId,now}={}){
     const page=await browser.newPage({viewport:{width:1400,height:1100},timezoneId})
+    if(now)await page.clock.setFixedTime(new Date(now))
     page.on('pageerror',e=>{errors.push(e.message);console.error(e.message)});page.on('dialog',d=>d.accept())
     await page.route('**/*',r=>new URL(r.request().url()).origin===new URL(base).origin?r.continue():(blocked.push(r.request().url()),r.abort()))
     await page.addInitScript(({mode,route,salaryPayments})=>{window.testMode=mode;window.testRoute=route;window.testSalaryPayments=salaryPayments},{mode,route,salaryPayments})
@@ -58,6 +59,99 @@ try{
   const double=locator=>locator.evaluate(element=>{element.click();element.click()})
   const count=(page,kind)=>page.evaluate(kind=>fixture.pending.filter(p=>p.kind===kind).length,kind)
   const wait=(page,kind,n=1)=>page.waitForFunction(({kind,n})=>fixture.pending.filter(p=>p.kind===kind).length===n,{kind,n})
+  const dayCases=[
+    ['2026-09-30T20:59:59.000Z','2026-09-30'],
+    ['2026-09-30T21:00:00.000Z','2026-10-01'],
+    ['2026-12-31T21:59:59.000Z','2026-12-31'],
+    ['2026-12-31T22:00:00.000Z','2027-01-01'],
+  ]
+  const observedDays=[],expectedDays=[]
+  for(const timezoneId of ['America/Los_Angeles','Asia/Tokyo','Europe/Moscow'])for(const [now,expectedDate] of dayCases){
+    const day=await setup('staff','/customers/new',[],{timezoneId,now})
+    await day.getByRole('button',{name:/Test Worker/}).click()
+    const reads=await day.evaluate(()=>fixture.salaryReads)
+    await day.getByRole('button',{name:/Виплати/}).click()
+    const initialPeriod=await day.locator('input[type="month"]').inputValue()
+    await day.getByLabel('Сума (грн)',{exact:true}).fill('126,50')
+    await double(day.getByRole('button',{name:'Зберегти операцію',exact:true}));await wait(day,'salary')
+    const salary=await day.evaluate(()=>fixture.pending.find(p=>p.kind==='salary').body)
+    await day.evaluate(()=>fixture.pending.find(p=>p.kind==='salary').reject(Error('Boundary salary failure')))
+    await day.waitForFunction(()=>fixture.errors.includes('Boundary salary failure'))
+    await day.keyboard.press('Escape');await day.getByRole('button',{name:/Test Worker/}).click()
+    await double(day.getByRole('button',{name:'Видати з каси',exact:true}));await wait(day,'shift')
+    await day.evaluate(()=>fixture.pending.find(p=>p.kind==='shift').resolve({data:{id:'boundary-shift'}}));await wait(day,'payout')
+    const payout=await day.evaluate(()=>fixture.pending.find(p=>p.kind==='payout').body)
+    observedDays.push({timezoneId,now,reads,initialPeriod,salaryDate:salary.work_date,salaryPeriod:salary.period,payoutDate:payout.work_date})
+    expectedDays.push({timezoneId,now,reads:[{kind:'summary',period:expectedDate.slice(0,7)},{kind:'history',period:expectedDate.slice(0,7)},{kind:'daily',date:expectedDate}],
+      initialPeriod:expectedDate.slice(0,7),salaryDate:expectedDate,salaryPeriod:expectedDate.slice(0,7),payoutDate:expectedDate})
+    assert.equal(salary.amount,12650);assert.equal(salary.employee_id,'worker');assert.equal(payout.employee_id,'worker')
+    assert.equal(await count(day,'salary'),1);assert.equal(await count(day,'shift'),1);assert.equal(await count(day,'payout'),1)
+    await day.evaluate(()=>fixture.pending.find(p=>p.kind==='payout').reject(Error('Boundary payout failure')))
+    await day.waitForFunction(()=>fixture.errors.includes('Boundary payout failure'));await day.close()
+  }
+  assert.deepEqual(observedDays,expectedDays,'Initial month, daily summary, salary creation and payout use the same Kyiv working day on every PC')
+
+  const crossedPreflights=[],expectedPreflights=[]
+  for(const [before,after,workDate] of [
+    ['2026-09-30T20:59:59.000Z','2026-09-30T21:00:00.000Z','2026-09-30'],
+    ['2026-12-31T21:59:59.000Z','2026-12-31T22:00:00.000Z','2026-12-31'],
+  ])for(const kind of ['salary','payout']){
+    const midnight=await setup('staff','/customers/new',[],{timezoneId:'Europe/Kyiv',now:before})
+    await midnight.getByRole('button',{name:/Test Worker/}).click()
+    if(kind==='salary'){
+      await midnight.getByRole('button',{name:/Виплати/}).click()
+      await midnight.getByRole('dialog').locator('select').first().selectOption('advance')
+      await midnight.getByLabel('Сума (грн)',{exact:true}).fill('126,50')
+    }
+    const action=midnight.getByRole('button',{name:kind==='salary'?'Зберегти операцію':'Видати з каси',exact:true})
+    await double(action);await wait(midnight,'shift')
+    await midnight.clock.setFixedTime(new Date(after));await double(action)
+    assert.equal(await count(midnight,'shift'),1,'Busy duplicate clicks do not start another preflight')
+    await midnight.evaluate(()=>fixture.pending.find(p=>p.kind==='shift').resolve({data:{id:'midnight-shift'}}));await wait(midnight,kind)
+    const body=await midnight.evaluate(kind=>fixture.pending.find(p=>p.kind===kind).body,kind)
+    crossedPreflights.push({kind,before,after,workDate:body.work_date,...(kind==='salary'?{period:body.period}:{})})
+    expectedPreflights.push({kind,before,after,workDate,...(kind==='salary'?{period:workDate.slice(0,7)}:{})})
+    assert.equal(await count(midnight,kind),1)
+    await midnight.evaluate(kind=>fixture.pending.find(p=>p.kind===kind).reject(Error('Midnight fixture failure')),kind)
+    await midnight.waitForFunction(()=>fixture.errors.includes('Midnight fixture failure'));await midnight.close()
+  }
+  assert.deepEqual(crossedPreflights,expectedPreflights,'An action keeps the Kyiv day captured before its awaited shift check')
+
+  // Selecting an earlier month is deliberate; only the current working day comes from Kyiv.
+  const past=await setup('staff','/customers/new',[],{timezoneId:'America/Los_Angeles',now:'2026-09-30T21:00:00.000Z'})
+  await past.getByRole('button',{name:/Test Worker/}).waitFor()
+  await past.locator('button:has(svg.lucide-chevron-left)').click()
+  await past.getByRole('button',{name:/Test Worker/}).click();await past.getByRole('button',{name:/Виплати/}).click()
+  assert.equal(await past.locator('input[type="month"]').inputValue(),'2026-09')
+  await past.locator('input[type="month"]').fill('2026-08')
+  await past.getByLabel('Сума (грн)',{exact:true}).fill('126,50')
+  await past.getByRole('dialog').locator('textarea').fill('Explicit August salary')
+  await past.getByRole('dialog').locator('select').first().selectOption('advance')
+  for(let attempt=1;attempt<=2;attempt++){
+    await double(past.getByRole('button',{name:'Зберегти операцію',exact:true}));await wait(past,'shift',attempt)
+    await past.evaluate(attempt=>fixture.pending.filter(p=>p.kind==='shift')[attempt-1].resolve({data:{id:'past-period-shift'}}),attempt)
+    await wait(past,'salary',attempt)
+    assert.deepEqual(await past.evaluate(attempt=>fixture.pending.filter(p=>p.kind==='salary')[attempt-1].body,attempt),{
+      employee_id:'worker',employee_name:'Test Worker',amount:12650,type:'advance',method:'cash',period:'2026-08',
+      note:'Explicit August salary',shift_id:'past-period-shift',work_date:'2026-10-01',
+    },'An explicit salary period is not replaced by the current working month')
+    if(attempt===1){
+      await past.evaluate(()=>fixture.pending.find(p=>p.kind==='salary').reject(Error('Retry this explicit period')))
+      await past.waitForFunction(()=>fixture.errors.includes('Retry this explicit period'))
+      assert.equal(await past.locator('input[type="month"]').inputValue(),'2026-08')
+      assert.equal(await past.getByLabel('Сума (грн)',{exact:true}).inputValue(),'126,50')
+      assert.equal(await past.getByRole('dialog').locator('textarea').inputValue(),'Explicit August salary')
+    }else{
+      await past.evaluate(()=>fixture.pending.filter(p=>p.kind==='salary')[1].resolve({data:{id:'saved-explicit-period'}}))
+      await past.waitForFunction(()=>fixture.messages.includes('Операцію збережено'))
+      await past.waitForFunction(()=>fixture.salaryReads.filter(r=>r.kind==='summary').length===3)
+    }
+  }
+  assert.equal(await count(past,'salary'),2,'One failed attempt plus one manual retry; no duplicate submissions')
+  assert.deepEqual(await past.evaluate(()=>fixture.salaryReads.filter(r=>r.kind==='summary').map(r=>r.period)),['2026-10','2026-09','2026-09'])
+  assert.equal(await past.locator('input[type="month"]').inputValue(),'2026-08')
+  await past.close()
+
   const timestampCases=[
     ['summer-before','2026-09-30T20:59:59.000Z','30.09.2026'],
     ['summer-after','2026-09-30T21:00:00.000Z','01.10.2026'],
@@ -208,5 +302,5 @@ try{
   ],'Commission reversals have one negative sign and a source-aware label; legacy types retain their labels and signed effect')
   await history.close()
   assert.deepEqual(errors,[]);assert.deepEqual(blocked,[])
-  console.log('PASS: staff actual creation dates use Kyiv at summer/winter month boundaries in LA/Tokyo PC timezones without changing work dates, periods or amounts; customer/vehicle/staff double clicks, busy forms/close, stale client/modal replies, garage readiness, exact salary decimals, invalid amount rejection, retained input on error, confirmation retry, signed commission reversal history and unchanged legacy salary types. No live data or services.')
+  console.log('PASS: 12 staff working-day/month cases in LA/Tokyo/Moscow, 4 salary/payout preflights across Kyiv midnight, explicit past period preserved through one failed attempt and manual retry; actual creation dates use Kyiv at summer/winter boundaries without rewriting stored data; customer/vehicle/staff double clicks, busy forms/close, stale client/modal replies, garage readiness, exact salary decimals, invalid amount rejection, retained input on error, confirmation retry, signed commission reversal history and unchanged legacy salary types. No live data or services.')
 }finally{await browser?.close();await server.close()}
