@@ -17,10 +17,10 @@ const mocks = {
   '@/components/Layout': 'export function Layout({children,title}){return <main><h1>{title}</h1>{children}</main>}',
   '@/components/ui/Toast': 'export const toast={error:m=>fixture.errors.push(m),success:()=>{}};export const ToastContainer=()=>null',
 }
-const entry = `import React from 'react';import {createRoot} from 'react-dom/client';
+const entry = `import React from 'react';import {createRoot} from 'react-dom/client';import {MemoryRouter} from 'react-router-dom';
 import PayrollPage from '/src/features/analytics/PayrollPage.tsx';
 import {BackupSettingsCard} from '/src/features/settings/BackupSettingsCard.tsx';
-const root=createRoot(document.getElementById('root'));fixture.backups=()=>root.render(<BackupSettingsCard/>);root.render(<PayrollPage/>);`
+const root=createRoot(document.getElementById('root'));fixture.backups=()=>root.render(<BackupSettingsCard/>);root.render(<MemoryRouter initialEntries={['/analytics/payroll?period=2026-09']}><PayrollPage/></MemoryRouter>);`
 const bootstrap = `window.fixture={errors:[],pages:[],copy:{id:'shift',closed_at:'2026-09-22T15:00:00Z',captured_at:'2026-09-22T15:01:00Z',local_ready:true,exports_ready:true,export_directory:'fixtures',cloud_completed_at:null,local_error:null,cloud_error:null}};
 fixture.bridge={staff:{salarySummary:async()=>[{employee_id:'worker',earned:45100,paid:0,balance:45100}],dailySummary:async()=>[],listSalary:async q=>{fixture.pages.push(q.page);return Array.from({length:Math.max(0,Math.min(200,451-(q.page-1)*200))},(_,i)=>({id:String((q.page-1)*200+i),employee_id:'worker',amount:100,type:'salary',method:'cash',created_at:'2026-09-22T10:00:00Z',note:'Операція '+((q.page-1)*200+i)}))}},listBackups:async()=>[{fileName:'test.db',filePath:'fixtures/test.db',sizeBytes:1000,createdAt:'2026-09-22T12:00:00Z'}],shiftBackups:{status:async()=>[fixture.copy]}};`
 const server = await createServer({cacheDir:createSmokeCache(), configFile:false,root:path.join(root,'apps/web'),logLevel:'error',esbuild:{jsx:'automatic'},resolve:{alias:{'@':path.join(root,'apps/web/src')}},server:{host:'127.0.0.1',port:0},plugins:[{
@@ -35,7 +35,7 @@ const server = await createServer({cacheDir:createSmokeCache(), configFile:false
 let browser
 try {
   await server.listen(); browser=await chromium.launch({headless:true})
-  const page=await browser.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message))
+  const page=await browser.newPage(),errors=[];page.on('pageerror',e=>{errors.push(e.message);console.error(e.message)})
   const base=server.resolvedUrls.local[0]
   await page.route('**/*',route=>new URL(route.request().url()).origin===new URL(base).origin?route.continue():route.abort())
   await page.goto(base+'stability-test')
