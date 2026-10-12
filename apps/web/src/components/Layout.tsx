@@ -3,6 +3,7 @@ import { Menu } from 'lucide-react'
 import { Sidebar } from './Sidebar'
 import { useLocation } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
+import { useViewScroll } from '@/hooks/useViewScroll'
 import {
   SubNavTabs,
   PRODUCTS_TABS,
@@ -28,6 +29,7 @@ interface Props {
 export function Layout({ children, title, actions, onBack, contentClassName = '' }: Props) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const location = useLocation()
+  const scrollRef = useViewScroll()
   const session = useAuthStore((s) => s.session)
   const role = (session?.user?.app_metadata?.role as string) ?? 'cashier'
 
@@ -44,12 +46,10 @@ export function Layout({ children, title, actions, onBack, contentClassName = ''
     SETTINGS_TABS
   ]
 
-  const activeGroup = allGroups.find(group => 
-    group.some(tab => {
-      const path = tab.to.split('?')[0]
-      return location.pathname === path
-    })
-  )
+  // The most specific section owns its nested cards (invoices are not suppliers).
+  const activeGroup = allGroups.flatMap(group => group.map(tab => ({ group, path: tab.to.split('?')[0] })))
+    .filter(({ path }) => location.pathname === path || location.pathname.startsWith(path + '/'))
+    .sort((a, b) => b.path.length - a.path.length)[0]?.group
 
   return (
     <div className="flex h-screen h-[100dvh] overflow-hidden bg-gray-100">
@@ -95,7 +95,7 @@ export function Layout({ children, title, actions, onBack, contentClassName = ''
           )}
         </header>
 
-        <main id="app-main-scroll" className={`min-h-0 min-w-0 flex-1 p-4 md:p-6 overflow-auto pb-safe ${contentClassName}`}>
+        <main ref={scrollRef} id="app-main-scroll" className={`min-h-0 min-w-0 flex-1 p-4 md:p-6 overflow-auto pb-safe ${contentClassName}`}>
           {activeGroup && <SubNavTabs tabs={activeGroup} currentRole={role} />}
           {children}
         </main>

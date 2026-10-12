@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useLatestRequest } from '@/hooks/useLatestRequest'
+import { useListViewState, useViewNavigation } from '@/hooks/useViewNavigation'
 import { useNavigate } from 'react-router-dom'
 import { Plus, Truck, GitMerge } from 'lucide-react'
 import { supplierApi } from './supplierApi'
@@ -13,6 +14,7 @@ export default function SuppliersPage() {
   const session = useAuthStore((s) => s.session)
   const role = (session?.user?.app_metadata?.role as string) ?? 'cashier'
   const navigate = useNavigate()
+  const viewNavigation = useViewNavigation('/suppliers')
   
   useEffect(() => {
     if (role === 'storekeeper') {
@@ -20,8 +22,10 @@ export default function SuppliersPage() {
     }
   }, [role, navigate])
   const [result, setResult]     = useState<PaginatedSuppliers | null>(null)
-  const [search, setSearch]     = useState('')
-  const [page, setPage]         = useState(1)
+  const [view, setView] = useListViewState('suppliers:list', { search: '', page: 1 })
+  const { search, page } = view
+  const setSearch = (search: string) => setView(previous => ({ ...previous, search, page: 1 }))
+  const setPage = (next: (page: number) => number) => setView(previous => ({ ...previous, page: next(previous.page) }))
   const [loading, setLoading]   = useState(false)
   const [deleting, setDeleting] = useState<string | null>(null)
   const [mergeOpen, setMergeOpen] = useState(false)
@@ -49,7 +53,6 @@ export default function SuppliersPage() {
   }, [search, page])
 
   useEffect(() => { load() }, [load])
-  useEffect(() => { setPage(1) }, [search])
 
   // Повний список для вибору в злитті дублів
   useEffect(() => {
@@ -112,7 +115,7 @@ export default function SuppliersPage() {
     {
       key: 'name', header: 'Назва',
       render: (s: Supplier) => (
-        <button onClick={() => navigate(`/suppliers/${s.id}`)} className="text-left hover:text-yellow-600 font-medium">
+        <button onClick={() => viewNavigation.open(`/suppliers/${s.id}`)} className="text-left hover:text-yellow-600 font-medium">
           {s.name}
         </button>
       ),
@@ -140,7 +143,7 @@ export default function SuppliersPage() {
       key: 'actions', header: '', className: 'w-20 text-right',
       render: (s: Supplier) => (
         <div className="flex justify-end gap-1">
-          <button onClick={() => navigate(`/suppliers/${s.id}/edit`)}
+          <button onClick={() => viewNavigation.open(`/suppliers/${s.id}/edit`)}
             className="text-xs text-gray-400 hover:text-gray-600 px-2 py-1">✎</button>
           <button onClick={() => handleDelete(s.id, s.name)} disabled={deleting === s.id}
             className="text-xs text-red-300 hover:text-red-500 px-2 py-1 disabled:opacity-40">✕</button>
@@ -163,7 +166,7 @@ export default function SuppliersPage() {
               Об’єднати дублі
             </Button>
           )}
-          <Button icon={<Plus size={16} />} onClick={() => navigate('/suppliers/new')}>
+          <Button icon={<Plus size={16} />} onClick={() => viewNavigation.open('/suppliers/new')}>
             Додати
           </Button>
         </div>

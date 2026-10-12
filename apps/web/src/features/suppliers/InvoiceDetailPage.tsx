@@ -1,7 +1,8 @@
 import { invoiceActions, invoiceActionError } from './invoiceActions'
 import { useLatestRequest } from '@/hooks/useLatestRequest'
 import { useState, useEffect, useRef } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
+import { useViewNavigation } from '@/hooks/useViewNavigation'
 import { Tag, Trash2 } from 'lucide-react'
 import { supplierApi } from './supplierApi'
 import { sourceForPaymentMethod, methodForPaymentSource } from './supplierPaymentSelection'
@@ -23,7 +24,7 @@ const STATUS_LABEL: Record<string, string> = {
 }
 
 export default function InvoiceDetailPage() {
-  const navigate = useNavigate()
+  const { open, back } = useViewNavigation('/suppliers/invoices')
   const { id } = useParams()
   const requests = useLatestRequest(id)
   const [invoice, setInvoice] = useState<SupplyInvoice | null>(null)
@@ -54,7 +55,7 @@ export default function InvoiceDetailPage() {
     try {
       await supplierApi.deleteInvoice(id!, invoice?.edit_revision)
       toast.success('Накладну видалено')
-      navigate('/suppliers/invoices')
+      back()
     } catch (error) {
       reportActionError(error, 'Не вдалося видалити чернетку')
     } finally {
@@ -69,7 +70,7 @@ export default function InvoiceDetailPage() {
     supplierApi.getInvoice(id!).then((res) => { if (current()) setInvoice(res.data) }).catch(() => {
       if (!current()) return
       toast.error('Не вдалось завантажити накладну')
-      navigate('/suppliers/invoices')
+      back()
     }).finally(() => { if (current()) setLoading(false) })
   }
 
@@ -118,7 +119,7 @@ export default function InvoiceDetailPage() {
     setActionLoading(true)
     try {
       await supplierApi.cancelInvoice(id!, invoice?.edit_revision)
-      navigate(`/suppliers/invoices/new?clone=${id}`)
+      open(`/suppliers/invoices/new?clone=${id}`)
     } catch (error) {
       reportActionError(error, 'Не вдалося підготувати накладну до редагування')
       actionLock.current = false
@@ -174,10 +175,10 @@ export default function InvoiceDetailPage() {
     <>
     <Layout
       title={`Накладна ${invoice.invoice_number ?? '—'}`}
-      onBack={() => navigate('/suppliers/invoices')}
+      onBack={back}
       actions={
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => navigate(`/suppliers/invoices/new?clone=${id}`)}>
+          <Button variant="outline" onClick={() => open(`/suppliers/invoices/new?clone=${id}`)}>
             Створити копію
           </Button>
           {invoice.status === 'draft' && (
@@ -187,7 +188,7 @@ export default function InvoiceDetailPage() {
                   {actionLoading ? '...' : 'Видалити'}
                 </Button>
               )}
-              <Button variant="outline" onClick={() => navigate(`/suppliers/invoices/${id}/edit`)}>
+              <Button variant="outline" onClick={() => open(`/suppliers/invoices/${id}/edit`)}>
                 Редагувати
               </Button>
               <Button onClick={handlePost} disabled={actionLoading || !actions.canPost}>

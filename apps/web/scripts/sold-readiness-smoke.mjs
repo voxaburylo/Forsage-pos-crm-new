@@ -12,7 +12,7 @@ const { default: tailwindcss } = await import(pathToFileURL(require.resolve('@ta
 const mocks = {
   '@/lib/api': 'export const api={get:url=>window.fixture.read({url})}',
   '@/lib/desktopBridge': 'export const desktopProductToProduct=p=>p;export const desktopCheckoutToSale=p=>p;export const isDesktopRuntime=()=>Boolean(window.fixture.desktop);export const desktopBridge=()=>window.fixture.desktop?(window.fixture.desktop==="old"?{pos:{}}:{pos:{soldItemsReport:input=>window.fixture.read({input}).then(r=>r.data)}}):null',
-  '@/stores/authStore': 'export const useAuthStore=selector=>selector({session:{user:{app_metadata:{role:"cashier"}}}})',
+  '@/stores/authStore': 'export const useAuthStore=selector=>selector({session:{user:{app_metadata:{role:window.fixture.role}}}})',
   '@/features/analytics/AnalyticsLayout': "export const AnalyticsLayout=({children,title})=><main className='analytics-content'><h1>{title}</h1>{children}</main>",
   '@/components/ui': 'import React from "react";export {Table} from "/src/components/ui/Table.tsx";export const Card=({children,className})=>React.createElement("div",{className},children);export const Badge=({children})=>React.createElement("span",null,children)',
   '@/components/ui/Toast': 'export const toast={error:m=>window.fixture.toast=m,success:()=>{}}',
@@ -27,12 +27,19 @@ import '/src/index.css';
 import '/src/features/analytics/analyticsLayout.css';
 const root=createRoot(document.getElementById('root'));
 const totals={qty_sold:3,qty_returned:1,qty_net:2,revenue:30000,refund_total:10000,net_revenue:20000};
-const f=window.fixture={mode:'error',desktop:false,pending:[],key:0,requests:[],
+const f=window.fixture={mode:'error',role:'cashier',desktop:false,pending:[],key:0,requests:[],
  data:[{product_id:'p',name:'Фільтр WIX WA9428',sku:'WA9428',barcode:'0200000000001',unit:'шт',
  qty_on_hand:3,storage_bin:null,...totals,suppliers:[{id:'a',name:'Автокомфорт'},{id:'b',name:'Інший'}],
  sellers:[{id:'one',name:'Перший',...totals,qty_sold:1,qty_returned:0,qty_net:1,revenue:10000,refund_total:0,net_revenue:10000},
  {id:'two',name:'Другий',...totals,qty_sold:2,qty_net:1,revenue:20000,net_revenue:10000}]}]};
 f.read=request=>{
+ if(request.url?.startsWith('/api/v1/reports/sales/period?')){
+  const date=new URL(request.url,'http://synthetic.invalid').searchParams.get('from');
+  return Promise.resolve({data:{total_sales:1,total_revenue:30000,returns_count:1,returns_total:10000,
+   net_revenue:20000,payment_received_total:35000,profit:9000,by_method:{cash:30000,card:5000,transfer:0,account:0,debt:0},
+   sales:[{id:'sale',sale_number:'SYNTHETIC',total:30000,payment_method:'cash',status:'completed',completed_at:date+'T10:00:00Z',customer:null}],
+   daily:[{date,sales:1,gross_revenue:30000,returns_total:10000,revenue:20000}]}});
+ }
  f.requests.push(request);const result={data:structuredClone(f.data)};
  if(f.mode==='error')return Promise.reject(Error('offline'));
  if(f.mode==='pending')return new Promise(resolve=>f.pending.push(()=>resolve(result)));
@@ -131,7 +138,38 @@ try {
   assert.equal(await page.evaluate(()=>fixture.requests.length),0)
   console.log('PASS: corrupt reports fail closed; local reports never silently fall back to the cloud')
 
-  await page.evaluate(()=>{fixture.desktop=false;fixture.data=[];fixture.render()})
+  await page.evaluate(()=>{fixture.role='owner';fixture.desktop=false;fixture.data=structuredClone(fixture.good);fixture.render()})
+  const summaryLink=page.getByRole('button',{name:'Продані товари за сьогодні →',exact:true})
+  await summaryLink.waitFor()
+  assert.equal(await page.locator('tbody tr').count(),0,'Today is a summary, not a second sold-items table')
+  assert.equal(await page.getByTestId('sold-items-mobile').count(),0,'There is no hidden mobile duplicate list')
+  assert.match(await page.getByText('Прийнято оплат до повернень',{exact:true}).locator('..').innerText(),/350,00/)
+  assert.match(await page.getByText('Сума товарів після повернень',{exact:true}).locator('..').innerText(),/200,00/)
+  await summaryLink.click()
+  await page.getByLabel('Від',{exact:true}).fill('2026-10-01')
+  await page.getByLabel('Продавець',{exact:true}).selectOption('two')
+  await page.getByLabel('Постачальник для дозамовлення').selectOption('a')
+  await page.getByLabel('Знайти проданий товар',{exact:true}).fill('WX WA9428')
+  await page.getByRole('button',{name:'Підсумки',exact:true}).click()
+  await summaryLink.waitFor()
+  assert.equal(await page.locator('tbody tr').count(),0)
+  await exportButton.click()
+  const todayExport=await page.evaluate(()=>fixture.exported)
+  assert.equal(todayExport.length,1,'Summary export still includes all today items regardless of previous sold filters')
+  assert.equal(todayExport[0]['Чиста сума (грн)'],200)
+  assert.equal(todayExport[0]['Дата'],'2026-10-04')
+  await summaryLink.click()
+  await page.locator('tbody tr').filter({hasText:'Фільтр WIX WA9428'}).first().waitFor()
+  assert.equal(await page.getByLabel('Від',{exact:true}).inputValue(),'2026-10-04')
+  assert.equal(await page.getByLabel('До',{exact:true}).inputValue(),'2026-10-04')
+  assert.equal(await page.getByLabel('Продавець',{exact:true}).inputValue(),'')
+  assert.equal(await page.getByLabel('Постачальник для дозамовлення').inputValue(),'')
+  assert.equal(await page.getByLabel('Знайти проданий товар',{exact:true}).inputValue(),'')
+  await exportButton.click()
+  assert.equal((await page.evaluate(()=>fixture.exported))[0]['Чиста сума (грн)'],200)
+  console.log('PASS: today has no duplicate list; the sole sold view opens today with cleared filters, keeping payment metrics and export separate')
+
+  await page.evaluate(()=>{fixture.role='cashier';fixture.desktop=false;fixture.data=[];fixture.render()})
   await page.getByText('За вибраним періодом, пошуком і фільтрами операцій із товарами немає',{exact:true}).waitFor()
   assert.equal(await page.getByRole('alert').count(),0)
   assert.equal(await exportButton.isDisabled(),true)

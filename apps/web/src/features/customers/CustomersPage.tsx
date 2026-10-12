@@ -1,9 +1,8 @@
 import { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router-dom'
 import { Plus, Users, Copy, Phone, Edit, Trash2, Search, Download, X as XIcon, Car, Loader2, ArrowUp, Barcode } from 'lucide-react'
 import { customerApi } from './customerApi'
 import { customerGroupsApi, type CustomerGroup } from './customerGroupsApi'
-import { QuickCustomerEditModal } from './QuickCustomerEditModal'
 import type { Customer } from '@/types/customer'
 import { Layout } from '@/components/Layout'
 import { Button, Card } from '@/components/ui'
@@ -13,11 +12,12 @@ import { useAuthStore } from '@/stores/authStore'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { mergeCustomerPage } from './customerUi'
 import { canEditCustomerCard } from './customerEditPermissions'
+import { useListViewState, useViewNavigation } from '@/hooks/useViewNavigation'
 
 const PER_PAGE = 50
 
 export default function CustomersPage() {
-  const navigate = useNavigate()
+  const navigation = useViewNavigation('/customers')
   const session = useAuthStore((state) => state.session)
   const offlineMode = useAuthStore((state) => state.offlineMode)
   const role = (session?.user.app_metadata?.role as string | undefined) ?? 'cashier'
@@ -31,15 +31,19 @@ export default function CustomersPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [total, setTotal]         = useState(0)
   const [page, setPage]           = useState(1)
+  const [savedPage, setSavedPage] = useListViewState('customers:loaded-pages', 1)
+  const savedPageRef = useRef(savedPage)
+  useLayoutEffect(() => { savedPageRef.current = savedPage }, [savedPage])
   const [hasMore, setHasMore]     = useState(false)
   const [loading, setLoading]     = useState(false)     // перше завантаження / зміна фільтра
   const [loadingMore, setLoadingMore] = useState(false) // дозавантаження при скролі
 
-  const [search, setSearch]       = useState('')
-  const [hasDebt, setHasDebt]     = useState(sp.get('has_debt') === 'true')
+  const [search, setSearch]       = useListViewState('customers:search', '')
+  const [hasDebt, setHasDebt]     = useListViewState('customers:has-debt', () => sp.get('has_debt') === 'true')
+  const debtQuery = sp.get('has_debt')
+  useEffect(() => { if (debtQuery !== null) setHasDebt(debtQuery === 'true') }, [debtQuery, setHasDebt])
   const [groups, setGroups]       = useState<CustomerGroup[]>([])
-  const [quickEditCustomer, setQuickEditCustomer] = useState<Customer | null>(null)
-  const [activeGroup, setActiveGroup] = useState<string | null>(null)
+  const [activeGroup, setActiveGroup] = useListViewState<string | null>('customers:group', null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkGroupId, setBulkGroupId] = useState('')
   const [bulkOperating, setBulkOperating] = useState(false)
@@ -82,7 +86,7 @@ export default function CustomersPage() {
   const filterKey = JSON.stringify([search, hasDebt, activeGroup, scopeKey])
   const currentFilter = useRef(filterKey)
   useLayoutEffect(() => { currentFilter.current = filterKey }, [filterKey])
-  const fetchPage = useCallback(async (pageToLoad: number, reset: boolean) => {
+  const fetchPage = useCallback(async (pageToLoad: number, reset: boolean, restoreThrough = pageToLoad) => {
     if (!reset && loadingRef.current) return
     const request = ++requestRef.current
     const active = () => request === requestRef.current && filterKey === currentFilter.current
@@ -90,16 +94,26 @@ export default function CustomersPage() {
     if (reset) setLoading(true); else setLoadingMore(true)
     try {
       // Desktop reads SQLite only, never a browser mirror or server fallback.
-      const data = await customerApi.list({
-        search: search || undefined, has_debt: hasDebt ? 'true' : undefined,
-        sort: hasDebt ? 'debt' : undefined, group_id: activeGroup ?? undefined,
-        page: pageToLoad, per_page: PER_PAGE,
-      })
+      let loadedPage = pageToLoad
+      let rows: Customer[] = []
+      let data
+      do {
+        data = await customerApi.list({
+          search: search || undefined, has_debt: hasDebt ? 'true' : undefined,
+          sort: hasDebt ? 'debt' : undefined, group_id: activeGroup ?? undefined,
+          page: loadedPage, per_page: PER_PAGE,
+        })
+        if (!active()) return
+        rows = mergeCustomerPage(rows, data.data)
+        if (loadedPage >= restoreThrough || loadedPage >= data.pagination.total_pages) break
+        loadedPage++
+      } while (active())
       if (!active()) return
       setTotal(data.pagination.total)
-      setHasMore(pageToLoad < data.pagination.total_pages)
-      setPage(pageToLoad)
-      setCustomers((previous) => reset ? data.data : mergeCustomerPage(previous, data.data))
+      setHasMore(loadedPage < data.pagination.total_pages)
+      setPage(loadedPage)
+      setSavedPage(loadedPage)
+      setCustomers((previous) => reset ? rows : mergeCustomerPage(previous, rows))
     } catch (error) {
       if (!active()) return
       setHasMore(false)
@@ -111,17 +125,22 @@ export default function CustomersPage() {
         setLoadingMore(false)
       }
     }
-  }, [search, hasDebt, activeGroup, filterKey])
+  }, [search, hasDebt, activeGroup, filterKey, setSavedPage])
 
+  const loadedScope = useRef<string | null>(null)
   useEffect(() => {
+    const restoring = loadedScope.current === null || loadedScope.current !== scopeKey
+    const restoreThrough = restoring ? Math.max(1, savedPageRef.current) : 1
+    loadedScope.current = scopeKey
+    if (!restoring) document.getElementById('app-main-scroll')?.scrollTo({ top: 0 })
     setSelectedIds(new Set())
     setCustomers([])
     setHasMore(false)
     setPage(1)
     setLoading(true)
-    const timer = setTimeout(() => { void fetchPage(1, true) }, 250)
+    const timer = setTimeout(() => { void fetchPage(1, true, restoreThrough) }, 250)
     return () => { clearTimeout(timer); requestRef.current++; loadingRef.current = false }
-  }, [fetchPage])
+  }, [fetchPage, scopeKey])
 
   // Нескінченний скрол — довантажуємо, коли sentinel зʼявляється у видимій зоні
   useEffect(() => {
@@ -250,7 +269,7 @@ export default function CustomersPage() {
     <Layout
       title={`Клієнти${total ? ` (${total})` : ''}`}
       actions={
-        writable && <Button icon={<Plus size={16} />} onClick={() => navigate('/customers/new')}>
+        canEditCard && <Button icon={<Plus size={16} />} onClick={() => navigation.open('/customers/new')}>
           Новий клієнт
         </Button>
       }
@@ -342,12 +361,12 @@ export default function CustomersPage() {
                     <div className="flex-1 min-w-0">
                       {/* Рядок 1: імʼя + бейджі */}
                       <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-                        <span
-                          className="font-semibold text-gray-900 text-sm break-words sm:truncate cursor-pointer hover:text-yellow-700"
-                          onClick={() => writable ? setQuickEditCustomer(c) : navigate('/customers/' + c.id)}
+                        <button type="button"
+                          className="text-left font-semibold text-gray-900 text-sm break-words sm:truncate cursor-pointer hover:text-yellow-700"
+                          onClick={() => navigation.open('/customers/' + c.id)}
                         >
                           {c.full_name ?? <span className="text-gray-400 italic">Без імені</span>}
-                        </span>
+                        </button>
                         {c.vip_level && c.vip_level !== 'standard' && (
                           <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
                             c.vip_level === 'gold' ? 'bg-yellow-100 text-yellow-700' :
@@ -480,7 +499,6 @@ export default function CustomersPage() {
                           <Car size={14} />
                         </button>
                       )}
-                      <button onClick={() => navigate('/customers/' + c.id)} className="rounded-lg px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-50">Історія та розрахунки</button>
                       {c.phone && (
                         <button onClick={() => copyToClipboard(c.phone, `телефон ${c.full_name ?? c.phone}`)}
                           className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-yellow-50 text-gray-400 hover:text-yellow-600 transition-colors"
@@ -543,14 +561,6 @@ export default function CustomersPage() {
         </div>
       )}
 
-      <QuickCustomerEditModal
-        customer={quickEditCustomer}
-        open={!!quickEditCustomer}
-        onClose={() => setQuickEditCustomer(null)}
-        onSaved={(updated) => {
-          setCustomers((current) => current.map((customer) => customer.id === updated.id ? updated : customer))
-        }}
-      />
       {showScrollTop && (
         <button
           type="button"

@@ -5,7 +5,9 @@ import { Save, Wand2, Plus } from 'lucide-react'
 import { productApi } from './productApi'
 import { pricingApi } from '@/features/admin/pricingApi'
 import { adminApi } from '@/features/admin/adminApi'
-import type { ProductFormData } from '@/types/product'
+import { useViewNavigation } from '@/hooks/useViewNavigation'
+import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
+import type { Product, ProductFormData } from '@/types/product'
 import { kopecksToHryvnia } from '@/types/product'
 import { getSpecTemplate } from './productSpecs'
 import { ProductPhotoUpload } from './ProductPhotoUpload'
@@ -26,17 +28,21 @@ const EMPTY: ProductFormData = {
 export default function ProductFormPage() {
   const { id } = useParams<{ id: string }>()
   const [searchParams] = useSearchParams()
-  return <ProductForm key={JSON.stringify([id, searchParams.get('clone')])} />
+  return <ProductEditor key={JSON.stringify([id, searchParams.get('clone')])} />
 }
 
-function ProductForm() {
+export function ProductEditor({ embedded = false, disabled = false, onSaved, onBusyChange }: {
+  embedded?: boolean; disabled?: boolean; onSaved?: (product: Product) => void; onBusyChange?: (busy: boolean) => void
+}) {
   const navigate = useNavigate()
+  const { back } = useViewNavigation('/products')
   const { id } = useParams<{ id: string }>()
   const [searchParams] = useSearchParams()
   const cloneId = searchParams.get('clone')
   const isEdit = !!id && id !== 'new'
 
   const [form, setForm] = useState<ProductFormData>(EMPTY)
+  const [baseline, setBaseline] = useState(JSON.stringify(EMPTY))
   const [loading, setLoading] = useState(isEdit || !!cloneId)
   const [photoPending, setPhotoPending] = useState(false)
   const photoPendingRef = useRef(false)
@@ -51,6 +57,8 @@ function ProductForm() {
   const scopeKey = JSON.stringify([id, cloneId, role])
   const writes = useScopedAction(scopeKey)
   const saving = writes.busy
+  const guard = useUnsavedChanges(!loading && JSON.stringify(form) !== baseline, saving || photoPending)
+  useEffect(() => { onBusyChange?.(saving || photoPending || (!loading && JSON.stringify(form) !== baseline)) }, [saving, photoPending, form, baseline, loading, onBusyChange])
   const barcodeAction = useScopedAction(JSON.stringify([scopeKey, form.barcode]))
   const markupAction = useScopedAction(JSON.stringify([scopeKey, form.purchase_price, form.retail_price, form.category_id]))
   const [referencesReady, setReferencesReady] = useState(false)
@@ -127,10 +135,10 @@ function ProductForm() {
     setLoading(true)
     Promise.all([
       productApi.get(id),
-      productApi.getCrossNumbers(id),
+      embedded ? Promise.resolve({ data: [] }) : productApi.getCrossNumbers(id),
     ]).then(([{ data }, crossRes]) => {
       if (!active) return
-      setForm({
+      const next: ProductFormData = {
         sku: data.sku,
         name: data.name,
         barcode: data.barcode ?? '',
@@ -151,14 +159,16 @@ function ProductForm() {
         requires_core_return: data.requires_core_return ?? false,
         core_deposit_amount: data.core_deposit_amount ? kopecksToHryvnia(data.core_deposit_amount) : '',
         cross_numbers: (crossRes.data ?? []).map((c) => c.number).join(', '),
-      })
+      }
+      setForm(next)
+      setBaseline(JSON.stringify(next))
     }).catch(() => {
       if (!active) return
       toast.error('Не вдалося повністю завантажити товар і крос-номери. Редагування не розпочато.')
       navigate('/products')
     }).finally(() => { if (active) setLoading(false) })
     return () => { active = false }
-  }, [id, isEdit, navigate])
+  }, [id, isEdit, navigate, embedded])
 
   // Дублювання: /products/new?clone=<id> — копіюємо все, крім унікальних
   // (артикул, штрих-код) та залишку; назву позначаємо «(копія)».
@@ -254,9 +264,14 @@ function ProductForm() {
     if (!attempt) return
     try {
       const payload = productEditorPayload(form, canSeeMargin)
+      // The existing typed/source-aware cross-number tools below the card own this field.
+      if (embedded) delete payload.cross_numbers
 
       if (isEdit) {
-        await productApi.update(id, payload)
+        const { data } = await productApi.update(id, payload)
+        if (!attempt.isCurrent()) return
+        setBaseline(JSON.stringify(form))
+        onSaved?.(data)
         if (!attempt.isCurrent()) return
         toast.success('Товар оновлено')
       } else {
@@ -264,7 +279,7 @@ function ProductForm() {
         if (!attempt.isCurrent()) return
         toast.success(`Товар "${data.name}" створено`)
       }
-      navigate('/products')
+      if (!embedded) { guard.allowLeave(); back() }
     } catch (err) {
       // api.ts вже показав toast — тут тільки логуємо щоб уникнути дублювання
       // Виняток: якщо це не HTTP-помилка (status відсутній), показуємо сами
@@ -276,17 +291,19 @@ function ProductForm() {
     }
   }
 
-  if (loading) return <Layout><div className="flex items-center justify-center h-64 text-gray-400 text-sm">Завантаження...</div></Layout>
+  if (loading) {
+    const indicator = <div className="flex items-center justify-center h-64 text-gray-400 text-sm">Завантаження...</div>
+    return embedded ? indicator : <Layout>{indicator}</Layout>
+  }
 
-  return (
-    <Layout title={isEdit ? 'Редагувати товар' : 'Новий товар'}>
-      <div className="max-w-2xl">
+  const content = (
+      <div className={embedded ? '' : 'max-w-2xl'}>
         {!referencesReady && <div role={referencesError ? 'alert' : 'status'} className="mb-3 rounded-lg border p-3 text-sm">
           {referencesError ?? 'Завантаження категорій і брендів...'}
           {referencesError && <Button type="button" variant="secondary" onClick={() => setReferenceReload((value) => value + 1)}>Повторити завантаження</Button>}
         </div>}
         <form onSubmit={handleSubmit}>
-          <fieldset disabled={saving || !referencesReady} className="min-w-0" aria-busy={saving}>
+          <fieldset disabled={disabled || saving || !referencesReady} className="min-w-0" aria-busy={saving}>
           <Card className="space-y-5">
 
             {/* Фото товару */}
@@ -495,8 +512,8 @@ function ProductForm() {
               />
             </div>
 
-            {/* Аналоги / крос-номери — за цими кодами товар знайдеться в пошуку й на касі */}
-            <div>
+            {/* Existing cards use the source-aware cross-number tools below. */}
+            {!embedded && <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Аналоги / крос-номери</label>
               <textarea
                 value={form.cross_numbers ?? ''}
@@ -506,7 +523,7 @@ function ProductForm() {
                 className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent resize-none font-mono"
               />
               <p className="text-xs text-gray-400 mt-1">За цими кодами товар знаходитиметься в пошуку й на касі. Розділяйте комою, крапкою з комою або новим рядком.</p>
-            </div>
+            </div>}
 
             {/* ── Технічні характеристики (залежать від категорії) ── */}
             {specTemplate && (
@@ -579,7 +596,11 @@ function ProductForm() {
               <Button type="submit" loading={saving} disabled={photoPending || barcodeAction.busy || markupAction.busy} icon={<Save size={16} />}>
                 {isEdit ? 'Зберегти зміни' : 'Створити товар'}
               </Button>
-              <Button type="button" variant="secondary" onClick={() => navigate('/products')}>
+              <Button type="button" variant="secondary" onClick={() => {
+                if (embedded) {
+                  if (JSON.stringify(form) === baseline || confirm('Скасувати незбережені зміни?')) setForm(JSON.parse(baseline))
+                } else back()
+              }}>
                 Скасувати
               </Button>
             </div>
@@ -587,6 +608,6 @@ function ProductForm() {
           </fieldset>
         </form>
       </div>
-    </Layout>
   )
+  return embedded ? content : <Layout title={isEdit ? 'Картка товару' : 'Новий товар'} onBack={back}>{content}</Layout>
 }

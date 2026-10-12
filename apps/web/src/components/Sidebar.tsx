@@ -2,7 +2,7 @@ import { isDesktopAccessLocked } from '@/lib/desktopAccessState'
 import { navigationAllowed } from '@/lib/navigationAccess'
 import { useState, useEffect, useRef } from 'react'
 import { toast } from '@/components/ui/Toast'
-import { NavLink, useNavigate, useLocation } from 'react-router-dom'
+import { Link, useNavigate, useLocation } from 'react-router-dom'
 import {
   Package, ShoppingCart,
   Truck, BarChart2, Settings, Zap, LogOut, ClipboardList,
@@ -16,6 +16,7 @@ import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
 import { PICKING_STATUSES } from '@/features/inventory/pickingApi'
 import { createReadPoller } from '@/lib/readPoller'
 import { AI_ASSISTANT_ROLES } from '@/features/ai/aiAccess'
+import { confirmUnsavedDeparture } from '@/hooks/useUnsavedChanges'
 
 interface NavItem {
   to: string
@@ -54,9 +55,9 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/inventory/picking',   icon: <ClipboardList size={18} />,   label: 'Збірка замовлень',     roles: ['owner','admin','manager','storekeeper'] },
       { to: '/inventory',           icon: <Package size={18} />,         label: 'Інвентаризація',       roles: ['owner','admin','manager','storekeeper','cashier','sto_viewer'] },
       { to: '/suppliers/invoices',  icon: <PackagePlus size={18} />,     label: 'Поступлення товарів',  roles: ['owner','admin','manager','cashier','storekeeper'] },
-      { to: '/labels',              icon: <Tag size={18} />,             label: 'Печать этикеток',       roles: ['owner','admin'] },
+      { to: '/labels',              icon: <Tag size={18} />,             label: 'Друк етикеток',        roles: ['owner','admin'] },
       { to: '/suppliers',           icon: <Truck size={18} />,           label: 'Постачальники',        roles: ['owner','admin','manager','storekeeper'] },
-      { to: '/sales',               icon: <ShoppingCart size={18} />,    label: 'Продажі та фінанси',   roles: ['owner','admin','manager','cashier'] },
+      { to: '/sales',               icon: <ShoppingCart size={18} />,    label: 'Чеки та касові операції', roles: ['owner','admin','manager','cashier'] },
       { to: '/ai-assistant',        icon: <Sparkles size={18} />,        label: 'ШІ-помічник',          roles: AI_ASSISTANT_ROLES },
     ],
   },
@@ -71,8 +72,8 @@ const NAV_GROUPS: NavGroup[] = [
     title: 'Адміністрування',
     roles: ['owner', 'admin'],
     items: [
-      { to: '/ai-agent', icon: <Sparkles size={18} />, label: 'AI-агент', roles: ['owner','admin'] },
-      { to: '/staff',               icon: <UserCog size={18} />,         label: 'Команда та ЗП',        roles: ['owner','admin'] },
+      { to: '/ai-agent', icon: <Sparkles size={18} />, label: 'Перевірка каталогу', roles: ['owner','admin'] },
+      { to: '/staff',               icon: <UserCog size={18} />,         label: 'Працівники',          roles: ['owner','admin'] },
       { to: '/settings',            icon: <Settings size={18} />,        label: 'Налаштування',         roles: ['owner','admin'] },
     ],
   },
@@ -101,12 +102,19 @@ function SidebarLink({ item, badge, onClose }: { item: NavItem; badge?: number; 
         || (location.pathname.startsWith('/inventory/') && location.pathname !== '/inventory/picking')
     }
 
+    if (item.to === '/suppliers') {
+      return location.pathname === '/suppliers'
+        || (location.pathname.startsWith('/suppliers/')
+          && !location.pathname.startsWith('/suppliers/invoices'))
+    }
+
     return location.pathname === item.to || (item.to !== '/' && location.pathname.startsWith(item.to + '/'))
   })()
 
   return (
-    <NavLink
+    <Link
       to={item.to}
+      aria-current={isActive ? 'page' : undefined}
       onClick={onClose}
       className={
         `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${
@@ -123,7 +131,7 @@ function SidebarLink({ item, badge, onClose }: { item: NavItem; badge?: number; 
           {badge}
         </span>
       )}
-    </NavLink>
+    </Link>
   )
 }
 
@@ -157,6 +165,11 @@ function NavSection({
         ))}
       </div>
     )
+  }
+
+  // A section with one destination does not need a second, identically named click.
+  if (visibleItems.length === 1 && group.title === visibleItems[0].label) {
+    return <SidebarLink item={visibleItems[0]} badge={badgeMap[visibleItems[0].to]} onClose={onClose} />
   }
 
   const isCollapsible = group.collapsible !== false
@@ -246,6 +259,8 @@ export function Sidebar({ isOpen = false, onClose = () => {} }: SidebarProps) {
 
   async function handleSignOut() {
     if (signingOut.current) return
+    // Decide before revoking auth: route guards cannot restore a signed-out draft.
+    if (!confirmUnsavedDeparture()) return
     signingOut.current = true; setLeaving(true)
     try { await signOut(); navigate('/login', { replace: true }) }
     catch { toast.error('Не вдалося завершити вихід. Спробуйте ще раз.') }

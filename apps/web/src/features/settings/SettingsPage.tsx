@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
 import { Save, Store, MapPin, Percent, RotateCcw, CreditCard, Ban, Plus, Trash2, ArrowUp, ArrowDown, Pencil, X, Zap, Users, Printer, Sparkles, Database } from 'lucide-react'
 import { adminApi } from '@/features/admin/adminApi'
 import type { ShopSettings, QuickItemConfig, QuickChildItem } from '@/features/admin/adminApi'
@@ -35,6 +36,7 @@ export default function SettingsPage() {
   const navigate = useNavigate()
   const offlineMode = useAuthStore((state) => state.offlineMode)
   const [form, setForm]     = useState<Partial<ShopSettings>>({})
+  const [settingsSnapshot, setSettingsSnapshot] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [settingsError, setSettingsError] = useState('')
   const [settingsRevision, setSettingsRevision] = useState(0)
@@ -54,6 +56,7 @@ export default function SettingsPage() {
   // Реквізити продавця для документів (рахунок-фактура / видаткова накладна).
   // Зберігаються локально на цьому пристрої.
   const [seller, setSeller] = useState<SellerRequisites>(() => loadSellerRequisites())
+  const [sellerSnapshot, setSellerSnapshot] = useState(() => JSON.stringify(seller))
   const [sellerSaving, setSellerSaving] = useState(false)
   function setSellerField<K extends keyof SellerRequisites>(key: K, value: string) {
     setSeller((prev) => ({ ...prev, [key]: value }))
@@ -62,6 +65,7 @@ export default function SettingsPage() {
     setSellerSaving(true)
     try {
       saveSellerRequisites(seller)
+      setSellerSnapshot(JSON.stringify(seller))
       toast.success('Реквізити продавця збережено')
     } finally {
       setSellerSaving(false)
@@ -156,6 +160,12 @@ export default function SettingsPage() {
   const [childLabel, setChildLabel]       = useState('')
   const [childSku, setChildSku]           = useState('')
   const [childPrice, setChildPrice]       = useState('')
+  useUnsavedChanges(Boolean((settingsSnapshot !== null && JSON.stringify(form) !== settingsSnapshot)
+    || JSON.stringify(seller) !== sellerSnapshot || aiKey || aiModel !== (aiStatus?.model ?? 'gemini-2.5-flash')
+    || aiEnabled !== (aiStatus?.enabled ?? false) || newMin || newMax || newPct
+    || childLabel || childSku || childPrice
+    || (editItem && JSON.stringify(editItem) !== JSON.stringify((form.pos_quick_items?.length ? form.pos_quick_items : DEFAULT_QUICK_ITEMS)[editIdx ?? -1]))),
+  saving || sellerSaving || aiSaving || resetting)
 
   useEffect(() => {
     let active = true
@@ -165,6 +175,7 @@ export default function SettingsPage() {
       .then(({ data }) => {
         if (!active) return
         setForm(data)
+        setSettingsSnapshot(JSON.stringify(data))
         localStorage.setItem('forsage_receipt_width_mm', String(data.receipt_width_mm ?? 58))
       })
       .catch(() => { if (active) setSettingsError('Налаштування не завантажено. Збереження вимкнене, щоб не замінити їх початковими значеннями.') })
@@ -203,6 +214,7 @@ export default function SettingsPage() {
         owner_telegram_chat_id: form.owner_telegram_chat_id ? Number(form.owner_telegram_chat_id) : null,
       })
       localStorage.setItem('forsage_receipt_width_mm', String(form.receipt_width_mm ?? 58))
+      setSettingsSnapshot(JSON.stringify(form))
       toast.success('Налаштування збережено')
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Помилка')
@@ -516,7 +528,7 @@ export default function SettingsPage() {
                   ))}
                 </select>
                 <p className="text-xs text-gray-400 mt-1">
-                  Чеки друкуються лише на цей принтер, етикетки — лише на свій (обирається
+              Вибір принтера зберігається одразу на цьому ПК. Чеки друкуються лише на цей принтер, етикетки — лише на свій (обирається
                   в дизайнері етикеток). Так вони не перетинаються й не блокують чергу
                   один одному.
                 </p>
@@ -865,7 +877,7 @@ export default function SettingsPage() {
           {/* ========== Зберегти ========== */}
           <div className="mt-6">
             <Button type="submit" loading={saving} icon={<Save size={16} />}>
-              Зберегти налаштування
+              Зберегти налаштування магазину
             </Button>
           </div>
 
@@ -878,7 +890,7 @@ export default function SettingsPage() {
             <h3 className="text-sm font-semibold text-gray-800">Реквізити продавця</h3>
           </div>
           <p className="text-xs text-gray-400 -mt-2">
-            Використовуються в рахунку-фактурі та видатковій накладній. Зберігаються локально на цьому пристрої.
+            Використовуються в рахунку-фактурі та видатковій накладній. Зберігаються локально на цьому пристрої окремо від налаштувань магазину — кнопкою «Зберегти реквізити» нижче.
           </p>
           <Input label="Назва (ФОП / ТОВ)" value={seller.name}
             onChange={(e) => setSellerField('name', e.target.value)}
@@ -917,7 +929,7 @@ export default function SettingsPage() {
           <div className="flex items-center justify-between pb-3 border-b border-gray-100">
             <div className="flex items-center gap-2">
               <Sparkles size={18} className="text-purple-500" />
-              <h3 className="text-sm font-semibold text-gray-800">Помічник АІ «Директор» (Gemini)</h3>
+              <h3 className="text-sm font-semibold text-gray-800">ШІ-помічник (Gemini)</h3>
             </div>
             {aiStatus?.has_key && (
               <span className="text-[11px] px-2 py-0.5 rounded-full bg-green-50 text-green-600 font-semibold">
@@ -927,7 +939,7 @@ export default function SettingsPage() {
           </div>
 
           <p className="text-xs text-gray-400">
-            AI-помічник у розділі «Допомога АІ»: розбирає товар, перекладає назви, пише описи, аналізує прайси.
+            ШІ-помічник розбирає накладні, Excel і текст; «Перевірка каталогу» пропонує виправлення наявних товарів. Ці налаштування зберігаються окремо кнопкою «Зберегти налаштування ШІ».
             Ключ Gemini зберігається зашифрованим на сервері й не показується назад. Отримати ключ:{' '}
             <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" className="text-blue-500 underline">
               aistudio.google.com/apikey
@@ -963,7 +975,7 @@ export default function SettingsPage() {
           <div className="flex items-center justify-between py-1">
             <div>
               <p className="text-sm font-medium text-gray-700">Увімкнути помічника</p>
-              <p className="text-xs text-gray-400">Без цього розділ «Допомога АІ» не відповідатиме</p>
+              <p className="text-xs text-gray-400">Без цього ШІ-помічник не відповідатиме</p>
             </div>
             <label className="relative inline-flex items-center cursor-pointer">
               <input type="checkbox" aria-label="Увімкнути AI-помічника" checked={aiEnabled} onChange={(e) => setAiEnabled(e.target.checked)} className="sr-only peer" />
@@ -980,7 +992,7 @@ export default function SettingsPage() {
 
           <div className="flex gap-2">
             <Button type="button" onClick={saveAiConfig} loading={aiSaving} icon={<Save size={16} />}>
-              Зберегти AI
+              Зберегти налаштування ШІ
             </Button>
             <Button type="button" variant="secondary" onClick={testAiKey} loading={aiTesting}>
               Перевірити звʼязок

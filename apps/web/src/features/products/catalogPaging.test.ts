@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import { canAdvanceCatalogPage, loadCatalogPage } from './catalogPaging'
 import type { PaginatedProducts } from '@/types/product'
@@ -29,6 +30,30 @@ describe('catalog scroll boundary', () => {
   })
 })
 describe('catalog page source', () => {
+  it('pins the source inside the restored-page loop only after checking its request is still current', () => {
+    const source = readFileSync(new URL('./ProductsPage.tsx', import.meta.url), 'utf8')
+    const restore = source.slice(source.indexOf('const refreshedPages:'), source.indexOf('} catch (e)', source.indexOf('const refreshedPages:')))
+    expect(restore).toContain('let chosenSource = catalogSourceRef.current')
+    expect(restore).toMatch(/loadCatalogPage\(\{[^\n]+currentPage \}, isDesktopRuntime\(\), chosenSource,/)
+    expect(restore).toContain('chosenSource = loaded.source')
+    expect(restore.indexOf('if (!isCurrentRequest()) return')).toBeLessThan(restore.indexOf('chosenSource = loaded.source'))
+    expect(restore.indexOf('chosenSource = loaded.source')).toBeLessThan(restore.indexOf('catalogSourceRef.current = loaded.source'))
+  })
+  it('restoring multiple pages cannot fall back after the first page chose the server', async () => {
+    const list = vi.fn().mockResolvedValueOnce(result).mockRejectedValueOnce(new Error('second page offline'))
+    const cache = vi.fn().mockResolvedValue(result)
+    const first = await loadCatalogPage({ page: 1 }, false, null, { list, cache })
+    await expect(loadCatalogPage({ page: 2 }, false, first.source, { list, cache })).rejects.toThrow('second page offline')
+    expect(cache).not.toHaveBeenCalled()
+  })
+  it('restoring multiple pages stays on cache even if the server recovers before page two', async () => {
+    const list = vi.fn().mockRejectedValueOnce(new Error('first page offline')).mockResolvedValue(result)
+    const cache = vi.fn().mockResolvedValue(result)
+    const first = await loadCatalogPage({ page: 1 }, false, null, { list, cache })
+    expect((await loadCatalogPage({ page: 2 }, false, first.source, { list, cache })).source).toBe('cache')
+    expect(list).toHaveBeenCalledTimes(1)
+    expect(cache.mock.calls).toEqual([[{ page: 1 }], [{ page: 2 }]])
+  })
   it('uses the paginated local API for named searches beyond the former 500-result cap', async () => {
     const list = vi.fn().mockResolvedValue(result)
     const cache = vi.fn()

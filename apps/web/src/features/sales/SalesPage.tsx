@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router-dom'
+import { useListViewState, useViewNavigation } from '@/hooks/useViewNavigation'
 import { ShoppingCart, RotateCcw, Printer } from 'lucide-react'
 import { saleApi } from '@/features/pos/saleApi'
 import { printReceipt, ReceiptPrint } from '@/features/pos/ReceiptPrint'
@@ -26,12 +27,21 @@ const PAY_LABEL: Record<string, string> = {
 }
 
 export default function SalesPage() {
-  const navigate = useNavigate()
-  const [searchParams] = useSearchParams()
+  const { open } = useViewNavigation('/sales')
+  const [searchParams, setSearchParams] = useSearchParams()
   const scopeKey = useAuthStore((state) => state.session?.user?.id ?? '')
   const [sales, setSales]     = useState<SaleWithSync[]>([])
-  const [search, setSearch]   = useState(() => searchParams.get('search') ?? '')
-  const [page, setPage]       = useState(1)
+  const [view, setView] = useListViewState('sales:list', () => ({ search: searchParams.get('search') ?? '', page: 1 }))
+  const { search, page } = view
+  const setSearch = (search: string) => {
+    setView(previous => ({ ...previous, search, page: 1 }))
+    setSearchParams(previous => { const next = new URLSearchParams(previous); next.set('search', search); return next }, { replace: true })
+  }
+  const setPage = (next: number | ((page: number) => number)) => setView(previous => ({ ...previous, page: typeof next === 'function' ? next(previous.page) : next }))
+  useEffect(() => {
+    const requested = searchParams.get('search')
+    if (requested !== null) setView(previous => previous.search === requested ? previous : { ...previous, search: requested, page: 1 })
+  }, [searchParams, setView])
   const [total, setTotal]     = useState(0)
   const [pages, setPages]     = useState(1)
   const [loading, setLoading] = useState(false)
@@ -71,7 +81,6 @@ export default function SalesPage() {
   }, [page, search, scopeKey, requests])
 
   useEffect(() => { void load() }, [load])
-  useEffect(() => { setPage(1) }, [search])
 
   const columns = [
     {
@@ -285,7 +294,7 @@ export default function SalesPage() {
             <div className="flex gap-2 pt-2 border-t border-gray-100">
               {detail.status === 'completed' && detail.sync_status !== 'pending' && detail.sync_status !== 'failed' && (
                 <Button icon={<RotateCcw size={15} />} className="flex-1"
-                  onClick={() => navigate(`/returns?sale=${detail.sale_number}`)}>
+                  onClick={() => open(`/returns?sale=${encodeURIComponent(detail.sale_number)}`)}>
                   Оформити повернення
                 </Button>
               )}

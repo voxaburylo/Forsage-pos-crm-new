@@ -1,6 +1,7 @@
 import { navigationAllowed } from '@/lib/navigationAccess'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useViewNavigation } from '@/hooks/useViewNavigation'
 import {
   Search, Package, Users, ClipboardList, Truck, ShoppingCart, Zap, Settings,
   Plus, FileText, BarChart2, CornerDownLeft,
@@ -53,6 +54,7 @@ const STATIC: StaticCmd[] = [
 
 export function CommandPalette() {
   const navigate = useNavigate()
+  const { open: openView } = useViewNavigation('/products')
   const session = useAuthStore((s) => s.session)
   const role = (session?.user?.app_metadata?.role as string) ?? 'cashier'
 
@@ -96,12 +98,12 @@ export function CommandPalette() {
         setProducts((pr.data ?? []).map((p: any) => ({
           id: 'p-' + p.id, group: 'Товари', icon: <Package size={16} className="text-gray-400" />,
           label: p.name, sublabel: `${p.sku ?? ''} · ${kopecksToHryvnia(p.retail_price)} ₴ · залишок ${p.qty_on_hand ?? 0}`,
-          run: () => navigate(`/products/${p.id}`),
+          run: () => openView(`/products/${p.id}`),
         })))
         setCustomers((cu.data ?? []).map((c: any) => ({
           id: 'c-' + c.id, group: 'Клієнти', icon: <Users size={16} className="text-gray-400" />,
           label: c.full_name || c.phone, sublabel: c.phone,
-          run: () => navigate(`/customers/${c.id}`),
+          run: () => openView(`/customers/${c.id}`),
         })))
         setSel(0)
       } catch { /* ignore */ }

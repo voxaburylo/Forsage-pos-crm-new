@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { Link } from 'react-router-dom'
 import { Plus, TrendingDown } from 'lucide-react'
 import { api } from '@/lib/api'
 import { desktopBridge } from '@/lib/desktopBridge'
@@ -138,7 +139,7 @@ export default function CashflowPage() {
       <div className="max-w-4xl space-y-4">
         {noOpenShift && (
           <Card className="border-amber-200 bg-amber-50 text-sm text-amber-900">
-            Спочатку відкрийте касову зміну в розділі «Каса». Після цього тут будуть доступні внесення та витрати.
+            Спочатку відкрийте касову зміну в розділі <Link to="/pos" className="font-semibold underline">«Каса»</Link>. Після цього тут будуть доступні внесення та витрати.
           </Card>
         )}
         <p className="text-sm text-gray-500">

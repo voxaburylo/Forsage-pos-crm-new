@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Plus, Trash2, Percent,
-  DollarSign, Award, AlertTriangle, ArrowDownRight,
+  DollarSign,
   User, Shield,
-  Settings, CreditCard, History, Lock, Save, ChevronLeft, ChevronRight
+  Settings, CreditCard, Lock, Save, ChevronLeft, ChevronRight
 } from 'lucide-react'
 import { adminApi, ROLE_LABELS } from '@/features/admin/adminApi'
 import type { AdminUser, UserRole } from '@/features/admin/adminApi'
@@ -13,27 +14,18 @@ import { Layout } from '@/components/Layout'
 import { Button, Card, Modal, Input, Badge, Table, ConfirmDialog } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { staffApi } from './staffApi'
-import type { EmployeeSummary, SalaryPayment, DailySummary } from './staffApi'
+import type { EmployeeSummary, DailySummary } from './staffApi'
 import { formatMoney } from '@/lib/utils'
-import { businessDateKey, formatBusinessDate } from '@/lib/businessDate'
-import { shiftApi } from '@/features/pos/shiftApi'
-import { normalizedStaffPhone, staffPaySettings, staffTransactionAmount } from './staffFormModel'
-import { payrollOperationLabel } from './payrollOperationLabel'
+import { businessDateKey } from '@/lib/businessDate'
+import { normalizedStaffPhone, staffPaySettings } from './staffFormModel'
 import { useScopedAction } from '@/hooks/useScopedAction'
 import { useBusinessDay } from '@/hooks/useBusinessDay'
 import { useLatestRequest } from '@/hooks/useLatestRequest'
+import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
 
 type BadgeColor = 'green' | 'orange' | 'red' | 'blue' | 'gray' | 'yellow'
 const ROLE_COLORS: Record<UserRole, BadgeColor> = { owner:'yellow', admin:'blue', manager:'green', cashier:'gray', storekeeper:'orange', sto_viewer:'gray', tire_worker:'orange' } as const
 type SalaryMode = 'only_rate' | 'only_pct' | 'rate_and_pct'
-
-const TYPE_CONFIG = {
-  salary:  { label: 'Ставка',  color: 'bg-green-100 text-green-700',  icon: <DollarSign size={12}/> },
-  bonus:   { label: 'Премія',  color: 'bg-yellow-100 text-yellow-700', icon: <Award size={12}/> },
-  advance: { label: 'Виплата', color: 'bg-blue-100 text-blue-700',     icon: <ArrowDownRight size={12}/> },
-  penalty: { label: 'Штраф',   color: 'bg-red-100 text-red-700',       icon: <AlertTriangle size={12}/> },
-}
-const METHOD_LABELS: Record<string,string> = { cash:'Готівка', card:'Картка', transfer:'Переказ' }
 
 function currentPeriod() { return localDate().slice(0,7) }
 function localDate() {
@@ -46,13 +38,13 @@ function periodLabel(p:string) {
 }
 
 export default function StaffPage() {
+  const navigate = useNavigate()
   const [users, setUsers] = useState<AdminUser[]>([])
   const [showArchived, setShowArchived] = useState(false)
   const businessDay = useBusinessDay()
   const [period, setPeriod] = useState(currentPeriod())
   const requests = useLatestRequest([period, businessDay])
   const [summary, setSummary] = useState<EmployeeSummary[]>([])
-  const [payments, setPayments] = useState<SalaryPayment[]>([])
   const [rules, setRules] = useState<CommissionRule[]>([])
   const [dailySummary, setDailySummary] = useState<DailySummary[]>([])
   const [loadedDailyDate, setLoadedDailyDate] = useState<string | null>(null)
@@ -65,12 +57,14 @@ export default function StaffPage() {
   const [addOpen, setAddOpen] = useState(false)
   const [deleteConfirmUser, setDeleteConfirmUser] = useState<AdminUser|null>(null)
   const [selectedUser, setSelectedUser] = useState<AdminUser|null>(null)
-  const [modalTab, setModalTab] = useState<'settings'|'payouts'>('settings')
   const [addForm, setAddForm] = useState({phone:'',password:'',full_name:'',role:'cashier' as UserRole,base_rate:'',rate_period:'day' as 'day'|'month',salaryMode:'only_rate' as SalaryMode,pos_revenue:'',pos_profit:'',order_revenue:'',order_profit:'',tire_revenue:'',tire_profit:''})
   const [editForm, setEditForm] = useState({role:'cashier' as UserRole,is_active:true,full_name:'',phone:'',base_rate:'',rate_period:'day' as 'day'|'month',salaryMode:'only_rate' as SalaryMode,pos_revenue:'',pos_profit:'',order_revenue:'',order_profit:'',tire_revenue:'',tire_profit:''})
   const [newPass, setNewPass] = useState('')
-
-  const [actionForm, setActionForm] = useState({type:'salary' as 'salary'|'bonus'|'advance'|'penalty',method:'cash' as 'cash'|'card'|'transfer',amount:'',note:'',period:currentPeriod()})
+  const [editSnapshot, setEditSnapshot] = useState('')
+  useUnsavedChanges(Boolean(selectedUser && (JSON.stringify(editForm) !== editSnapshot || newPass))
+    || Boolean(addOpen && (addForm.full_name || addForm.phone || addForm.password || addForm.base_rate
+      || addForm.pos_revenue || addForm.pos_profit || addForm.order_revenue || addForm.order_profit
+      || addForm.tire_revenue || addForm.tire_profit)), saving)
 
   const loadData = useCallback(async () => {
     // A pre-midnight action may call this closure after it commits. Refresh the
@@ -83,23 +77,21 @@ export default function StaffPage() {
     setLoadedDailyDate(null)
     setDailySummary([])
     try {
-      const [usersRes,summaryRes,paymentsRes,rulesRes,dailyRes] = await Promise.allSettled([adminApi.listUsers(true),staffApi.summary(period),staffApi.listSalary(period),commissionApi.listRules(),staffApi.dailySummary(workDate)])
+      const [usersRes,summaryRes,rulesRes,dailyRes] = await Promise.allSettled([adminApi.listUsers(true),staffApi.summary(period),commissionApi.listRules(),staffApi.dailySummary(workDate)])
       if(!isCurrent())return
       if(usersRes.status==='rejected')throw usersRes.reason
       setUsers(usersRes.value.data)
       setSummary(summaryRes.status==='fulfilled'?summaryRes.value.data??[]:[])
-      setPayments(paymentsRes.status==='fulfilled'?paymentsRes.value.data??[]:[])
       setRules(rulesRes.status==='fulfilled'?rulesRes.value.data??[]:[])
       setDailySummary(dailyRes.status==='fulfilled'?dailyRes.value.data??[]:[])
       setLoadedDailyDate(dailyRes.status==='fulfilled'?workDate:null)
-      setPayrollReady([summaryRes,paymentsRes,rulesRes,dailyRes].every(result=>result.status==='fulfilled'))
-      if([summaryRes,paymentsRes,rulesRes,dailyRes].some(result=>result.status==='rejected'))toast.warning('Команду завантажено, але частина даних зарплати недоступна. Оновіть сторінку перед редагуванням оплати.')
+      setPayrollReady([summaryRes,rulesRes,dailyRes].every(result=>result.status==='fulfilled'))
+      if([summaryRes,rulesRes,dailyRes].some(result=>result.status==='rejected'))toast.warning('Команду завантажено, але частина даних зарплати недоступна. Оновіть сторінку перед редагуванням оплати.')
     } catch { if(isCurrent())toast.error('Помилка завантаження даних') } finally { if(isCurrent())setLoading(false) }
   },[period,businessDay,requests])
   useEffect(()=>{void loadData()},[loadData])
 
   const employeeSummary = useMemo(()=>{ if(!selectedUser) return null; return summary.find(s=>s.employee_id===selectedUser.id)||null },[selectedUser,summary])
-  const employeePayments = useMemo(()=>{ if(!selectedUser) return []; return payments.filter(p=>p.employee_id===selectedUser.id) },[selectedUser,payments])
   const employeeRules = useMemo(()=>{ if(!selectedUser) return []; return rules.filter(r=>r.user_id===selectedUser.id) },[selectedUser,rules])
   const employeeToday = useMemo(()=>{ if(!selectedUser||!dailyReady) return null; return dailySummary.find(s=>s.employee_id===selectedUser.id)||null },[selectedUser,dailySummary,dailyReady])
   // Власник керує зарплатою, але не є працівником, якому магазин винен ЗП.
@@ -147,9 +139,8 @@ export default function StaffPage() {
     let sm:SalaryMode='only_rate'; if(hasRate&&hasPct)sm='rate_and_pct'; else if(hasPct&&!hasRate)sm='only_pct'
     const findRule=(type:string)=>ur.find(r=>r.rule_type===type&&!r.brand_id&&!r.category_id)
     const legacy=findRule('personal_sales'); const pos=findRule('pos_sales')??legacy; const order=findRule('order_sales')??legacy; const tire=findRule('tire_service')
-    setEditForm({role:u.role as UserRole,is_active:u.is_active,full_name:u.full_name,phone:u.phone||'',base_rate:u.base_rate?(u.base_rate/100).toString():'',rate_period:u.rate_period??'month',salaryMode:sm,pos_revenue:pos?.pct_from_revenue?.toString()??'',pos_profit:pos?.pct_from_profit?.toString()??'',order_revenue:order?.pct_from_revenue?.toString()??'',order_profit:order?.pct_from_profit?.toString()??'',tire_revenue:tire?.pct_from_revenue?.toString()??'',tire_profit:tire?.pct_from_profit?.toString()??''})
-    setNewPass('');setModalTab('settings')
-    setActionForm({type:'salary',method:'cash',amount:u.base_rate?(u.base_rate/100).toString():'',note:'',period})
+    const form = {role:u.role as UserRole,is_active:u.is_active,full_name:u.full_name,phone:u.phone||'',base_rate:u.base_rate?(u.base_rate/100).toString():'',rate_period:u.rate_period??'month',salaryMode:sm,pos_revenue:pos?.pct_from_revenue?.toString()??'',pos_profit:pos?.pct_from_profit?.toString()??'',order_revenue:order?.pct_from_revenue?.toString()??'',order_profit:order?.pct_from_profit?.toString()??'',tire_revenue:tire?.pct_from_revenue?.toString()??'',tire_profit:tire?.pct_from_profit?.toString()??''}
+    setEditForm(form); setEditSnapshot(JSON.stringify(form)); setNewPass('')
   }
 
   async function handleSaveAll(e:React.FormEvent){
@@ -160,6 +151,7 @@ export default function StaffPage() {
       await adminApi.saveUserSettings(selectedUser.id,{role:editForm.role,is_active:editForm.is_active,full_name:editForm.full_name,base_rate:rate,rate_period:editForm.rate_period,phone:editForm.role==='tire_worker'?undefined:(editForm.phone||undefined)},newRules)
       if (!isCurrent()) return
       toast.success('Всі налаштування збережено')
+      setEditSnapshot(JSON.stringify(editForm))
       setSelectedUser({...selectedUser,role:editForm.role,is_active:editForm.is_active,full_name:editForm.full_name,phone:editForm.phone||selectedUser.phone,base_rate:rate,rate_period:editForm.rate_period})
       await loadData()
     }, 'Помилка збереження')
@@ -193,47 +185,6 @@ export default function StaffPage() {
       toast.success('Працівника відновлено. Пароль та історію збережено.'); await loadData()
     }, 'Помилка відновлення')
   }
-  async function handleAddTransaction() {
-    if (!selectedUser) return
-    await performAction(async isCurrent => {
-      const workDate = localDate()
-      const amount = staffTransactionAmount(actionForm.amount)
-      const shift = actionForm.type === 'advance' && actionForm.method === 'cash' ? await shiftApi.current() : null
-      if (!isCurrent()) return
-      const shiftId = (shift as any)?.data?.id ?? null
-      if (actionForm.type === 'advance' && actionForm.method === 'cash' && !shiftId) throw new Error('Спочатку відкрийте касову зміну')
-      await staffApi.createSalary({employee_id:selectedUser.id,employee_name:selectedUser.full_name||selectedUser.email,amount,type:actionForm.type,method:actionForm.method,period:actionForm.period||period,note:actionForm.note||null,shift_id:shiftId,work_date:workDate})
-      if (!isCurrent()) return
-      toast.success('Операцію збережено'); setActionForm({...actionForm,amount:'',note:''}); await loadData()
-    }, 'Помилка збереження операції')
-  }
-  async function handleDailyPayout(fundSource:'cashbox'|'owner_funds') {
-    if (!selectedUser || action.isBusy()) return
-    const workDate = localDate()
-    if (!dailyReady || loadedDailyDate !== workDate) {
-      toast.error('Розрахунок за сьогодні ще не оновлено. Дочекайтеся актуальних даних перед виплатою.')
-      void loadData()
-      return
-    }
-    await performAction(async isCurrent => {
-      const shift = await shiftApi.current()
-      if (!isCurrent()) return
-      const shiftId = (shift as any)?.data?.id ?? null
-      if (!shiftId) throw new Error('Спочатку відкрийте касову зміну')
-      if (fundSource === 'owner_funds' && !window.confirm(`Внести власні кошти власника та виплатити заробіток ${selectedUser.full_name}? Залишок каси не зміниться.`)) return
-      const result = await staffApi.dailyPayout({employee_id:selectedUser.id,employee_name:selectedUser.full_name||selectedUser.email,method:'cash',fund_source:fundSource,shift_id:shiftId,work_date:workDate})
-      if (!isCurrent()) return
-      toast.success(fundSource==='owner_funds'?`Видано власними коштами ${formatMoney(result.data.amount)}`:`Видано з каси ${formatMoney(result.data.amount)}`); await loadData()
-    }, 'Помилка виплати')
-  }
-  async function handleDeleteTransaction(id:string) {
-    if (action.isBusy() || !window.confirm('Скасувати цю операцію зарплати? Пов’язаний рух коштів буде перевірено.')) return
-    await performAction(async isCurrent => {
-      await staffApi.deleteSalary(id)
-      if (isCurrent()) { toast.success('Операцію скасовано'); await loadData() }
-    }, 'Помилка скасування операції')
-  }
-
   const columns = [
     { key:'full_name' as const, header:'Співробітник', render:(u:AdminUser)=>(
       <button onClick={()=>openModal(u)} className="text-left group"><div className="flex items-center gap-3"><div className="w-9 h-9 rounded-full bg-gradient-to-br from-gray-100 to-gray-200 flex items-center justify-center text-sm font-bold text-gray-600 ring-2 ring-white shadow-sm group-hover:ring-yellow-200 transition-all">{(u.full_name||'?')[0]?.toUpperCase()}</div><div><p className="text-sm font-semibold text-gray-900 group-hover:text-yellow-700 transition-colors">{u.full_name||'Без імені'}</p><p className="text-[11px] text-gray-400">{u.role==='tire_worker'?'Без доступу до програми':u.phone}</p></div></div></button>
@@ -254,7 +205,7 @@ export default function StaffPage() {
   ]
 
   return (
-    <Layout title="Команда та ЗП">
+    <Layout title="Працівники">
       <div className="space-y-5">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2">
@@ -285,11 +236,10 @@ export default function StaffPage() {
             </div>
 
             <div className="flex border-b border-gray-100 mb-5 gap-1">
-              <button onClick={()=>setModalTab('settings')} className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-all rounded-t-lg ${modalTab==='settings'?'border-amber-400 text-gray-900 bg-amber-50/50':'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}><Settings size={15}/>Налаштування та Оплата</button>
-              <button onClick={()=>setModalTab('payouts')} className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-all rounded-t-lg ${modalTab==='payouts'?'border-amber-400 text-gray-900 bg-amber-50/50':'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}><CreditCard size={15}/>Виплати та Історія{employeePayments.length>0&&<span className="ml-1 px-1.5 py-0.5 bg-gray-200 text-gray-600 rounded-full text-[10px] font-bold">{employeePayments.length}</span>}</button>
+              <span className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-gray-900"><Settings size={15}/>Налаштування працівника</span>
+              <button type="button" onClick={()=>{if(!action.isBusy())navigate(`/analytics/payroll?employee=${encodeURIComponent(selectedUser.id)}&period=${encodeURIComponent(period)}`)}} className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-amber-800 hover:bg-amber-50 rounded-lg"><CreditCard size={15}/>Зарплата та виплати →</button>
             </div>
 
-            {modalTab==='settings' && (
               <form onSubmit={handleSaveAll} className="space-y-5">
                 <fieldset disabled={saving} className="space-y-5 min-w-0">
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -368,55 +318,13 @@ export default function StaffPage() {
                         <div><p className="text-xs font-bold uppercase tracking-wider text-emerald-800">Заробіток сьогодні</p><p className="mt-1 text-xs text-emerald-700">Ставка за день + автоматичний відсоток</p></div>
                         <p className="text-xl font-bold text-emerald-800">{dailyReady?formatMoney(employeeToday?.balance??0):'—'}</p>
                       </div>
-                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                        <Button type="button" onClick={()=>handleDailyPayout('cashbox')} loading={saving} disabled={!dailyReady || ((employeeToday?.balance??0)<=0 && !(selectedUser.base_rate>0 && selectedUser.rate_period==='day'))} className="w-full">
-                          Видати з каси
-                        </Button>
-                        <button type="button" onClick={()=>handleDailyPayout('owner_funds')} disabled={saving || !dailyReady || ((employeeToday?.balance??0)<=0 && !(selectedUser.base_rate>0 && selectedUser.rate_period==='day'))} className="w-full rounded-lg bg-amber-400 px-3 py-2 text-sm font-bold text-black hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-50">
-                          Кошти власника
-                        </button>
-                      </div>
-                      <p className="mt-2 text-[10px] text-emerald-700">Для коштів власника програма одночасно зафіксує внесення та виплату. Залишок каси не зміниться.</p>
+                      <p className="text-xs text-emerald-700">Виплати та історія операцій — у розділі «Зарплата та виплати».</p>
                     </div>
                   </div>
                 </div>
                   <div className="pt-3 border-t border-gray-100">{(!payrollReady||!editRulesLoaded)&&<p role="alert" className="mb-2 text-sm text-amber-800">Дані оплати недоступні. Оновіть сторінку й повторно відкрийте картку, щоб безпечно зберегти налаштування.</p>}<Button type="submit" disabled={!payrollReady||!editRulesLoaded} loading={saving} className="w-full"><Save size={16}/>Зберегти всі налаштування</Button></div>
                 </fieldset>
               </form>
-            )}
-
-            {modalTab==='payouts' && (
-              <div className="space-y-5">
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  <div className="bg-gray-50/70 rounded-xl p-4 space-y-4 border border-gray-100">
-                    <h4 className="text-sm font-bold text-gray-800 flex items-center gap-2"><CreditCard size={14} className="text-gray-500"/>Нарахувати або Виплатити</h4>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div><label className="block text-xs font-medium text-gray-500 mb-1">Тип операції</label><select value={actionForm.type} onChange={(e)=>setActionForm({...actionForm,type:e.target.value as any})} className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300 bg-white"><option value="salary">Ставка (Нарахування)</option><option value="bonus">Премія / Бонус</option><option value="advance">Виплата / Аванс</option><option value="penalty">Штраф (Утримання)</option></select></div>
-                      <div><label className="block text-xs font-medium text-gray-500 mb-1">Метод</label><select value={actionForm.method} onChange={(e)=>setActionForm({...actionForm,method:e.target.value as any})} className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300 bg-white"><option value="cash">Готівка</option><option value="card">Картка</option><option value="transfer">Переказ</option></select></div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <Input label="Сума (грн)" inputMode="decimal" value={actionForm.amount} onChange={(e)=>setActionForm({...actionForm,amount:e.target.value})} placeholder="0,00"/>
-                      <div><label className="block text-xs font-medium text-gray-500 mb-1">Період (місяць)</label><input type="month" value={actionForm.period} onChange={(e)=>setActionForm({...actionForm,period:e.target.value})} className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300 bg-white"/></div>
-                    </div>
-                    <div><label className="block text-xs font-medium text-gray-500 mb-1">Примітка</label><textarea value={actionForm.note} onChange={(e)=>setActionForm({...actionForm,note:e.target.value})} rows={3} placeholder="Наприклад: Видача залишку зарплати за травень..." className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300 resize-none bg-white"/></div>
-                    <Button onClick={handleAddTransaction} loading={saving} className="w-full">Зберегти операцію</Button>
-                  </div>
-                  <div className="space-y-3">
-                    <h4 className="text-sm font-bold text-gray-800 flex items-center gap-2"><History size={14} className="text-gray-500"/>Операції за {periodLabel(period)}</h4>
-                    <div className="border border-gray-100 rounded-xl divide-y divide-gray-50 bg-white overflow-y-auto max-h-[420px]">
-                      {employeePayments.length===0?(<p className="text-xs text-gray-400 text-center py-12">Операцій у цьому місяці ще не було</p>):(
-                        employeePayments.map(p=>{const conf=TYPE_CONFIG[p.type];const effect=(p.type==='penalty'||p.type==='advance')?-p.amount:p.amount;const isMinus=effect<0;return(
-                          <div key={p.id} className="p-3.5 flex items-start gap-3 hover:bg-gray-50/30 transition-all">
-                            <div className="flex-1 min-w-0 space-y-0.5"><div className="flex items-center gap-2"><span className={`inline-flex items-center gap-0.5 text-[10px] font-semibold px-2 py-0.5 rounded-full ${conf.color}`}>{conf.icon} {payrollOperationLabel(p,conf.label)}</span><span className="text-[10px] text-gray-400">{METHOD_LABELS[p.method]}</span><span className="text-[10px] text-gray-400 font-mono">{formatBusinessDate(p.created_at)}</span></div>{p.note&&<p className="text-xs text-gray-600 leading-relaxed font-medium break-all">{p.note}</p>}</div>
-                            <div className="text-right shrink-0 flex items-center gap-3"><div><p className={`text-sm font-bold ${isMinus?'text-red-500':'text-green-600'}`}>{isMinus?'\u2212':'+'}{formatMoney(Math.abs(effect))}</p></div><button onClick={()=>handleDeleteTransaction(p.id)} className="text-gray-300 hover:text-red-500 p-1 rounded transition-colors"><Trash2 size={13}/></button></div>
-                          </div>
-                        )})
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
           </fieldset>
         )}
       </Modal>

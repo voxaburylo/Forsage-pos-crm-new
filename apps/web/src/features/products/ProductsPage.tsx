@@ -1,3 +1,4 @@
+import { useListViewState, useViewNavigation } from '@/hooks/useViewNavigation'
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -72,6 +73,7 @@ const PRODUCTS_PER_PAGE = 100
 export default function ProductsPage() {
   const desktopLayout = useDesktopCatalogLayout()
   const navigate = useNavigate()
+  const { open } = useViewNavigation('/products')
   const session  = useAuthStore((s) => s.session)
   const role     = (session?.user?.app_metadata?.role as string) ?? 'cashier'
   const scopeKey = session?.user?.id ?? ''
@@ -82,12 +84,13 @@ export default function ProductsPage() {
   const loadRequestRef             = useRef(0)
   const catalogSourceRef           = useRef<CatalogSource | null>(null)
   const skipNextLoadRef            = useRef(false)
-  const [search, setSearch]         = useState('')
-  const [debouncedSearch, setDebouncedSearch] = useState('')
-  const [lowStock, setLowStock]     = useState(false)
+  const loadedRangeRef = useRef(false)
+  const [search, setSearch]         = useListViewState('products:search', '')
+  const [debouncedSearch, setDebouncedSearch] = useState(search)
+  const [lowStock, setLowStock]     = useListViewState('products:lowStock', false)
   // Контрольні фільтри власника: мінусові залишки / товари без ціни
-  const [stockFilter, setStockFilter] = useState<'' | 'negative' | 'no_price'>('')
-  const [page, setPage]             = useState(1)
+  const [stockFilter, setStockFilter] = useListViewState<'' | 'negative' | 'no_price'>('products:stockFilter', '')
+  const [page, setPage]             = useListViewState('products:page', 1)
   // Нескінченний скрол: накопичуємо сторінки по 100 (ключ = номер сторінки),
   // щоб при докручуванні донизу дозавантажувати наступні 100, а не гортати сторінками.
   const [pages, setPages]           = useState<Record<number, Product[]>>({})
@@ -95,9 +98,9 @@ export default function ProductsPage() {
   const pageAdvanceLockedRef = useRef(false)
   const [loading, setLoading]       = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
-  const [categoryFilter, setCategoryFilter] = useState('')
+  const [categoryFilter, setCategoryFilter] = useListViewState('products:categoryFilter', '')
   const [categories, setCategories] = useState<Category[]>([])
-  const [brandFilter, setBrandFilter] = useState('')
+  const [brandFilter, setBrandFilter] = useListViewState('products:brandFilter', '')
   const [brands, setBrands]         = useState<Brand[]>([])
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkMoveCategoryId, setBulkMoveCategoryId] = useState('')
@@ -106,7 +109,7 @@ export default function ProductsPage() {
   const [mergeProduct, setMergeProduct] = useState<Product | null>(null)
   const [importOpen, setImportOpen] = useState(false)
   const [bulkPrintOpen, setBulkPrintOpen] = useState(false)
-  const [sort, setSort]             = useState<{ field: SortField; dir: SortDir } | null>(null)
+  const [sort, setSort]             = useListViewState<{ field: SortField; dir: SortDir } | null>('products:sort', null)
   // Інлайн-редагування ціни прямо у списку (без переходу в картку)
   const [editPriceId, setEditPriceId] = useState<string | null>(null)
   const [priceDraft, setPriceDraft]   = useState('')
@@ -251,7 +254,11 @@ export default function ProductsPage() {
       sort_dir: sort?.dir,
     }
     try {
-      const loaded = await loadCatalogPage(filters, isDesktopRuntime(), catalogSourceRef.current, {
+      const refreshedPages: Record<number, Product[]> = {}
+      let loaded: Awaited<ReturnType<typeof loadCatalogPage>> | undefined
+      let chosenSource = catalogSourceRef.current
+      for (let currentPage = loadedRangeRef.current ? page : 1; currentPage <= page; currentPage++) {
+      loaded = await loadCatalogPage({ ...filters, page: currentPage }, isDesktopRuntime(), chosenSource, {
         list: productApi.list,
         cache: (f) => listProductsOffline({
           search: f.search,
@@ -267,11 +274,14 @@ export default function ProductsPage() {
         }),
       })
       if (!isCurrentRequest()) return
+      chosenSource = loaded.source
+      refreshedPages[currentPage] = loaded.result.data
+      }
+      if (!loaded) return
+      loadedRangeRef.current = true
       catalogSourceRef.current = loaded.source
       setResult(loaded.result)
-      setPages((prev) => page === 1
-        ? { 1: loaded.result.data }
-        : { ...prev, [page]: loaded.result.data })
+      setPages((prev) => page === 1 ? refreshedPages : { ...prev, ...refreshedPages })
     } catch (e) {
       if (!isCurrentRequest()) return
       setLoadFailed(true)
@@ -295,6 +305,8 @@ export default function ProductsPage() {
     pageAdvanceLockedRef.current = true
     loadRequestRef.current++
     catalogSourceRef.current = null
+    loadedRangeRef.current = false
+    document.getElementById('app-main-scroll')?.scrollTo({ top: 0 })
     if (page !== 1) skipNextLoadRef.current = true
     setPage(1)
     setPages({})
@@ -721,13 +733,13 @@ export default function ProductsPage() {
                         </div>
                       )}
                       <div className="min-w-0 flex-1">
-                        <button onClick={() => navigate(`/products/${p.id}${canEditCatalog ? "/edit" : ""}`)}
+                        <button onClick={() => open(`/products/${p.id}`)}
                           className="block w-full text-left text-[15px] font-semibold leading-snug text-gray-900 break-words hover:text-yellow-700">
                           {p.name}
                         </button>
                         <div className="mt-1 flex flex-wrap items-center gap-1.5">
                           <span className="font-mono text-[11px] text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded">{p.sku}</span>
-                          <CrossNumberBadge count={p.cross_numbers_count} onEdit={() => navigate(`/products/${p.id}${canEditCatalog ? "/edit" : ""}`)} />
+                          <CrossNumberBadge count={p.cross_numbers_count} onEdit={() => open(`/products/${p.id}`)} />
                           {p.category && <span className="text-[11px] text-gray-400">{p.category.name}</span>}
                           {p.brand?.name && <span className="text-[11px] text-gray-400">{p.brand.name}</span>}
                         </div>
@@ -763,7 +775,7 @@ export default function ProductsPage() {
                     </div>
 
                     <div className="mt-3 flex gap-2">
-                      <Button size="sm" className="flex-1" onClick={() => navigate(`/products/${p.id}${canEditCatalog ? "/edit" : ""}`)}>{canEditCatalog ? "Редагувати" : "Перегляд"}</Button>
+                      <Button size="sm" className="flex-1" onClick={() => open(`/products/${p.id}`)}>Картка товару</Button>
 
                       {isAdmin && (
                         <Button size="sm" variant="danger-outline" onClick={() => askDelete(p)} aria-label={`Видалити ${p.name}`}>
@@ -867,7 +879,7 @@ export default function ProductsPage() {
                               </div>
                             )}
                             <div>
-                              <button onClick={() => navigate(`/products/${p.id}${canEditCatalog ? "/edit" : ""}`)}
+                              <button onClick={() => open(`/products/${p.id}`)}
                                 className="font-medium text-gray-900 hover:text-yellow-700 text-left transition-colors text-sm leading-snug">
                                 {p.name}
                               </button>
@@ -877,7 +889,7 @@ export default function ProductsPage() {
                             </div>
                           </div>
                         </td>
-                        <td className="px-1 py-3 text-center"><CrossNumberBadge count={p.cross_numbers_count} onEdit={() => navigate(`/products/${p.id}${canEditCatalog ? "/edit" : ""}`)} /></td>
+                        <td className="px-1 py-3 text-center"><CrossNumberBadge count={p.cross_numbers_count} onEdit={() => open(`/products/${p.id}`)} /></td>
                         <td className="px-3 py-3 text-sm text-gray-500">{p.brand?.name ?? '—'}</td>
                         <td className="px-3 py-3">
                           {editBinId === p.id ? (
@@ -944,7 +956,7 @@ export default function ProductsPage() {
                               <SplitButton
                                 size="sm"
                                 primaryLabel="Ред."
-                                onPrimary={() => navigate(`/products/${p.id}${canEditCatalog ? "/edit" : ""}`)}
+                                onPrimary={() => open(`/products/${p.id}`)}
                                 actions={[
 
                                   { label: 'Дублювати', icon: <Copy size={14} />, onClick: () => navigate(`/products/new?clone=${p.id}`) },
@@ -953,8 +965,8 @@ export default function ProductsPage() {
                                 ]}
                               />
                             ) : (
-                              <button onClick={() => navigate(`/products/${p.id}${canEditCatalog ? "/edit" : ""}`)}
-                                className="text-xs px-2 py-1 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors font-medium">{canEditCatalog ? "Ред." : "Перегляд"}</button>
+                              <button onClick={() => open(`/products/${p.id}`)}
+                                className="text-xs px-2 py-1 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors font-medium">Картка</button>
                             )}
                           </div>
                         </td>

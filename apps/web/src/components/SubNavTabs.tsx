@@ -1,5 +1,7 @@
 import { Link, useLocation } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
+import { isDesktopRuntime } from '@/lib/desktopBridge'
+import { navigationAllowed } from '@/lib/navigationAccess'
 
 interface TabItem {
   label: string
@@ -18,7 +20,8 @@ export function SubNavTabs({ tabs, currentRole }: SubNavTabsProps) {
   const offlineMode = useAuthStore((state) => state.offlineMode)
 
   const visibleTabs = tabs.filter(
-    (tab) => (!tab.serverOnly || !offlineMode) && (!tab.roles || !currentRole || tab.roles.includes(currentRole))
+    (tab) => navigationAllowed(tab.to.split('?')[0], isDesktopRuntime())
+      && (!tab.serverOnly || !offlineMode) && (!tab.roles || !currentRole || tab.roles.includes(currentRole))
   )
 
   if (visibleTabs.length <= 1) return null
@@ -90,7 +93,7 @@ export const ORDERS_TABS = [
 ]
 
 export const FINANCE_TABS = [
-  { to: '/sales', label: 'Журнал продажів' },
+  { to: '/sales', label: 'Журнал чеків' },
   { to: '/returns', label: 'Повернення' },
   { to: '/cashflow', label: 'Каса та витрати' }
 ]
@@ -115,12 +118,12 @@ export const INVENTORY_TABS = [
 
 export const ANALYTICS_TABS = [
   { to: '/analytics/statistics', label: 'Статистика', roles: ['owner', 'admin', 'manager'] },
-  { to: '/analytics/sales', label: 'Продажі та звіти', roles: ['owner', 'admin', 'manager', 'cashier'] },
+  { to: '/analytics/sales', label: 'Звіти про продажі', roles: ['owner', 'admin', 'manager', 'cashier'] },
   { to: '/analytics/payroll', label: 'Зарплата та виплати', roles: ['owner', 'admin'] },
 ]
 
 export const STAFF_TABS = [
-  { to: '/staff', label: 'Команда та ЗП', roles: ['owner', 'admin'] }
+  { to: '/staff', label: 'Працівники', roles: ['owner', 'admin'] }
 ]
 
 export const SETTINGS_TABS = [

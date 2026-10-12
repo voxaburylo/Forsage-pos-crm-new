@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useState, useMemo, useRef, useId } from 'react'
-import { useNavigate, useSearchParams, useParams } from 'react-router-dom'
+import { useLocation, useNavigate, useSearchParams, useParams } from 'react-router-dom'
+import { useViewNavigation } from '@/hooks/useViewNavigation'
 import { Plus, Trash2, User, Car, Check, ChevronRight, ArrowLeft, Search, ClipboardList, X } from 'lucide-react'
 import { orderApi, type CreateOrderPayload, type CustomerOrder } from './orderApi'
 import { productApi } from '@/features/products/productApi'
@@ -209,6 +210,13 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
   const [backupState, setBackupState] = useState('')
   const [discardPrompt, setDiscardPrompt] = useState(false)
   const navigate = useNavigate()
+  const location = useLocation()
+  const { back, returnTo } = useViewNavigation('/orders')
+  function showSavedOrder(orderId: string) {
+    const target = '/orders/' + orderId
+    if (returnTo.split('?')[0] === target) back()
+    else navigate(target, { state: location.state })
+  }
   const [searchParams] = useSearchParams()
   const { id } = useParams()
   const [loading, setLoading] = useState(!backup && Boolean(id || searchParams.get('draftId')))
@@ -1068,7 +1076,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
       } else {
         toast.success(action === 'order' ? 'Замовлення оформлено' : id ? 'Зміни збережено' : 'Чернетку збережено')
       }
-      navigate('/orders/' + saved.id)
+      showSavedOrder(saved.id)
     } catch (saveError) {
       try {
         if (readOrderSaveAttempt(backupKey)) {
@@ -1076,7 +1084,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
           if (recovered) {
             finishSavedForm()
             toast.warning('Замовлення збережене. Відповідь загубилася; відкриваємо наявну картку без повторного запису.')
-            navigate('/orders/' + recovered.id)
+            showSavedOrder(recovered.id)
             return
           }
           setPendingSave(null)
@@ -1103,7 +1111,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
     savingRef.current = true; setCheckingSave(true)
     try {
       const saved = await checkOrderSaveAttempt(backupKey, orderApi.getSaveResult)
-      if (saved) { finishSavedForm(); toast.success('Знайдено збережене замовлення'); navigate('/orders/' + saved.id) }
+      if (saved) { finishSavedForm(); toast.success('Знайдено збережене замовлення'); showSavedOrder(saved.id) }
       else { setPendingSave(null); toast.warning('Попередній запис не відбувся. Можна продовжити редагування та зберегти.') }
     } catch (error) { toast.error(error instanceof Error ? error.message : 'Не вдалося перевірити збереження') }
     finally { savingRef.current = false; setCheckingSave(false) }
@@ -1151,10 +1159,10 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
   const customerListLoading = customerSearch.trim().length >= 2 ? searchCustomersLoading : defaultCustomersLoading
   const hasValidItems = items.some((item) => item.name.trim().length > 0)
 
-  if (initialBackup.error || loadError) return <Layout title="Замовлення" onBack={() => navigate('/orders')}><p role="alert" className="p-4 text-red-700">{initialBackup.error || loadError}</p><Button onClick={onReset}>Повторити завантаження</Button></Layout>
+  if (initialBackup.error || loadError) return <Layout title="Замовлення" onBack={back}><p role="alert" className="p-4 text-red-700">{initialBackup.error || loadError}</p><Button onClick={onReset}>Повторити завантаження</Button></Layout>
   if (loading) {
     return (
-      <Layout title={id ? "Редагування замовлення" : "Нове замовлення"} onBack={() => navigate(-1)}>
+      <Layout title={id ? "Редагування замовлення" : "Нове замовлення"} onBack={back}>
         <div className="flex items-center justify-center min-h-[300px]">
           <p className="text-gray-400 text-sm">Завантаження даних замовлення...</p>
         </div>
@@ -1163,7 +1171,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
   }
 
   return (
-    <Layout title={id ? "Редагування замовлення" : "Нове замовлення"} onBack={() => navigate(-1)}>
+    <Layout title={id ? "Редагування замовлення" : "Нове замовлення"} onBack={back}>
       <OrderLanNotice />
       {pendingSave && <div role="alert" className="mb-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm">
         <p>Збереження замовлення ще не підтверджене. Спочатку перевірте результат — це не створює новий документ.</p>

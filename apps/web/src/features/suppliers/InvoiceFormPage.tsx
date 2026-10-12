@@ -5,7 +5,8 @@ import { bindInvoiceCandidate, invoiceMatchProblems, type InvoiceCandidate } fro
 import type { InvoiceFundSource, InvoiceImportField, InvoiceImportMapping, InvoicePaymentMethod, LineItem, SupplierPaymentFundSource, SupplyInvoiceDraftData, SupplyInvoiceLocalDraft } from './invoiceFormModel'
 import { EMPTY_INVOICE_IMPORT_MAPPING, InvoiceImportMatchError, INVOICE_IMPORT_FIELDS, supplyInvoiceDraftKey, buildInvoiceImportItems, cleanImportCell, clearSupplyInvoiceDraft, draftFromServerInvoice, duplicateProductMessage, findExactProductForQuery, guessInvoiceImport, hasSupplyInvoiceDraftContent, invoiceItemsToLineItems, isDuplicateProductError, kopecksForForm, loadSupplyInvoiceDraft, makeAutoSku, makeDraftItem, makeLineKey, newestSupplyInvoiceDraft, normalizeBarcodeValue, normalizeExactInvoiceProductName, normalizeInvoiceUnit, normalizeSkuValue, parseDecimalInput, parseMoneyToKopecks, parseQty, persistSupplyInvoiceDraft, retailFromLocalGrid } from './invoiceFormModel'
 import { useState, useEffect, useRef, useMemo } from 'react'
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useViewNavigation } from '@/hooks/useViewNavigation'
 import { Trash2, Barcode } from 'lucide-react'
 import { read, utils } from 'xlsx'
 import Papa from 'papaparse'
@@ -33,6 +34,8 @@ import { captureInvoiceQuantities, nextInvoiceItems } from './invoiceQuantityGua
 
 export default function InvoiceFormPage() {
   const navigate = useNavigate()
+  const location = useLocation()
+  const { open, back, returnTo } = useViewNavigation('/suppliers/invoices')
   const { id } = useParams()
   const [searchParams] = useSearchParams()
   const isEdit = Boolean(id)
@@ -388,7 +391,7 @@ export default function InvoiceFormPage() {
           invoiceDraftPersistenceDisabledRef.current = true
           clearSupplyInvoiceDraft(invoiceDraftKey)
           toast.warning('Накладну вже проведено або скасовано. Відкриваю документ без створення копії.')
-          navigate(`/suppliers/invoices/${id}`, { replace: true })
+          navigate(`/suppliers/invoices/${id}`, { replace: true, state: location.state })
           return
         }
         setInitialPaymentAvailable(Number(inv.paid_amount ?? 0) <= 0)
@@ -410,7 +413,7 @@ export default function InvoiceFormPage() {
       }).catch(() => {
         if (cancelled) return
         toast.error('Не вдалось завантажити накладну')
-        navigate('/suppliers')
+        back()
       }).finally(() => {
         if (cancelled) return
         setLoading(false)
@@ -1291,7 +1294,7 @@ export default function InvoiceFormPage() {
       toast.success('Накладну проведено — товари, оплата та залишки збережені разом')
       invoiceDraftPersistenceDisabledRef.current = true
       clearSupplyInvoiceDraft(invoiceDraftKey, serverDraftIdRef.current)
-      navigate(`/suppliers/invoices`)
+      back()
     } catch (err) {
       const failedId = serverDraftIdRef.current || commitInvoiceIdRef.current
       if (err instanceof Error && err.message.includes('DOCUMENT_CONFLICT') && failedId) {
@@ -1320,7 +1323,7 @@ export default function InvoiceFormPage() {
     // Вихід через «Назад» зберігає незакриту накладну як чернетку.
     const hasContent = items.length > 0 || invoiceNumber.trim().length > 0 || notes.trim().length > 0
     if (hasContent && !confirm('Вийти з накладної?\n\nНезбережена накладна лишиться у списку як чернетка.')) return
-    navigate('/suppliers/invoices')
+    back()
   }
 
   async function cancelInvoiceForm() {
@@ -1352,7 +1355,9 @@ export default function InvoiceFormPage() {
       }
       clearSupplyInvoiceDraft(invoiceDraftKey, draftId)
       toast.success('Чернетку накладної видалено')
-      navigate('/suppliers/invoices')
+      // Do not return to the just-deleted document's detail screen.
+      if (draftId && returnTo.split('?')[0] === `/suppliers/invoices/${draftId}`) navigate('/suppliers/invoices')
+      else back()
     } catch (err) {
       invoiceDraftPersistenceDisabledRef.current = false
       toast.error(err instanceof Error ? err.message : 'Не вдалося видалити чернетку')
@@ -1392,7 +1397,7 @@ export default function InvoiceFormPage() {
             setInitialPaymentAvailable(Number(versionConflict.paid_amount ?? 0) <= 0)
             setVersionConflict(null)
           }}
-          onOpen={() => navigate('/suppliers/invoices/' + versionConflict.id)} />}
+          onOpen={() => open('/suppliers/invoices/' + versionConflict.id)} />}
         <fieldset disabled={saving} className="min-w-0 border-0 p-0 m-0" aria-busy={saving}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
           <Card>

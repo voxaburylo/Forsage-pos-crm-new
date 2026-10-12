@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useViewNavigation } from '@/hooks/useViewNavigation'
 import { RotateCcw, Search, Package, AlertTriangle, Info } from 'lucide-react'
 import { returnApi } from './returnApi'
 import { saleApi } from './saleApi'
@@ -123,6 +124,14 @@ export default function ReturnForm() {
   const [returnFiscalNumber, setReturnFiscalNumber] = useState<string | null>(null)
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
+  const returnNavigation = useViewNavigation('/sales')
+  const leaveReturn = () => {
+    if (submitBusy.current || checkingReturn || resolvingFiscal || startupRecoveryBusy) {
+      toast.warning('Дочекайтеся завершення поточної операції')
+      return
+    }
+    returnNavigation.back()
+  }
   const exchangeOrderId = searchParams.get('exchangeOrderId')
 
   // Коли змінюється condition — автопідбираємо stock_action
@@ -662,7 +671,7 @@ export default function ReturnForm() {
   // ===== DONE STATE =====
   if (done) {
     return (
-      <Layout title="Повернення">
+      <Layout title="Повернення" onBack={leaveReturn}>
         <Card className="max-w-md text-center py-10 mx-auto">
           <RotateCcw size={40} className="text-green-500 mx-auto mb-3" />
           <p className="text-lg font-semibold text-gray-900 mb-1">Повернення оформлено</p>
@@ -686,6 +695,7 @@ export default function ReturnForm() {
               <Button onClick={startExchangeOrder}>Створити замовлення на заміну</Button>
             )}
             <Button variant={exchangeOrderId ? 'secondary' : 'primary'} onClick={reset}>Нове повернення</Button>
+            <Button variant="secondary" onClick={leaveReturn}>До попереднього списку</Button>
           </div>
         </Card>
       </Layout>
@@ -694,7 +704,7 @@ export default function ReturnForm() {
 
   // ===== MAIN FORM =====
   return (
-    <Layout title="Оформити повернення">
+    <Layout title="Оформити повернення" onBack={leaveReturn}>
       {pendingReturn && <Card className="mb-4 max-w-3xl border-amber-300">
         <p role="alert" className="mb-3 text-sm text-amber-800">Є спроба повернення без підтвердженого результату. Перевірте її перед новою операцією; гроші повторно не видавайте.</p>
         <Button type="button" loading={checkingReturn} onClick={checkPendingReturn}>Перевірити повернення</Button>

@@ -10,7 +10,8 @@ it('stores a stable receiving identity before the atomic IPC can lose its reply'
 it('never automatically clones an already posted invoice during recovery', () => {
   expect(form).not.toMatch(/navigate\([^\n]+new\?clone=/)
   expect(form).toContain('setVersionConflict(invoice)')
-  expect(form).toContain('onOpen={() => navigate(\'/suppliers/invoices/\' + versionConflict.id)}')
+  expect(form).toContain("const { open, back, returnTo } = useViewNavigation('/suppliers/invoices')")
+  expect(form).toContain('onOpen={() => open(\'/suppliers/invoices/\' + versionConflict.id)}')
 })
 it('keeps a manually selected category when revalidating the same product', () => {
   expect(form).toContain('category_id: item.product_id === product.id ? item.category_id ?? null : product.category_id ?? item.category_id ?? null')

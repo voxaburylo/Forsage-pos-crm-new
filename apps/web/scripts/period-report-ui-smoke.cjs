@@ -65,8 +65,9 @@ createRoot(document.getElementById('root')).render(React.createElement(MemoryRou
     await page.getByText('Прийнято оплат до повернень',{exact:true}).waitFor()
     assert.match(await page.getByTestId('report-source').innerText(),/серверна копія.*може відставати/)
     const choose=async tab=>{
-      if(page.viewportSize().width<768)await page.locator('select').first().selectOption(tab)
-      else await page.getByRole('button',{name:tab==='period'?'За період':tab==='weekly'?'7 днів':'Сьогодні',exact:true}).click()
+      if(page.viewportSize().width<768)await page.locator('select').first().selectOption('today')
+      else await page.getByRole('button',{name:'Підсумки',exact:true}).click()
+      await page.getByLabel('Період підсумків',{exact:true}).selectOption(tab)
     }
     const setDates=async from=>{
       await page.getByLabel('Від',{exact:true}).fill(from)

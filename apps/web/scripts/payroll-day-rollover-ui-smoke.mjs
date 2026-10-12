@@ -24,13 +24,13 @@ const mocks = {
   '@/components/ui/Toast': 'export const toast={error:m=>fixture.errors.push(m),warning:m=>fixture.warnings.push(m),success:m=>fixture.messages.push(m)};export function ToastContainer(){return null}',
 }
 const entry = `
-import React from 'react';import{createRoot}from'react-dom/client';import{MemoryRouter}from'react-router-dom';
+import React from 'react';import{createRoot}from'react-dom/client';import{MemoryRouter,Routes,Route}from'react-router-dom';
 import Staff from'/src/features/staff/StaffPage.tsx';import Payroll from'/src/features/analytics/PayrollPage.tsx';import'/src/index.css';
-createRoot(document.getElementById('root')).render(<MemoryRouter>{fixture.mode==='staff'?<Staff/>:<Payroll/>}</MemoryRouter>);
+createRoot(document.getElementById('root')).render(<MemoryRouter initialEntries={[fixture.route??(fixture.mode==='staff'?'/staff':'/analytics/payroll')]}><Routes><Route path="/staff" element={<Staff/>}/><Route path="/analytics/payroll" element={<Payroll/>}/></Routes></MemoryRouter>);
 `
 const bootstrap = `
 window.fixture={...window.testConfig,reads:[],pending:[],errors:[],warnings:[],messages:[],holdDates:window.testConfig.holdDates??[]};
-fixture.worker={id:'worker',full_name:'Test Worker',phone:'+380674444444',email:'',role:'cashier',is_active:true,base_rate:10000,rate_period:'day'};
+fixture.worker={id:'worker',full_name:'Test Worker',phone:'+380674444444',email:'',role:'cashier',is_active:fixture.workerActive??true,base_rate:10000,rate_period:'day'};
 fixture.rows=amount=>[{employee_id:'worker',earned:amount,paid:0,penalty:0,balance:amount}];
 fixture.defer=(kind,body)=>new Promise((resolve,reject)=>fixture.pending.push({kind,body,resolve,reject}));
 fixture.admin={listUsers:async()=>({data:[fixture.worker]})};
@@ -110,13 +110,17 @@ try {
     else await page.getByRole('row').filter({ hasText: 'Test Worker' }).getByRole('button', { name: 'Операції', exact: true }).click()
   }
   const today = (page, mode) => page.getByRole('dialog').getByText(mode === 'staff' ? 'Заробіток сьогодні' : 'Сьогодні', { exact: true }).locator(mode === 'staff' ? '../..' : '..')
-  const payout = (page, mode, fund = 'cashbox') => page.getByRole('button', { name: mode === 'staff'
-    ? fund === 'cashbox' ? 'Видати з каси' : 'Кошти власника'
-    : fund === 'cashbox' ? 'Видати денний заробіток з каси' : 'Видати коштами власника', exact: true })
-  const amount = (page, mode) => mode === 'staff' ? page.getByLabel('Сума (грн)', { exact: true }) : page.getByPlaceholder('Сума, грн')
-  const note = (page, mode) => mode === 'staff' ? page.getByRole('dialog').locator('textarea') : page.getByPlaceholder('Примітка')
+  const payout = (page, _mode, fund = 'cashbox') => page.getByRole('button', {
+    name: fund === 'cashbox' ? 'Видати денний заробіток з каси' : 'Видати коштами власника', exact: true })
+  const amount = page => page.getByPlaceholder('Сума, грн')
+  const note = page => page.getByPlaceholder('Примітка')
   async function showForm(page, mode) {
-    if (mode === 'staff') await page.getByRole('button', { name: /Виплати та Історія/ }).click()
+    if (mode === 'staff') {
+      assert.equal(await page.getByRole('button', { name: /^(Видати з каси|Кошти власника|Зберегти операцію)$/ }).count(), 0,
+        'Staff settings no longer expose a second salary-write surface')
+      await page.getByRole('button', { name: 'Зарплата та виплати →', exact: true }).click()
+      await page.getByRole('dialog').getByPlaceholder('Сума, грн').waitFor()
+    }
   }
   async function expectToday(page, mode, value) {
     await today(page, mode).filter({ hasText: value }).waitFor()
@@ -147,8 +151,10 @@ try {
     await page.clock.runFor(50)
   }
   async function expectUnavailable(page, mode) {
-    assert.equal(await payout(page, mode).isDisabled(), true, 'Cash payout is disabled without a current-day summary')
-    assert.equal(await payout(page, mode, 'owner_funds').isDisabled(), true, 'Owner-funded payout is also disabled')
+    if (mode === 'payroll') {
+      assert.equal(await payout(page, mode).isDisabled(), true, 'Cash payout is disabled without a current-day summary')
+      assert.equal(await payout(page, mode, 'owner_funds').isDisabled(), true, 'Owner-funded payout is also disabled')
+    } else assert.equal(await payout(page, mode).count(), 0, 'Staff has no duplicate daily payout')
     if (await today(page, mode).count()) {
       const text = await today(page, mode).innerText()
       assert.equal(/126,00|73,00|0,00/.test(text), false, 'Unavailable daily calculation must not display yesterday or a fabricated zero as ready')
@@ -185,19 +191,20 @@ try {
     await scenario(`${mode}: stale payout click is blocked before any day observer runs`, async use => {
       const page = await use(mode)
       await open(page, mode); await expectToday(page, mode, '126,00')
+      await showForm(page, mode)
       assert.equal(await payout(page, mode).isDisabled(), false, 'The existing DOM button starts enabled for yesterday')
       const readsBefore = await page.evaluate(() => fixture.reads)
       // Do not run elapsed timers, dispatch focus/visibility, or use a physical click:
       // the handler's fresh wall-clock check must protect the still-stale DOM itself.
       await page.clock.setSystemTime(new Date(summer.after))
       assert.equal(await page.evaluate(() => new Date().toISOString().slice(0, 16)), summer.after.slice(0, 16))
-      await expectToday(page, mode, '126,00')
+      await expectToday(page, 'payroll', '126,00')
       assert.deepEqual(await page.evaluate(() => fixture.reads), readsBefore, 'No observer has refreshed the stale view yet')
       await payout(page, mode).evaluate(element => element.click())
       // The rejecting handler may safely refresh data itself; that is not a payout retry.
       assert.equal(await writeCount(page), 0, 'A stale daily click cannot start shift preflight or any money request')
       await page.evaluate(() => window.dispatchEvent(new Event('focus')))
-      await waitDay(page, summer.newDate); await expectToday(page, mode, '73,00')
+      await waitDay(page, summer.newDate); await expectToday(page, 'payroll', '73,00')
       assert.equal(await payout(page, mode).isDisabled(), false)
       assert.equal(await writeCount(page), 0, 'Refreshing the day does not replay the rejected click')
     })
@@ -218,8 +225,10 @@ try {
       await open(page, mode); await expectToday(page, mode, '73,00')
       await settleDaily(page, summer.oldDate, 0, true)
       await expectToday(page, mode, '73,00')
-      assert.equal(await payout(page, mode).isDisabled(), false)
-      assert.equal(await payout(page, mode, 'owner_funds').isDisabled(), false)
+      if (mode === 'payroll') {
+        assert.equal(await payout(page, mode).isDisabled(), false)
+        assert.equal(await payout(page, mode, 'owner_funds').isDisabled(), false)
+      } else assert.equal(await payout(page, mode).count(), 0)
       assert.equal(await page.getByRole('dialog').getByRole('status').count(), 0, 'An old rejection must not install a stale error/loading status')
       assert.deepEqual(await page.evaluate(() => ({ errors: fixture.errors, warnings: fixture.warnings })), { errors: [], warnings: [] })
       assert.equal(await writeCount(page), 0)
@@ -236,7 +245,8 @@ try {
       const next = { after: '2026-10-01T21:00:05.000Z' }
       await resume(page, next, 'visibility'); await waitDay(page, '2026-10-02')
       await expectToday(page, mode, '48,00')
-      assert.equal(await payout(page, mode).isDisabled(), false)
+      if (mode === 'payroll') assert.equal(await payout(page, mode).isDisabled(), false)
+      else assert.equal(await payout(page, mode).count(), 0)
       assert.equal(await writeCount(page), 0, 'Read recovery never retries money')
     })
 
@@ -249,14 +259,18 @@ try {
         await page.getByRole('button', { name: 'Операції', exact: true }).waitFor()
         await page.getByLabel('Попередній місяць').click()
       }
-      await open(page, mode); await showForm(page, mode)
-      await amount(page, mode).fill('126,50'); await note(page, mode).fill('Unsubmitted boundary operation')
-      const formPeriod = mode === 'staff' ? await page.locator('input[type="month"]').inputValue() : null
+      await open(page, mode)
+      if (mode === 'staff') await page.getByLabel("Повне ім'я", { exact: true }).fill('Unsubmitted employee name')
+      else { await amount(page).fill('126,50'); await note(page).fill('Unsubmitted boundary operation') }
+      const formPeriod = mode === 'payroll' ? await page.getByLabel('Місяць зарплати').inputValue() : null
       const readIndex = await page.evaluate(() => fixture.reads.length)
       await resume(page, summer); await waitDay(page, summer.newDate)
-      assert.equal(await amount(page, mode).inputValue(), '126,50')
-      assert.equal(await note(page, mode).inputValue(), 'Unsubmitted boundary operation')
-      if (mode === 'staff') assert.equal(await page.locator('input[type="month"]').inputValue(), formPeriod)
+      if (mode === 'staff') assert.equal(await page.getByLabel("Повне ім'я", { exact: true }).inputValue(), 'Unsubmitted employee name')
+      else {
+        assert.equal(await amount(page).inputValue(), '126,50')
+        assert.equal(await note(page).inputValue(), 'Unsubmitted boundary operation')
+        assert.equal(await page.getByLabel('Місяць зарплати').inputValue(), formPeriod)
+      }
       const refreshed = await page.evaluate(index => fixture.reads.slice(index).filter(row => row.kind !== 'daily'), readIndex)
       assert.ok(refreshed.length > 0); assert.ok(refreshed.every(row => row.period === '2026-08'))
       assert.equal(await writeCount(page), 0)
@@ -265,8 +279,8 @@ try {
     for (const kind of ['salary', 'payout']) await scenario(`${mode}: ${kind} preflight crosses midnight without changing captured day`, async use => {
       const page = await use(mode)
       await open(page, mode); await expectToday(page, mode, '126,00')
+      await showForm(page, mode)
       if (kind === 'salary') {
-        await showForm(page, mode)
         await page.getByRole('dialog').locator('select').first().selectOption('advance')
         await amount(page, mode).fill('126,50'); await note(page, mode).fill('Started yesterday')
         await page.getByRole('button', { name: 'Зберегти операцію', exact: true }).click()
@@ -289,9 +303,42 @@ try {
       await page.waitForFunction(index => fixture.reads.slice(index).some(row => row.kind === 'daily'), readIndex)
       const afterAction = await page.evaluate(index => fixture.reads.slice(index).filter(row => row.kind === 'daily'), readIndex)
       assert.ok(afterAction.every(row => row.date === summer.newDate), 'Late completion reloads the latest day, not the action closure day')
-      if (kind === 'salary' && mode === 'staff') await page.getByRole('button', { name: /Налаштування/ }).click()
-      await expectToday(page, mode, '73,00')
+      await expectToday(page, 'payroll', '73,00')
       assert.equal(await financialCount(page), 1, 'Completing the old action never starts another payment')
+    })
+  }
+  if (!redProof) {
+    await scenario('Staff opens the same employee and selected past month in the only salary form', async use => {
+      const page = await use('staff')
+      await page.getByRole('button', { name: /Test Worker/ }).waitFor()
+      await page.locator('button:has(svg.lucide-chevron-left)').first().click()
+      await open(page, 'staff'); await showForm(page, 'staff')
+      assert.equal(await page.getByLabel('Місяць зарплати').inputValue(), '2026-08')
+      assert.ok((await page.getByRole('dialog').innerText()).includes('Test Worker'))
+      assert.equal(await page.getByRole('button', { name: 'Зберегти операцію', exact: true }).count(), 1)
+      assert.equal(await writeCount(page), 0, 'Navigation does not write or open a shift')
+    })
+    await scenario('Inactive nondeleted employee stays accessible and a consumed link never reopens a closed form', async use => {
+      const page = await use('payroll', summer, 'America/Los_Angeles', {
+        route: '/analytics/payroll?employee=worker&period=2026-08', workerActive: false,
+      })
+      await page.getByRole('dialog').waitFor()
+      assert.equal(await page.getByLabel('Місяць зарплати').inputValue(), '2026-08')
+      assert.ok((await page.getByRole('row').filter({ hasText: 'Test Worker' }).innerText()).includes('Неактивний'))
+      await page.keyboard.press('Escape'); await page.getByRole('dialog').waitFor({ state: 'detached' })
+      await resume(page, summer); await waitDay(page, summer.newDate)
+      await page.getByRole('button', { name: 'Операції', exact: true }).waitFor()
+      assert.equal(await page.getByRole('dialog').count(), 0)
+      assert.equal(await writeCount(page), 0)
+    })
+    await scenario('Invalid month and unknown employee links cannot create a synthetic employee selection', async use => {
+      const page = await use('payroll', summer, 'America/Los_Angeles', {
+        route: '/analytics/payroll?employee=not-in-authorized-list&period=2026-99',
+      })
+      await page.getByRole('button', { name: 'Операції', exact: true }).waitFor()
+      assert.equal(await page.getByLabel('Місяць зарплати').inputValue(), '2026-09')
+      assert.equal(await page.getByRole('dialog').count(), 0)
+      assert.equal(await writeCount(page), 0)
     })
   }
   assert.deepEqual(pageErrors, [], 'No uncaught browser errors')

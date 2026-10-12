@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Edit, Trash2, Plus, Copy, ClipboardList } from 'lucide-react'
+import { Trash2, Plus, Copy, ClipboardList } from 'lucide-react'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
 import { customerApi } from './customerApi'
@@ -15,7 +15,10 @@ import { CustomerBalances } from './CustomerBalances'
 import { customerCashPath } from './customerUi'
 import { CustomerHistory } from './CustomerHistory'
 import type { Customer, CustomerVehicle } from '@/types/customer'
-import { QuickCustomerEditModal } from './QuickCustomerEditModal'
+import { CustomerEditor } from './QuickCustomerEditModal'
+import { canEditCustomerCard } from './customerEditPermissions'
+import { useViewNavigation } from '@/hooks/useViewNavigation'
+import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
 import { Layout } from '@/components/Layout'
 import { Button, Badge, Card, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
@@ -24,9 +27,11 @@ import { formatMoney } from '@/lib/utils'
 
 export default function CustomerDetailPage() {
   const navigate = useNavigate()
+  const navigation = useViewNavigation('/customers')
   const { id } = useParams<{ id: string }>()
   const role = useAuthStore((s) => s.session?.user?.app_metadata?.role as string | undefined)
   const local = Boolean(desktopBridge())
+  const canEdit = local && canEditCustomerCard(role)
   const offlineMode = useAuthStore((s) => s.offlineMode)
   const [customer, setCustomer] = useState<Customer | null>(null)
   const [cars, setCars] = useState<CustomerVehicle[]>([])
@@ -38,11 +43,13 @@ export default function CustomerDetailPage() {
   const [ordersLoading, setOrdersLoading] = useState(false)
   const [hasMore, setHasMore] = useState(false)
   const [revision, setRevision] = useState(0)
-  const [editModal, setEditModal] = useState(false)
+  const [draftState, setDraftState] = useState({ dirty: false, busy: false })
+  const [historyRevision, setHistoryRevision] = useState(0)
   const [deleteModal, setDeleteModal] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const request = useRef(0)
   const orderBusy = useRef(false)
+  const leave = useUnsavedChanges(draftState.dirty, draftState.busy || deleting)
 
   useEffect(() => {
     if (!id) return
@@ -78,9 +85,9 @@ export default function CustomerDetailPage() {
     finally { if (token === request.current) { orderBusy.current = false; setOrdersLoading(false) } }
   }
   async function handleDelete() {
-    if (!customer || deleting) return
+    if (!customer || deleting || draftState.busy) return
     setDeleting(true)
-    try { await customerApi.delete(customer.id); toast.success('Клієнта видалено'); navigate('/customers') }
+    try { await customerApi.delete(customer.id); toast.success('Клієнта видалено'); leave.allowLeave(); navigation.back() }
     catch (e) { toast.error(e instanceof Error ? e.message : 'Не вдалося видалити') }
     finally { setDeleting(false) }
   }
@@ -89,17 +96,11 @@ export default function CustomerDetailPage() {
 
   return (
     <Layout
+      onBack={navigation.back}
       title={`${customer.full_name ?? customer.phone}${customer.primary_vin ? `  ${customer.primary_vin}` : ''}`}
       actions={
         <div className="flex gap-2">
-          {local && <Button size="sm" icon={<ClipboardList size={14} />}
-            onClick={() => navigate(`/orders/new?customer_id=${customer.id}`)}>
-            Замовлення
-          </Button>}
-          {local && <Button variant="secondary" size="sm" icon={<Edit size={14} />} onClick={() => setEditModal(true)}>
-            Редагувати
-          </Button>}
-          {local && ['owner', 'admin'].includes(role ?? '') && <Button variant="danger" size="sm" icon={<Trash2 size={14} />} onClick={() => setDeleteModal(true)}>
+          {local && ['owner', 'admin'].includes(role ?? '') && <Button variant="danger" size="sm" disabled={draftState.busy} icon={<Trash2 size={14} />} onClick={() => setDeleteModal(true)}>
             Видалити
           </Button>}
         </div>
@@ -108,11 +109,20 @@ export default function CustomerDetailPage() {
       <div className="w-full max-w-6xl space-y-4">
         {Object.keys(errors).length > 0 && <div role="alert" className="rounded-lg border border-red-200 p-3 text-sm text-red-700">
           {Object.entries(errors).map(([key, message]) => <p key={key}>{key}: {message}</p>)}
-          <Button size="sm" variant="secondary" onClick={() => setRevision((n) => n + 1)}>Повторити завантаження</Button>
+          <Button size="sm" variant="secondary" disabled={draftState.busy} onClick={() => { if (!draftState.dirty || confirm('Завантажити свіжі дані? Незбережені зміни цієї картки буде втрачено.')) setRevision((n) => n + 1) }}>Повторити завантаження</Button>
         </div>}
 
         {/* Основна інфо */}
-        <Card>
+        {canEdit ? <Card><CustomerEditor
+          key={customer.id}
+          customer={customer}
+          open
+          inline
+          onClose={navigation.back}
+          onDraftStateChange={setDraftState}
+          onVehiclesChanged={setCars}
+          onSaved={(updated) => { setCustomer(updated); setHistoryRevision((value) => value + 1) }}
+        /></Card> : <Card>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <div className="sm:col-span-2 lg:col-span-1">
               <p className="text-xs text-gray-400 mb-0.5">Телефон</p>
@@ -178,20 +188,20 @@ export default function CustomerDetailPage() {
               <p className="text-sm text-gray-700">{customer.notes}</p>
             </div>
           )}
-        </Card>
+        </Card>}
 
         <CustomerBalances customer={customer} deposit={deposit?.balance}/>
-        {local && canUseOrderCash(role) && <Button onClick={() => navigate(customerCashPath(customer.id))}>Розрахунки в касі</Button>}
+        {local && canUseOrderCash(role) && <Button onClick={() => navigation.open(customerCashPath(customer.id))}>Розрахунки в касі</Button>}
         {depositError && <p role="alert" className="text-sm text-red-700">{depositError}</p>}
 
-        <Card>
-          <div className="mb-3 flex items-center justify-between"><h3 className="font-semibold">Автомобілі ({cars.length})</h3>{local && <Button size="sm" variant="secondary" onClick={() => setEditModal(true)}>Додати / редагувати</Button>}</div>
+        {!canEdit && <Card>
+          <div className="mb-3 flex items-center justify-between"><h3 className="font-semibold">Автомобілі ({cars.length})</h3></div>
           {errors['Автомобілі'] ? <p role="alert" className="text-red-700">{errors['Автомобілі']}</p> : cars.length === 0 ? <p className="text-sm text-gray-500">Автомобілі ще не додані</p> : <div className="grid gap-3 md:grid-cols-2">{cars.map((car) => <div key={car.id} className="rounded-lg border p-3">
             <p className="font-semibold">{car.brand} {car.model} {car.year || ''}</p>
             <p className="break-all font-mono text-sm">{car.vin || 'VIN не вказано'}</p>
             {car.notes && <p className="mt-1 text-sm text-gray-500">{car.notes}</p>}
           </div>)}</div>}
-        </Card>
+        </Card>}
 
         {!local && !offlineMode && (
           <>
@@ -208,7 +218,7 @@ export default function CustomerDetailPage() {
               <h3 className="font-semibold text-gray-800 text-sm">Замовлення ({customerOrders.length})</h3>
             </div>
             {local && <button
-              onClick={() => navigate(`/orders/new?customer_id=${customer.id}`)}
+              onClick={() => navigation.open(`/orders/new?customer_id=${customer.id}`)}
               className="text-xs text-yellow-600 hover:text-yellow-700 font-medium flex items-center gap-1"
             >
               <Plus size={12} /> Нове
@@ -237,7 +247,7 @@ export default function CustomerDetailPage() {
                     className="w-full px-6 py-3 flex items-center justify-between text-sm hover:bg-gray-50 transition-colors gap-2"
                   >
                     <button
-                      onClick={() => navigate(`/orders/${o.id}`)}
+                      onClick={() => navigation.open(`/orders/${o.id}`)}
                       className="flex items-center gap-2 min-w-0 flex-1 text-left"
                     >
                       <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0 ${statusColor[o.status] ?? 'bg-gray-100 text-gray-500'}`}>
@@ -277,21 +287,8 @@ export default function CustomerDetailPage() {
 
         {/* Історія покупок */}
         {hasMore && <Button variant="secondary" size="sm" onClick={moreOrders} loading={ordersLoading}>Ще замовлення</Button>}
-        <CustomerHistory customerId={customer.id} revision={revision} />
+        <CustomerHistory customerId={customer.id} revision={revision + historyRevision} />
       </div>
-
-      <QuickCustomerEditModal
-        customer={customer}
-        open={editModal}
-        onClose={() => setEditModal(false)}
-        onSaved={(updated) => {
-          setCustomer(updated)
-          setEditModal(false)
-          setRevision((n) => n + 1)
-        }}
-      />
-
-
 
       <Modal open={deleteModal} onClose={() => setDeleteModal(false)} title="Видалити клієнта?" size="sm">
         <p className="text-sm text-gray-600 mb-6">

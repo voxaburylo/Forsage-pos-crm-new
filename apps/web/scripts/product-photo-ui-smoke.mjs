@@ -26,7 +26,7 @@ const bootstrap = `
 window.fixture={id:'a',disabled:false,hidden:false,photos:{},success:[],errors:[],writes:[],uploads:[],busy:[],gates:{},hold:{}};
 fixture.mode=new URL(location.href).searchParams.get('mode')||'photo';fixture.web=new URL(location.href).searchParams.has('web');fixture.detailWrites=[];fixture.crosses={a:[],b:[]};
 fixture.role=new URL(location.href).searchParams.get('role')||'owner';fixture.offline=new URL(location.href).searchParams.has('offline');
-fixture.failRefs=new URL(location.href).searchParams.has('failRefs');fixture.refWrites=[];fixture.barcodeCalls=0;fixture.priceCalls=[];fixture.suggestedPrice=15000;
+fixture.failRefs=new URL(location.href).searchParams.has('failRefs');fixture.failLinks=new URL(location.href).searchParams.has('failLinks');fixture.refWrites=[];fixture.barcodeCalls=0;fixture.priceCalls=[];fixture.suggestedPrice=15000;
 fixture.wait=key=>fixture.hold[key]?new Promise((resolve,reject)=>fixture.gates[key]={resolve,reject}):Promise.resolve();
 fixture.admin={
  listCategories:async()=>{if(fixture.failRefs)throw Error('Reference read failed');return {data:[]}},
@@ -198,25 +198,26 @@ try{
   console.log('PASS: real detail routes isolate A/B data and ignore stale success and failure')
 
   await reset('detail')
-  await page.getByRole('button',{name:'Змінити фото',exact:true}).click()
-  await page.evaluate(()=>fixture.hold['commit-a']=true);await paste();await pending('commit-a')
-  await page.getByRole('button',{name:'Закрити',exact:true}).click()
-  assert.equal(await page.getByRole('dialog').count(),1)
-  assert.equal(await page.getByRole('button',{name:'Готово',exact:true}).isDisabled(),true)
-  assert.equal(await page.evaluate(()=>fixture.success.length),0)
-  assert.deepEqual(await page.evaluate(()=>fixture.writes.map(({id,patch})=>({id,keys:Object.keys(patch)}))),[{id:'a',keys:['photo_url']}])
+  await page.getByLabel('Назва товару *').waitFor()
+  await paste();await ready()
+  assert.equal(await page.evaluate(()=>fixture.writes.length),0,'Photo is a draft until explicit Save')
+  await page.evaluate(()=>fixture.hold['commit-a']=true)
+  await page.getByRole('button',{name:'Зберегти зміни',exact:true}).click();await pending('commit-a')
+  assert.equal(await page.getByRole('button',{name:'Зберегти зміни',exact:true}).isDisabled(),true)
+  assert.equal(await page.evaluate(()=>Object.hasOwn(fixture.writes[0].patch,'qty_on_hand')),false)
   await page.evaluate(()=>fixture.gates['commit-a'].reject(Error('disk full')))
   await ready()
-  assert.equal(await page.getByRole('dialog').count(),1)
   assert.deepEqual(await page.evaluate(()=>fixture.errors),['disk full'])
-  await page.evaluate(()=>fixture.hold['commit-a']=false);await paste()
-  await page.waitForFunction(()=>fixture.success.length===1);await ready()
-  await page.getByRole('button',{name:'Готово',exact:true}).click()
+  assert.equal(await page.getByRole('img',{name:'Фото товару'}).getAttribute('src'),await page.evaluate(()=>fixture.image+'#a'))
+  await page.evaluate(()=>fixture.hold['commit-a']=false)
+  await page.getByRole('button',{name:'Зберегти зміни',exact:true}).click()
+  await page.waitForFunction(()=>fixture.success.includes('Товар оновлено'))
   await page.evaluate(()=>fixture.nav('/products/b'));await page.getByRole('heading',{name:'Product b',exact:true}).waitFor()
   await page.evaluate(()=>fixture.nav('/products/a'));await page.getByRole('heading',{name:'Product a',exact:true}).waitFor()
-  assert.equal(await page.getByRole('img',{name:'Product a',exact:true}).getAttribute('src'),await page.evaluate(()=>fixture.products.a.photo_url))
+  await page.getByLabel('Назва товару *').waitFor()
+  assert.equal(await page.getByRole('img',{name:'Фото товару'}).getAttribute('src'),await page.evaluate(()=>fixture.products.a.photo_url))
   assert.equal(await page.evaluate(()=>fixture.products.a.qty_on_hand),2)
-  console.log('PASS: real detail photo dialog waits for persistence, keeps old photo on error, survives reopening, never sends stock fields')
+  console.log('PASS: canonical card stages photos until Save, retains draft on error, survives reopening, never sends stock fields')
 
   await reset('form')
   await page.getByLabel('Назва товару *').fill('Changed product a')
@@ -452,14 +453,16 @@ try{
   console.log('PASS: delete failure keeps confirmation open; explicit retry navigates only on success')
 
   await reset('detail')
-  await page.evaluate(()=>fixture.hold['detail-barcode']=true)
-  await page.getByRole('button',{name:'Згенерувати штрихкод'}).evaluate(b=>{b.click();b.click()})
-  await pending('detail-barcode');assert.equal(await page.evaluate(()=>fixture.detailWrites.length),1)
+  await page.getByLabel('Назва товару *').waitFor()
+  await page.evaluate(()=>fixture.hold['barcode']=true)
+  await page.getByRole('button',{name:'Генерувати',exact:true}).evaluate(b=>{b.click();b.click()})
+  await pending('barcode');assert.equal(await page.evaluate(()=>fixture.barcodeCalls),1)
+  assert.equal(await page.evaluate(()=>fixture.detailWrites.length+fixture.writes.length),0)
   await page.evaluate(()=>fixture.nav('/products/b'));await page.getByRole('heading',{name:'Product b',exact:true}).waitFor()
-  await settle('detail-barcode');await page.waitForTimeout(60)
-  assert.equal(await page.getByText('2000000000123',{exact:true}).count(),0)
-  assert.deepEqual(await page.evaluate(()=>fixture.success),[])
-  console.log('PASS: barcode generation is serialized and cannot replace another card')
+  await settle('barcode');await page.waitForTimeout(60)
+  assert.equal(await page.locator('input[placeholder="4006633364515 або відскануйте..."]').inputValue(),'')
+  assert.equal(await page.evaluate(()=>fixture.writes.length),0)
+  console.log('PASS: barcode is staged, duplicate generation ignored, late result cannot change another card')
 
   await reset('detail','&web=1')
   for(const name of ['📌 Резерв','Редагувати','Видалити','Згенерувати штрихкод','Змінити фото','Додати номери']){
@@ -468,7 +471,9 @@ try{
   assert.equal(await page.evaluate(()=>fixture.detailWrites.length),0)
   await reset('detail','&role=cashier')
   assert.equal(await page.getByRole('button',{name:'📌 Резерв',exact:true}).count(),0)
-  assert.equal(await page.getByRole('button',{name:'Редагувати',exact:true}).count(),1)
+  await page.getByRole('button',{name:'Зберегти зміни',exact:true}).waitFor()
+  assert.equal(await page.getByRole('button',{name:'Редагувати',exact:true}).count(),0)
+  assert.equal(await page.getByLabel('Закупівельна ціна (₴)').count(),0)
   assert.equal(await page.getByRole('button',{name:'Видалити',exact:true}).count(),0)
   await reset('detail','&offline=1')
   await crossInput().fill('OC195')
@@ -476,5 +481,11 @@ try{
   await page.getByRole('button',{name:'Product b',exact:true}).waitFor()
   assert.equal(await page.evaluate(()=>fixture.detailWrites.length),1)
   console.log('PASS: web detail is read-only; cashier permissions respected; cross editing works offline')
+  await reset('detail','&failLinks=1')
+  await page.getByLabel('Назва товару *').waitFor()
+  await page.getByRole('alert').filter({hasText:'Не вдалося оновити крос-номери'}).waitFor()
+  assert.equal(await page.getByRole('button',{name:'Зберегти зміни',exact:true}).isEnabled(),true)
+  assert.equal(await page.evaluate(()=>fixture.writes.length),0)
+  console.log('PASS: optional cross-number read failure keeps the canonical editor available without writes')
   assert.deepEqual(errors,[]);assert.deepEqual(blocked,[])
 }finally{await browser?.close();await server.close()}

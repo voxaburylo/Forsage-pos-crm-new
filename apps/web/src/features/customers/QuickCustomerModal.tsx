@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { customerApi } from './customerApi'
 import type { Customer } from '@/types/customer'
 import { Modal, Button, Input } from '@/components/ui'
@@ -9,9 +9,10 @@ import { pricingApi } from '@/features/admin/pricingApi'
 import type { PriceTier } from '@/features/admin/pricingApi'
 import { TAGS } from '@/types/customer'
 import { desktopBridge } from '@/lib/desktopBridge'
-import { canManageCustomerDiscount, canManageCustomerFinancials, canManageCustomerStatus } from './customerEditPermissions'
+import { canEditCustomerCard, canManageCustomerDiscount, canManageCustomerFinancials, canManageCustomerStatus } from './customerEditPermissions'
 import { CustomerCardBarcodeField } from './CustomerCardBarcodeField'
 import { useScopedAction } from '@/hooks/useScopedAction'
+import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
 
 interface Props {
   open: boolean
@@ -20,6 +21,7 @@ interface Props {
   onCreated: (customer: Customer) => void
   onEdit?: (customer: Customer) => void
   onPayDebt?: (customer: Customer) => void
+  resumeSearch?: boolean
 }
 
 type Mode = 'search' | 'create'
@@ -45,10 +47,11 @@ function getRecentItems(key: string): string[] {
   }
 }
 
-export function QuickCustomerModal({ open, offline: networkOffline = false, onClose, onCreated, onEdit, onPayDebt }: Props) {
+export function QuickCustomerModal({ open, offline: networkOffline = false, onClose, onCreated, onEdit, onPayDebt, resumeSearch = false }: Props) {
   const offline = networkOffline && !desktopBridge()
   const scopeKey = useAuthStore((state) => state.session?.user?.id ?? '')
   const role = useAuthStore((state) => state.session?.user?.app_metadata?.role as string | undefined)
+  const canEdit = canEditCustomerCard(role)
   const canManageFinancials = canManageCustomerFinancials(role)
   const canManageStatus = canManageCustomerStatus(role)
   const canManageDiscount = canManageCustomerDiscount(role)
@@ -75,11 +78,14 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
   const action = useScopedAction(`${open}:${scopeKey}`)
   const saving = action.busy
   const [recentPhones, setRecentPhones] = useState<string[]>([])
+  const previousScope = useRef(scopeKey)
 
   // Reset state on open
   useEffect(() => {
     if (open) {
       setMode('search')
+      if (resumeSearch && previousScope.current === scopeKey) return
+      previousScope.current = scopeKey
       setQuery('')
       setResults([])
       setPhone('')
@@ -99,7 +105,14 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
       setRecentPhones(getRecentItems('recent_phones'))
       if (!offline) pricingApi.listTiers().then((res) => setTiers(res.data)).catch(() => setTiers([]))
     }
-  }, [open])
+  }, [open, scopeKey, resumeSearch])
+
+  const createDirty = Boolean(phone || name || email || notes || cardBarcode || tags.length || priceTierId || discountPct !== '0' || clientStatus !== 'client' || carBrand || carModel || carYear || carVin || carNotes)
+  useUnsavedChanges(open && createDirty, open && saving)
+  function requestClose() {
+    if (action.isBusy()) return
+    if (!createDirty || confirm('Закрити без збереження введених даних клієнта?')) onClose()
+  }
 
   useEffect(() => {
     if (offline) setMode('search')
@@ -145,13 +158,14 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
-    if (action.isBusy()) return
+    if (action.isBusy() || !canEdit) return
     if (offline) {
       toast.error('Створення нового клієнта потребує інтернету')
       return
     }
     if (!phone.trim()) { toast.error("Телефон обов'язковий"); return }
-    if (!name.trim())  { toast.error("Ім'я обов'язкове"); return }
+    const discount = Number(discountPct.replace(',', '.'))
+    if (canManageDiscount && (!Number.isFinite(discount) || discount < 0 || discount > 100)) { toast.error('Знижка має бути від 0 до 100%'); return }
     const attempt = action.begin()
     if (!attempt) return
     try {
@@ -163,7 +177,7 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
         notes: notes.trim() || undefined,
         tags,
         ...(canManageStatus ? { client_status: clientStatus } : {}),
-        ...(canManageDiscount ? { discount_pct: Number(discountPct.replace(',', '.')) } : {}),
+        ...(canManageDiscount ? { discount_pct: discount } : {}),
         ...(canManageFinancials ? { price_tier_id: priceTierId || null } : {}),
         card_barcode: cardBarcode.trim() || null,
         ...(hasVehicle ? {
@@ -194,10 +208,10 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
   }
 
   return (
-    <Modal open={open} onClose={() => { if (!action.isBusy()) onClose() }} title="Клієнт у чеку" size={mode === 'create' ? 'lg' : 'sm'}>
+    <Modal open={open} onClose={requestClose} title="Клієнт у чеку" size={mode === 'create' ? 'lg' : 'sm'}>
       {/* Tabs */}
       <div className="flex gap-1 mb-4 border-b border-gray-200 -mt-1">
-        {((offline ? ['search'] : ['search', 'create']) as Mode[]).map((m) => (
+        {((offline || !canEdit ? ['search'] : ['search', 'create']) as Mode[]).map((m) => (
           <button
             key={m}
             disabled={saving}
@@ -310,7 +324,7 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
                           Гроші
                         </button>
                       )}
-                      {onEdit && !offline && (
+                      {onEdit && !offline && canEdit && (
                         <button
                           type="button"
                           onClick={() => editCustomer(c)}
@@ -326,7 +340,7 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
               ))}
             </div>
           )}
-          {!offline && (
+          {!offline && canEdit && (
             <p className="text-xs text-gray-400 text-center">
               Або{' '}
               <button
@@ -368,7 +382,7 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
               </div>
             )}
             </div>
-            <Input label="Ім'я *" value={name} onChange={(e) => setName(e.target.value)} placeholder="Іван Іваненко" required />
+            <Input label="Ім'я" value={name} onChange={(e) => setName(e.target.value)} placeholder="Іван Іваненко" />
             <CustomerCardBarcodeField value={cardBarcode} onChange={setCardBarcode} disabled={saving} />
             <Input label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="client@example.com" />
             <div>

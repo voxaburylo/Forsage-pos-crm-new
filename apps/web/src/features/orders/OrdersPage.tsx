@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
+import { useListViewState, useViewNavigation } from '@/hooks/useViewNavigation'
 import {
   Plus, Phone, MessageSquare, FilePen, ClipboardList,
   AlertCircle, Search, Send, User, Car, ExternalLink,
@@ -26,6 +27,7 @@ import type { CustomerVehicle } from '@/types/customer'
 import { BoundedCache } from '@/lib/boundedCache'
 import { createReadPoller } from '@/lib/readPoller'
 import { isDesktopAccessLocked } from '@/lib/desktopAccessState'
+import { isDraftOrder as isDraft, isLeadOrder as isLead } from './orderQueues'
 
 // ───────────────────────── Constants ─────────────────────────
 
@@ -179,13 +181,6 @@ function chatLabel(chat: Chat): string {
 // Чернетка = ЛИШЕ рукописна (QuickDraft, source='mobile_draft') або позначені
 // нотатки-чернетки. Замовлення з форми (source='walk_in') — це відкрите замовлення,
 // що очікує відповідь клієнта, а НЕ чернетка.
-function isDraft(o: CustomerOrder) {
-  return o.status === 'quoted' || (o.status === 'lead' && (o.source === 'mobile_draft' || o.items.some((i) => (i as { is_draft_note?: boolean }).is_draft_note)))
-}
-function isLead(o: CustomerOrder) {
-  return o.status === 'lead' && !isDraft(o)
-}
-
 function statusFilterForTab(tab: Tab): string | undefined {
   if (tab === 'all') return 'lead,quoted,new,in_progress,ordered,arrived,called,no_answer,ready'
   if (tab === 'leads') return 'lead'
@@ -818,11 +813,11 @@ interface DraftsGridProps {
 }
 
 function DraftsGrid({ orders, loading, onLoad, onEdit, offset, onPrevPage, onNextPage, hasMore }: DraftsGridProps) {
-  const navigate = useNavigate()
+  const { open } = useViewNavigation('/orders?tab=drafts')
   const drafts = orders.filter(isDraft)
 
   async function handleConvertToOrder(orderId: string) {
-    navigate(`/orders/new?draftId=${orderId}`)
+    open(`/orders/new?draftId=${orderId}`)
   }
 
   async function handleDelete(orderId: string, clientName: string) {
@@ -841,7 +836,7 @@ function DraftsGrid({ orders, loading, onLoad, onEdit, offset, onPrevPage, onNex
       <div className="max-w-7xl mx-auto space-y-6">
         <div className="flex justify-between items-center">
           <h2 className="text-lg md:text-xl font-bold text-gray-900">Робочі чернетки</h2>
-          <Button size="sm" icon={<Plus size={14} />} onClick={() => navigate('/quotes/new')}>
+          <Button size="sm" icon={<Plus size={14} />} onClick={() => open('/quotes/new')}>
             Створити чернетку
           </Button>
         </div>
@@ -852,7 +847,7 @@ function DraftsGrid({ orders, loading, onLoad, onEdit, offset, onPrevPage, onNex
           <div className="bg-white rounded-2xl border border-gray-100 p-12 text-center">
             <p className="text-gray-500 text-sm font-medium">Активних чернеток немає</p>
             <p className="text-gray-400 text-xs mt-1">Телефон, VIN і список побажань клієнта — без цін та артикулів</p>
-            <Button size="sm" icon={<Plus size={14} />} className="mt-4" onClick={() => navigate('/quotes/new')}>
+            <Button size="sm" icon={<Plus size={14} />} className="mt-4" onClick={() => open('/quotes/new')}>
               Створити чернетку
             </Button>
           </div>
@@ -1322,7 +1317,7 @@ function OrdersTable({ orders, loading, search, setSearch, offset, onPrevPage, o
                             title="Повторити замовлення"
                             onClick={() => startRepeatOrder(o, navigate)}
                           />
-                          <Button variant="secondary" size="sm" onClick={() => navigate('/orders/' + o.id)}>
+                          <Button variant="secondary" size="sm" onClick={() => onQuickView(o)}>
                             Відкрити
                           </Button>
                           {canDelete && canDeleteDraftOrder(o) && (
@@ -1372,6 +1367,7 @@ function OrdersTable({ orders, loading, search, setSearch, offset, onPrevPage, o
 
 export default function OrdersPage() {
   const navigate = useNavigate()
+  const viewNavigation = useViewNavigation('/orders')
   const location = useLocation()
   // Режим «Чат-боти» (маршрут /chats) — лише чати; режим замовлень (/orders) — лише замовлення.
   const chatMode = location.pathname.startsWith('/chats')
@@ -1388,29 +1384,37 @@ export default function OrdersPage() {
 
   const [hasMoreOrders, setHasMoreOrders] = useState(false)
   // ui
-  const [tab, setTab] = useState<Tab>(chatMode ? 'bots' : 'all')
-  const [offset, setOffset] = useState(0)
+  const [view, setView] = useListViewState<{ tab: Tab; offset: number; search: string }>(chatMode ? 'chats:list' : 'orders:list',
+    () => ({ tab: chatMode ? 'bots' : 'all', offset: 0, search: '' }))
+  const { offset, search } = view
+  const tab = chatMode ? 'bots' : view.tab
+  const setOffset = (offset: number) => setView(previous => ({ ...previous, offset }))
+  const setSearch = (search: string) => {
+    setView(previous => ({ ...previous, search, offset: 0 }))
+    if (!chatMode) setSearchParams(previous => { const next = new URLSearchParams(previous); next.set('search', search); return next }, { replace: true })
+  }
+  const setTab = (tab: Tab) => {
+    setView(previous => ({ ...previous, tab, offset: 0 }))
+    if (!chatMode) setSearchParams(previous => { const next = new URLSearchParams(previous); next.set('tab', tab); return next }, { replace: true })
+  }
 
-  // Reset offset on tab changes
   useEffect(() => {
-    setOffset(0)
-  }, [tab])
-
-  useEffect(() => {
-    if (chatMode) { setTab('bots'); return }   // у режимі чатів вкладка завжди «чати»
+    if (chatMode) return   // у режимі чатів вкладка завжди «чати»
     const urlTab = searchParams.get('tab') as Tab
+    const urlSearch = searchParams.get('search')
     // «bots» свідомо НЕ дозволений у блоці /orders — чати живуть лише на /chats (меню «Чат-боти»)
     if (urlTab && ['all', 'leads', 'drafts', 'active', 'ready', 'completed', 'canceled'].includes(urlTab)) {
-      setTab(urlTab)
+      setView(previous => previous.tab === urlTab && (urlSearch === null || previous.search === urlSearch) ? previous
+        : { ...previous, tab: urlTab, search: urlSearch ?? previous.search, offset: 0 })
+    } else if (urlSearch !== null) {
+      setView(previous => previous.search === urlSearch ? previous : { ...previous, search: urlSearch, offset: 0 })
     }
-  }, [searchParams, chatMode])
-  const [search, setSearch] = useState('')
+  }, [searchParams, chatMode, setView])
   const [selection, setSelection] = useState<Selection>(null)
-  const [serverSearch, setServerSearch] = useState('')
+  const [serverSearch, setServerSearch] = useState(search.trim())
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setServerSearch(search.trim())
-      setOffset(0)
     }, 250)
     return () => window.clearTimeout(timer)
   }, [search])
@@ -1895,10 +1899,10 @@ export default function OrdersPage() {
               <span className="md:hidden">{vehiclePhotoLoading ? '…' : 'Фото авто'}</span>
             </button>
             <div className="flex items-center gap-1 rounded-xl bg-gray-50 p-0.5">
-              <Button size="sm" icon={<Plus size={14} />} onClick={() => navigate('/orders/new')} title="Нове замовлення">
+              <Button size="sm" icon={<Plus size={14} />} onClick={() => viewNavigation.open('/orders/new')} title="Нове замовлення">
                 <span className="hidden sm:inline">Нове замовлення</span><span className="sm:hidden">Нове</span>
               </Button>
-              <Button variant="secondary" size="sm" icon={<FilePen size={14} />} onClick={() => navigate('/quotes/new')} title="Чернетка">
+              <Button variant="secondary" size="sm" icon={<FilePen size={14} />} onClick={() => viewNavigation.open('/quotes/new')} title="Чернетка">
                 <span className="hidden sm:inline">Чернетка</span><span className="sm:hidden">Черн.</span>
               </Button>
             </div>
@@ -2069,8 +2073,8 @@ export default function OrdersPage() {
               </>
             ) : selectedOrder ? (
               <OrderInlineView order={selectedOrder} now={now}
-                onOpenFull={() => navigate('/orders/' + selectedOrder.id)}
-                onEditDraft={() => navigate(orderEditPath(selectedOrder))}
+                onOpenFull={() => viewNavigation.open('/orders/' + selectedOrder.id)}
+                onEditDraft={() => viewNavigation.open(orderEditPath(selectedOrder))}
                 onOpenChat={(chatId) => navigate('/chats?chat_id=' + encodeURIComponent(chatId))}
                 onChangeStatus={(s) => changeOrderStatus(selectedOrder.id, s)}
                 onItemStatus={(itemId, s) => updateItemStatus(selectedOrder.id, itemId, s)}
@@ -2101,7 +2105,7 @@ export default function OrdersPage() {
               orders={orders} 
               loading={loadingOrders}
               onLoad={loadOrders} 
-              onEdit={(id) => navigate('/quotes/' + id)} 
+              onEdit={(id) => viewNavigation.open('/quotes/' + id)}
               offset={offset}
               onPrevPage={() => setOffset(Math.max(0, offset - 50))}
               onNextPage={() => setOffset(offset + 50)}
@@ -2117,7 +2121,7 @@ export default function OrdersPage() {
               onPrevPage={() => setOffset(Math.max(0, offset - 50))}
               onNextPage={() => setOffset(offset + 50)}
               hasMore={hasMoreOrders}
-              onQuickView={(o) => navigate('/orders/' + o.id)}
+              onQuickView={(o) => viewNavigation.open('/orders/' + o.id)}
               onQuickOrder={handleQuickOrder}
               onDelete={handleDeleteOrder}
               canDelete={role === 'owner' || role === 'admin'}

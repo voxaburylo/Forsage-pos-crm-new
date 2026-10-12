@@ -147,6 +147,7 @@ export default function POSPage() {
   const [resolvingFiscal, setResolvingFiscal] = useState(false)
   const [customerOpen, setCustomerOpen] = useState(false)
   const [customerEditOpen, setCustomerEditOpen] = useState(false)
+  const [resumeCustomerSearch, setResumeCustomerSearch] = useState(false)
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null)
   const [closeOpen, setCloseOpen]       = useState(false)
   const [cashOpen, setCashOpen]         = useState(false)
@@ -243,6 +244,7 @@ export default function POSPage() {
     try {
       const { data } = await customerApi.get(customer.id)
       setEditingCustomer(data)
+      setResumeCustomerSearch(true)
       setCustomerOpen(false)
       setCustomerEditOpen(true)
     } catch (error) {
@@ -961,8 +963,9 @@ export default function POSPage() {
 
       <QuickCustomerModal
         open={customerOpen}
+        resumeSearch={resumeCustomerSearch}
         offline={!effectiveOnline}
-        onClose={() => setCustomerOpen(false)}
+        onClose={() => { setCustomerOpen(false); setResumeCustomerSearch(false) }}
         onEdit={handleEditCustomerFromSearch}
         onPayDebt={(c) => {
           setCustomerOpen(false)
@@ -979,7 +982,7 @@ export default function POSPage() {
       <QuickCustomerEditModal
         customer={editingCustomer}
         open={customerEditOpen}
-        onClose={() => setCustomerEditOpen(false)}
+        onClose={() => { setCustomerEditOpen(false); if (resumeCustomerSearch) setCustomerOpen(true) }}
         onSaved={(c) => {
           const posCustomer = posCustomerFromCustomer(c)
           if (store.customer?.id === c.id) {
@@ -988,6 +991,7 @@ export default function POSPage() {
           }
           setEditingCustomer(c)
           setCustomerEditOpen(false)
+          if (resumeCustomerSearch) setCustomerOpen(true)
         }}
       />
 

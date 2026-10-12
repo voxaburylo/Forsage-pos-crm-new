@@ -4,12 +4,13 @@ import { useScopedAction } from '@/hooks/useScopedAction'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { parseWriteoffQuantity } from '@/features/inventory/writeoffQuantity'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Edit, Trash2, Clock, AlertTriangle, Trash, CheckCircle, XCircle, Barcode, Printer, Camera } from 'lucide-react'
+import { Trash2, Clock, AlertTriangle, Trash, CheckCircle, XCircle, Printer, Camera } from 'lucide-react'
 import { productApi, type ProductCrossNumber } from './productApi'
 import type { Product } from '@/types/product'
 import { kopecksToHryvnia, stockStatus } from '@/types/product'
 import { getSpecTemplate } from './productSpecs'
-import { ProductPhotoUpload } from './ProductPhotoUpload'
+import { ProductEditor } from './ProductFormPage'
+import { useViewNavigation } from '@/hooks/useViewNavigation'
 import { Layout } from '@/components/Layout'
 import { Button, Badge, Card, Modal, ConfirmDialog } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
@@ -65,11 +66,11 @@ export default function ProductDetailPage() {
 
 function ProductDetail() {
   const navigate = useNavigate()
+  const { open, back } = useViewNavigation('/products')
   const { id } = useParams<{ id: string }>()
   // Закупівля/маржа — тільки власник/адмін/кладівник (сервер їх і не віддає іншим)
   const role = useAuthStore((s) => (s.session?.user?.app_metadata?.role as string) ?? 'cashier')
   const offlineMode = useAuthStore((s) => s.offlineMode)
-  const photoRequests = useLatestRequest([id, offlineMode])
   const writes = useScopedAction(JSON.stringify([id, role, offlineMode]))
   const linksRequests = useLatestRequest([id, offlineMode])
   const canWrite = isDesktopRuntime() && ['owner', 'admin', 'manager', 'cashier', 'storekeeper'].includes(role)
@@ -93,9 +94,8 @@ function ProductDetail() {
   const [linksError, setLinksError] = useState('')
   const [fitment, setFitment] = useState<{ grouped: Record<string, any[]> } | null>(null)
   const [cobuy, setCobuy] = useState<any[]>([])
-  const [photoModalOpen, setPhotoModalOpen] = useState(false)
-  const [savingPhoto, setSavingPhoto] = useState(false)
-  const [uploadingPhoto, setUploadingPhoto] = useState(false)
+  const [editorBusy, setEditorBusy] = useState(false)
+  const [revision, setRevision] = useState(0)
   const [printModalOpen, setPrintModalOpen] = useState(false)
   const [printCopies, setPrintCopies] = useState(1)
 
@@ -124,7 +124,7 @@ function ProductDetail() {
   useEffect(() => { void refreshLinks() }, [refreshLinks, offlineMode])
 
   const handleAddCrossNumbers = async () => {
-    if (!id || !canWrite || linksLoading || linksError || uploadingPhoto) return
+    if (!id || !canWrite || linksLoading || linksError || editorBusy) return
     const numbers = [...new Set(crossPaste.split(/[\r\n,;\t]+/).map(value => value.trim()).filter(Boolean))]
     if (!numbers.length) { toast.error('Вставте хоча б один номер'); return }
     const attempt = writes.begin()
@@ -142,7 +142,7 @@ function ProductDetail() {
   }
 
   const handleRemoveCrossNumber = async (crossNumber: ProductCrossNumber) => {
-    if (!id || !canWrite || linksLoading || linksError || uploadingPhoto || writes.isBusy()) return
+    if (!id || !canWrite || linksLoading || linksError || editorBusy || writes.isBusy()) return
     if (!confirm('Видалити номер ' + crossNumber.number + '?')) return
     const attempt = writes.begin()
     if (!attempt) return
@@ -163,22 +163,6 @@ function ProductDetail() {
       toast.success('Номер скопійовано')
     } catch {
       toast.error('Не вдалося скопіювати номер')
-    }
-  }
-
-  async function handlePhotoUrl(url: string | null) {
-    if (!product || !id || product.id !== id) throw new Error('Відкрийте картку товару повторно')
-    if (!canWrite) throw new Error('Картка доступна лише для перегляду')
-    const attempt = writes.begin()
-    if (!attempt) throw new Error('Зачекайте завершення попереднього збереження')
-    const isCurrent = photoRequests.begin()
-    setSavingPhoto(true)
-    try {
-      await productApi.update(id, { photo_url: url ?? '' })
-      if (isCurrent() && attempt.isCurrent()) setProduct(current => current?.id === id ? { ...current, photo_url: url } : current)
-    } finally {
-      if (isCurrent()) setSavingPhoto(false)
-      attempt.finish()
     }
   }
 
@@ -228,10 +212,7 @@ function ProductDetail() {
   useEffect(() => {
     if (!id) return
     let active = true
-    setLoading(true)
-    setPhotoModalOpen(false)
-    setSavingPhoto(false)
-    setUploadingPhoto(false)
+    if (!revision) setLoading(true)
     productApi.get(id).then(({ data }) => {
       if (!active) return
       setProduct(data)
@@ -250,13 +231,13 @@ function ProductDetail() {
       })
     }).catch(() => { if (active) navigate('/products') }).finally(() => { if (active) setLoading(false) })
     return () => { active = false }
-  }, [id, navigate, offlineMode])
+  }, [id, navigate, offlineMode, revision])
 
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
   const [reserveOpen, setReserveOpen] = useState(false)
   const [reserveQty, setReserveQty] = useState('1')
   async function handleReserve() {
-    if (!product || !canReserve || uploadingPhoto || reserveRecovery.blocked || reserveRecovery.busy) return
+    if (!product || !canReserve || editorBusy || reserveRecovery.blocked || reserveRecovery.busy) return
     const qty = parseWriteoffQuantity(reserveQty)
     if (qty === null) { toast.error('Вкажіть коректну кількість, не більше трьох знаків після коми'); return }
     const attempt = writes.begin()
@@ -294,7 +275,7 @@ function ProductDetail() {
   }} />
 
   async function handleDelete() {
-    if (!product || !canDeleteProduct || uploadingPhoto) return false
+    if (!product || !canDeleteProduct || editorBusy) return false
     const attempt = writes.begin()
     if (!attempt) return false
     try {
@@ -308,21 +289,6 @@ function ProductDetail() {
     } finally { attempt.finish() }
   }
 
-  async function handleGenerateBarcode() {
-    if (!product || !canWrite || uploadingPhoto || writes.isBusy()) return
-    if (product.barcode && !confirm('Замінити основний штрихкод товару на новий?')) return
-    const attempt = writes.begin()
-    if (!attempt) return
-    try {
-      const { data } = await productApi.generateBarcode(product.id)
-      if (!attempt.isCurrent()) return
-      setProduct(data)
-      toast.success('Штрихкод згенеровано: ' + data.barcode)
-    } catch (e) {
-      if (attempt.isCurrent()) toast.error(e instanceof Error ? e.message : 'Помилка')
-    } finally { attempt.finish() }
-  }
-
   if (loading || !product) return (
     <Layout>
       <div className="flex items-center justify-center h-64 text-gray-400 text-sm">Завантаження...</div>
@@ -332,17 +298,15 @@ function ProductDetail() {
   return (
     <Layout
       title={product.name}
+      onBack={back}
       actions={
         <div className="flex gap-2 items-center">
           {product.is_active === false && <Badge color="red">🚫 Неактивний</Badge>}
-          {canReserve && <Button variant="secondary" size="sm" disabled={writes.busy || uploadingPhoto} onClick={() => setReserveOpen(true)}>
+          {canReserve && <Button variant="secondary" size="sm" disabled={writes.busy || editorBusy} onClick={() => setReserveOpen(true)}>
             📌 Резерв
           </Button>}
-          {canWrite && <Button variant="secondary" size="sm" disabled={writes.busy || uploadingPhoto} icon={<Edit size={14} />} onClick={() => navigate(`/products/${product.id}/edit`)}>
-            Редагувати
-          </Button>}
           {canDeleteProduct && (
-<Button variant="danger" size="sm" disabled={writes.busy || uploadingPhoto} icon={<Trash2 size={14} />} onClick={() => setConfirmDeleteOpen(true)}>
+<Button variant="danger" size="sm" disabled={writes.busy || editorBusy} icon={<Trash2 size={14} />} onClick={() => setConfirmDeleteOpen(true)}>
               Видалити
             </Button>
           )}
@@ -352,8 +316,13 @@ function ProductDetail() {
       <div className="max-w-3xl space-y-4">
         {!reserveOpen && canReserve && reserveRecoveryNotice}
 
-        {/* Основна інфо */}
-        <Card>
+        {canWrite && <ProductEditor embedded disabled={writes.busy} onBusyChange={setEditorBusy} onSaved={(updated) => {
+          setProduct(updated)
+          setRevision(value => value + 1)
+        }} />}
+
+        {/* Read-only roles see the same card without mutation controls. */}
+        {!canWrite && <Card>
           <div className="flex items-start gap-5 mb-4">
             {/* Фото — клікабельне, з можливістю завантажити/змінити */}
             <div className="relative shrink-0 group">
@@ -368,15 +337,6 @@ function ProductDetail() {
                   <Camera size={28} />
                 </div>
               )}
-              {canWrite && <button
-                disabled={writes.busy || uploadingPhoto}
-                onClick={() => setPhotoModalOpen(true)}
-                className="absolute inset-0 w-full h-full flex items-center justify-center bg-black/0 group-hover:bg-black/40 rounded-xl transition-all"
-              >
-                <span className="opacity-0 group-hover:opacity-100 text-white text-xs font-medium bg-black/60 px-3 py-1.5 rounded-lg transition-all">
-                  {product.photo_url ? 'Змінити фото' : 'Додати фото'}
-                </span>
-              </button>}
             </div>
             <div className="flex-1 flex items-start justify-between">
               <div>
@@ -418,10 +378,6 @@ function ProductDetail() {
                     <span className="text-gray-400 text-sm italic">Не вказано</span>
                   )}
                 </div>
-                {canWrite && <button onClick={handleGenerateBarcode} disabled={writes.busy || uploadingPhoto}
-                  className="self-start text-xs text-gray-500 hover:text-blue-600 flex items-center gap-1 font-medium px-3 py-1.5 rounded-lg hover:bg-blue-50 transition-colors">
-                  <Barcode size={14} /> Згенерувати штрихкод
-                </button>}
               </div>
             </div>
             <div>
@@ -449,19 +405,29 @@ function ProductDetail() {
               <p className="text-sm text-gray-700">{product.notes}</p>
             </div>
           )}
-        </Card>
+        </Card>}
+
+        {canWrite && <div className="flex flex-wrap items-center gap-2">
+          <StockBadge product={product} />
+          {product.barcode && <>
+            <Button variant="secondary" size="sm" disabled={editorBusy || writes.busy} onClick={() => { setPrintCopies(1); setPrintModalOpen(true) }} icon={<Printer size={14} />}>Друк етикетки</Button>
+            <Button variant="secondary" size="sm" disabled={editorBusy || writes.busy} onClick={handleSendToPrintQueue}>В чергу друку</Button>
+          </>}
+          {product.storage_bin && <Button variant="secondary" size="sm" disabled={editorBusy || writes.busy} onClick={handlePrintBinLabel}>Друк комірки</Button>}
+          {editorBusy && <span className="text-xs text-gray-500">Спершу збережіть або скасуйте зміни картки.</span>}
+        </div>}
 
         <div className={`grid grid-cols-1 gap-4 ${canSeeMargin ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>
-          {canSeeMargin && (
+          {!canWrite && canSeeMargin && (
             <Card>
               <p className="text-xs text-gray-400 mb-1">Закупівельна ціна</p>
               <p className="text-2xl font-bold text-gray-900">{kopecksToHryvnia(product.purchase_price)} ₴</p>
             </Card>
           )}
-          <Card>
+          {!canWrite && <Card>
             <p className="text-xs text-gray-400 mb-1">Роздрібна ціна</p>
             <p className="text-2xl font-bold text-gray-900">{kopecksToHryvnia(product.retail_price)} ₴</p>
-          </Card>
+          </Card>}
           <Card>
             <p className="text-xs text-gray-400 mb-1">Доступно / Залишок</p>
             <p className="text-2xl font-bold text-gray-950">{product.qty_available ?? product.qty_on_hand} {product.unit}</p>
@@ -475,7 +441,7 @@ function ProductDetail() {
         </div>
 
         {/* Технічні характеристики */}
-        {(() => {
+        {!canWrite && (() => {
           const tpl = getSpecTemplate(product.category?.name ?? '')
           const specs = product.specs
           if (!tpl || !specs || Object.keys(specs).length === 0) return null
@@ -521,7 +487,7 @@ function ProductDetail() {
           {linksError && <div role="alert" className="text-sm text-amber-700 mb-3">
             {linksError} <Button size="sm" disabled={writes.busy} onClick={refreshLinks}>Оновити аналоги</Button>
           </div>}
-          <fieldset disabled={writes.busy || uploadingPhoto || linksLoading || !!linksError} className="min-w-0">
+          <fieldset disabled={writes.busy || editorBusy || linksLoading || !!linksError} className="min-w-0">
 
           <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-4 mb-5">
             <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 mb-3">
@@ -609,7 +575,7 @@ function ProductDetail() {
                       {(items as any[]).map((a: any) => (
                         <div key={a.id} className="flex items-center justify-between px-3 py-1.5 bg-gray-50 rounded-lg text-sm group hover:bg-gray-100 transition">
                           <div>
-                            <button onClick={() => navigate('/products/' + a.id)} className="font-medium text-blue-600 hover:text-blue-800 text-xs">{a.name}</button>
+                            <button onClick={() => open('/products/' + a.id)} className="font-medium text-blue-600 hover:text-blue-800 text-xs">{a.name}</button>
                             <span className="text-[10px] text-gray-400 ml-2 font-mono">{a.sku}</span>
                           </div>
                           <div className="flex items-center gap-3">
@@ -666,7 +632,7 @@ function ProductDetail() {
             <h3 className="font-semibold text-gray-800 mb-3">🛒 Часто купують разом</h3>
             <div className="flex gap-2 overflow-x-auto pb-2">
               {cobuy.map((item: any) => (
-                <button key={item.id} onClick={() => navigate('/products/' + item.id)}
+                <button key={item.id} onClick={() => open('/products/' + item.id)}
                   className="flex flex-col items-center min-w-[120px] p-3 bg-gray-50 rounded-xl hover:bg-gray-100 text-center">
                   <span className="text-sm font-medium text-gray-800">{item.name}</span>
                   <span className="text-xs text-gray-400">{item.sku}</span>
@@ -717,33 +683,6 @@ function ProductDetail() {
           </Card>
         )}
       </div>
-
-      {/* Модалка додавання/зміни фото */}
-      <Modal
-        open={photoModalOpen}
-        onClose={() => { if (!uploadingPhoto && !savingPhoto) setPhotoModalOpen(false) }}
-        title={product.photo_url ? 'Змінити фото товару' : 'Додати фото товару'}
-        size="md"
-      >
-        <ProductPhotoUpload
-          productId={product.id}
-          currentPhotoUrl={product.photo_url ?? null}
-          onPhotoUrl={handlePhotoUrl}
-          onBusyChange={setUploadingPhoto}
-          disabled={!canWrite || writes.busy}
-        />
-        <div className="flex items-center justify-between mt-4 pt-3 border-t border-gray-100">
-          <p className="text-xs text-gray-400">
-            {uploadingPhoto || savingPhoto ? 'Зберігаємо...' : 'Зміни зберігаються автоматично'}
-          </p>
-          <Button
-            onClick={() => setPhotoModalOpen(false)}
-            loading={uploadingPhoto || savingPhoto}
-          >
-            Готово
-          </Button>
-        </div>
-      </Modal>
 
       {/* Модалка друку етикеток */}
       <Modal

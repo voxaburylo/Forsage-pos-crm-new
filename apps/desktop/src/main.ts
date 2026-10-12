@@ -1,6 +1,7 @@
 import { localAnalytics } from './repositories/localAnalytics'
 import path from 'node:path'
 import { RendererRecovery } from './rendererRecovery'
+import { deferQuitForMainWindow, NativeCloseController, requestUnloadScript } from './nativeClose'
 import { BlackBox } from './diagnostics/blackBox'
 import { safeDiagnosticDetails } from './diagnostics/blackBoxData'
 import { readBuildInfo } from './diagnostics/buildInfo'
@@ -650,7 +651,16 @@ async function createWindow(): Promise<void> {
     : null
   const packagedRendererPath = path.resolve(rendererIndexPath()).toLocaleLowerCase('en-US')
   const window = mainWindow
-  window.on('close', () => blackBox?.record('window-close-request'))
+  const closeController = new NativeCloseController({
+    isDestroyed: () => window.isDestroyed(),
+    requestApproval: deadline => window.webContents.executeJavaScript(requestUnloadScript(deadline)),
+    close: () => window.close(),
+    failed: error => writeDesktopDiagnostic('window-close-approval-failed', error),
+  })
+  window.on('close', event => {
+    blackBox?.record('window-close-request')
+    closeController.onClose(event)
+  })
   window.webContents.on('did-finish-load', () => {
     blackBox?.record('renderer-loaded')
     if (audioServiceUnavailable) window.webContents.send('desktop:audio-unavailable')
@@ -685,7 +695,7 @@ async function createWindow(): Promise<void> {
       buttons: ['Відновити інтерфейс', 'Закрити програму'], defaultId: 0, cancelId: 1,
     }).then(result => {
       if (window.isDestroyed()) return
-      if (result.response === 1) { app.quit(); return }
+      if (result.response === 1) { closeController.closeAfterConfirmedRecovery(); return }
       recovery = makeRecovery()
       recoveryFailed = false
       void recovery.start().catch(failRecovery)
@@ -693,8 +703,15 @@ async function createWindow(): Promise<void> {
   }
   window.on('closed', () => {
     blackBox?.record('window-closed')
+    closeController.stop()
     recovery.stop()
-    if (mainWindow === window) { desktopAuthSession = null; mainWindow = null }
+    if (mainWindow === window) {
+      desktopAuthSession = null
+      mainWindow = null
+      // Auxiliary print windows may remain alive; begin the existing orderly
+      // cleanup only now, after the main renderer really accepted departure.
+      app.quit()
+    }
   })
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -1841,6 +1858,7 @@ app.on('child-process-gone', (_event, details) => {
 
 app.on('window-all-closed', () => app.quit())
 app.on('before-quit', (event) => {
+  if (deferQuitForMainWindow(event, mainWindow)) return
   if (quitAfterCleanup) return
   event.preventDefault()
   if (databaseMaintenance) return

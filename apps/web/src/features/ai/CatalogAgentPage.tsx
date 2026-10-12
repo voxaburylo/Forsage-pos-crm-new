@@ -52,7 +52,7 @@ function CatalogAgentContent({userId}:{userId:string}) {
   const bridge = desktopBridge()?.catalog
   async function load() {
     if (running.current || !isCurrentContext()) return
-    if (!bridge?.agentScan) { setError('Оновіть локальну програму, щоб користуватися AI-агентом.'); return }
+    if (!bridge?.agentScan) { setError('Оновіть локальну програму, щоб перевіряти каталог.'); return }
     setBusy(true); setError('')
     try {
       running.current = true
@@ -105,8 +105,8 @@ function CatalogAgentContent({userId}:{userId:string}) {
   const pages = Math.max(1, Math.ceil(visible.length / 50))
   const rows = visible.slice(page * 50, page * 50 + 50)
   const value = (key: string, val: any) => key === 'retail_price' ? formatMoney(Number(val)) : key === 'category_id' ? scan?.categories.find(c => c.id === val)?.name ?? 'Без категорії' : String(val ?? '—')
-  return <Layout title="AI-агент">
-    <div className="mb-4 flex flex-wrap gap-3 text-sm"><span className="border-b-2 border-yellow-400 pb-2 font-semibold">Порядок у товарах</span><Link className="pb-2 text-gray-600" to="/ai-assistant">Помічник / фото</Link><Link className="pb-2 text-gray-600" to="/audit">Журнал змін</Link></div>
+  return <Layout title="Перевірка каталогу">
+    <div className="mb-4 flex flex-wrap gap-3 text-sm"><span className="border-b-2 border-yellow-400 pb-2 font-semibold">Перевірка каталогу</span><Link className="pb-2 text-gray-600" to="/ai-assistant">ШІ-помічник / розбір накладної</Link><Link className="pb-2 text-gray-600" to="/audit">Журнал змін</Link></div>
     <Card className="mb-4">
       <h2 className="font-bold">Перевірити → переглянути → підтвердити</h2>
       <p className="mt-2 text-sm text-gray-600">Перевірка не змінює базу. Агент пропонує переклад назв, артикули з назв, наявні категорії та виправлення ціни за вашою таблицею. Схожий товар — не обов’язково дубль.</p>

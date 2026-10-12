@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useLatestRequest } from '@/hooks/useLatestRequest'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router-dom'
+import { useViewNavigation } from '@/hooks/useViewNavigation'
 import { INVOICE_LIST_STATE_KEY, readInvoiceListState, invoiceListQuery } from './invoiceListState'
 import { Plus, FileText } from 'lucide-react'
 import { supplierApi } from './supplierApi'
@@ -18,7 +19,7 @@ const STATUS_LABEL: Record<string, string> = {
 }
 
 export default function InvoicesPage() {
-  const navigate = useNavigate()
+  const { open } = useViewNavigation('/suppliers/invoices')
   const [result, setResult]     = useState<PaginatedInvoices | null>(null)
   const [initialQuery] = useState(() => {
     try { return sessionStorage.getItem(INVOICE_LIST_STATE_KEY) || '' } catch { return '' }
@@ -66,13 +67,13 @@ export default function InvoicesPage() {
 
   useEffect(() => { load() }, [load])
 
-  function openInvoice(inv: SupplyInvoice) {
+  function openInvoice(inv: SupplyInvoice, edit = false) {
     if (inv.id.startsWith('local-draft:')) {
       const key = decodeURIComponent(inv.id.slice('local-draft:'.length))
-      navigate('/suppliers/invoices/new?resume=' + encodeURIComponent(key))
+      open('/suppliers/invoices/new?resume=' + encodeURIComponent(key))
       return
     }
-    navigate('/suppliers/invoices/' + inv.id)
+    open('/suppliers/invoices/' + inv.id + (edit && inv.status === 'draft' ? '/edit' : ''))
   }
   const columns = [
     {
@@ -106,8 +107,8 @@ export default function InvoicesPage() {
     {
       key: 'actions', header: '', className: 'w-16 text-right',
       render: (inv: SupplyInvoice) => (
-        <button onClick={() => openInvoice(inv)}
-          className="text-xs text-gray-400 hover:text-gray-600 px-2 py-1">✎</button>
+        <button onClick={() => openInvoice(inv, true)} title={inv.status === 'draft' ? 'Редагувати чернетку' : 'Переглянути накладну'}
+          className="text-xs text-gray-400 hover:text-gray-600 px-2 py-1">{inv.status === 'draft' ? '✎' : 'Перегляд'}</button>
       ),
     },
   ]
@@ -126,10 +127,9 @@ export default function InvoicesPage() {
   return (
     <Layout
       title={`Приходні накладні${total ? ` (${total})` : ''}`}
-      onBack={() => navigate('/receiving')}
       actions={
         <div className="flex flex-wrap gap-2">
-          <Button icon={<Plus size={16} />} onClick={() => navigate('/suppliers/invoices/new?fresh=' + Date.now())}>
+          <Button icon={<Plus size={16} />} onClick={() => open('/suppliers/invoices/new?fresh=' + Date.now())}>
             Приходна накладна
           </Button>
         </div>

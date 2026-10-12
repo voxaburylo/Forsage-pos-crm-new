@@ -1,5 +1,5 @@
-import { Component, lazy, Suspense, useEffect, type ErrorInfo, type ReactNode } from 'react'
-import { BrowserRouter, HashRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { Component, lazy, Suspense, useEffect, useState, type ErrorInfo, type ReactNode } from 'react'
+import { createBrowserRouter, createHashRouter, RouterProvider, Routes, Route, Navigate, useLocation, useParams } from 'react-router-dom'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { TillOnly } from '@/components/TillOnly'
 import { DesktopAccessGate } from '@/components/DesktopAccessGate'
@@ -8,6 +8,7 @@ import { CommandPalette } from '@/components/CommandPalette'
 import { LocalSyncAgent } from '@/components/LocalSyncAgent'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
+import { NavigationGuard } from '@/hooks/useUnsavedChanges'
 
 function lazyPage(componentImport: () => Promise<any>) {
   return lazy(componentImport)
@@ -30,7 +31,6 @@ const AdminPage            = lazyPage(() => import('@/features/admin/AdminPage')
 const SettingsPage         = lazyPage(() => import('@/features/settings/SettingsPage'))
 // CommissionRulesPage merged
 const SuppliersPage        = lazyPage(() => import('@/features/suppliers/SuppliersPage'))
-const ReceivingPage        = lazyPage(() => import('@/features/receiving/ReceivingPage'))
 const SupplierFormPage     = lazyPage(() => import('@/features/suppliers/SupplierFormPage'))
 const SupplierDetailPage   = lazyPage(() => import('@/features/suppliers/SupplierDetailPage'))
 const InvoicesPage         = lazyPage(() => import('@/features/suppliers/InvoicesPage'))
@@ -83,6 +83,12 @@ import { AI_ASSISTANT_ROLES } from '@/features/ai/aiAccess'
 function AnalyticsHome() {
   const role = (useAuthStore((state) => state.session)?.user?.app_metadata?.role as string | undefined) ?? ''
   return <Navigate to={role === 'cashier' ? '/analytics/sales' : '/analytics/statistics'} replace />
+}
+
+function CanonicalCard({ kind }: { kind: 'products' | 'customers' }) {
+  const { id } = useParams()
+  const location = useLocation()
+  return <Navigate to={`/${kind}/${id}${location.search}`} state={location.state} replace />
 }
 
 function Loader() {
@@ -153,7 +159,9 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBounda
 
 function App() {
   const desktop = isDesktopRuntime()
-  const Router = desktop ? HashRouter : BrowserRouter
+  const [router] = useState(() => (desktop ? createHashRouter : createBrowserRouter)([
+    { path: '*', element: <Workspace /> },
+  ]))
 
   // Після успішного запуску знову дозволяємо одноразове автоматичне
   // відновлення. Інакше один давній збій чанка блокував самовідновлення всіх
@@ -176,9 +184,14 @@ function App() {
     return () => document.removeEventListener('wheel', onWheel)
   }, [])
 
+  return <RouterProvider router={router} />
+}
+
+function Workspace() {
   return (
-    <Router>
+    <>
       <div id="desktop-workspace">
+      <NavigationGuard />
       <LocalSyncAgent />
       <AppErrorBoundary>
       <Suspense fallback={<Loader />}>
@@ -193,12 +206,12 @@ function App() {
           <Route path="/products"           element={<ProtectedRoute><ProductsPage /></ProtectedRoute>} />
           <Route path="/products/new"       element={<TillOnly what="Створення товару"><ProtectedRoute roles={CATALOG_EDITOR_ROLES}><ProductFormPage /></ProtectedRoute></TillOnly>} />
           <Route path="/products/:id"       element={<ProtectedRoute><ProductDetailPage /></ProtectedRoute>} />
-          <Route path="/products/:id/edit"  element={<TillOnly what="Редагування товару"><ProtectedRoute roles={CATALOG_EDITOR_ROLES}><ProductFormPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/products/:id/edit"  element={<TillOnly what="Редагування товару"><ProtectedRoute roles={CATALOG_EDITOR_ROLES}><CanonicalCard kind="products" /></ProtectedRoute></TillOnly>} />
 
           <Route path="/customers"           element={<ProtectedRoute><CustomersPage /></ProtectedRoute>} />
           <Route path="/customers/new"       element={<TillOnly what="Створення клієнта"><ProtectedRoute><CustomerFormPage /></ProtectedRoute></TillOnly>} />
           <Route path="/customers/:id"       element={<ProtectedRoute><CustomerDetailPage /></ProtectedRoute>} />
-          <Route path="/customers/:id/edit"  element={<TillOnly what="Редагування клієнта"><ProtectedRoute roles={CUSTOMER_CARD_EDITOR_ROLES}><CustomerFormPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/customers/:id/edit"  element={<TillOnly what="Редагування клієнта"><ProtectedRoute roles={CUSTOMER_CARD_EDITOR_ROLES}><CanonicalCard kind="customers" /></ProtectedRoute></TillOnly>} />
 
           <Route path="/pos"      element={<TillOnly what="Каса"><ProtectedRoute><POSPage /></ProtectedRoute></TillOnly>} />
           <Route path="/sales"     element={<ProtectedRoute><SalesPage /></ProtectedRoute>} />
@@ -218,7 +231,7 @@ function App() {
           <Route path="/suppliers/new" element={<TillOnly what="Створення постачальника"><ProtectedRoute roles={OFFICE_ROLES}><SupplierFormPage /></ProtectedRoute></TillOnly>} />
           <Route path="/suppliers/:id" element={<TillOnly what="Постачальник"><ProtectedRoute roles={SUPPLIER_ROLES}><SupplierDetailPage /></ProtectedRoute></TillOnly>} />
           <Route path="/suppliers/:id/edit" element={<TillOnly what="Редагування постачальника"><ProtectedRoute roles={OFFICE_ROLES}><SupplierFormPage /></ProtectedRoute></TillOnly>} />
-          <Route path="/receiving" element={<TillOnly what="Приймання товару"><ProtectedRoute roles={RECEIVING_ROLES}><ReceivingPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/receiving" element={<TillOnly what="Приймання товару"><ProtectedRoute roles={RECEIVING_ROLES}><Navigate to="/suppliers/invoices" replace /></ProtectedRoute></TillOnly>} />
           <Route path="/receiving/ai" element={<TillOnly what="Приймання товару"><ProtectedRoute roles={RECEIVING_ROLES}><AiAssistantPage invoiceOnly /></ProtectedRoute></TillOnly>} />
           <Route path="/suppliers/invoices" element={<TillOnly what="Прихідні накладні"><ProtectedRoute roles={RECEIVING_ROLES}><InvoicesPage /></ProtectedRoute></TillOnly>} />
           <Route path="/suppliers/pos" element={<TillOnly what="Замовлення постачальникам"><ProtectedRoute roles={OFFICE_ROLES}><SupplierPOsPage /></ProtectedRoute></TillOnly>} />
@@ -267,7 +280,7 @@ function App() {
       <CommandPalette />
       </div>
       <DesktopAccessGate />
-    </Router>
+    </>
   )
 }
 

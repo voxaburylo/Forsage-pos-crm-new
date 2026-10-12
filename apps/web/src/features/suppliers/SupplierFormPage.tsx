@@ -1,5 +1,6 @@
 ﻿import { useState, useEffect } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
+import { useViewNavigation } from '@/hooks/useViewNavigation'
 import { supplierApi } from './supplierApi'
 import type { SupplierFormData } from '@/types/supplier'
 import { Layout } from '@/components/Layout'
@@ -9,7 +10,7 @@ import { toast } from '@/components/ui/Toast'
 const EMPTY: SupplierFormData = { name: '', phone: '', email: '', contact_name: '', notes: '' }
 
 export default function SupplierFormPage() {
-  const navigate = useNavigate()
+  const { back } = useViewNavigation('/suppliers')
   const { id } = useParams()
   const isEdit = Boolean(id)
   const [form, setForm] = useState<SupplierFormData>(EMPTY)
@@ -29,7 +30,7 @@ export default function SupplierFormPage() {
         })
       }).catch(() => {
         toast.error('Не вдалось завантажити постачальника')
-        navigate('/suppliers')
+        back()
       }).finally(() => setLoading(false))
     }
   }, [id])
@@ -58,7 +59,7 @@ export default function SupplierFormPage() {
         await supplierApi.create(body)
         toast.success('Постачальника створено')
       }
-      navigate('/suppliers')
+      back()
     } catch {
       toast.error('Помилка збереження')
     } finally {
@@ -71,7 +72,7 @@ export default function SupplierFormPage() {
   return (
     <Layout
       title={isEdit ? 'Редагувати постачальника' : 'Новий постачальник'}
-      onBack={() => navigate('/suppliers')}
+      onBack={back}
     >
       <form onSubmit={handleSubmit} className="max-w-xl">
         <Card className="space-y-4">
@@ -89,7 +90,7 @@ export default function SupplierFormPage() {
             <Button type="submit" disabled={saving}>
               {saving ? 'Збереження...' : isEdit ? 'Зберегти' : 'Створити'}
             </Button>
-            <Button type="button" variant="outline" onClick={() => navigate('/suppliers')}>
+            <Button type="button" variant="outline" onClick={back}>
               Скасувати
             </Button>
           </div>

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useLatestRequest } from '@/hooks/useLatestRequest'
 import { useScopedAction } from '@/hooks/useScopedAction'
 import { useBusinessDay } from '@/hooks/useBusinessDay'
+import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { staffTransactionAmount } from '@/features/staff/staffFormModel'
 import { payrollOperationLabel } from '@/features/staff/payrollOperationLabel'
@@ -40,8 +41,13 @@ function periodLabel(period: string): string {
 }
 
 export default function PayrollPage() {
+  const [searchParams] = useSearchParams()
   const businessDay = useBusinessDay()
-  const [period, setPeriod] = useState(currentPeriod())
+  const [period, setPeriod] = useState(() => {
+    const requested = searchParams.get('period') ?? ''
+    return /^\d{4}-(0[1-9]|1[0-2])$/.test(requested) && Number(requested.slice(0, 4)) > 0 ? requested : currentPeriod()
+  })
+  const [requestedEmployee, setRequestedEmployee] = useState(() => searchParams.get('employee'))
   const [users, setUsers] = useState<AdminUser[]>([])
   const [summary, setSummary] = useState<EmployeeSummary[]>([])
   const [payments, setPayments] = useState<SalaryPayment[]>([])
@@ -64,6 +70,7 @@ export default function PayrollPage() {
     amount: '',
     note: '',
   })
+  useUnsavedChanges(Boolean(selected && (form.amount || form.note || form.type !== 'advance' || form.method !== 'cash')), saving)
 
   const requests = useLatestRequest([period, businessDay])
   const load = useCallback(async () => {
@@ -78,13 +85,13 @@ export default function PayrollPage() {
     setLoadedDailyDate(null)
     try {
       const [usersResult, summaryResult, paymentsResult, dailyResult] = await Promise.all([
-        adminApi.listUsers(),
+        adminApi.listUsers(true),
         staffApi.summary(period),
         staffApi.listSalary(period),
         staffApi.dailySummary(workDate),
       ])
       if (!isCurrent()) return
-      setUsers((usersResult.data ?? []).filter((user) => user.is_active && user.role !== 'owner'))
+      setUsers((usersResult.data ?? []).filter((user) => !user.deleted_at && user.role !== 'owner'))
       setSummary(summaryResult.data ?? [])
       setPayments(paymentsResult.data ?? [])
       setDaily(dailyResult.data ?? [])
@@ -104,6 +111,14 @@ export default function PayrollPage() {
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    if (!ready || !requestedEmployee) return
+    const employee = users.find(user => user.id === requestedEmployee)
+    if (employee) setSelected(employee)
+    // Consume the link once: refreshing data must not reopen a closed form.
+    setRequestedEmployee(null)
+  }, [ready, requestedEmployee, users])
 
   const summaryByEmployee = useMemo(
     () => new Map(summary.map((row) => [row.employee_id, row])),
@@ -221,7 +236,9 @@ export default function PayrollPage() {
     <Layout title="Зарплата та виплати">
       <div className="mb-4 flex items-center gap-2">
         <button aria-label="Попередній місяць" disabled={saving} onClick={() => shiftPeriod(-1)} className="rounded-lg border border-gray-200 bg-white p-2 hover:bg-gray-50"><ChevronLeft size={16} /></button>
-        <strong className="analytics-month-label text-center capitalize">{periodLabel(period)}</strong>
+        <input type="month" aria-label="Місяць зарплати" title={periodLabel(period)} value={period} disabled={saving}
+          onChange={event => { if (!action.isBusy() && /^\d{4}-(0[1-9]|1[0-2])$/.test(event.target.value) && Number(event.target.value.slice(0, 4)) > 0) { setSelected(null); setPeriod(event.target.value) } }}
+          className="analytics-month-label rounded-lg border border-gray-200 bg-white px-3 py-2 text-center" />
         <button aria-label="Наступний місяць" disabled={saving} onClick={() => shiftPeriod(1)} className="rounded-lg border border-gray-200 bg-white p-2 hover:bg-gray-50"><ChevronRight size={16} /></button>
       </div>
 
@@ -248,7 +265,7 @@ export default function PayrollPage() {
                 const row = summaryByEmployee.get(user.id)
                 return (
                   <tr key={user.id} className="hover:bg-gray-50">
-                    <td data-label="Працівник" className="px-4 py-3 font-semibold text-gray-900">{user.full_name || user.email}</td>
+                    <td data-label="Працівник" className="px-4 py-3 font-semibold text-gray-900">{user.full_name || user.email}{!user.is_active && <span className="ml-2 text-xs font-normal text-gray-500">Неактивний</span>}</td>
                     <td data-label="Роль" className="px-2 py-3 text-gray-500">{ROLE_LABELS[user.role as UserRole] ?? user.role}</td>
                     <td data-label="Нараховано" className="px-2 py-3 text-right">{formatMoney(row?.earned ?? 0)}</td>
                     <td data-label="Виплачено" className="px-2 py-3 text-right">{formatMoney(row?.paid ?? 0)}</td>
@@ -297,7 +314,9 @@ export default function PayrollPage() {
               <div className="analytics-operation-history max-h-64 divide-y divide-gray-100 overflow-auto rounded-xl border border-gray-200">
                 {!ready ? <p className="px-4 py-8 text-center text-sm text-gray-400">Історія операцій ще не завантажена.</p> : selectedPayments.length === 0 ? (
                   <p className="px-4 py-8 text-center text-sm text-gray-400">Операцій за цей місяць немає</p>
-                ) : selectedPayments.slice(0, historyLimit).map((payment) => (
+                ) : selectedPayments.slice(0, historyLimit).map((payment) => {
+                  const effect = payment.type === 'advance' || payment.type === 'penalty' ? -payment.amount : payment.amount
+                  return (
                   <div key={payment.id} className="analytics-payment-row flex items-center justify-between gap-3 px-4 py-3 text-sm">
                     <div className="min-w-0">
                       <p className="font-semibold text-gray-900">{payrollOperationLabel(payment)}</p>
@@ -307,7 +326,7 @@ export default function PayrollPage() {
                       </p>
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
-                      <strong>{formatMoney(payment.amount)}</strong>
+                      <strong className={effect < 0 ? 'text-red-500' : 'text-green-600'}>{effect < 0 ? '−' : '+'}{formatMoney(Math.abs(effect))}</strong>
                       {canWrite && <button type="button" disabled={saving || !ready} onClick={() => deleteOperation(payment.id)}
                         className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-red-500 hover:bg-red-50"
                         title="Скасувати операцію">
@@ -315,7 +334,8 @@ export default function PayrollPage() {
                       </button>}
                     </div>
                   </div>
-                ))}
+                  )
+                })}
               </div>
               {ready && <p className="mt-2 text-xs text-gray-500">Показано {Math.min(historyLimit, selectedPayments.length)} з {selectedPayments.length}</p>}
               {ready && historyLimit < selectedPayments.length && <Button type="button" variant="secondary" onClick={() => setHistoryLimit(value => value + 50)}>Показати ще 50</Button>}

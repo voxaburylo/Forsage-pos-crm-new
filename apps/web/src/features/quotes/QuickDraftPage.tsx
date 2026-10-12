@@ -1,6 +1,7 @@
 import { useLatestRequest } from '@/hooks/useLatestRequest'
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useViewNavigation } from '@/hooks/useViewNavigation'
 import { ClipboardList, Search, Save, User } from 'lucide-react'
 import { Layout } from '@/components/Layout'
 import { Button, Card, Input } from '@/components/ui'
@@ -15,6 +16,8 @@ function digits(value: string) {
 
 export default function QuickDraftPage() {
   const navigate = useNavigate()
+  const location = useLocation()
+  const { back } = useViewNavigation('/orders?tab=drafts')
   const { id } = useParams<{ id: string }>()
   const [searchParams] = useSearchParams()
   const [phone, setPhone] = useState('')
@@ -40,7 +43,7 @@ export default function QuickDraftPage() {
         if (!current()) return
         if (data.items.some(item => item.product_id || item.sku || Number(item.qty) !== 1 || Number(item.sell_price) !== 0 || Number(item.buy_price) !== 0 || item.supplier_id || ((item as any).variants?.length ?? 0) > 0)
           || Object.entries(data.vehicle_info ?? {}).some(([key, value]) => key !== 'vin' && Boolean(value))) {
-          navigate('/orders/' + id + '/edit', { replace: true })
+          navigate('/orders/' + id + '/edit', { replace: true, state: location.state })
           return
         }
         setLoadedOrderVersion(data.updated_at)
@@ -58,7 +61,7 @@ export default function QuickDraftPage() {
       .catch(() => {
         if (!current()) return
         toast.error('Чернетку не знайдено')
-        navigate('/orders?tab=drafts')
+        back()
       })
       .finally(() => { if (current()) setLoading(false) })
   }, [id, navigate])
@@ -157,7 +160,7 @@ export default function QuickDraftPage() {
         })
         toast.success('Чернетку збережено')
       }
-      navigate('/orders?tab=drafts')
+      back()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося зберегти чернетку')
     } finally {
@@ -170,7 +173,7 @@ export default function QuickDraftPage() {
   }
 
   return (
-    <Layout title={id ? 'Редагувати чернетку' : 'Швидка чернетка'} onBack={() => navigate('/orders?tab=drafts')}>
+    <Layout title={id ? 'Редагувати чернетку' : 'Швидка чернетка'} onBack={back}>
       <div className="mx-auto max-w-2xl space-y-4">
         <Card className="border-yellow-200 bg-yellow-50">
           <div className="flex gap-3">
@@ -262,7 +265,7 @@ export default function QuickDraftPage() {
         </Card>
 
         <div className="flex justify-end gap-2">
-          <Button variant="secondary" onClick={() => navigate('/orders?tab=drafts')}>Скасувати</Button>
+          <Button variant="secondary" onClick={back}>Скасувати</Button>
           <Button icon={<Save size={16} />} loading={saving} onClick={save}>Зберегти чернетку</Button>
         </div>
       </div>

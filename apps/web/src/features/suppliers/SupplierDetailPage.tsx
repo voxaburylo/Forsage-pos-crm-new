@@ -1,5 +1,6 @@
 ﻿import { useState, useEffect } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
+import { useViewNavigation } from '@/hooks/useViewNavigation'
 import { Edit3, FileText, Plus } from 'lucide-react'
 import { supplierApi } from './supplierApi'
 import type { Supplier, SupplyInvoice, PaginatedInvoices } from '@/types/supplier'
@@ -16,7 +17,7 @@ const STATUS_LABEL: Record<string, string> = {
 }
 
 export default function SupplierDetailPage() {
-  const navigate = useNavigate()
+  const { open, back } = useViewNavigation('/suppliers')
   const { id } = useParams()
   const [supplier, setSupplier]   = useState<Supplier | null>(null)
   const [invoices, setInvoices]   = useState<PaginatedInvoices | null>(null)
@@ -33,7 +34,7 @@ export default function SupplierDetailPage() {
         setInvoices(invRes)
       } catch {
         toast.error('Не вдалось завантажити постачальника')
-        navigate('/suppliers')
+        back()
       } finally {
         setLoading(false)
       }
@@ -47,7 +48,7 @@ export default function SupplierDetailPage() {
 
   const invoiceColumns = [
     { key: 'num', header: '№', render: (inv: SupplyInvoice) => (
-      <button onClick={() => navigate(`/suppliers/invoices/${inv.id}`)} className="text-left hover:text-yellow-600 font-mono text-sm">
+      <button onClick={() => open(`/suppliers/invoices/${inv.id}`)} className="text-left hover:text-yellow-600 font-mono text-sm">
         {inv.invoice_number ?? '—'}
       </button>
     )},
@@ -61,13 +62,13 @@ export default function SupplierDetailPage() {
   return (
     <Layout
       title={supplier.name}
-      onBack={() => navigate('/suppliers')}
+      onBack={back}
       actions={
         <div className="flex gap-2">
-          <Button variant="outline" icon={<FileText size={16} />} onClick={() => navigate(`/suppliers/invoices/new?supplier_id=${supplier.id}`)}>
+          <Button variant="outline" icon={<FileText size={16} />} onClick={() => open(`/suppliers/invoices/new?supplier_id=${supplier.id}`)}>
             Накладна
           </Button>
-          <Button icon={<Edit3 size={16} />} onClick={() => navigate(`/suppliers/${supplier.id}/edit`)}>
+          <Button icon={<Edit3 size={16} />} onClick={() => open(`/suppliers/${supplier.id}/edit`)}>
             Редагувати
           </Button>
         </div>
@@ -101,7 +102,7 @@ export default function SupplierDetailPage() {
       {/* Приходні накладні */}
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-semibold text-gray-800">Приходні накладні</h3>
-        <Button size="sm" icon={<Plus size={14} />} onClick={() => navigate(`/suppliers/invoices/new?supplier_id=${supplier.id}`)}>
+        <Button size="sm" icon={<Plus size={14} />} onClick={() => open(`/suppliers/invoices/new?supplier_id=${supplier.id}`)}>
           Додати
         </Button>
       </div>

@@ -29,6 +29,7 @@ import { periodReportNote } from './periodReportData'
 import { writeoffReportDate, type WriteoffSummary } from './writeoffReportData'
 
 type Tab = 'today' | 'sold' | 'tire' | 'weekly' | 'period' | 'lowstock' | 'debtors' | 'writeoffs' | 'profit'
+type SummaryPeriod = 'today' | 'weekly' | 'period'
 
 interface ProfitReport {
   from: string; to: string
@@ -69,6 +70,8 @@ export default function DailyReport() {
   const canSeeFullReports = role === 'owner' || role === 'admin'
   const canSeeTireReport = canSeeFullReports || role === 'cashier'
   const [tab, setTab]           = useState<Tab>(() => searchParams.get('tab') === 'tire' && canSeeTireReport ? 'tire' : canSeeFullReports ? 'today' : 'sold')
+  const [summaryPeriod, setSummaryPeriod] = useState<SummaryPeriod>('today')
+  const summaryActive = tab === 'today' || tab === 'weekly' || tab === 'period'
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo]     = useState('')
   const reportScope = JSON.stringify([tab,dateFrom,dateTo,role,businessDateKey()])
@@ -492,16 +495,27 @@ export default function DailyReport() {
   }, [tab, loadToday, loadWeekly, loadLowStock, loadDebtors, loadWriteoffs, loadProfit, loadTireReport])
 
   const TABS = [
-    { id: 'today',    label: 'Сьогодні',   icon: <TrendingUp size={15} /> },
+    { id: 'today',    label: 'Підсумки',   icon: <TrendingUp size={15} /> },
     { id: 'sold',     label: 'Продані товари', icon: <BarChart2 size={15} /> },
     { id: 'tire',     label: 'Шиномонтаж', icon: <Wrench size={15} /> },
-    { id: 'weekly',   label: '7 днів',     icon: <BarChart2 size={15} /> },
-    { id: 'period',   label: 'За період',  icon: <BarChart2 size={15} /> },
     { id: 'lowstock', label: 'Мало товару', icon: <AlertTriangle size={15} /> },
     { id: 'debtors',  label: 'Боржники',   icon: <Users size={15} /> },
     { id: 'writeoffs', label: 'Списання',  icon: <Trash2 size={15} /> },
     { id: 'profit',    label: 'P&L',        icon: <DollarSign size={15} /> },
   ].filter((item) => canSeeFullReports || item.id === 'sold' || (canSeeTireReport && item.id === 'tire'))
+
+  function selectReport(id: string) {
+    if (tireAction.isBusy() || !TABS.some(item => item.id === id)) return
+    setTab(id === 'today' ? summaryPeriod : id as Tab)
+  }
+
+  function openTodaysSoldItems() {
+    if (tireAction.isBusy()) return
+    const date = businessDateKey()
+    setSoldFrom(date); setSoldTo(date)
+    setSoldSupplierId(''); setSoldSellerId(''); setSoldSearch('')
+    setTab('sold')
+  }
 
   const weeklyTotal = weekly.reduce((s, d) => s + d.revenue, 0)
   const weeklySales = weekly.reduce((s, d) => s + d.sales, 0)
@@ -515,19 +529,19 @@ export default function DailyReport() {
   }))
 
   return (
-    <Layout title="Продажі та звіти">
+    <Layout title="Звіти про продажі">
       <div className="flex justify-between items-center gap-2 mb-6 flex-wrap">
         <label className="w-full min-w-0 md:hidden text-sm text-gray-600">Звіт
-          <select value={tab} disabled={tireAction.busy} onChange={e => { if (!tireAction.isBusy()) setTab(e.target.value as Tab) }} className="mt-1 w-full min-w-0 rounded-lg border border-gray-200 bg-white px-3 py-3 text-base text-gray-900">
+          <select value={summaryActive ? 'today' : tab} disabled={tireAction.busy} onChange={e => selectReport(e.target.value)} className="mt-1 w-full min-w-0 rounded-lg border border-gray-200 bg-white px-3 py-3 text-base text-gray-900">
             {TABS.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
           </select>
         </label>
         <div className="hidden md:flex gap-2 flex-wrap">
           {TABS.map((t) => (
-            <button key={t.id} disabled={tireAction.busy} onClick={() => { if (!tireAction.isBusy()) setTab(t.id as Tab) }}
+            <button key={t.id} disabled={tireAction.busy} onClick={() => selectReport(t.id)}
               className={
                 'flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ' +
-                (tab === t.id
+                ((summaryActive ? 'today' : tab) === t.id
                   ? 'bg-yellow-400 text-black'
                   : 'bg-white border border-gray-200 text-gray-600 hover:border-gray-300')
               }>
@@ -542,6 +556,21 @@ export default function DailyReport() {
           Експорт в Excel
         </button>
       </div>
+
+      {summaryActive && <label className="mb-4 flex flex-wrap items-center gap-2 text-sm text-gray-600">
+        Період підсумків
+        <select aria-label="Період підсумків" value={tab} disabled={tireAction.busy}
+          onChange={event => {
+            const next = event.target.value
+            if (!tireAction.isBusy() && canSeeFullReports && (next === 'today' || next === 'weekly' || next === 'period')) {
+              setSummaryPeriod(next); setTab(next)
+            }
+          }} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-gray-900">
+          <option value="today">Сьогодні</option>
+          <option value="weekly">Останні 7 днів</option>
+          <option value="period">Вибраний період</option>
+        </select>
+      </label>}
 
       {['today','weekly','period'].includes(tab) && reportError && <p role="alert" className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{reportError}</p>}
       {['today','weekly','period'].includes(tab) && loading && <p role="status" className="mb-4 text-sm text-gray-500">Завантаження звіту…</p>}
@@ -571,47 +600,12 @@ export default function DailyReport() {
             {' '}{periodReportNote}
           </p>
 
-          <Card padding="none">
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between border-b border-gray-100 px-4 py-3">
-              <div className="min-w-0">
-                <h3 className="font-bold text-gray-900">Продані товари за сьогодні</h3>
-                <p className="text-xs text-gray-500">Один товар — один рядок, незалежно від кількості чеків</p>
-              </div>
-              <div className="min-w-0 md:text-right">
-                <p className="text-xs text-gray-500">Сума товарів за день</p>
-                <p className="text-lg font-bold text-gray-900">{soldReady ? formatMoney(soldRevenue) : '—'}</p>
-              </div>
-            </div>
-            {soldLoading ? <p className="p-6 text-gray-500">Формуємо список…</p> : soldError ? <p role="alert" className="p-6 text-red-700">{soldError}</p> : soldItems.length === 0 ? (
-              <div className="px-4 py-8 text-center text-sm text-gray-400">Проданих товарів за сьогодні немає</div>
-            ) : (
-              <>
-              <SoldItemsMobile items={soldItems} />
-              <div className="hidden md:block max-h-[55vh] overflow-auto">
-                <table className="w-full min-w-[620px] text-sm">
-                  <thead className="sticky top-0 bg-gray-50 text-xs text-gray-500 shadow-sm">
-                    <tr>
-                      <th className="px-4 py-3 text-left">Назва товару</th>
-                      <th className="px-2 py-3 text-left">Артикул</th>
-                      <th className="px-2 py-3 text-right">Чисто продано</th>
-                      <th className="px-4 py-3 text-right">Сума</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {soldItems.map((item) => (
-                      <tr key={item.product_id} className="hover:bg-gray-50">
-                        <td data-label="Назва товару" className="px-4 py-2 font-medium text-gray-900">{item.name}</td>
-                        <td data-label="Артикул" className="px-2 py-2 font-mono text-xs text-gray-600">{item.sku || '—'}</td>
-                        <td data-label="Продано" className="px-2 py-2 text-right font-bold">{item.qty_net} {item.unit}</td>
-                        <td data-label="Сума" className="px-4 py-2 text-right font-semibold text-gray-900">{formatMoney(item.net_revenue)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              </>
-            )}
-          </Card>
+          <button type="button" onClick={openTodaysSoldItems} disabled={tireAction.busy}
+            className="text-sm font-semibold text-amber-800 underline underline-offset-4 hover:text-amber-950">
+            Продані товари за сьогодні →
+          </button>
+          {soldLoading ? <p role="status" className="mt-2 text-sm text-gray-500">Формуємо підсумок товарів…</p>
+            : soldError ? <p role="alert" className="mt-2 text-sm text-red-700">{soldError}</p> : null}
 
         </>
       )}

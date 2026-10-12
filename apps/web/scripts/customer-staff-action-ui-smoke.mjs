@@ -23,12 +23,14 @@ const mocks={
   '@/stores/authStore':'export const useAuthStore=select=>select({session:{user:{id:"owner",app_metadata:{role:"owner"}}}})',
   '@/components/ui/Toast':'export const toast={error:m=>fixture.errors.push(m),warning:m=>fixture.warnings.push(m),success:m=>fixture.messages.push(m)};export function ToastContainer(){return null}',
   '@/components/Layout':'export function Layout({children,title}){return <main><h1>{title}</h1>{children}</main>}',
+  '@/features/analytics/AnalyticsLayout':'export function AnalyticsLayout({children,title}){return <main><h1>{title}</h1>{children}</main>}',
 }
 const entry=`
-import React,{useEffect,useState}from'react';import{createRoot}from'react-dom/client';import{MemoryRouter,Routes,Route,useNavigate,useLocation}from'react-router-dom';
-import Form from'/src/features/customers/CustomerFormPage.tsx';import{QuickCustomerModal}from'/src/features/customers/QuickCustomerModal.tsx';import{QuickCustomerEditModal}from'/src/features/customers/QuickCustomerEditModal.tsx';import Staff from'/src/features/staff/StaffPage.tsx';import{ConfirmDialog}from'/src/components/ui/ConfirmDialog.tsx';import'/src/index.css';
-function App(){const[open,setOpen]=useState(true),[id,setId]=useState('a'),[mounted,setMounted]=useState(true);const navigate=useNavigate(),location=useLocation();useEffect(()=>{fixture.go=navigate;fixture.show=setOpen;fixture.switchCustomer=setId;fixture.unmount=()=>setMounted(false)},[navigate]);const close=()=>{fixture.closes++;setOpen(false)};return <><div data-testid="location">{location.pathname}</div>{mounted&&(fixture.mode==='quick'?<QuickCustomerModal open={open} onClose={close} onCreated={c=>fixture.selected.push(c)}/>:fixture.mode==='edit'?<QuickCustomerEditModal open={open} customer={fixture.customer(id)} onClose={close} onSaved={c=>fixture.selected.push(c)}/>:fixture.mode==='confirm'?<ConfirmDialog open={open} title="Test confirmation" onClose={close} onConfirm={()=>fixture.defer('confirm',{})}/>:fixture.mode==='staff'?<Staff/>:<Routes><Route path='/customers/new' element={<Form/>}/><Route path='/customers/:id/edit' element={<Form/>}/><Route path='*' element={<p>Destination</p>}/></Routes>)}</>}
-createRoot(document.getElementById('root')).render(<MemoryRouter initialEntries={[fixture.route]}><App/></MemoryRouter>);`
+import React,{useEffect,useState}from'react';import{createRoot}from'react-dom/client';import{createMemoryRouter,RouterProvider,Routes,Route,useNavigate,useLocation,useParams}from'react-router-dom';
+import Form from'/src/features/customers/CustomerFormPage.tsx';import{QuickCustomerModal}from'/src/features/customers/QuickCustomerModal.tsx';import{QuickCustomerEditModal,CustomerEditor}from'/src/features/customers/QuickCustomerEditModal.tsx';import{NavigationGuard,useUnsavedChanges}from'/src/hooks/useUnsavedChanges.ts';import Staff from'/src/features/staff/StaffPage.tsx';import Payroll from'/src/features/analytics/PayrollPage.tsx';import{ConfirmDialog}from'/src/components/ui/ConfirmDialog.tsx';import'/src/index.css';
+function FullEditor(){const{id}=useParams();const[draft,setDraft]=useState({dirty:false,busy:false});useUnsavedChanges(draft.dirty,draft.busy);return <CustomerEditor key={id} inline open customer={fixture.customer(id)} onClose={()=>{}} onDraftStateChange={setDraft} onSaved={c=>fixture.selected.push(c)}/>}
+function App(){const[open,setOpen]=useState(true),[id,setId]=useState('a'),[mounted,setMounted]=useState(true);const navigate=useNavigate(),location=useLocation();useEffect(()=>{fixture.go=navigate;fixture.show=setOpen;fixture.switchCustomer=setId;fixture.unmount=()=>setMounted(false)},[navigate]);const close=()=>{fixture.closes++;setOpen(false)};return <><NavigationGuard/><div data-testid="location">{location.pathname}</div>{mounted&&(fixture.mode==='quick'?<QuickCustomerModal open={open} onClose={close} onCreated={c=>fixture.selected.push(c)}/>:fixture.mode==='edit'?<QuickCustomerEditModal open={open} customer={fixture.customer(id)} onClose={close} onSaved={c=>fixture.selected.push(c)}/>:fixture.mode==='confirm'?<ConfirmDialog open={open} title="Test confirmation" onClose={close} onConfirm={()=>fixture.defer('confirm',{})}/>:fixture.mode==='staff'?<Staff/>:fixture.mode==='payroll'?<Payroll/>:<Routes><Route path='/customers/new' element={<Form/>}/><Route path='/customers/:id/edit' element={<Form/>}/><Route path='/customers/:id' element={<FullEditor/>}/><Route path='*' element={<p>Destination</p>}/></Routes>)}</>}
+createRoot(document.getElementById('root')).render(<RouterProvider router={createMemoryRouter([{path:'*',element:<App/>}],{initialEntries:[fixture.route]})}/>);`
 const bootstrap=`
 window.fixture={mode:window.testMode,route:window.testRoute??'/customers/new',pending:[],reads:[],salaryReads:[],errors:[],warnings:[],messages:[],selected:[],closes:0,salaryPayments:window.testSalaryPayments??[]};
 fixture.customer=id=>({id,phone:'+38067111111'+(id==='a'?'1':'2'),full_name:'Client '+id,email:'',notes:'',tags:[],card_barcode:null,discount_pct:0,client_status:'client',loyalty_mode:'discount',bonus_balance:0,debt_balance:0,updated_at:'version-'+id});
@@ -59,6 +61,7 @@ try{
   const double=locator=>locator.evaluate(element=>{element.click();element.click()})
   const count=(page,kind)=>page.evaluate(kind=>fixture.pending.filter(p=>p.kind===kind).length,kind)
   const wait=(page,kind,n=1)=>page.waitForFunction(({kind,n})=>fixture.pending.filter(p=>p.kind===kind).length===n,{kind,n})
+  const openPayroll=page=>page.getByRole('row').filter({hasText:'Test Worker'}).getByRole('button',{name:'Операції',exact:true}).click()
   const dayCases=[
     ['2026-09-30T20:59:59.000Z','2026-09-30'],
     ['2026-09-30T21:00:00.000Z','2026-10-01'],
@@ -67,18 +70,18 @@ try{
   ]
   const observedDays=[],expectedDays=[]
   for(const timezoneId of ['America/Los_Angeles','Asia/Tokyo','Europe/Moscow'])for(const [now,expectedDate] of dayCases){
-    const day=await setup('staff','/customers/new',[],{timezoneId,now})
-    await day.getByRole('button',{name:/Test Worker/}).click()
+    const day=await setup('payroll','/analytics/payroll',[],{timezoneId,now})
+    await openPayroll(day)
     const reads=await day.evaluate(()=>fixture.salaryReads)
-    await day.getByRole('button',{name:/Виплати/}).click()
     const initialPeriod=await day.locator('input[type="month"]').inputValue()
-    await day.getByLabel('Сума (грн)',{exact:true}).fill('126,50')
+    await day.getByRole('dialog').locator('select').first().selectOption('salary')
+    await day.getByPlaceholder('Сума, грн').fill('126,50')
     await double(day.getByRole('button',{name:'Зберегти операцію',exact:true}));await wait(day,'salary')
     const salary=await day.evaluate(()=>fixture.pending.find(p=>p.kind==='salary').body)
     await day.evaluate(()=>fixture.pending.find(p=>p.kind==='salary').reject(Error('Boundary salary failure')))
     await day.waitForFunction(()=>fixture.errors.includes('Boundary salary failure'))
-    await day.keyboard.press('Escape');await day.getByRole('button',{name:/Test Worker/}).click()
-    await double(day.getByRole('button',{name:'Видати з каси',exact:true}));await wait(day,'shift')
+    await day.keyboard.press('Escape');await openPayroll(day)
+    await double(day.getByRole('button',{name:'Видати денний заробіток з каси',exact:true}));await wait(day,'shift')
     await day.evaluate(()=>fixture.pending.find(p=>p.kind==='shift').resolve({data:{id:'boundary-shift'}}));await wait(day,'payout')
     const payout=await day.evaluate(()=>fixture.pending.find(p=>p.kind==='payout').body)
     observedDays.push({timezoneId,now,reads,initialPeriod,salaryDate:salary.work_date,salaryPeriod:salary.period,payoutDate:payout.work_date})
@@ -96,14 +99,13 @@ try{
     ['2026-09-30T20:59:59.000Z','2026-09-30T21:00:00.000Z','2026-09-30'],
     ['2026-12-31T21:59:59.000Z','2026-12-31T22:00:00.000Z','2026-12-31'],
   ])for(const kind of ['salary','payout']){
-    const midnight=await setup('staff','/customers/new',[],{timezoneId:'Europe/Kyiv',now:before})
-    await midnight.getByRole('button',{name:/Test Worker/}).click()
+    const midnight=await setup('payroll','/analytics/payroll',[],{timezoneId:'Europe/Kyiv',now:before})
+    await openPayroll(midnight)
     if(kind==='salary'){
-      await midnight.getByRole('button',{name:/Виплати/}).click()
       await midnight.getByRole('dialog').locator('select').first().selectOption('advance')
-      await midnight.getByLabel('Сума (грн)',{exact:true}).fill('126,50')
+      await midnight.getByPlaceholder('Сума, грн').fill('126,50')
     }
-    const action=midnight.getByRole('button',{name:kind==='salary'?'Зберегти операцію':'Видати з каси',exact:true})
+    const action=midnight.getByRole('button',{name:kind==='salary'?'Зберегти операцію':'Видати денний заробіток з каси',exact:true})
     await double(action);await wait(midnight,'shift')
     await midnight.clock.setFixedTime(new Date(after));await double(action)
     assert.equal(await count(midnight,'shift'),1,'Busy duplicate clicks do not start another preflight')
@@ -118,14 +120,14 @@ try{
   assert.deepEqual(crossedPreflights,expectedPreflights,'An action keeps the Kyiv day captured before its awaited shift check')
 
   // Selecting an earlier month is deliberate; only the current working day comes from Kyiv.
-  const past=await setup('staff','/customers/new',[],{timezoneId:'America/Los_Angeles',now:'2026-09-30T21:00:00.000Z'})
-  await past.getByRole('button',{name:/Test Worker/}).waitFor()
-  await past.locator('button:has(svg.lucide-chevron-left)').click()
-  await past.getByRole('button',{name:/Test Worker/}).click();await past.getByRole('button',{name:/Виплати/}).click()
+  const past=await setup('payroll','/analytics/payroll',[],{timezoneId:'America/Los_Angeles',now:'2026-09-30T21:00:00.000Z'})
+  await past.getByRole('button',{name:'Операції',exact:true}).waitFor()
+  await past.getByLabel('Попередній місяць').click()
   assert.equal(await past.locator('input[type="month"]').inputValue(),'2026-09')
   await past.locator('input[type="month"]').fill('2026-08')
-  await past.getByLabel('Сума (грн)',{exact:true}).fill('126,50')
-  await past.getByRole('dialog').locator('textarea').fill('Explicit August salary')
+  await openPayroll(past)
+  await past.getByPlaceholder('Сума, грн').fill('126,50')
+  await past.getByPlaceholder('Примітка').fill('Explicit August salary')
   await past.getByRole('dialog').locator('select').first().selectOption('advance')
   for(let attempt=1;attempt<=2;attempt++){
     await double(past.getByRole('button',{name:'Зберегти операцію',exact:true}));await wait(past,'shift',attempt)
@@ -139,16 +141,16 @@ try{
       await past.evaluate(()=>fixture.pending.find(p=>p.kind==='salary').reject(Error('Retry this explicit period')))
       await past.waitForFunction(()=>fixture.errors.includes('Retry this explicit period'))
       assert.equal(await past.locator('input[type="month"]').inputValue(),'2026-08')
-      assert.equal(await past.getByLabel('Сума (грн)',{exact:true}).inputValue(),'126,50')
-      assert.equal(await past.getByRole('dialog').locator('textarea').inputValue(),'Explicit August salary')
+      assert.equal(await past.getByPlaceholder('Сума, грн').inputValue(),'126,50')
+      assert.equal(await past.getByPlaceholder('Примітка').inputValue(),'Explicit August salary')
     }else{
       await past.evaluate(()=>fixture.pending.filter(p=>p.kind==='salary')[1].resolve({data:{id:'saved-explicit-period'}}))
       await past.waitForFunction(()=>fixture.messages.includes('Операцію збережено'))
-      await past.waitForFunction(()=>fixture.salaryReads.filter(r=>r.kind==='summary').length===3)
+      await past.waitForFunction(()=>fixture.salaryReads.filter(r=>r.kind==='summary').length===4)
     }
   }
   assert.equal(await count(past,'salary'),2,'One failed attempt plus one manual retry; no duplicate submissions')
-  assert.deepEqual(await past.evaluate(()=>fixture.salaryReads.filter(r=>r.kind==='summary').map(r=>r.period)),['2026-10','2026-09','2026-09'])
+  assert.deepEqual(await past.evaluate(()=>fixture.salaryReads.filter(r=>r.kind==='summary').map(r=>r.period)),['2026-10','2026-09','2026-08','2026-08'])
   assert.equal(await past.locator('input[type="month"]').inputValue(),'2026-08')
   await past.close()
 
@@ -163,13 +165,12 @@ try{
   const timestampPayments=timestampCases.map(([id,created_at])=>({id,employee_id:'worker',employee_name:'Test Worker',
     amount:12600,type:'advance',method:'cash',period:'2026-09',work_date:'2026-09-29',created_at,note:'Timestamp '+id}))
   for(const timezoneId of ['America/Los_Angeles','Asia/Tokyo']){
-    const timestamps=await setup('staff','/customers/new',timestampPayments,{timezoneId})
-    await timestamps.getByRole('button',{name:/Test Worker/}).click()
-    await timestamps.getByRole('button',{name:/Виплати/}).click()
+    const timestamps=await setup('payroll','/analytics/payroll',timestampPayments,{timezoneId})
+    await openPayroll(timestamps)
     for(const [id,,expected] of timestampCases){
-      const row=timestamps.getByText('Timestamp '+id,{exact:true}).locator('..').locator('..')
-      assert.equal(await row.locator('span.font-mono').innerText(),expected,`${timezoneId}: ${id} displays actual creation date in Kyiv`)
-      assert.equal((await row.locator('p.text-sm.font-bold').innerText()).replace(/\s+/g,' '),'−126,00 ₴')
+      const row=timestamps.locator('.analytics-payment-row').filter({hasText:'Timestamp '+id})
+      assert.ok((await row.locator('p.text-xs').innerText()).startsWith(expected),`${timezoneId}: ${id} displays actual creation date in Kyiv`)
+      assert.equal((await row.locator('strong').innerText()).replace(/\s+/g,' '),'−126,00 ₴')
     }
     assert.deepEqual(await timestamps.evaluate(()=>fixture.salaryPayments),timestampPayments,'Date rendering leaves salary period, work date and timestamp unchanged')
     assert.deepEqual(await timestamps.evaluate(()=>fixture.pending),[],'Viewing timestamps creates no salary operation')
@@ -177,20 +178,20 @@ try{
   }
   const quick=await setup('quick');await quick.getByRole('button',{name:'Новий клієнт',exact:true}).click()
   await quick.getByLabel('Телефон *',{exact:true}).fill('+380671234567')
-  await quick.getByLabel("Ім'я *",{exact:true}).fill('New client')
+  await quick.getByLabel("Ім'я",{exact:true}).fill('New client')
   await quick.locator('form').evaluate(form=>{form.requestSubmit();form.requestSubmit()});await wait(quick,'customer-create')
-  assert.equal(await quick.getByLabel("Ім'я *",{exact:true}).isDisabled(),true)
+  assert.equal(await quick.getByLabel("Ім'я",{exact:true}).isDisabled(),true)
   await quick.keyboard.press('Escape');assert.equal(await quick.getByRole('dialog').count(),1)
   await quick.evaluate(()=>fixture.show(false));await quick.getByRole('dialog').waitFor({state:'detached'})
   await quick.evaluate(()=>fixture.show(true));await quick.getByRole('dialog').waitFor()
   await quick.getByRole('button',{name:'Новий клієнт',exact:true}).click()
   await quick.getByLabel('Телефон *',{exact:true}).fill('+380679999999')
-  await quick.getByLabel("Ім'я *",{exact:true}).fill('Current client')
+  await quick.getByLabel("Ім'я",{exact:true}).fill('Current client')
   await quick.locator('form').evaluate(form=>form.requestSubmit());await wait(quick,'customer-create',2)
   await quick.evaluate(()=>fixture.pending.find(p=>p.kind==='customer-create').resolve({data:fixture.customer('a')}))
   await quick.waitForTimeout(100)
   assert.equal(await quick.evaluate(()=>fixture.selected.length),0);assert.equal(await quick.getByRole('dialog').count(),1)
-  assert.equal(await quick.getByLabel("Ім'я *",{exact:true}).isDisabled(),true,'old finally must not enable a newer save')
+  assert.equal(await quick.getByLabel("Ім'я",{exact:true}).isDisabled(),true,'old finally must not enable a newer save')
   await quick.evaluate(()=>fixture.pending.filter(p=>p.kind==='customer-create')[1].resolve({data:fixture.customer('b')}))
   await quick.getByRole('dialog').waitFor({state:'detached'})
   assert.deepEqual(await quick.evaluate(()=>fixture.selected.map(c=>c.id)),['b']);await quick.close()
@@ -204,6 +205,9 @@ try{
   assert.equal(await full.evaluate(()=>fixture.pending.find(p=>p.kind==='customer-update').body.id),'b')
   assert.equal(await full.evaluate(()=>fixture.pending.find(p=>p.kind==='customer-update').body.expected_updated_at),'version-b')
   assert.equal(await full.evaluate(()=>fixture.pending.find(p=>p.kind==='customer-update').body.full_name),'Edited B')
+  await full.evaluate(()=>fixture.go('/elsewhere'));await full.waitForTimeout(100)
+  assert.equal(await full.getByTestId('location').innerText(),'/customers/b','pending card save blocks navigation')
+  await full.evaluate(()=>fixture.unmount());await full.locator('form').waitFor({state:'detached'})
   await full.evaluate(()=>fixture.go('/elsewhere'));await full.waitForFunction(()=>document.querySelector('[data-testid=location]').textContent==='/elsewhere')
   await full.evaluate(()=>fixture.pending.find(p=>p.kind==='customer-update').resolve({data:fixture.customer('b')}));await full.waitForTimeout(100)
   assert.equal(await full.getByTestId('location').innerText(),'/elsewhere');await full.close()
@@ -221,26 +225,26 @@ try{
   await edit.evaluate(()=>fixture.switchCustomer('a'));await wait(edit,'garage',3)
   await edit.evaluate(()=>fixture.pending.find(p=>p.kind==='customer-update').resolve({data:fixture.customer('b')}));await edit.waitForTimeout(100)
   assert.equal(await edit.evaluate(()=>fixture.selected.length),0);assert.equal(await edit.getByRole('dialog').count(),1);await edit.close()
-  const staff=await setup('staff');await staff.getByRole('button',{name:/Test Worker/}).click()
-  await staff.getByRole('button',{name:/Виплати/}).click()
-  await staff.getByLabel('Сума (грн)',{exact:true}).fill('126,50')
+  const staff=await setup('payroll','/analytics/payroll');await openPayroll(staff)
+  await staff.getByRole('dialog').locator('select').first().selectOption('salary')
+  await staff.getByPlaceholder('Сума, грн').fill('126,50')
   await double(staff.getByRole('button',{name:'Зберегти операцію',exact:true}));await wait(staff,'salary')
   assert.equal(await staff.evaluate(()=>fixture.pending.find(p=>p.kind==='salary').body.amount),12650)
-  assert.equal(await staff.getByLabel('Сума (грн)',{exact:true}).isDisabled(),true)
+  assert.equal(await staff.getByPlaceholder('Сума, грн').isDisabled(),true)
   await staff.keyboard.press('Escape');assert.equal(await staff.getByRole('dialog').count(),1)
   await staff.evaluate(()=>fixture.pending.find(p=>p.kind==='salary').reject(Error('Test write failure')))
   await staff.waitForFunction(()=>fixture.errors.includes('Test write failure'))
-  assert.equal(await staff.getByLabel('Сума (грн)',{exact:true}).inputValue(),'126,50')
-  await staff.getByLabel('Сума (грн)',{exact:true}).fill('126junk');await staff.getByRole('button',{name:'Зберегти операцію',exact:true}).click()
+  assert.equal(await staff.getByPlaceholder('Сума, грн').inputValue(),'126,50')
+  await staff.getByPlaceholder('Сума, грн').fill('126junk');await staff.getByRole('button',{name:'Зберегти операцію',exact:true}).click()
   await staff.waitForTimeout(100);assert.equal(await count(staff,'salary'),1);await staff.close()
   for (const fund of ['cashbox','owner_funds']) {
-    const payout=await setup('staff');await payout.getByRole('button',{name:/Test Worker/}).click()
-    await double(payout.getByRole('button',{name:fund==='cashbox'?'Видати з каси':'Кошти власника',exact:true}));await wait(payout,'shift')
+    const payout=await setup('payroll','/analytics/payroll');await openPayroll(payout)
+    await double(payout.getByRole('button',{name:fund==='cashbox'?'Видати денний заробіток з каси':'Видати коштами власника',exact:true}));await wait(payout,'shift')
     await payout.keyboard.press('Escape');assert.equal(await payout.getByRole('dialog').count(),1)
     await payout.evaluate(()=>fixture.pending.find(p=>p.kind==='shift').resolve({data:{id:'test-shift'}}));await wait(payout,'payout')
     assert.equal(await payout.evaluate(()=>fixture.pending.find(p=>p.kind==='payout').body.fund_source),fund)
     await payout.evaluate(()=>fixture.pending.find(p=>p.kind==='payout').resolve({data:{amount:12600}}))
-    await payout.waitForFunction(()=>fixture.messages.some(m=>m.includes('Видано')));await payout.close()
+    await payout.waitForFunction(()=>fixture.messages.some(m=>m.includes('Виплачено')));await payout.close()
   }
   const access=await setup('staff');await access.getByRole('button',{name:/Test Worker/}).click()
   await access.getByRole('dialog').waitFor()
@@ -279,14 +283,13 @@ try{
     {id:'legacy-advance',type:'advance',amount:3000,note:'Synthetic legacy advance'},
     {id:'legacy-penalty',type:'penalty',amount:4000,note:'Synthetic legacy penalty'},
   ].map(row=>({...row,employee_id:'worker',employee_name:'Test Worker',method:'cash',period:'2026-10',created_at:'2026-10-02T09:00:00.000Z'}))
-  const history=await setup('staff','/customers/new',salaryPayments)
-  await history.getByRole('button',{name:/Test Worker/}).click()
-  await history.getByRole('button',{name:/Виплати/}).click()
+  const history=await setup('payroll','/analytics/payroll',salaryPayments)
+  await openPayroll(history)
   const rendered=[]
   for(const payment of salaryPayments){
-    const row=history.getByText(payment.note,{exact:true}).locator('..').locator('..')
-    const amount=row.locator('p.text-sm.font-bold')
-    rendered.push({id:payment.id,label:await row.locator('span.inline-flex').innerText(),
+    const row=history.locator('.analytics-payment-row').filter({hasText:payment.note})
+    const amount=row.locator('strong')
+    rendered.push({id:payment.id,label:await row.locator('p.font-semibold').innerText(),
       amount:(await amount.innerText()).replace(/\s+/g,' '),
       red:await amount.evaluate(element=>element.classList.contains('text-red-500')),
       green:await amount.evaluate(element=>element.classList.contains('text-green-600'))})
@@ -297,7 +300,7 @@ try{
     {id:'reversal',label:'Сторно нарахування за повернення',amount:'−63,00 ₴',red:true,green:false},
     {id:'legacy-bonus',label:'Премія',amount:'+10,00 ₴',red:false,green:true},
     {id:'legacy-rate',label:'Ставка',amount:'+20,00 ₴',red:false,green:true},
-    {id:'legacy-advance',label:'Виплата',amount:'−30,00 ₴',red:true,green:false},
+    {id:'legacy-advance',label:'Виплата / аванс',amount:'−30,00 ₴',red:true,green:false},
     {id:'legacy-penalty',label:'Штраф',amount:'−40,00 ₴',red:true,green:false},
   ],'Commission reversals have one negative sign and a source-aware label; legacy types retain their labels and signed effect')
   await history.close()

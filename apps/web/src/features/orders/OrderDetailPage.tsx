@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import { useViewNavigation } from '@/hooks/useViewNavigation'
 import { Phone, MessageSquare, FilePen, ChevronDown, Pencil, Copy } from 'lucide-react'
 import { orderApi, type CustomerOrder, type CustomerOrderStatus, type ItemStatus } from './orderApi'
 import { formatOrderNo, startRepeatOrder } from './orderActions'
@@ -120,6 +121,7 @@ const ITEM_STATUS_ACTIONS: Record<string, Array<{ status: ItemStatus; label: str
 export default function OrderDetailPage() {
   const canUseCash = useAuthStore((state) => canUseOrderCash(state.session?.user.app_metadata?.role))
   const navigate = useNavigate()
+  const { open, back } = useViewNavigation('/orders')
   const { id } = useParams<{ id: string }>()
 
   const [order, setOrder]     = useState<CustomerOrder | null>(null)
@@ -155,11 +157,11 @@ export default function OrderDetailPage() {
       setOrder((result as { data: CustomerOrder }).data)
     } catch (error) {
       toast.error(getErrorMessage(error, 'Замовлення не знайдено'))
-      navigate('/orders')
+      back()
     } finally {
       setLoading(false)
     }
-  }, [id, navigate])
+  }, [id, back])
 
   useEffect(() => { load() }, [load])
   useEffect(() => {
@@ -304,25 +306,25 @@ export default function OrderDetailPage() {
   return (
     <Layout
       title={`Замовлення ${formatOrderNo(order)} від ${formatDate(order.created_at)}`}
-      onBack={() => navigate('/orders')}
+      onBack={back}
       actions={
         <div className="flex gap-1.5 md:gap-2 items-center">
           {isDraft && order.lan_sync?.state !== 'blocked' && (
-            <Button icon={<FilePen size={15} />} onClick={() => navigate(orderEditPath(order))}>
+            <Button icon={<FilePen size={15} />} onClick={() => open(orderEditPath(order))}>
               <span>Редагувати чернетку</span>
             </Button>
           )}
           {canEdit && (
-            <Button variant="secondary" icon={<Pencil size={15} />} onClick={() => navigate(`/orders/${id}/edit`)}>
+            <Button variant="secondary" icon={<Pencil size={15} />} onClick={() => open(`/orders/${id}/edit`)}>
               <span className="hidden sm:inline">Редагувати</span>
             </Button>
           )}
           {serverActionsReady && order.status === 'completed' && order.sale_id && (
             <>
-              <Button variant="secondary" onClick={() => navigate(`/returns?saleId=${order.sale_id}&orderId=${id}`)}>
+              <Button variant="secondary" onClick={() => open(`/returns?saleId=${order.sale_id}&orderId=${id}`)}>
                 ↩️ <span className="hidden sm:inline">Повернути</span>
               </Button>
-              <Button variant="secondary" onClick={() => navigate(`/returns?saleId=${order.sale_id}&exchangeOrderId=${id}`)}>
+              <Button variant="secondary" onClick={() => open(`/returns?saleId=${order.sale_id}&exchangeOrderId=${id}`)}>
                 🔁 <span className="hidden sm:inline">Обміняти</span>
               </Button>
             </>

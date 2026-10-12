@@ -52,7 +52,8 @@ const {chromium}=require('playwright'),XLSX=require('../node_modules/xlsx')
   await page.goto('http://127.0.0.1:5188/__writeoff_fixture')
   const choose=async tab=>{
    if(page.viewportSize().width<768)await page.locator('select').first().selectOption(tab)
-   else await page.getByRole('button',{name:tab==='writeoffs'?'Списання':'Сьогодні',exact:true}).click()
+   else await page.getByRole('button',{name:tab==='writeoffs'?'Списання':'Підсумки',exact:true}).click()
+   if(tab==='today')await page.getByLabel('Період підсумків',{exact:true}).selectOption('today')
   }
   await choose('writeoffs');await page.waitForFunction(()=>document.querySelectorAll('tbody tr').length===25)
   for(const width of [1200,390,320]){

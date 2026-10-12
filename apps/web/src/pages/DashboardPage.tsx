@@ -160,21 +160,15 @@ export default function DashboardPage() {
       {loadError ? (
         <p role="alert" className="mb-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{loadError}</p>
       ) : <>
-      {period === 'date' && (
-        <div className="mb-6 flex flex-col gap-1 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <span className="text-sm font-semibold text-emerald-900">
-            Загальна сума продажів за {new Date(`${selectedDate}T12:00:00`).toLocaleDateString('uk-UA')}
-          </span>
-          <strong className="text-2xl text-emerald-800">{loading ? '—' : formatMoney(d?.total_revenue ?? 0)}</strong>
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-4 mb-6"><div className="bg-indigo-50 border border-indigo-200 rounded-2xl p-4 shadow-sm"><div className="text-xs font-semibold text-indigo-700 uppercase tracking-wider">Товарів на складі</div><div className="mt-2 text-2xl font-bold text-indigo-950">{loading ? "—" : formatMoney(d?.inventory?.retail_value ?? 0)}</div><div className="text-xs text-indigo-700 mt-1">за ціною продажу</div></div><div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 shadow-sm"><div className="text-xs font-semibold text-slate-600 uppercase tracking-wider">Собівартість залишків</div><div className="mt-2 text-2xl font-bold text-slate-900">{loading ? "—" : formatMoney(d?.inventory?.purchase_value ?? 0)}</div><div className="text-xs text-slate-600 mt-1">закупівельна вартість</div></div><div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 shadow-sm"><div className="text-xs font-semibold text-emerald-700 uppercase tracking-wider">{period === 'today' ? 'Продано сьогодні' : 'Продажі за вибраний період'}</div><div className="mt-2 text-2xl font-bold text-emerald-950">{loading ? "—" : formatMoney(d?.total_revenue ?? 0)}</div><div className="text-xs text-emerald-700 mt-1">з урахуванням повернень</div></div></div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 md:gap-4 mb-6">
+        <div className="bg-indigo-50 border border-indigo-200 rounded-2xl p-4 shadow-sm"><div className="text-xs font-semibold text-indigo-700 uppercase tracking-wider">Товарів на складі</div><div className="mt-2 text-2xl font-bold text-indigo-950">{loading ? '—' : formatMoney(d?.inventory?.retail_value ?? 0)}</div><div className="text-xs text-indigo-700 mt-1">за ціною продажу</div></div>
+        <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 shadow-sm"><div className="text-xs font-semibold text-slate-600 uppercase tracking-wider">Собівартість залишків</div><div className="mt-2 text-2xl font-bold text-slate-900">{loading ? '—' : formatMoney(d?.inventory?.purchase_value ?? 0)}</div><div className="text-xs text-slate-600 mt-1">закупівельна вартість</div></div>
+      </div>
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4 mb-6 md:mb-8">
         {[
-          { label: period === 'date' ? 'Продажі за день' : 'Виторг', value: d?.total_revenue ?? 0, color: 'bg-emerald-50 border-emerald-200', iconColor: 'text-emerald-600', icon: Receipt },
+          { label: 'Продажі після повернень', value: d?.total_revenue ?? 0, color: 'bg-emerald-50 border-emerald-200', iconColor: 'text-emerald-600', icon: Receipt },
           ...(canSeeProfit ? [{ label: 'Валовий прибуток', value: d?.gross_profit ?? 0, color: 'bg-blue-50 border-blue-200', iconColor: 'text-blue-600', icon: TrendingUp }] : []),
           { label: 'Кількість чеків', value: d?.total_receipts ?? 0, color: 'bg-purple-50 border-purple-200',   iconColor: 'text-purple-600',  icon: ClipboardList, raw: true },
           { label: 'Середній чек',    value: d?.average_receipt ?? 0, color: 'bg-amber-50 border-amber-200',   iconColor: 'text-amber-600',   icon: Receipt },

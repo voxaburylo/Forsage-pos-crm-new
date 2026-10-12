@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import { Clock, Bell, Trash2 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { Layout } from '@/components/Layout'
@@ -93,9 +94,9 @@ export default function WaitlistPage() {
                 <tr><td colSpan={7} className="text-center text-gray-400 py-8">Немає очікувань</td></tr>
               ) : entries.map((e) => (
                 <tr key={e.id} className="hover:bg-gray-50">
-                  <td className="px-4 py-3 font-medium text-gray-900">{e.customer.full_name ?? e.customer.phone}</td>
+                  <td className="px-4 py-3 font-medium text-gray-900"><Link className="hover:underline hover:text-yellow-700" to={`/customers/${e.customer_id}`}>{e.customer.full_name ?? e.customer.phone}</Link></td>
                   <td className="px-4 py-3">
-                    <div className="font-medium text-gray-800">{e.product.name}</div>
+                    <Link className="font-medium text-gray-800 hover:underline hover:text-yellow-700" to={`/products/${e.product_id}`}>{e.product.name}</Link>
                     <div className="text-xs text-gray-400 font-mono">{e.product.sku}</div>
                   </td>
                   <td className="px-4 py-3 text-right font-semibold">{formatMoney(e.product.retail_price)}</td>

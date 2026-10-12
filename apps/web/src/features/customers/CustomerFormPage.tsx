@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { Car, Save } from 'lucide-react'
 import { customerApi } from './customerApi'
 import { pricingApi } from '@/features/admin/pricingApi'
@@ -9,9 +9,11 @@ import { Layout } from '@/components/Layout'
 import { Button, Input, Card } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/stores/authStore'
-import { canManageCustomerDiscount, canManageCustomerFinancials, canManageCustomerStatus } from './customerEditPermissions'
+import { canEditCustomerCard, canManageCustomerDiscount, canManageCustomerFinancials, canManageCustomerStatus } from './customerEditPermissions'
 import { CustomerCardBarcodeField } from './CustomerCardBarcodeField'
 import { useScopedAction } from '@/hooks/useScopedAction'
+import { useViewNavigation } from '@/hooks/useViewNavigation'
+import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
 
 interface FormData {
   phone:         string
@@ -37,61 +39,31 @@ const EMPTY: FormData = {
 
 export default function CustomerFormPage() {
   const { id } = useParams<{ id: string }>()
-  return <CustomerForm key={id ?? 'new'} />
+  const location = useLocation()
+  if (id && id !== 'new') return <Navigate to={`/customers/${id}`} replace state={location.state} />
+  return <CustomerForm />
 }
 
 function CustomerForm() {
   const navigate = useNavigate()
-  const { id }   = useParams<{ id: string }>()
-  const isEdit   = !!id && id !== 'new'
+  const location = useLocation()
+  const navigation = useViewNavigation('/customers')
   const role = useAuthStore((s) => s.session?.user?.app_metadata?.role as string | undefined)
+  const canEdit = canEditCustomerCard(role)
   const canManageFinancials = canManageCustomerFinancials(role)
   const canManageStatus = canManageCustomerStatus(role)
-  const [loyaltyMode, setLoyaltyMode] = useState('discount')
-  const canManageDiscount = canManageCustomerDiscount(role, loyaltyMode)
-  const [version, setVersion] = useState<string | undefined>()
+  const canManageDiscount = canManageCustomerDiscount(role)
 
   const [form, setForm]     = useState<FormData>(EMPTY)
   const [tiers, setTiers]   = useState<PriceTier[]>([])
-  const [loading, setLoading] = useState(isEdit)
-  const action = useScopedAction(`${id ?? 'new'}:${role ?? ''}`)
+  const userId = useAuthStore((s) => s.session?.user.id ?? '')
+  const action = useScopedAction(`new:${userId}:${role ?? ''}`)
   const saving = action.busy
+  const leave = useUnsavedChanges(JSON.stringify(form) !== JSON.stringify(EMPTY), saving)
 
   useEffect(() => {
     pricingApi.listTiers().then((res) => setTiers(res.data)).catch(() => {})
   }, [])
-
-  useEffect(() => {
-    if (!isEdit) return
-    let active = true
-    setLoading(true)
-    customerApi.get(id).then(({ data }) => {
-      if (!active) return
-      const d = data as typeof data & { price_tier_id?: string | null }
-      setVersion(d.updated_at)
-      setLoyaltyMode(d.loyalty_mode ?? 'discount')
-      setForm({
-        phone:         d.phone,
-        full_name:     d.full_name ?? '',
-        email:         d.email ?? '',
-        notes:         d.notes ?? '',
-        tags:          d.tags,
-        price_tier_id: d.price_tier_id ?? '',
-        card_barcode:  (d as any).card_barcode ?? '',
-        discount_pct:  String((d as any).discount_pct ?? 0),
-        client_status: (d as any).client_status ?? 'client',
-        car_brand:     '',
-        car_model:     '',
-        car_year:      '',
-        car_vin:       '',
-      })
-    }).catch(() => {
-      if (!active) return
-      toast.error('Клієнта не знайдено')
-      navigate('/customers')
-    }).finally(() => { if (active) setLoading(false) })
-    return () => { active = false }
-  }, [id, isEdit, navigate])
 
   function set(field: keyof FormData, value: string) {
     setForm((f) => ({ ...f, [field]: value }))
@@ -106,8 +78,10 @@ function CustomerForm() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (action.isBusy() || loading) return
+    if (action.isBusy() || !canEdit) return
     if (!form.phone.trim()) { toast.error("Телефон обов'язковий"); return }
+    const discount = Number(form.discount_pct.replace(',', '.'))
+    if (canManageDiscount && (!Number.isFinite(discount) || discount < 0 || discount > 100)) { toast.error('Знижка має бути від 0 до 100%'); return }
 
     const attempt = action.begin()
     if (!attempt) return
@@ -119,10 +93,10 @@ function CustomerForm() {
         notes:         form.notes.trim(),
         tags:          form.tags,
         ...(canManageStatus ? { client_status: form.client_status } : {}),
-        ...(canManageDiscount ? { discount_pct: Number(form.discount_pct.replace(',', '.')) } : {}),
+        ...(canManageDiscount ? { discount_pct: discount } : {}),
         ...(canManageFinancials ? { price_tier_id: form.price_tier_id || null } : {}),
         card_barcode:  form.card_barcode.trim() || null,
-        ...(!isEdit && (form.car_vin.trim() || form.car_brand.trim() || form.car_model.trim()) ? {
+        ...((form.car_vin.trim() || form.car_brand.trim() || form.car_model.trim()) ? {
           vehicle: {
             brand: form.car_brand.trim() || 'Авто',
             model: form.car_model.trim() || '—',
@@ -131,25 +105,19 @@ function CustomerForm() {
           },
         } : {}),
       }
-      if (isEdit) {
-        await customerApi.update(id, { ...body, expected_updated_at: version })
-        if (!attempt.isCurrent()) return
-        toast.success('Клієнта оновлено')
-        navigate('/customers')
+      const result = await customerApi.create(body as Parameters<typeof customerApi.create>[0])
+      if (!attempt.isCurrent()) return
+      if (result.meta?.reused) {
+        toast.success(result.meta.card_attached
+          ? result.meta.vehicle_added ? 'Клієнт уже є — картку й автомобіль додано' : 'Клієнт уже є — штрихкод картки збережено'
+          : result.meta.vehicle_added
+          ? 'Клієнт уже існував — нове авто додано в його картку'
+          : 'Клієнт уже існує — відкрито його картку')
       } else {
-        const result = await customerApi.create(body as Parameters<typeof customerApi.create>[0])
-        if (!attempt.isCurrent()) return
-        if (result.meta?.reused) {
-          toast.success(result.meta.card_attached
-            ? result.meta.vehicle_added ? 'Клієнт уже є — картку й автомобіль додано' : 'Клієнт уже є — штрихкод картки збережено'
-            : result.meta.vehicle_added
-            ? 'Клієнт уже існував — нове авто додано в його картку'
-            : 'Клієнт уже існує — відкрито його картку')
-        } else {
-          toast.success(result.meta?.vehicle_added ? 'Клієнта й автомобіль створено' : 'Клієнта створено')
-        }
-        navigate(`/customers/${result.data.id}`)
+        toast.success(result.meta?.vehicle_added ? 'Клієнта й автомобіль створено' : 'Клієнта створено')
       }
+      leave.allowLeave()
+      navigate(`/customers/${result.data.id}`, { replace: true, state: location.state })
     } catch (e) {
       if (attempt.isCurrent()) toast.error(e instanceof Error ? e.message : 'Помилка збереження')
     } finally {
@@ -157,18 +125,16 @@ function CustomerForm() {
     }
   }
 
-  if (loading) return <Layout><div className="flex items-center justify-center h-64 text-gray-400 text-sm">Завантаження...</div></Layout>
-
   return (
-    <Layout title={isEdit ? 'Редагувати клієнта' : 'Новий клієнт'}>
+    <Layout title="Новий клієнт" onBack={navigation.back}>
       <div className="max-w-lg">
         <form onSubmit={handleSubmit}>
-          <fieldset disabled={saving}>
+          <fieldset disabled={saving || !canEdit}>
           <Card className="space-y-5">
 
             <Input label="Телефон *" type="tel"
               value={form.phone} onChange={(e) => set('phone', e.target.value)}
-              placeholder="+380671234567" required autoFocus={!isEdit} />
+              placeholder="+380671234567" required autoFocus />
 
             <Input label="Ім'я"
               value={form.full_name} onChange={(e) => set('full_name', e.target.value)}
@@ -180,7 +146,7 @@ function CustomerForm() {
               value={form.email} onChange={(e) => set('email', e.target.value)}
               placeholder="ivan@example.com" />
 
-            {!isEdit && (
+            {
               <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-4 space-y-3">
                 <div className="flex items-start gap-2">
                   <Car size={18} className="text-blue-600 mt-0.5 shrink-0" />
@@ -206,7 +172,7 @@ function CustomerForm() {
                     placeholder="17 символів" maxLength={17} />
                 </div>
               </div>
-            )}
+            }
 
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -264,9 +230,9 @@ function CustomerForm() {
 
             <div className="flex gap-3 pt-2">
               <Button type="submit" loading={saving} icon={<Save size={16} />}>
-                {isEdit ? 'Зберегти зміни' : 'Створити клієнта'}
+                Створити клієнта
               </Button>
-              <Button type="button" variant="secondary" onClick={() => { if (!action.isBusy()) navigate('/customers') }}>
+              <Button type="button" variant="secondary" onClick={() => { if (!action.isBusy()) navigation.back() }}>
                 Скасувати
               </Button>
             </div>
