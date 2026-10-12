@@ -6,6 +6,7 @@ import { logger } from '../lib/logger.js'
 import { clearProductSearchCache, catalogCodesFromName } from './productService.js'
 import { groundedSourceLabel, isPlaceholderSku, normalizedNameContains, safeCatalogNumber } from './aiCrossNumberRules.js'
 import { getAiConfig, recordAiUsage } from './aiService.js'
+import { requiresSignedBalances } from './sync/balanceMirror.js'
 
 const BATCH_SIZE = 5
 const MIN_CROSS_CONFIDENCE = 0.9
@@ -162,6 +163,19 @@ async function markFailed(products: ClaimedProduct[], error: unknown): Promise<v
   })))
 }
 
+async function skipLocalPrimaryCatalog(product: ClaimedProduct): Promise<boolean> {
+  // The desktop owns this catalog and does not pull cloud card mutations back.
+  // A background AUTO-SKU replacement would create two competing versions.
+  // Failure to read authority is not permission to edit: let the caller retry.
+  if (!await requiresSignedBalances(product.tenant_id)) return false
+  await updateState(product, {
+    status: 'no_match', result_count: 0, processed_at: new Date().toISOString(),
+    locked_at: null, locked_by: null,
+    last_error: 'Каталог ведеться в основній локальній програмі; фонові зміни серверної копії пропущено.',
+  })
+  return true
+}
+
 export async function callGemini(products: ClaimedProduct[], apiKey: string, model: string) {
   const ai = new GoogleGenAI({ apiKey })
   const searchInteraction = await ai.interactions.create({
@@ -261,6 +275,8 @@ async function saveProductResult(
   result: z.infer<typeof enrichmentProductSchema> | undefined,
   sources: Array<{ title: string; uri: string }>,
 ): Promise<{ added: number; skuUpdated: boolean }> {
+  // Recheck after the provider await: authority may have changed in flight.
+  if (await skipLocalPrimaryCatalog(product)) return { added: 0, skuUpdated: false }
   if (!result) {
     await updateState(product, {
       status: 'no_match',
@@ -386,10 +402,14 @@ export async function runAiCrossNumberEnrichment(): Promise<AiCrossEnrichmentSum
   }
 
   try {
-    const searchableProducts = products.filter((product) => inputCatalogNumbers(product).length > 0)
+    const eligible: ClaimedProduct[] = []
+    for (const product of products) {
+      if (!await skipLocalPrimaryCatalog(product)) eligible.push(product)
+    }
+    const searchableProducts = eligible.filter((product) => inputCatalogNumbers(product).length > 0)
     let cfg: Awaited<ReturnType<typeof getAiConfig>> | null = null
     if (searchableProducts.length > 0) {
-      cfg = await getAiConfig(products[0].tenant_id)
+      cfg = await getAiConfig(eligible[0].tenant_id)
       if (!cfg.enabled || !cfg.apiKey) throw new Error('Gemini вимкнено або API-ключ не налаштовано')
     }
 
@@ -398,7 +418,7 @@ export async function runAiCrossNumberEnrichment(): Promise<AiCrossEnrichmentSum
     let skuUpdated = 0
     let failed = 0
 
-    for (const product of products) {
+    for (const product of eligible) {
       try {
         let result: z.infer<typeof enrichmentProductSchema> | undefined
         let sources: Array<{ title: string; uri: string }> = []
