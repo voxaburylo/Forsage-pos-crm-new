@@ -14,6 +14,19 @@ const { localAnalytics } = require(path.join(dist, 'repositories/localAnalytics'
 const { LocalStaffRepository } = require(path.join(dist, 'repositories/staffRepository'))
 const { attachBalanceSnapshots } = require(path.join(dist, 'repositories/balanceSnapshot'))
 const { readSoldItems } = require(path.join(dist, 'repositories/pos/soldItemsReport'))
+// The payroll work_date is a Kyiv calendar date, not the UTC date. Keep
+// timestamps and calendar bounds aligned even after Kyiv midnight or at DST.
+const dayFormatter = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Kyiv', year: 'numeric', month: '2-digit', day: '2-digit' })
+function midnightUtc(day) {
+  let low = Date.parse(day + 'T00:00:00.000Z') - 36 * 3600000
+  let high = low + 72 * 3600000
+  while (high - low > 1) {
+    const middle = Math.floor((low + high) / 2)
+    if (dayFormatter.format(new Date(middle)) < day) low = middle
+    else high = middle
+  }
+  return new Date(high).toISOString()
+}
 const root = mkdtempSync(path.join(tmpdir(), 'forsage-writeoff-return-'))
 let db
 try {
@@ -39,9 +52,11 @@ try {
   const request = { sale_id: sale, approved_by: cashier, shift_id: shift, client_operation_id: randomUUID(), items: [{ sale_item_id: line.id, product_id: product, quantity: 0.1 }] }
   const first = pos.createReturn(request)
   assert.equal(first.refund_kopecks, 10)
-  const reportDay = new Date().toISOString().slice(0, 10)
+  const reportDay = dayFormatter.format(new Date(now))
+  const nextDay = new Date(Date.parse(reportDay + 'T00:00:00.000Z') + 86400000).toISOString().slice(0, 10)
   const reportRange = { kind: 'staff', startDate: reportDay, endDate: reportDay,
-    from: reportDay+'T00:00:00.000Z', to: reportDay+'T23:59:59.999Z' }
+    from: midnightUtc(reportDay), to: new Date(Date.parse(midnightUtc(nextDay)) - 1).toISOString() }
+  assert.deepEqual([...new Set(db.prepare('SELECT work_date FROM salary_payments').all().map(row => row.work_date))], [reportDay])
   const staffPartial = localAnalytics(db, reportRange).find(row => row.manager_id === employee)
   assert.equal(staffPartial.total_revenue, 19)
   assert.equal(staffPartial.total_cogs, 10)
@@ -107,7 +122,6 @@ try {
   const received = new LocalSupplyRepository(db).createInvoice({ user_id: cashier, paid_amount: 15,
     payment_method: 'cash', fund_source: 'owner_funds', items: [{ product_id: product, qty: 0.3, purchase_price: 50 }] })
   db.close(); db = new LocalDatabase(root)
-  const day = new Date().toISOString().slice(0, 10)
   db.exec('PRAGMA query_only=ON')
   try {
     const invoiceQueued = db.prepare("SELECT * FROM sync_outbox WHERE operation_type='supplier_invoice.created' AND aggregate_id=?").get(received.id)
@@ -127,8 +141,7 @@ try {
     const deletionCopy = JSON.parse(JSON.stringify(attachBalanceSnapshots(db, [oldDeletion])[0].payload.deleted_payment))
     assert.deepEqual(deletionCopy, deletedPayload.deleted_payment)
     assert.equal(db.prepare('SELECT deleted_at FROM cash_operations WHERE id=?').get(manual.cash_operation_id).deleted_at, deletion.created_at)
-    const abc = localAnalytics(db, { kind: 'abc', startDate: day, endDate: day,
-      from: day+'T00:00:00.000Z', to: day+'T23:59:59.999Z' })
+    const abc = localAnalytics(db, { ...reportRange, kind: 'abc' })
     const row = abc.find(item => item.id === product)
     assert.equal(row.soldQty, 0)
     assert.equal(row.profit, 0)
