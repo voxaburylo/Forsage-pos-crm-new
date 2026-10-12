@@ -27,13 +27,16 @@ import DashboardPage from '/src/pages/DashboardPage.tsx';
 import '/src/index.css';
 import '/src/features/analytics/analyticsLayout.css';
 const root=createRoot(document.getElementById('root'));
-const f=window.fixture={mode:'error',role:'owner',desktop:false,tireMode:'ok',pending:[],tirePending:[],key:0,
+const f=window.fixture={mode:'error',role:'owner',desktop:false,tireMode:'ok',pending:[],tirePending:[],readRequests:[],key:0,
  data:{total_revenue:12345,cogs:6000,gross_profit:6345,total_receipts:2,average_receipt:6173,
  daily:[{date:'2026-10-03',revenue:12345,profit:6345}],
  low_stock:2,overdue_count:1,debt:{count:1,total:999},inventory:{purchase_value:20000,retail_value:40000}}};
 f.read=(local,request)=>{
  const data=structuredClone(f.data);
  const start=local?request.date_from.slice(0,10):new URL(request,'http://127.0.0.1').searchParams.get('startDate');
+ const end=local?request.date_to.slice(0,10):new URL(request,'http://127.0.0.1').searchParams.get('endDate');
+ f.readRequests.push({local,start,end});
+ Object.assign(data,structuredClone(f.dataByDate?.[start]??{}));
  data.daily=data.daily.map(day=>({...day,date:f.dayOverride??start}));
  const result=local?{analytics:data,low_stock:data.low_stock,overdue_count:data.overdue_count,debt:data.debt,inventory:data.inventory}:{data};
  if(f.mode==='error')return Promise.reject(Error('offline'));
@@ -81,10 +84,21 @@ try {
 
   await page.evaluate(() => { fixture.mode='ok';fixture.render() })
   await page.getByText('123.45 грн',{exact:true}).first().waitFor()
+  await page.evaluate(() => { fixture.dataByDate={'2026-10-01':{
+    total_revenue:23000,cogs:10000,gross_profit:13000,average_receipt:11500,
+    daily:[{date:'2026-10-01',revenue:23000,profit:13000}],
+  }} })
   await page.getByLabel('Дата продажів').fill('2026-10-01')
-  await page.getByText('Продажі за вибраний період',{exact:true}).waitFor()
+  await page.getByText('230.00 грн',{exact:true}).first().waitFor()
+  await page.getByText('Продажі після повернень',{exact:true}).waitFor()
+  await page.getByText('2026-10-01 — 2026-10-01',{exact:true}).waitFor()
+  assert.equal(await page.getByLabel('Дата продажів').inputValue(),'2026-10-01')
+  assert.deepEqual(await page.evaluate(()=>fixture.readRequests.at(-1)),{
+    local:false,start:'2026-10-01',end:'2026-10-01',
+  })
+  assert.equal(await page.getByText('123.45 грн',{exact:true}).count(),0)
   assert.equal(await page.getByText('Продано сьогодні',{exact:true}).count(), 0)
-  console.log('PASS: selected historical date is not mislabeled as today')
+  console.log('PASS: historical selection requests its exact day, replaces today totals, and keeps the return-aware sales label')
 
   await page.evaluate(() => { fixture.tireMode='error';fixture.render() })
   await page.getByText('Не вдалося завантажити дані шиномонтажу',{exact:true}).waitFor()
