@@ -126,3 +126,56 @@ supplier52–58 збережена. Робоча програма відкрит
 - Наступне: commit, чиста portable-збірка, ASAR smoke/secret scan, push.
   Установлення заборонене чинним проханням власника; архів менеджера можна
   оновити лише після підтвердження сумісної серверної публікації.
+
+## Зібраний кандидат і GitHub
+
+- Код `be6ceedb21f2abad6df12d56951234eebd7d1650`, чисте дерево.
+  Fast-forward push у перевірений origin/main виконано, без force.
+- Release `20261013T131320-bbb3bed884a3`, sourceDirty=false,478 файлів.
+  EXE `apps/desktop/release/staged/Forsage-0.1.0-portable.exe`,91 627 539 байтів,
+  SHA256 `974cb5994a20e58da2714cbdca4c901a6c920abbd776921d844ac97f63965530`.
+- ASAR15 521 768 байтів,
+  SHA256 `89e002b2736ef3d3a1ec79f5ad53995d8d5ed7b78b4a283c4616f8eabf8aa3ff`.
+- `build-candidate77.ps1 -ExpectedCommit be6ceedb21f2abad6df12d56951234eebd7d1650`
+  exit0; `tmp/catalog-cleanup-portable-build.log`. Verify-build/package PASS.
+- Native smoke повторено саме на ASAR:15 002 картки,19,8с,main max39мс;
+  scan без змін, Балатон UA/RU exact, merge/history/barcodes/aliases/photo/replay PASS.
+  `tmp/catalog-cleanup-asar-smoke.log`.
+- LAN ASAR smoke PASS: ізольоване підключення, офлайн-вхід, одне замовлення
+  після повторного reconnect, отримання тестового binary без установлення;
+  `tmp/catalog-cleanup-lan-asar-smoke.log`. Це не приймання другого фізичного ПК.
+- Secret scan1751 tracked+501 packed,9 відомих приватних значень,0 знахідок;
+  `tmp/catalog-cleanup-package-secrets.log`.
+- Серверна публікація й GitHub CI після push ще очікуються. Архів і основний
+  встановлений EXE на цій контрольній точці не замінено.
+
+## Фінальний стан пакета
+
+- Обидва Vercel production для runtime commit be6ceed успішні:
+  `crm-forsage` deployment7039534069 та `forsage-pos-crm-new-web`7039564038.
+  Public API health200 JSON; новий capabilities route без token повертає401,
+  як належить. Авторизовану capability програма перевірятиме при роботі;
+  живе злиття на сервері не виконувалось.
+- Наявний архів `C:/Users/neo/Desktop/Форсаж — ПК менеджера.zip` атомарно
+  оновлено після сумісної публікації.91 640 710 байтів,
+  SHA256 `58607d7c8a5553e865678573e55a07e87a2c45b35290515ee0bec93cd81c16ab`.
+  Три записи: EXE з наведеним вище hash, SHA256.txt, інструкція. Бази,
+  паролів і мережевого коду немає. Попередній ZIP збережено у
+  `C:/Users/neo/AppData/Local/Forsage/old-builds/Manager-before-update.zip`,
+  SHA256 `978317360b46bb1fb6f40a578f7dbaba31ae431a66a40ee4b67d5f01d86829ce`.
+  Процедура `tmp/refresh-manager103.ps1` основної копії;
+  лог release-копії `tmp/catalog-cleanup-manager-archive.log`.
+- Основну відкриту програму не закривали й EXE не замінювали. Шість
+  Forsage-процесів на фінальній перевірці; чинна заборона власника збережена.
+- GitHub Verify38403627415 ще in_progress. Повний локальний PASS не є
+  завершеним CI. Потрібно звірити результат, зокрема Windows install/rollback,
+  що локально пропущені через відкритий застосунок.
+- Не прийняті: живий платний ШІ, два фізичних ПК, окремі одночасні PG-сесії.
+  Не виконані: встановлення кандидата, реальні об'єднання/артикули/ревізія.
+- Навички Supabase/Postgres застосовані до атомарності, порядку блокувань
+  і перевірок прав; навичка документації — до цього контрольного запису.
+  Це не замінює перелічені польові перевірки.
+
+Наступний безпечний крок: перевірити CI, після погодженого закриття
+встановити staged EXE штатною процедурою з відкатом; потім власник може
+переглянути кандидати й підтвердити перше злиття. Автоматизацію не відновлено.
