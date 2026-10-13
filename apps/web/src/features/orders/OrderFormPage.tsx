@@ -1,5 +1,8 @@
 import { useEffect, useLayoutEffect, useState, useMemo, useRef, useId } from 'react'
 import { useLocation, useNavigate, useSearchParams, useParams } from 'react-router-dom'
+import { customerPhoneFromSearch } from '@/features/customers/customerCreateModel'
+import { readOrderList } from './orderConvenience'
+import { OrderReadError } from './OrderReadError'
 import { useViewNavigation } from '@/hooks/useViewNavigation'
 import { Plus, Trash2, User, Car, Check, ChevronRight, ArrowLeft, Search, ClipboardList, X } from 'lucide-react'
 import { orderApi, type CreateOrderPayload, type CustomerOrder } from './orderApi'
@@ -248,6 +251,9 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
   const [searchedCustomers, setSearchedCustomers] = useState<Customer[]>([])
   const [defaultCustomersLoading, setDefaultCustomersLoading] = useState(true)
   const [searchCustomersLoading, setSearchCustomersLoading] = useState(false)
+  const [defaultCustomersError, setDefaultCustomersError] = useState('')
+  const [searchCustomersError, setSearchCustomersError] = useState('')
+  const [customerReadRevision, setCustomerReadRevision] = useState(0)
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null)
   
   // Inline Create Customer
@@ -258,6 +264,8 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
 
   // Step 2: Vehicle
   const [vehicles, setVehicles] = useState<CustomerVehicle[]>([])
+  const [customerVehiclesError, setCustomerVehiclesError] = useState('')
+  const [customerVehiclesLoading, setCustomerVehiclesLoading] = useState(false)
   const [selectedVehicle, setSelectedVehicle] = useState<CustomerVehicle | null>(null)
   // Авто із замовлення, якого немає в гаражі клієнта — щоб при редагуванні
   // НЕ загубити його (інакше vehicle_info затирався б на null при збереженні)
@@ -560,11 +568,20 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
 
   // Load default/recent customers on mount
   useEffect(() => {
-    customerApi.list({ per_page: 5, sort: 'recent' })
-      .then((r) => setDefaultCustomers((r as any).data ?? []))
-      .catch(() => {})
-      .finally(() => setDefaultCustomersLoading(false))
+    let cancelled = false
+    setDefaultCustomersLoading(true)
+    setDefaultCustomersError('')
+    void readOrderList(() => customerApi.list({ per_page: 5, sort: 'recent' }), 'Не вдалося завантажити клієнтів. Це не означає, що їх немає в базі.')
+      .then(result => {
+        if (cancelled) return
+        if (result.error) setDefaultCustomersError(result.error)
+        else setDefaultCustomers(result.data ?? [])
+      })
+      .finally(() => { if (!cancelled) setDefaultCustomersLoading(false) })
+    return () => { cancelled = true }
+  }, [customerReadRevision])
 
+  useEffect(() => {
     supplierApi.list({ per_page: 200, is_active: 'true' })
       .then((r) => setSuppliers(uniqueSuppliers((r as any).data ?? [])))
       .catch(() => {})
@@ -576,22 +593,27 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
     if (query.length < 2) {
       setSearchedCustomers([])
       setSearchCustomersLoading(false)
+      setSearchCustomersError('')
       return
     }
 
     let cancelled = false
     setSearchCustomersLoading(true)
+    setSearchCustomersError('')
     const timer = window.setTimeout(() => {
-      customerApi.list({ search: query, per_page: 8 })
-        .then((r) => { if (!cancelled) setSearchedCustomers((r as any).data ?? []) })
-        .catch(() => { if (!cancelled) setSearchedCustomers([]) })
+      void readOrderList(() => customerApi.list({ search: query, per_page: 8 }), 'Не вдалося перевірити клієнта. Повторіть пошук перед створенням нової картки.')
+        .then(result => {
+          if (cancelled) return
+          if (result.error) setSearchCustomersError(result.error)
+          else setSearchedCustomers(result.data ?? [])
+        })
         .finally(() => { if (!cancelled) setSearchCustomersLoading(false) })
     }, 300)
     return () => {
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [customerSearch])
+  }, [customerSearch, customerReadRevision])
 
   // A VIN hint may fill a blank brand, but must never erase a manual/OCR value.
   useEffect(() => {
@@ -624,6 +646,8 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
     setSelectedVehicle(null)
     setLoadedVehicleInfo(null)
     setVehicles([])
+    setCustomerVehiclesError('')
+    setCustomerVehiclesLoading(false)
     setStep(3)
   }
 
@@ -641,12 +665,19 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
     setCustomerId(c.id)
     setCustomerSearch('')
     setShowAddCustomer(false)
+    setCustomerVehiclesLoading(true)
+    setCustomerVehiclesError('')
 
     // Load customer vehicles
-    customerVehiclesApi.list(c.id)
+    readOrderList(() => customerVehiclesApi.list(c.id), 'Не вдалося перевірити автомобілі клієнта. Повторіть завантаження перед додаванням авто.')
       .then((r) => {
         if (request !== customerVehicleRequest.current || savingRef.current) return
-        const list = (r as any).data ?? []
+        if (r.error) {
+          setCustomerVehiclesError(r.error)
+          setStep(2)
+          return
+        }
+        const list = r.data ?? []
         setVehicles(list)
         // ORD-4: якщо авто рівно одне — підставляємо й одразу до товарів
         if (list.length === 1) {
@@ -656,9 +687,9 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
           setStep(2)
         }
       })
-      .catch(() => {
+      .finally(() => {
         if (request !== customerVehicleRequest.current || savingRef.current) return
-        setStep(2)
+        setCustomerVehiclesLoading(false)
       })
   }
 
@@ -668,6 +699,8 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
     setSelectedVehicle(v)
     setLoadedVehicleInfo(null)
     setShowAddVehicle(false)
+    setCustomerVehiclesError('')
+    setCustomerVehiclesLoading(false)
     setStep(3)
   }
 
@@ -693,6 +726,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
   async function handleCreateCustomer(e: React.FormEvent) {
     e.preventDefault()
     if (customerCreateBusy.current || savingRef.current) return
+    if (customerListLoading || customerListError) return
     if (!newCustPhone.trim()) {
       toast.error('Введіть номер телефону')
       return
@@ -774,6 +808,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
   async function handleCreateVehicle(e: React.FormEvent) {
     e.preventDefault()
     if (vehicleCreateBusy.current || savingRef.current) return
+    if (customerVehiclesLoading || customerVehiclesError) return
     if (!newVehBrand.trim() || !newVehModel.trim()) {
       toast.error('Введіть марку та модель')
       return
@@ -1157,6 +1192,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
   // Customer List to show
   const customerList = customerSearch.trim().length >= 2 ? searchedCustomers : defaultCustomers
   const customerListLoading = customerSearch.trim().length >= 2 ? searchCustomersLoading : defaultCustomersLoading
+  const customerListError = customerSearch.trim().length >= 2 ? searchCustomersError : defaultCustomersError
   const hasValidItems = items.some((item) => item.name.trim().length > 0)
 
   if (initialBackup.error || loadError) return <Layout title="Замовлення" onBack={back}><p role="alert" className="p-4 text-red-700">{initialBackup.error || loadError}</p><Button onClick={onReset}>Повторити завантаження</Button></Layout>
@@ -1275,6 +1311,8 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
                     </div>
                   ))}
                 </div>
+              ) : customerListError ? (
+                <OrderReadError message={customerListError} onRetry={() => setCustomerReadRevision(value => value + 1)} />
               ) : customerList.length > 0 ? (
                 <div className="divide-y divide-gray-100 border border-gray-100 rounded-xl overflow-hidden mb-6 bg-white shadow-sm">
                   {customerList.map((c) => (
@@ -1320,12 +1358,18 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
               {/* DASHED ADD CUSTOMER BUTTON */}
               {!showAddCustomer ? (
                 <div className="space-y-3">
-                  <button
-                    onClick={() => setShowAddCustomer(true)}
+                  {!customerListError && <button
+                    disabled={customerListLoading || Boolean(customerListError)}
+                    onClick={() => {
+                      if (customerListLoading || customerListError) return
+                      const phone = customerPhoneFromSearch(customerSearch)
+                      if (phone) setNewCustPhone(current => current.trim() ? current : phone)
+                      setShowAddCustomer(true)
+                    }}
                     className="w-full border-2 border-dashed border-gray-200 hover:border-yellow-400 hover:bg-yellow-50/20 text-gray-600 hover:text-yellow-700 font-semibold py-3 px-4 rounded-xl text-center text-sm transition-all duration-200 cursor-pointer flex items-center justify-center gap-2"
                   >
                     <Plus size={16} /> Створити нового клієнта
-                  </button>
+                  </button>}
                   <button
                     onClick={handleSkipCustomer}
                     className="w-full border border-gray-200 hover:border-gray-300 hover:bg-gray-50 text-gray-700 font-semibold py-3 px-4 rounded-xl text-center text-sm transition-all duration-200 cursor-pointer flex items-center justify-center gap-2 whitespace-nowrap"
@@ -1371,7 +1415,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
                   </div>
                   <div className="flex justify-end gap-2">
                     <Button variant="secondary" size="sm" onClick={() => setShowAddCustomer(false)}>Скасувати</Button>
-                    <Button type="submit" size="sm" disabled={addingCustomer}>Зберегти клієнта</Button>
+                    <Button type="submit" size="sm" disabled={addingCustomer || customerListLoading || Boolean(customerListError)}>Зберегти клієнта</Button>
                   </div>
                 </form>
               )}
@@ -1416,7 +1460,11 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
               </div>
 
               {/* Vehicles List */}
-              {vehicles.length > 0 ? (
+              {customerVehiclesLoading ? (
+                <p role="status" className="py-4 text-sm text-gray-500">Перевіряємо автомобілі клієнта…</p>
+              ) : customerVehiclesError ? (
+                <OrderReadError message={customerVehiclesError} onRetry={() => handleCustomerSelect(selectedCustomer)} />
+              ) : vehicles.length > 0 ? (
                 <div className="space-y-3 mb-6">
                   {vehicles.map((v) => (
                     <button
@@ -1447,6 +1495,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
               {!showAddVehicle ? (
                 <div className="flex flex-col gap-2">
                   <button
+                    disabled={customerVehiclesLoading || Boolean(customerVehiclesError)}
                     onClick={() => setShowAddVehicle(true)}
                     className="w-full border-2 border-dashed border-gray-200 hover:border-yellow-400 hover:bg-yellow-50/20 text-gray-600 hover:text-yellow-700 font-semibold py-3 px-4 rounded-xl text-center text-sm transition-all duration-200 cursor-pointer flex items-center justify-center gap-2"
                   >
@@ -1519,7 +1568,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
                   </div>
                   <div className="flex justify-end gap-2">
                     <Button variant="secondary" size="sm" onClick={() => { invalidateVehicleRead(); setShowAddVehicle(false) }}>Скасувати</Button>
-                    <Button type="submit" size="sm" disabled={addingVehicle}>Додати автомобіль</Button>
+                    <Button type="submit" size="sm" disabled={addingVehicle || customerVehiclesLoading || Boolean(customerVehiclesError)}>Додати автомобіль</Button>
                   </div>
                 </form>
               )}

@@ -8,7 +8,7 @@
  */
 import { invoiceIdForDraft, removeInvoiceDrafts } from './invoiceDraftStore'
 import { parseLocaleNumber } from '@/lib/parseDecimal'
-import type { Product, ProductFormData } from '@/types/product'
+import type { ProductFormData } from '@/types/product'
 import type { SupplyInvoice } from '@/types/supplier'
 export interface LineItem {
   product_id?: string
@@ -264,7 +264,7 @@ export function normalizeExactInvoiceProductName(raw: unknown): string {
     .trim()
 }
 
-export function findExactProductForQuery(query: string, products: Product[]): Product | null {
+export function findExactProductForQuery<T extends { id: string; sku: string; name: string; barcode?: string | null; additional_barcodes?: string[] | null }>(query: string, products: T[]): T | null {
   const trimmedQuery = query.trim()
   if (!trimmedQuery) return null
 

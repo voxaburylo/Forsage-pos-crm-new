@@ -65,6 +65,8 @@ export class LocalPosBase {
       customer_id: row.customer_id ?? null,
       cashier_id: row.cashier_id,
       manager_id: row.manager_id ?? null,
+      cashier: row.cashier_name == null ? null : { id: row.cashier_id, full_name: row.cashier_name, is_active: Number(row.cashier_active) === 1, deleted_at: row.cashier_deleted_at ?? null },
+      manager: row.manager_name == null ? null : { id: row.manager_id, full_name: row.manager_name, is_active: Number(row.manager_active) === 1, deleted_at: row.manager_deleted_at ?? null },
       shift_id: row.shift_id,
       status: row.status,
       subtotal: Number(row.subtotal ?? 0),
@@ -91,6 +93,8 @@ export class LocalPosBase {
       sale_items: items.map((item) => ({
         id: item.id,
         product_id: item.product_id,
+        description: item.description ?? null,
+        sku: item.sku ?? null,
         qty: Number(item.qty),
         unit_price: Number(item.unit_price),
         purchase_price: Number(item.purchase_price ?? 0),

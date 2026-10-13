@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { useDialogEscape } from '@/hooks/useDialogEscape'
 import { productApi } from '@/features/products/productApi'
 import { adminApi } from '@/features/admin/adminApi'
 import type { QuickItemConfig, QuickChildItem } from '@/features/admin/adminApi'
@@ -41,6 +42,11 @@ export function FavoritesPanel({ open, onClose }: { open?: boolean; onClose?: ()
   const [foodLoading, setFoodLoading] = useState(false)
   const popupRef = useRef<HTMLDivElement>(null)
   const foodRef  = useRef<HTMLDivElement>(null)
+  useDialogEscape(Boolean(open || popupItem || foodItem), () => {
+    if (foodItem) setFoodItem(null)
+    else if (popupItem) setPopupItem(null)
+    else onClose?.()
+  })
 
   useEffect(() => {
     const load = async () => {
@@ -191,7 +197,7 @@ export function FavoritesPanel({ open, onClose }: { open?: boolean; onClose?: ()
     <>
       {/* ─── Burger Menu Quick Access Modal ─────── */}
       {open && (
-        <div className="fixed inset-0 z-40 flex flex-col justify-end" style={{ background: 'rgba(0,0,0,0.5)' }} onClick={onClose}>
+        <div role="dialog" aria-modal="true" aria-label="Швидкий доступ" className="fixed inset-0 z-40 flex flex-col justify-end" style={{ background: 'rgba(0,0,0,0.5)' }} onClick={onClose}>
           <div className="bg-[#1A1A1A] rounded-t-2xl border-t border-gray-700 w-full shadow-2xl animate-slide-up pb-safe" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-gray-800">
               <span className="text-white font-bold text-lg">🍔 Швидкий доступ</span>
@@ -246,7 +252,7 @@ export function FavoritesPanel({ open, onClose }: { open?: boolean; onClose?: ()
 
       {/* ─── Попап варіантів (static з children) ──────────────────── */}
       {popupItem && (popupItem.children?.length ?? 0) > 0 && (
-        <div className="fixed inset-0 z-50 flex flex-col justify-end" style={{ background: 'rgba(0,0,0,0.5)' }}
+        <div role="dialog" aria-modal="true" aria-label="Варіанти швидкого товару" className="fixed inset-0 z-50 flex flex-col justify-end" style={{ background: 'rgba(0,0,0,0.5)' }}
           onClick={() => setPopupItem(null)}>
           <div ref={popupRef}
             className="bg-[#1A1A1A] rounded-t-2xl border-t border-gray-700 w-full max-w-lg mx-auto shadow-2xl animate-slide-up"
@@ -287,7 +293,7 @@ export function FavoritesPanel({ open, onClose }: { open?: boolean; onClose?: ()
 
       {/* ─── Попап ЇЖА / food_popup ───────────────────────────────── */}
       {foodItem && (
-        <div className="fixed inset-0 z-50 flex flex-col justify-end" style={{ background: 'rgba(0,0,0,0.6)' }}
+        <div role="dialog" aria-modal="true" aria-label="Швидкий вибір товарів" className="fixed inset-0 z-50 flex flex-col justify-end" style={{ background: 'rgba(0,0,0,0.6)' }}
           onClick={() => setFoodItem(null)}>
           <div ref={foodRef}
             className="bg-[#1A1A1A] rounded-t-2xl border-t border-gray-700 w-full shadow-2xl animate-slide-up"

@@ -21,6 +21,7 @@ import { recognizeVehicleImage } from '@/lib/vehicleOcr'
 import { Menu } from 'lucide-react'
 import { Sidebar } from '@/components/Sidebar'
 import { Card, Badge, Button, Modal, Input } from '@/components/ui'
+import { PageNumberInput } from '@/components/ui/PageNumberInput'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney, formatDate, formatDateTime } from '@/lib/utils'
 import type { CustomerVehicle } from '@/types/customer'
@@ -28,6 +29,9 @@ import { BoundedCache } from '@/lib/boundedCache'
 import { createReadPoller } from '@/lib/readPoller'
 import { isDesktopAccessLocked } from '@/lib/desktopAccessState'
 import { isDraftOrder as isDraft, isLeadOrder as isLead } from './orderQueues'
+import { orderItemPreview, readOrderList } from './orderConvenience'
+import { OrderReadError } from './OrderReadError'
+import { readOrderHistoryPage } from './orderHistoryPage'
 
 // ───────────────────────── Constants ─────────────────────────
 
@@ -327,7 +331,12 @@ function CustomerPanel({ chat, messages, onCustomerLinked }: {
   const [vehicles, setVehicles] = useState<Vehicle[]>([])
   const [orders, setOrders] = useState<CustomerOrder[]>([])
   const [chatOrders, setChatOrders] = useState<CustomerOrder[]>([])
+  const [chatHasMore, setChatHasMore] = useState(false)
+  const [customerHasMore, setCustomerHasMore] = useState(false)
+  const [historyIncomplete, setHistoryIncomplete] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [historyError, setHistoryError] = useState('')
+  const [vehicleError, setVehicleError] = useState('')
   const [showAddVehicle, setShowAddVehicle] = useState(false)
   const [vehicleForm, setVehicleForm] = useState({ brand: '', model: '', year: '', vin: '' })
   const [savingV, setSavingV] = useState(false)
@@ -335,6 +344,9 @@ function CustomerPanel({ chat, messages, onCustomerLinked }: {
   const [showOrderModal, setShowOrderModal] = useState(false)
   const [searchPhone, setSearchPhone] = useState('')
   const [searchResults, setSearchResults] = useState<CustomerSearchResult[]>([])
+  const [searchError, setSearchError] = useState('')
+  const [searchLoading, setSearchLoading] = useState(false)
+  const [searchRevision, setSearchRevision] = useState(0)
   const [linking, setLinking] = useState(false)
   const customerId = customer?.id
   const loadDataRequestRef = useRef(0)
@@ -343,28 +355,30 @@ function CustomerPanel({ chat, messages, onCustomerLinked }: {
     const requestId = ++loadDataRequestRef.current
     const isCurrentRequest = () => requestId === loadDataRequestRef.current
     setLoading(true)
+    setHistoryError('')
+    setVehicleError('')
 
-    const ordersRequest = orderApi.list()
-      .then((response) => {
+    const ordersRequest = Promise.all([
+      readOrderHistoryPage({ chat_id: chat.id }, 0, 10),
+      customerId ? readOrderHistoryPage({ customer_id: customerId }, 0, 25) : Promise.resolve(null),
+    ])
+      .then(([chatPage, customerPage]) => {
         if (!isCurrentRequest()) return
-        const allOrders = response.data ?? []
-        setChatOrders(allOrders.filter((order) => order.chat_id === chat.id).slice(0, 10))
-        setOrders(customerId
-          ? allOrders.filter((order) => order.customer_id === customerId).slice(0, 5)
-          : [])
+        setChatOrders(chatPage.data); setChatHasMore(chatPage.hasMore)
+        setOrders(customerPage?.data ?? []); setCustomerHasMore(customerPage?.hasMore ?? false)
+        setHistoryIncomplete(chatPage.incomplete || Boolean(customerPage?.incomplete))
       })
-      .catch(() => {
-        if (!isCurrentRequest()) return
-        setChatOrders([])
-        setOrders([])
-      })
+      .catch(() => { if (isCurrentRequest()) setHistoryError('Не вдалося завантажити історію замовлень. Відсутність записів не підтверджена.') })
 
     const requests: Promise<unknown>[] = [ordersRequest]
     if (customerId) {
       requests.push(
-        customerVehiclesApi.list(customerId)
-          .then((response) => { if (isCurrentRequest()) setVehicles(response.data ?? []) })
-          .catch(() => { if (isCurrentRequest()) setVehicles([]) }),
+        readOrderList(() => customerVehiclesApi.list(customerId), 'Не вдалося перевірити автомобілі клієнта. Повторіть завантаження перед додаванням авто.')
+          .then((response) => {
+            if (!isCurrentRequest()) return
+            if (response.error) setVehicleError(response.error)
+            else setVehicles(response.data ?? [])
+          }),
       )
     } else {
       setVehicles([])
@@ -376,6 +390,8 @@ function CustomerPanel({ chat, messages, onCustomerLinked }: {
   }, [chat.id, customerId])
 
   useEffect(() => {
+    setChatOrders([]); setOrders([]); setVehicles([])
+    setChatHasMore(false); setCustomerHasMore(false); setHistoryIncomplete(false)
     loadData()
     return () => { loadDataRequestRef.current += 1 }
   }, [loadData])
@@ -384,19 +400,27 @@ function CustomerPanel({ chat, messages, onCustomerLinked }: {
     const query = searchPhone.trim()
     if (query.length < 3) {
       setSearchResults([])
+      setSearchError('')
+      setSearchLoading(false)
       return
     }
     let cancelled = false
+    setSearchLoading(true)
+    setSearchError('')
     const timer = window.setTimeout(() => {
-      customerApi.list({ search: query, per_page: 5 })
-        .then((r) => { if (!cancelled) setSearchResults(r.data ?? []) })
-        .catch(() => { if (!cancelled) setSearchResults([]) })
+      void readOrderList(() => customerApi.list({ search: query, per_page: 5 }), 'Не вдалося перевірити клієнта. Введений пошук збережено.')
+        .then((result) => {
+          if (cancelled) return
+          if (result.error) setSearchError(result.error)
+          else setSearchResults(result.data ?? [])
+        })
+        .finally(() => { if (!cancelled) setSearchLoading(false) })
     }, 400)
     return () => {
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [searchPhone])
+  }, [searchPhone, searchRevision])
 
   const detectedVins = useMemo(() => {
     const out = new Set<string>()
@@ -465,7 +489,7 @@ function CustomerPanel({ chat, messages, onCustomerLinked }: {
                 <Phone size={12} /> {customer.phone}
               </p>
             </div>
-            <button onClick={() => navigate('/customers/' + customer.id)}
+            <button onClick={() => navigate('/customers/' + customer.id)} title="Відкрити картку клієнта та повну історію замовлень"
               className="text-blue-500 hover:text-blue-700 p-1.5 hover:bg-blue-50 rounded-lg transition-colors">
               <ExternalLink size={15} />
             </button>
@@ -475,7 +499,10 @@ function CustomerPanel({ chat, messages, onCustomerLinked }: {
             <p className="text-sm text-gray-400">Клієнта не прив'язано</p>
             <Input placeholder="Пошук по телефону / імені..." value={searchPhone}
               onChange={(e) => setSearchPhone(e.target.value)} />
-            {searchResults.length > 0 && (
+            {searchLoading && <p role="status" className="text-sm text-gray-500">Шукаємо клієнта…</p>}
+            {searchError && <OrderReadError message={searchError} onRetry={() => setSearchRevision(value => value + 1)} />}
+            {!searchLoading && !searchError && searchPhone.trim().length >= 3 && searchResults.length === 0 && <p className="text-sm text-gray-500">Клієнтів за цим запитом не знайдено.</p>}
+            {!searchLoading && !searchError && searchResults.length > 0 && (
               <div className="border border-gray-200 rounded-xl overflow-hidden shadow-sm">
                 {searchResults.map((c) => (
                   <button key={c.id} onClick={() => linkCustomer(c.id)} disabled={linking}
@@ -493,10 +520,12 @@ function CustomerPanel({ chat, messages, onCustomerLinked }: {
       {/* Замовлення цього чату */}
       <div className="bg-yellow-50/60 rounded-2xl border border-yellow-200 p-4 shadow-sm">
         <p className="text-xs font-bold text-yellow-700 uppercase tracking-widest mb-3 flex items-center gap-2">
-          <ClipboardList size={13} /> Замовлення цього чату
+          <ClipboardList size={13} /> Останні замовлення цього чату
         </p>
         {loading && chatOrders.length === 0 ? (
           <p className="text-sm text-gray-400">Завантаження...</p>
+        ) : historyError ? (
+          <OrderReadError message={historyError} onRetry={loadData} />
         ) : chatOrders.length === 0 ? (
           <div className="space-y-2">
             <p className="text-xs text-gray-500">
@@ -526,6 +555,8 @@ function CustomerPanel({ chat, messages, onCustomerLinked }: {
                 </button>
               </div>
             ))}
+            {chatHasMore && <p className="text-xs text-gray-500">Показано останні {chatOrders.length}. Це не вся історія замовлень.</p>}
+            {historyIncomplete && <p role="alert" className="text-xs text-amber-700">Зв’язку з головним ПК немає. Показано збережені замовлення; повнота історії не підтверджена.</p>}
             <Button onClick={() => setShowOrderModal(true)} icon={<Plus size={14} />} className="w-full mt-2">
               Ще одне замовлення
             </Button>
@@ -551,7 +582,7 @@ function CustomerPanel({ chat, messages, onCustomerLinked }: {
                       <Check size={11} /> Вже в гаражі
                     </span>
                   ) : (
-                    <button onClick={() => addDetectedVin(vin)} disabled={addingVin === vin}
+                    <button onClick={() => addDetectedVin(vin)} disabled={addingVin === vin || loading || Boolean(vehicleError)}
                       className="mt-1 bg-blue-500 text-white rounded px-2 py-1 text-[11px] font-semibold hover:bg-blue-600 disabled:opacity-50 self-start transition-colors">
                       + Додати в гараж
                     </button>
@@ -570,13 +601,15 @@ function CustomerPanel({ chat, messages, onCustomerLinked }: {
             <p className="text-xs font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2">
               <Car size={13} /> Автомобілі
             </p>
-            <button onClick={() => setShowAddVehicle(!showAddVehicle)}
+            <button onClick={() => setShowAddVehicle(!showAddVehicle)} disabled={loading || Boolean(vehicleError)}
               className="text-yellow-500 hover:text-yellow-600 hover:bg-yellow-50 p-1 rounded-lg transition-colors">
               <Plus size={16} />
             </button>
           </div>
           {loading ? (
             <p className="text-sm text-gray-400">Завантаження...</p>
+          ) : vehicleError ? (
+            <OrderReadError message={vehicleError} onRetry={loadData} />
           ) : vehicles.length === 0 ? (
             <p className="text-sm text-gray-400">Авто не додано</p>
           ) : (
@@ -600,7 +633,7 @@ function CustomerPanel({ chat, messages, onCustomerLinked }: {
               ))}
             </div>
           )}
-          {showAddVehicle && (
+          {showAddVehicle && !vehicleError && !loading && (
             <div className="mt-3 pt-3 border-t border-gray-100 space-y-2">
               <div className="grid grid-cols-2 gap-2">
                 {(['brand', 'model', 'year', 'vin'] as const).map((field) => (
@@ -626,13 +659,13 @@ function CustomerPanel({ chat, messages, onCustomerLinked }: {
       )}
 
       {/* Інші замовлення клієнта */}
-      {customer && (() => {
-        const others = orders.filter((o) => !chatOrders.some((co) => co.id === o.id))
-        if (others.length === 0) return null
+      {customer && !historyError && (() => {
+        const others = orders.filter((o) => o.chat_id !== chat.id)
+        if (others.length === 0 && !customerHasMore) return null
         return (
           <div className="bg-white rounded-2xl border border-gray-100 p-4 shadow-sm">
             <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3 flex items-center gap-2">
-              <ClipboardList size={13} /> Інші замовлення клієнта
+              <ClipboardList size={13} /> Останні інші замовлення клієнта
             </p>
             <div className="space-y-2">
               {others.slice(0, 4).map((o) => (
@@ -645,6 +678,7 @@ function CustomerPanel({ chat, messages, onCustomerLinked }: {
                   <span className="text-gray-700 font-semibold ml-3 shrink-0">{formatMoney(o.total_amount)}</span>
                 </button>
               ))}
+              <p className="text-xs text-gray-500">Повна історія та старіші замовлення — у картці клієнта.</p>
             </div>
           </div>
         )
@@ -809,10 +843,11 @@ interface DraftsGridProps {
   offset: number
   onPrevPage: () => void
   onNextPage: () => void
+  onPage: (page: number) => void
   hasMore: boolean
 }
 
-function DraftsGrid({ orders, loading, onLoad, onEdit, offset, onPrevPage, onNextPage, hasMore }: DraftsGridProps) {
+function DraftsGrid({ orders, loading, onLoad, onEdit, offset, onPrevPage, onNextPage, onPage, hasMore }: DraftsGridProps) {
   const { open } = useViewNavigation('/orders?tab=drafts')
   const drafts = orders.filter(isDraft)
 
@@ -968,6 +1003,7 @@ function DraftsGrid({ orders, loading, onLoad, onEdit, offset, onPrevPage, onNex
           <span className="text-xs text-gray-500">
             Показано {drafts.length} {draftCountLabel(drafts.length)}
           </span>
+          <PageNumberInput page={offset / 50 + 1} disabled={loading} onPage={onPage} />
           <div className="flex gap-2">
             <Button
               variant="secondary"
@@ -1003,6 +1039,7 @@ interface OrdersTableProps {
   offset: number
   onPrevPage: () => void
   onNextPage: () => void
+  onPage: (page: number) => void
   hasMore: boolean
   onQuickView: (o: CustomerOrder) => void
   onQuickOrder: (o: CustomerOrder) => void
@@ -1012,7 +1049,7 @@ interface OrdersTableProps {
   onStatusTab: (t: Tab) => void
 }
 
-function OrdersTable({ orders, loading, search, setSearch, offset, onPrevPage, onNextPage, hasMore, onQuickView, onQuickOrder, onDelete, canDelete, statusTab, onStatusTab }: OrdersTableProps) {
+function OrdersTable({ orders, loading, search, setSearch, offset, onPrevPage, onNextPage, onPage, hasMore, onQuickView, onQuickOrder, onDelete, canDelete, statusTab, onStatusTab }: OrdersTableProps) {
   const navigate = useNavigate()
 
   const statusFilters: Array<{ id: Tab; label: string; accent?: boolean }> = [
@@ -1077,6 +1114,7 @@ function OrdersTable({ orders, loading, search, setSearch, offset, onPrevPage, o
             </div>
           ) : orders.map((o: CustomerOrder) => {
             const paid = o.total_paid ?? o.prepayment ?? 0
+            const preview = orderItemPreview(o.items, search)
             const hasDebt = o.status !== 'canceled' && o.total_amount > paid
             const conf = STATUS_CONFIG[o.status] ?? { label: o.status, color: 'gray' as BadgeColor }
             return (
@@ -1125,11 +1163,12 @@ function OrdersTable({ orders, loading, search, setSearch, offset, onPrevPage, o
                     VIN {o.vehicle_info.vin} <Copy size={11} />
                   </button>
                 )}
-                {o.items.filter((i) => !i.is_draft_note).slice(0, 3).map((item) => (
+                {preview.items.map((item) => (
                   <p key={item.id} className="truncate text-xs text-gray-600">
-                    {item.name}{item.sku ? ` · ${item.sku}` : ''} × {item.qty}
+                    {item.name}{item.sku ? ` · ${item.sku}` : ''} × {item.qty}{item.item_status === 'canceled' ? ' · Скасовано' : ''}
                   </p>
                 ))}
+                <p className="text-xs text-gray-500">Позицій: {preview.total}{preview.remaining > 0 ? ` · ще ${preview.remaining}` : ''}</p>
                 {o.comment && <p className="line-clamp-2 text-xs italic text-amber-700">📝 {o.comment}</p>}
                 <div className="flex items-end justify-between pt-2 border-t border-gray-50">
                   <div className="text-xs space-y-0.5">
@@ -1156,6 +1195,7 @@ function OrdersTable({ orders, loading, search, setSearch, offset, onPrevPage, o
           {(offset > 0 || hasMore) && (
             <div className="flex items-center justify-between gap-2 pt-1">
               <Button variant="secondary" size="sm" disabled={offset === 0} onClick={onPrevPage} className="flex-1">← Назад</Button>
+              <PageNumberInput page={offset / 50 + 1} disabled={loading} onPage={onPage} />
               <Button variant="secondary" size="sm" disabled={!hasMore} onClick={onNextPage} className="flex-1">Далі →</Button>
             </div>
           )}
@@ -1196,6 +1236,7 @@ function OrdersTable({ orders, loading, search, setSearch, offset, onPrevPage, o
                 )}
                 {orders.map((o: CustomerOrder) => {
                   const paid = o.total_paid ?? o.prepayment ?? 0
+                  const preview = orderItemPreview(o.items, search)
                   const hasDebt = o.status !== 'canceled' && o.total_amount > paid
                   return (
                     <tr key={o.id} onClick={() => onQuickView(o)} className="hover:bg-gray-50/30 transition-colors cursor-pointer">
@@ -1242,12 +1283,14 @@ function OrdersTable({ orders, loading, search, setSearch, offset, onPrevPage, o
                       {/* Запчастини та VIN */}
                       <td className="px-5 py-4">
                         <div className="max-w-[300px] space-y-1">
-                          {o.items.filter((i) => !i.is_draft_note).slice(0, 3).map((item) => (
+                          {preview.items.map((item) => (
                             <div key={item.id} className="truncate text-xs text-gray-700" title={item.name}>
                               {item.name}{item.sku ? <span className="font-mono text-gray-400"> · {item.sku}</span> : null}
                               <span className="text-gray-400"> × {item.qty}</span>
+                              {item.item_status === 'canceled' && <span className="text-gray-500"> · Скасовано</span>}
                             </div>
                           ))}
+                          <p className="text-xs text-gray-500">Позицій: {preview.total}{preview.remaining > 0 ? ` · ще ${preview.remaining}` : ''}</p>
                           {o.vehicle_info?.vin && (
                             <button
                               type="button"
@@ -1338,6 +1381,7 @@ function OrdersTable({ orders, loading, search, setSearch, offset, onPrevPage, o
               <span className="text-xs text-gray-500">
                 Показано {orders.length} замовлень
               </span>
+              <PageNumberInput page={offset / 50 + 1} disabled={loading} onPage={onPage} />
               <div className="flex gap-2">
                 <Button
                   variant="secondary"
@@ -1387,6 +1431,8 @@ export default function OrdersPage() {
   const [view, setView] = useListViewState<{ tab: Tab; offset: number; search: string }>(chatMode ? 'chats:list' : 'orders:list',
     () => ({ tab: chatMode ? 'bots' : 'all', offset: 0, search: '' }))
   const { offset, search } = view
+  const jumpReturnOffset = useRef<number | null>(null)
+  const jumpToPage = (page: number) => { jumpReturnOffset.current = offset; setOffset((page - 1) * 50) }
   const tab = chatMode ? 'bots' : view.tab
   const setOffset = (offset: number) => setView(previous => ({ ...previous, offset }))
   const setSearch = (search: string) => {
@@ -1552,6 +1598,13 @@ export default function OrdersPage() {
       const response = await orderApi.list(offset, { silent: true, timeoutMs: ORDERS_READ_TIMEOUT_MS }, 50, { search: chatMode ? undefined : serverSearch, status: statusFilterForTab(tab) })
       if (requestId !== orderLoadRequestRef.current) return
       const next = response.data ?? []
+      if (next.length === 0 && offset > 0) {
+        const fallback = jumpReturnOffset.current ?? Math.max(0, offset - 50)
+        jumpReturnOffset.current = null
+        setView(previous => ({ ...previous, offset: Math.min(fallback, Math.max(0, offset - 50)) }))
+        return
+      }
+      jumpReturnOffset.current = null
       orderCacheRef.current.set(cacheKey, next)
       setHasMoreOrders(response.meta?.has_more ?? false)
       setOrders(next)
@@ -1562,7 +1615,7 @@ export default function OrdersPage() {
     } finally {
       if (requestId === orderLoadRequestRef.current) setLoadingOrders(false)
     }
-  }, [tab, offset, serverSearch, chatMode])
+  }, [tab, offset, serverSearch, chatMode, setView])
   useEffect(() => {
     let initial = true
     const poller = createReadPoller({ read: async () => { const first = initial; initial = false; await loadOrders(first) }, intervalMs: 15_000,
@@ -2109,6 +2162,7 @@ export default function OrdersPage() {
               offset={offset}
               onPrevPage={() => setOffset(Math.max(0, offset - 50))}
               onNextPage={() => setOffset(offset + 50)}
+              onPage={jumpToPage}
               hasMore={hasMoreOrders}
             />
           ) : (
@@ -2120,6 +2174,7 @@ export default function OrdersPage() {
               offset={offset}
               onPrevPage={() => setOffset(Math.max(0, offset - 50))}
               onNextPage={() => setOffset(offset + 50)}
+              onPage={jumpToPage}
               hasMore={hasMoreOrders}
               onQuickView={(o) => viewNavigation.open('/orders/' + o.id)}
               onQuickOrder={handleQuickOrder}

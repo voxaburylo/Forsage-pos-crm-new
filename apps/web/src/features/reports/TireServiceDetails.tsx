@@ -27,6 +27,7 @@ function AmountRow({ label, value, strong = false }: { label: ReactNode; value: 
 interface Props {
   report: TireServiceReport | null
   date: string; today: string; employeeId: string; loading: boolean; error: boolean
+  period?: string
   onDate: (date: string) => void; onEmployee: (id: string) => void; onRefresh: () => void
   canPay: boolean; canMutate: boolean; busy: boolean
   onPay: (row: TireServiceReportRow, source: SalaryFundSource) => void
@@ -38,10 +39,13 @@ export function TireServiceDetails(props: Props) {
     <div className="rounded-xl border border-gray-200 bg-white p-4">
       <h2 className="text-lg font-bold text-gray-900">Шиномонтаж — роботи та зарплата</h2>
       <p className="mt-1 text-sm text-gray-500">Оберіть день робіт і працівника. Спочатку — чеки касира, нижче — нарахування, виплати та підсумок.</p>
+      {props.period && <p className="mt-2 text-sm text-blue-800">Період зарплати: {props.period}. Цей звіт показує один день робіт — оберіть потрібну дату; підсумок місяця залишається в зарплаті.</p>}
       <div className="mt-3 flex flex-wrap items-end gap-3">
         <label className="text-sm text-gray-600">Дата робіт<input aria-label="Дата робіт шиномонтажу" type="date" disabled={props.busy} max={props.today} value={date} onChange={e => props.onDate(e.target.value)} className="mt-1 block rounded-lg border border-gray-300 bg-white px-3 py-2" /></label>
         <label className="min-w-0 text-sm text-gray-600">Працівник<select aria-label="Працівник шиномонтажу" disabled={props.busy} value={employeeId} onChange={e => props.onEmployee(e.target.value)} className="mt-1 block w-full max-w-full rounded-lg border border-gray-300 bg-white px-3 py-2">
-          <option value="">Усі шиномонтажники</option>{report?.data.map(row => <option key={row.employee_id} value={row.employee_id}>{row.employee_name}</option>)}
+          <option value="">Усі шиномонтажники</option>
+          {employeeId && !report?.data.some(row => row.employee_id === employeeId) && <option value={employeeId}>Вибраний працівник із зарплати</option>}
+          {report?.data.map(row => <option key={row.employee_id} value={row.employee_id}>{row.employee_name}</option>)}
         </select></label>
         <button type="button" disabled={props.busy || loading || !date} onClick={props.onRefresh} className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm disabled:opacity-50">Оновити</button>
       </div>
@@ -51,7 +55,9 @@ export function TireServiceDetails(props: Props) {
       : !date ? <p className="p-4 text-gray-500">Оберіть дату робіт.</p>
       : report && <>
         {report.details_version !== 1 && <p role="status" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">Джерело звіту ще не оновлено: касир, коментарі й деталізація нарахувань можуть бути недоступні.</p>}
-        {rows.length === 0 && <p className="p-6 text-center text-gray-500">Для вибраного працівника даних немає.</p>}
+        {rows.length === 0 && <p role="status" className="p-6 text-center text-gray-500">{employeeId
+          ? 'Вибраного працівника немає у джерелі цього звіту. Це не підтверджує відсутність минулих робіт; перевірте його історію зарплати, зокрема якщо працівник уже неактивний.'
+          : 'Джерело не повернуло працівників для цього дня.'}</p>}
         {rows.map(row => <WorkerDetails key={`${date}:${row.employee_id}`} row={row} {...props} report={report} />)}
       </>}
   </section>
@@ -73,6 +79,11 @@ function WorkerDetails({ row, report, date, canPay, canMutate, busy, onPay }: Pr
       <div><h3 className="font-bold text-gray-900">{row.employee_name}</h3><p className="text-sm text-gray-500">{dayLabel(date)} · Чеків: {receipts.length}</p></div>
       <div className="text-right text-sm text-gray-600">Сума робіт<p className="text-lg font-bold text-gray-900">{formatMoney(row.service_revenue)}</p></div>
     </header>
+    <dl aria-label={`Короткий підсумок зарплати: ${row.employee_name}`} className="grid grid-cols-1 gap-2 border-b border-gray-100 bg-gray-50 px-4 py-3 text-sm sm:grid-cols-3">
+      <div><dt className="text-gray-600">Нараховано</dt><dd className="font-bold tabular-nums">{formatMoney(row.earned)}</dd></div>
+      <div><dt className="text-gray-600">Виплачено</dt><dd className="font-bold tabular-nums">{formatMoney(row.paid)}</dd></div>
+      <div><dt className="text-gray-600">Залишилося виплатити</dt><dd className="font-bold tabular-nums text-amber-800">{formatMoney(row.due)}</dd></div>
+    </dl>
     <div className="p-4">
       <h4 className="mb-3 font-semibold text-gray-900">Чеки касира</h4>
       {!receipts.length && <p className="text-sm text-gray-500">Закритих чеків за цей день немає.</p>}
@@ -115,10 +126,12 @@ function WorkerDetails({ row, report, date, canPay, canMutate, busy, onPay }: Pr
         : <p className="mt-3 text-xs text-gray-600">Оновіть програму, щоб перевірити облік готівки. Не вносьте повторно гроші, вже прийняті за чеками.</p>}
       {row.cash_handed_over > 0 && <p className="mt-1 text-xs text-gray-600">Окремі внесення в історії: {formatMoney(row.cash_handed_over)}. Початкові операції збережено.</p>}
       {row.balance < 0 && <p className="mt-2 text-sm text-gray-600">Від’ємний залишок зарплати: {formatMoney(row.balance)}.</p>}
-      {!row.salary_ready && <p className="mt-2 text-sm text-blue-800">Виплата за цими роботами доступна з {dayLabel(row.salary_available_on)}. Залишок зарплати не означає, що її вже можна видати сьогодні.</p>}
-      {row.salary_ready && <p className="mt-2 font-bold text-emerald-800">Можна видати зараз: {formatMoney(row.payable_due)}</p>}
+      {row.employee_active === false
+        ? <p className="mt-2 text-sm text-gray-700">Працівник неактивний. Показано історію робіт і лише збережені нарахування; поточна ставка не додається заднім числом. Виплата з цього звіту недоступна.</p>
+        : !row.salary_ready && <p className="mt-2 text-sm text-blue-800">Виплата за цими роботами доступна з {dayLabel(row.salary_available_on)}. Залишок зарплати не означає, що її вже можна видати сьогодні.</p>}
+      {row.employee_active !== false && row.salary_ready && <p className="mt-2 font-bold text-emerald-800">Можна видати зараз: {formatMoney(row.payable_due)}</p>}
       {canMutate && <div className="mt-3 flex flex-wrap gap-2">
-        {canPay && row.salary_ready && row.payable_due > 0 && <>
+        {canPay && row.employee_active !== false && row.salary_ready && row.payable_due > 0 && <>
           <button type="button" disabled={busy} onClick={() => onPay(row, 'cashbox')} className="rounded-lg bg-gray-900 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">Виплатити з каси</button>
           <button type="button" disabled={busy} onClick={() => onPay(row, 'owner_funds')} className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm disabled:opacity-50">Виплатити коштами власника</button>
         </>}

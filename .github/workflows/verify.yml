@@ -74,6 +74,17 @@ jobs:
       - run: node apps/web/scripts/ai-supply-input-ui-smoke.mjs
       - run: node apps/web/scripts/ai-invoice-review-ui-smoke.mjs
       - run: node apps/web/scripts/catalog-agent-safety-ui-smoke.mjs
+      - run: node apps/web/scripts/customer-creation-ui-smoke.mjs
+      - run: node apps/web/scripts/customer-card-ui-smoke.mjs
+      - run: node apps/web/scripts/dialog-escape-ui-smoke.mjs
+      - run: node apps/web/scripts/pos-dialog-ui-smoke.mjs
+      - run: node apps/web/scripts/pos-usability-ui-smoke.mjs
+      - run: node apps/web/scripts/receipt-search-contract-ui-smoke.mjs
+      - run: node apps/web/scripts/sale-history-ui-smoke.mjs
+      - run: node apps/web/scripts/report-context-ui-smoke.mjs
+      - run: node apps/web/scripts/invoice-usability-ui-smoke.mjs
+      - run: node apps/web/scripts/product-reference-ui-smoke.mjs
+      - run: node apps/web/scripts/order-usability-ui-smoke.mjs
       - run: pnpm --filter desktop exec electron scripts/ai-input-renderer-smoke.cjs
       - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/ai-invoice-worker-smoke.cjs
       - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/receiving-worker-smoke.cjs

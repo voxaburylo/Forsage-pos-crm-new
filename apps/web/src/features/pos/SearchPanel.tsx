@@ -291,6 +291,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       debtBalance: customer.debt_balance ?? 0,
       tierDiscountPct: effectivePct,
       tierName: customer.price_tier?.name ?? null,
+      loyaltyMode: customer.loyalty_mode ?? 'discount',
       vipLevel: customer.vip_level ?? 'standard',
       riskProfile: customer.risk_profile ?? 'low',
     })
@@ -384,6 +385,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
           debtBalance: customer.debt_balance ?? 0,
           tierDiscountPct: effectivePct,
           tierName: customer.price_tier?.name ?? null,
+          loyaltyMode: customer.loyalty_mode ?? 'discount',
           vipLevel: customer.vip_level ?? 'standard',
           riskProfile: customer.risk_profile ?? 'low',
         })
@@ -421,6 +423,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
           id: c.id, phone: c.phone, name: c.full_name ?? null,
           debtBalance: c.debt_balance ?? 0, tierDiscountPct: effectivePct,
           tierName: c.price_tier?.name ?? null,
+          loyaltyMode: c.loyalty_mode ?? 'discount',
           vipLevel: c.vip_level ?? 'standard', riskProfile: c.risk_profile ?? 'low',
         })
         store.setAutomaticDiscountPct(effectivePct)

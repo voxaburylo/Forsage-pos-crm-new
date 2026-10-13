@@ -14,22 +14,37 @@ import { lineTotal, money, nowIso, operationId, payloadHash, paymentMethod } fro
 import { randomUUID } from 'node:crypto'
 import { LocalPosCustomers } from './customers'
 import { assertCheckoutPayload, assertSaleMoney } from './checkoutValidation'
+import { productHistoryTextMatch, saleHistoryFilters, type SaleHistoryFilters } from './saleHistorySearch'
 
 export class LocalPosSales extends LocalPosCustomers {
   getSale(saleId: string, tenantId = DEFAULT_TENANT_ID): any {
     const row = this.db.prepare(`
-      SELECT s.*, c.phone AS customer_phone, c.full_name AS customer_name
+      SELECT s.*, c.phone AS customer_phone, c.full_name AS customer_name,
+        cashier.full_name AS cashier_name, cashier.is_active AS cashier_active, cashier.deleted_at AS cashier_deleted_at,
+        manager.full_name AS manager_name, manager.is_active AS manager_active, manager.deleted_at AS manager_deleted_at,
+        EXISTS (SELECT 1 FROM customer_orders o WHERE o.tenant_id = s.tenant_id
+          AND o.sale_id = s.id AND o.deleted_at IS NULL) AS is_order_sale
       FROM sales s
       LEFT JOIN customers c ON c.id = s.customer_id AND c.tenant_id = s.tenant_id
+      LEFT JOIN staff_users cashier ON cashier.id = s.cashier_id AND cashier.tenant_id = s.tenant_id
+      LEFT JOIN staff_users manager ON manager.id = s.manager_id AND manager.tenant_id = s.tenant_id
       WHERE s.id = ? AND s.tenant_id = ? AND s.deleted_at IS NULL
       LIMIT 1
     `).get(saleId, tenantId) as any
     if (!row) throw new Error('Чек не знайдено')
-    return this.decorateSale(row, tenantId)
+    const sale = this.decorateSale(row, tenantId)
+    sale.returns = this.db.prepare(`
+      SELECT id, refund_kopecks, refund_method, fiscal_number, created_at
+      FROM customer_returns WHERE sale_id = ? AND tenant_id = ?
+        AND deleted_at IS NULL AND status = 'completed'
+      ORDER BY datetime(created_at), id
+    `).all(saleId, tenantId)
+    return sale
   }
 
-  listSales(input: { tenant_id?: string; search?: string; status?: string; product_barcode?: string; date_from?: string; date_to?: string; page?: number; per_page?: number } = {}): {
+  listSales(input: SaleHistoryFilters & { tenant_id?: string; search?: string; status?: string; product_barcode?: string; page?: number; per_page?: number } = {}): {
     data: any[]
+    filter_version: number
     pagination: { page: number; per_page: number; total: number; total_pages: number }
   } {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
@@ -41,33 +56,14 @@ export class LocalPosSales extends LocalPosCustomers {
       where.push('s.status = ?')
       params.push(input.status)
     }
-    const productBarcode = String(input.product_barcode ?? '').trim()
-    if (productBarcode) {
-      where.push(`EXISTS (
-        SELECT 1
-        FROM sale_items si
-        LEFT JOIN products p ON p.id = si.product_id AND p.tenant_id = si.tenant_id
-        LEFT JOIN product_barcodes pb ON pb.product_id = si.product_id AND pb.tenant_id = si.tenant_id AND pb.deleted_at IS NULL
-        WHERE si.sale_id = s.id
-          AND si.tenant_id = s.tenant_id
-          AND si.deleted_at IS NULL
-          AND (COALESCE(p.barcode, '') = ? OR COALESCE(p.sku, '') = ? OR COALESCE(pb.barcode, '') = ?)
-      )`)
-      params.push(productBarcode, productBarcode, productBarcode)
-    }
-    if (input.date_from) {
-      where.push('COALESCE(s.completed_at, s.created_at) >= ?')
-      params.push(input.date_from)
-    }
-    if (input.date_to) {
-      where.push('COALESCE(s.completed_at, s.created_at) <= ?')
-      params.push(input.date_to)
-    }
+    where.push(...saleHistoryFilters(input, params))
     const raw = String(input.search ?? '').trim()
     if (raw) {
       const lower = raw.toLocaleLowerCase('uk-UA')
       const title = lower.replace(/(^|\s)\S/g, (char) => char.toLocaleUpperCase('uk-UA'))
       const q = `%${raw}%`
+      params.push(q, q, q, q, `%${title}%`, q)
+      const productMatch = productHistoryTextMatch('si', raw, params)
       where.push(`(
         s.sale_number LIKE ?
         OR COALESCE(c.phone, '') LIKE ?
@@ -79,8 +75,9 @@ export class LocalPosSales extends LocalPosCustomers {
           WHERE v.customer_id = c.id AND v.tenant_id = s.tenant_id
             AND v.deleted_at IS NULL AND upper(COALESCE(v.vin, '')) LIKE upper(?)
         )
+        OR EXISTS (SELECT 1 FROM sale_items si LEFT JOIN products p ON p.id=si.product_id AND p.tenant_id=si.tenant_id
+          WHERE si.sale_id=s.id AND si.tenant_id=s.tenant_id AND si.deleted_at IS NULL AND ${productMatch})
       )`)
-      params.push(q, q, q, q, `%${title}%`, q)
     }
     const whereSql = where.join(' AND ')
     const totalRow = this.db.prepare(`
@@ -100,12 +97,13 @@ export class LocalPosSales extends LocalPosCustomers {
       FROM sales s
       LEFT JOIN customers c ON c.id = s.customer_id AND c.tenant_id = s.tenant_id
       WHERE ${whereSql}
-      ORDER BY COALESCE(s.completed_at, s.created_at) DESC
+      ORDER BY julianday(COALESCE(s.completed_at, s.created_at)) DESC, s.id DESC
       LIMIT ? OFFSET ?
     `).all(...params, perPage, (page - 1) * perPage) as any[]
     const total = Number(totalRow?.total ?? 0)
     return {
       data: rows.map((row) => this.decorateSale(row, tenantId)),
+      filter_version: 1,
       pagination: { page, per_page: perPage, total, total_pages: Math.max(1, Math.ceil(total / perPage)) },
     }
   }
@@ -681,6 +679,7 @@ export class LocalPosSales extends LocalPosCustomers {
 
     let subtotal = 0
     let itemDiscountTotal = 0
+    let coreDepositTotal = 0
     for (const item of input.items) {
       if (!Number.isFinite(Number(item.qty)) || Number(item.qty) <= 0) {
         throw new Error('LOCAL_SALE_INVALID_QTY')
@@ -696,7 +695,9 @@ export class LocalPosSales extends LocalPosCustomers {
       const coreDepositAmount = product?.requires_core_return === 1
         ? money(product.core_deposit_amount ?? 0)
         : 0
-      subtotal += gross + money(coreDepositAmount * Number(item.qty))
+      const lineCoreDeposit = money(coreDepositAmount * Number(item.qty))
+      subtotal += gross + lineCoreDeposit
+      coreDepositTotal += lineCoreDeposit
       itemDiscountTotal += itemDiscount
     }
 
@@ -713,6 +714,14 @@ export class LocalPosSales extends LocalPosCustomers {
     }
     assertSaleMoney(subtotal)
     if (money(input.discount ?? 0) > subtotal - itemDiscountTotal) throw new Error('LOCAL_SALE_INVALID_DISCOUNT')
+    // Match the existing desktop payment preview: 30% of discounted goods,
+    // before bonus redemption. A refundable core deposit is not eligible.
+    const bonusEligibleTotal = Math.max(0,
+      subtotal - coreDepositTotal - itemDiscountTotal - money(input.discount ?? 0) + bonusesSpent,
+    )
+    if (bonusesSpent > Math.floor(bonusEligibleTotal * 0.30)) {
+      throw new Error('Сума бонусів перевищує 30% товарної суми чека')
+    }
     const total = subtotal - itemDiscountTotal - money(input.discount ?? 0)
     const paidTotal = input.payments.reduce((sum, payment) => sum + money(payment.amount), 0)
     if (paidTotal !== total) throw new Error('LOCAL_SALE_PAYMENT_MISMATCH')

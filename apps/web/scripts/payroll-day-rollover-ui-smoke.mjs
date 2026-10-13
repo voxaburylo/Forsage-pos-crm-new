@@ -211,6 +211,7 @@ try {
 
     await scenario(`${mode}: delayed yesterday response cannot overwrite today`, async use => {
       const page = await use(mode, summer, 'America/Los_Angeles', { holdDates: [summer.oldDate] })
+      await waitDay(page, summer.oldDate)
       await resume(page, summer); await waitDay(page, summer.newDate)
       await open(page, mode); await expectToday(page, mode, '73,00')
       await settleDaily(page, summer.oldDate, 88800)
@@ -221,6 +222,7 @@ try {
 
     await scenario(`${mode}: delayed yesterday failure cannot invalidate today's success`, async use => {
       const page = await use(mode, summer, 'America/Los_Angeles', { holdDates: [summer.oldDate] })
+      await waitDay(page, summer.oldDate)
       await resume(page, summer); await waitDay(page, summer.newDate)
       await open(page, mode); await expectToday(page, mode, '73,00')
       await settleDaily(page, summer.oldDate, 0, true)

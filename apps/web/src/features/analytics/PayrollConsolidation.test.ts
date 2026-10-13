@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import ts from 'typescript'
+import { payrollTireHref } from '../reports/reportViewContext'
 
 const source = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8')
 const staff = source('../staff/StaffPage.tsx')
@@ -40,7 +41,13 @@ describe('salary has one mutation surface, with the previous safety contracts', 
     expect(payroll).toContain('setRequestedEmployee(null)')
     expect(payroll).toContain('aria-label="Місяць зарплати"')
     expect(payroll).toContain("/^\\d{4}-(0[1-9]|1[0-2])$/")
-    expect(payroll).toContain('/analytics/sales?tab=tire&employee=')
+    expect(payroll).toContain('to={payrollTireHref(selected.id, period)}')
+    expect(payroll).toContain('to={payrollTireHref(selected.id, period, payment.work_date)}')
+    const monthLink = new URL(payrollTireHref('worker & one', '2026-09'), 'https://fixture.invalid')
+    expect(monthLink.pathname).toBe('/analytics/sales')
+    expect(Object.fromEntries(monthLink.searchParams)).toEqual({ tab: 'tire', employee: 'worker & one', period: '2026-09' })
+    const dayLink = new URL(payrollTireHref('worker & one', '2026-09', '2026-09-28'), 'https://fixture.invalid')
+    expect(dayLink.searchParams.get('date')).toBe('2026-09-28')
   })
   it('keeps read-only web controls and uses the shared unsaved-change guard', () => {
     expect(payroll).toContain('const canWrite = isDesktopRuntime()')

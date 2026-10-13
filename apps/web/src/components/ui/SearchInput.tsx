@@ -34,7 +34,8 @@ export function SearchInput({
     const v = e.target.value
     setLocal(v)
     clearTimeout(timer.current)
-    timer.current = setTimeout(() => onChange(v), debounceMs)
+    if (debounceMs <= 0) onChange(v)
+    else timer.current = setTimeout(() => onChange(v), debounceMs)
   }
 
   return (

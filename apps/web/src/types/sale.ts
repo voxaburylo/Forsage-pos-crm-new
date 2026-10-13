@@ -1,6 +1,9 @@
 export interface SaleItem {
   id: string
   product_id: string
+  /** Original line text/code, including custom-price and archived product rows. */
+  description?: string | null
+  sku?: string | null
   qty: number
   unit_price: number   // копійки
   discount: number     // копійки
@@ -18,6 +21,13 @@ export interface SaleItem {
   core_return_status?: string
 }
 
+export interface SalePerson {
+  id: string
+  full_name: string | null
+  is_active?: boolean
+  deleted_at?: string | null
+}
+
 export interface Sale {
   id: string
   sale_number: string
@@ -33,6 +43,7 @@ export interface Sale {
   is_debt: boolean
   notes: string | null
   completed_at: string
+  created_at?: string
   is_fiscal: boolean
   fiscal_number: string | null
   fiscal_qr_url?: string | null
@@ -48,7 +59,8 @@ export interface Sale {
   pickup_cell: string | null
   sale_items?: SaleItem[]
   customer?: { id: string; phone: string; full_name: string | null } | null
-  manager?: { id: string; full_name: string } | null
+  manager?: SalePerson | null
+  cashier?: SalePerson | null
   /** Повернення по цьому чеку (з фіскальними номерами чеків повернення ПРРО) */
   returns?: Array<{
     id: string

@@ -56,12 +56,13 @@ async function expireBonuses(customerId: string, tenantId: string): Promise<numb
 // ── Налаштування ─────────────────────────────────────────
 
 export async function getSettings(tenantId: string) {
-  const { data } = await db
+  const { data, error } = await db
     .from(SETTINGS_TABLE)
     .select('*')
     .eq('tenant_id', tenantId)
     .maybeSingle()
 
+  if (error) throw new AppError('DB_ERROR', 'Не вдалося перевірити налаштування бонусів. Повторіть спробу.', 500)
   if (!data) {
     return {
       is_enabled:           false,

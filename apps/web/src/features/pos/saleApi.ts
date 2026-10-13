@@ -53,10 +53,15 @@ export const saleApi = {
     opts: Pick<RequestOptions, 'silent' | 'timeoutMs'> = {},
   ) => {
     const local = desktopBridge()?.pos.listSales
-    if (local) return local(params) as Promise<{ data: Sale[]; pagination: unknown }>
     const q = new URLSearchParams()
     Object.entries(params).forEach(([k, v]) => { if (v !== undefined) q.set(k, String(v)) })
-    return api.get<{ data: Sale[]; pagination: unknown }>(`/api/v1/sales?${q}`, opts)
+    const result = local
+      ? await local(params) as { data: Sale[]; pagination: unknown; filter_version?: number }
+      : await api.get<{ data: Sale[]; pagination: unknown; filter_version?: number }>(`/api/v1/sales?${q}`, opts)
+    if (params.history_filter_version === '1' && result.filter_version !== 1) {
+      throw new Error('Ця версія джерела ще не підтримує фільтри чеків. Оновіть сервер або програму; неповний список не показано.')
+    }
+    return result
   },
 
   calculatePrice: async (items: Array<{ product_id: string; qty: number }>, opts: SaleRequestOptions = {}) => {

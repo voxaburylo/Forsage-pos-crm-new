@@ -53,7 +53,7 @@ export function InventoryQuantityInput({ current, draft, disabled, onDraft, onDi
       onFocus={() => { focused.current = true }}
       onChange={event => onDraft({ value: event.target.value, baseRevision: draft ? draft.baseRevision : view.edit_revision })}
       onBlur={() => { focused.current = false; if (draft) void save(); else setView(current) }}
-      onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur() } }}
+      onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.blur() } }}
       className="mt-0.5 w-20 rounded-lg border border-yellow-300 px-2 py-1 text-center font-bold outline-none focus:border-yellow-500" />
     {saving && <span className="block text-xs text-gray-500">Зберігається…</span>}
     {draft && !saving && <div className="mt-1 text-xs text-amber-800">

@@ -13,7 +13,7 @@ const mocks={
 '@/lib/api':'export const api={get:async()=>{throw Error("Unexpected server request")},post:async()=>({data:{vin:null}})}',
 '@/stores/authStore':'const state={session:{user:{id:"test-user",app_metadata:{role:"cashier",tenant_id:"fixture"}}}};fixture.authState=state;export const useAuthStore=Object.assign(s=>s(state),{getState:()=>state})',
 '@/features/admin/adminApi':'export const adminApi={getSettings:async()=>({data:{quick_percents:[]}}),listCategories:async()=>({data:[]})}',
-'@/features/products/productApi':'export const requestDesktopSync=()=>{};export const productApi={search:async()=>({data:[]}),getSupplierPrices:async()=>({data:[]})}',
+'@/features/products/productApi':'export const requestDesktopSync=()=>{};export const productApi={search:async()=>({data:fixture.searchResults||[]}),getSupplierPrices:async()=>({data:[]})}',
 '@/features/admin/pricingApi':'export const pricingApi={autoRetail:async(purchase)=>({data:{retail_price:Math.round(purchase*1.3/100)*100}})}',
 '@/features/pos/shiftApi':'export const shiftApi={}',
 '@/features/suppliers/RowPhotoCell':'export const RowPhotoCell=()=>null',
@@ -21,18 +21,19 @@ const mocks={
 '@/features/ai/aiApi':'export const aiApi={status:async()=>{if(!fixture.online)throw Error("Offline");return {data:{enabled:true,has_key:true,model:"test",usage:{cost_usd:0,requests:0}}}},chat:async body=>{fixture.aiCalls.push(body);return {data:fixture.response}},recognizeSupplyInvoice:async body=>{fixture.photoCalls.push(body);return {data:fixture.response}}}',
 '@/features/ai/OrderConfirmModal':'export const OrderConfirmModal=()=>null',
 '@/lib/processingUploads':'export const dataUrlToBlob=()=>({type:"image/jpeg"});export const uploadProcessingBlob=async()=>({path:"test-user/ai/photo.jpg",mimeType:"image/jpeg"});export const removeProcessingUploads=async()=>{}',
-'@/components/Layout':'export function Layout({children,title,onBack}){return <main className="min-w-0 p-4"><h1>{title}</h1>{onBack&&<button onClick={onBack}>Назад тест</button>}{children}</main>}',
+'@/components/Layout':'export function Layout({children,title,onBack}){return <div className="flex h-screen overflow-hidden"><aside className="hidden w-60 shrink-0 md:block"/><div className="flex min-w-0 flex-1 flex-col"><h1>{title}</h1>{onBack&&<button onClick={onBack}>Назад тест</button>}<main id="test-scroll" className="min-h-0 min-w-0 flex-1 overflow-auto p-4">{children}</main></div></div>}',
 '@/components/ui/Toast':'export const toast={error:m=>fixture.errors.push(m),warning:m=>fixture.warnings.push(m),success:m=>fixture.messages.push(m)};export const ToastContainer=()=>null',
 }
 const entry=String.raw`import React from 'react';import {createRoot} from 'react-dom/client';import {MemoryRouter,Routes,Route,useLocation} from 'react-router-dom';
 import AiAssistantPage from '/src/features/ai/AiAssistantPage.tsx';import InvoiceFormPage from '/src/features/suppliers/InvoiceFormPage.tsx';import '/src/index.css';
-function Location(){const l=useLocation();fixture.location=l.pathname+l.search;return <p data-testid="location">{fixture.location}</p>}
-createRoot(document.getElementById('root')).render(<MemoryRouter initialEntries={[sessionStorage.getItem('start-route')||'/']}><Location/><Routes><Route path="/" element={<AiAssistantPage/>}/><Route path="/suppliers/invoices/new" element={<InvoiceFormPage/>}/><Route path="*" element={<p>Документ збережено</p>}/></Routes></MemoryRouter>);`
+function Location(){const l=useLocation();fixture.location=l.pathname+l.search;return <p className="hidden" data-testid="location">{fixture.location}</p>}
+createRoot(document.getElementById('root')).render(<MemoryRouter initialEntries={[sessionStorage.getItem('start-route')||'/']}><Location/><Routes><Route path="/" element={<AiAssistantPage/>}/><Route path="/suppliers/invoices/new" element={<InvoiceFormPage/>}/><Route path="/suppliers/invoices/:id/edit" element={<InvoiceFormPage/>}/><Route path="*" element={<p>Документ збережено</p>}/></Routes></MemoryRouter>);`
 const bootstrap=String.raw`
 window.fixture={online:false,errors:[],warnings:[],messages:[],writes:[],previewCalls:[],aiCalls:[],photoCalls:[],catalog:[],mode:'new',
 response:{reply:'Розібрано',usage:{cost_usd:0},actions:[{id:'photo',tool:'create_products_bulk',payload:{invoice_total:240,products:[{name:'Товар з фото',sku:'',qty_on_hand:2,purchase_price_uah:120}]}}]}};
 fixture.supplier={id:'supplier',name:'Постачальник тест'};
-fixture.supplierApi={list:async()=>({data:[fixture.supplier],pagination:{total_pages:1}}),get:async()=>({data:fixture.supplier}),getInvoice:async()=>{throw Error('INVOICE_NOT_FOUND')},commitReceiving:async body=>{fixture.writes.push(body);return {data:{id:body.invoice_id,status:'posted',edit_revision:'r1'}}}};
+fixture.invoice=JSON.parse(sessionStorage.getItem('invoice-test-record')||'null');
+fixture.supplierApi={list:async()=>({data:[fixture.supplier],pagination:{total_pages:1}}),get:async()=>({data:fixture.supplier}),getInvoice:async()=>{if(fixture.invoice)return {data:structuredClone(fixture.invoice)};throw Error('INVOICE_NOT_FOUND')},commitReceiving:async body=>{fixture.writes.push(body);return {data:{id:body.invoice_id,status:'posted',edit_revision:'r1'}}}};
 fixture.bridge={catalog:{listCategories:async()=>[],getSettings:async()=>({}),findByBarcode:async code=>fixture.catalog.find(p=>p.barcode===code)||null,findBySku:async code=>fixture.catalog.find(p=>p.sku===code)||null},
 supply:{getInvoice:async()=>{throw Error('INVOICE_NOT_FOUND')},listSuppliers:async()=>({data:[fixture.supplier]}),
 previewInvoiceFromAi:async ({rows})=>{fixture.previewCalls.push(structuredClone(rows));if(fixture.failPreview)throw Error('Preview unavailable');await new Promise(r=>setTimeout(r,rows[0].qty===7?700:15));
@@ -49,7 +50,7 @@ return {name:row.name,source_name:row.source_name||row.name,brand:'',product_id:
 })},createInvoiceFromAi:async()=>{throw Error('Old direct write path must not run')}}};
 `
 export async function startFixture(){
-const server=await createServer({configFile:false,cacheDir:createSmokeCache(),root:path.join(root,'apps/web'),logLevel:'error',esbuild:{jsx:'automatic'},resolve:{alias:{'@':path.join(root,'apps/web/src')}},server:{host:'127.0.0.1',port:0},plugins:[tailwind(),{
+const server=await createServer({configFile:false,cacheDir:createSmokeCache(),root:path.join(root,'apps/web'),logLevel:'error',esbuild:{jsx:'automatic'},resolve:{alias:{'@':path.join(root,'apps/web/src')}},server:{host:'127.0.0.1',port:0,watch:null,hmr:false},plugins:[tailwind(),{
 name:'ai-ordinary-invoice',enforce:'pre',resolveId(id){if(id==='virtual:ordinary.tsx'||Object.hasOwn(mocks,id))return '\0'+id},
 async load(id){if(id==='\0virtual:ordinary.tsx')return transformWithEsbuild(entry,'entry.tsx',{loader:'tsx',jsx:'automatic'});
 let source=id.startsWith('\0')?mocks[id.slice(1)]:undefined;for(const [name,mock] of Object.entries(mocks))if(id.replaceAll('\\','/').replace(/\.tsx?$/,'').endsWith('/src/'+name.slice(2)))source=mock;

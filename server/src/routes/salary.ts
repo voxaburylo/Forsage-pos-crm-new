@@ -106,10 +106,10 @@ async function allSalarySummaryRows(tenantId: string, field: 'period' | 'work_da
 }
 
 async function buildTireServiceReport(tenantId: string, date: string) {
-  const users = await adminService.listUsers(tenantId)
+  const users = await adminService.listUsers(tenantId, true)
   const names = new Map(users.map(user => [user.id, user.full_name]))
   const workers = users
-    .filter((user) => user.is_active && user.role === 'tire_worker')
+    .filter((user) => user.role === 'tire_worker')
   const workerIds = workers.map((worker) => worker.id)
   if (workerIds.length === 0) {
     return { data: [], receipts: [], salary_operations: [], cash_handovers: [], details_version: 1, date, totals: { services_qty: 0, service_revenue: 0, cash_revenue: 0, cash_register_received: 0, cash_handed_over: 0, cash_pending: 0, due: 0, payable_due: 0 } }
@@ -205,7 +205,12 @@ async function buildTireServiceReport(tenantId: string, date: string) {
   const handedByWorker = new Map(handoverResult.rows.map((row) => [row.employee_id, Number(row.amount ?? 0)]))
   const salaryAvailableOn = plusDays(date, 2)
   const matured = kyivDateKey() >= salaryAvailableOn
-  const data = workers.map((worker) => {
+  // Inactive staff remain in historical reports, but this must not enable a
+  // previously unavailable payout or derive old earnings from today's rate.
+  const data = workers.filter(worker => (worker.is_active && !worker.deleted_at)
+    || salaryByWorker.has(worker.id) || receipts.some(receipt => receipt.employee_id === worker.id)
+    || handedByWorker.has(worker.id)).map((worker) => {
+    const employeeActive = worker.is_active && !worker.deleted_at
     const salary = salaryByWorker.get(worker.id) ?? {}
     const workerReceipts = receipts.filter((receipt) => receipt.employee_id === worker.id)
     const serviceRevenue = workerReceipts.reduce((sum, receipt) => sum + receipt.service_revenue, 0)
@@ -215,7 +220,7 @@ async function buildTireServiceReport(tenantId: string, date: string) {
     // Historical handovers remain visible, but must never demand another cash-in.
     const cashPending = 0
     const recordedDailyRate = Number(salary.daily_rate ?? 0)
-    const projectedDailyRate = recordedDailyRate === 0 && worker.rate_period === 'day' && workerReceipts.length > 0
+    const projectedDailyRate = employeeActive && recordedDailyRate === 0 && worker.rate_period === 'day' && workerReceipts.length > 0
       ? Number(worker.base_rate ?? 0)
       : 0
     const earned = Number(salary.earned ?? 0) + projectedDailyRate
@@ -223,9 +228,10 @@ async function buildTireServiceReport(tenantId: string, date: string) {
     const penalty = Number(salary.penalty ?? 0)
     const balance = earned - paid - penalty
     const due = Math.max(0, balance)
-    const salaryReady = matured && cashPending === 0
+    const salaryReady = employeeActive && matured && cashPending === 0
     return {
       employee_id: worker.id, employee_name: worker.full_name,
+      employee_active: employeeActive,
       services_qty: workerReceipts.reduce((sum, receipt) => sum + receipt.services_qty, 0),
       service_revenue: serviceRevenue, cash_revenue: cashRevenue, cash_register_received: cashRevenue, cash_handed_over: cashHandedOver, cash_pending: cashPending,
       commission_earned: Number(salary.commission_earned ?? 0), daily_rate: recordedDailyRate + projectedDailyRate,

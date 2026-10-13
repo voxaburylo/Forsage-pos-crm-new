@@ -1,4 +1,5 @@
 import { useState, useLayoutEffect, useRef } from 'react'
+import { useDialogEscape } from '@/hooks/useDialogEscape'
 import { shiftApi, type ExpectedCash } from './shiftApi'
 import { parseCountedCash } from './shiftCashData'
 import { X, DollarSign } from 'lucide-react'
@@ -23,6 +24,7 @@ export function CashReconciliationModal({ open, onClose }: Props) {
   const [comment, setComment] = useState('')
   const [saving, setSaving] = useState(false)
   const saveInFlight = useRef(false)
+  useDialogEscape(open, () => { if (!saveInFlight.current) onClose() }, { disabled: saving })
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState(false)
 

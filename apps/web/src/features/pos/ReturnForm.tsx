@@ -240,7 +240,7 @@ export default function ReturnForm() {
       let hint = ''
       for (const req of requests) {
         if (!req.params.product_barcode && !req.params.search) continue
-        const result = await saleApi.list(req.params, { silent: true })
+        const result = await saleApi.list({ ...req.params, history_filter_version: '1' }, { silent: true })
         if (version !== requestVersion.current) return
         sales = (result as unknown as { data: FoundSale[] }).data ?? []
         hint = req.hint

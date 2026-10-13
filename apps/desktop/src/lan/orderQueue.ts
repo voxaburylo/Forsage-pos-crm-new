@@ -241,6 +241,7 @@ export class LanOrderQueue {
     const q = String(input.search ?? '').trim().toLocaleLowerCase('uk-UA')
     const statuses = String(input.status ?? '').split(',').filter(Boolean)
     const matches = (row: any) => (!input.customer_id || row.customer_id === input.customer_id)
+      && (!input.chat_id || row.chat_id === input.chat_id)
       && (!statuses.length || statuses.includes(row.status))
       && (!q || [row.order_number, row.comment, row.customer?.phone, row.customer?.full_name, ...(row.items ?? []).flatMap((item: any) => [item.name, item.sku])].join(' ').toLocaleLowerCase('uk-UA').includes(q))
     const local = pending.filter(matches)
@@ -262,7 +263,15 @@ export class LanOrderQueue {
       this.persist(key, updated)
     } catch (error) {
       if (!(error instanceof LanUnavailableError)) throw error
-      rows = this.load(key).cache[entry]?.value ?? []
+      const cachedRows = this.load(key).cache[entry]?.value
+      if ((!Array.isArray(cachedRows) || cachedRows.length === 0) && pageLocal.length === 0) {
+        throw new Error('Немає зв’язку з головним ПК і збереженої історії за цим запитом. Відсутність замовлень не підтверджена.')
+      }
+      if (!Array.isArray(cachedRows) || cachedRows.length === 0) {
+        return pageLocal.map(row => ({ ...row, lan_sync: { ...row.lan_sync, history_incomplete: true,
+          message: row.lan_sync.message + ' Історію головного ПК не завантажено; показано лише локальні замовлення.' } }))
+      }
+      rows = cachedRows
       stale = true
     }
     return [...pageLocal, ...rows.map(row => stale ? { ...row, lan_sync: { state: 'cached', message: 'Збережена копія. Головний ПК недоступний.' } } : row)]

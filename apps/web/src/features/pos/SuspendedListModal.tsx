@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useDialogEscape } from '@/hooks/useDialogEscape'
 import { Loader2, RotateCcw, Search, Trash2, X } from 'lucide-react'
 import { saleApi } from './saleApi'
 import type { Sale } from '@/types/sale'
@@ -17,6 +18,8 @@ export function SuspendedListModal({ open, onClose, onResume, onChanged }: Props
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(false)
   const [operatingId, setOperatingId] = useState<string | null>(null)
+  const safeClose = () => { if (!operatingId) onClose() }
+  useDialogEscape(open, safeClose, { disabled: Boolean(operatingId) })
 
   useEffect(() => {
     if (!open) return
@@ -76,12 +79,12 @@ export function SuspendedListModal({ open, onClose, onResume, onChanged }: Props
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/70" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/70" onClick={safeClose} />
       <div className="relative bg-[#1A1A1A] rounded-2xl border border-gray-700 w-full max-w-2xl mx-4 max-h-[80vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 shrink-0">
           <h2 className="text-white text-lg font-bold">Відкладені чеки</h2>
-          <button onClick={onClose} aria-label="Закрити відкладені чеки" className="text-gray-500 hover:text-white"><X size={20} /></button>
+          <button onClick={safeClose} disabled={Boolean(operatingId)} aria-label="Закрити відкладені чеки" className="text-gray-500 hover:text-white"><X size={20} /></button>
         </div>
 
         {/* Search */}

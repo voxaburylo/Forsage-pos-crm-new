@@ -13,25 +13,27 @@ const mocks={
   '@/features/inventory/inventoryApi':'export const inventoryApi=window.fixture.api',
   '@/features/admin/adminApi':'export const adminApi={getSettings:async()=>({data:{quick_percents:[]}}),listCategories:async()=>({data:[]})}',
   '@/features/admin/pricingApi':'export const pricingApi={}',
-  '@/features/products/productApi':'export const productApi={}',
+  '@/features/products/productApi':'export const productApi={search:async()=>({data:fixture.searchResults||[]})}',
   '@/features/labels/LabelDesigner':'export const loadProductLabelSettings=()=>({});export const printLabels=()=>{throw Error("Unexpected print")}',
   '@/features/pos/CameraScanner':'export function CameraScanner(){return null}',
   '@/features/pos/usePOSBarcodeScanner':'export const usePOSBarcodeScanner=()=>{}',
   '@/lib/audioService':'export const playErrorTone=()=>{};export const playSuccessBeep=()=>{};export const initAudio=()=>{}',
   '@/stores/authStore':'export const useAuthStore=s=>s({session:{user:{id:"owner",app_metadata:{role:"owner"}}}})',
-  '@/components/Layout':'export function Layout({children,title}){return <main><h1>{title}</h1>{children}</main>}',
+  '@/components/Layout':'export function Layout({children,title}){return <div className="flex h-screen overflow-hidden"><aside className="hidden w-60 shrink-0 md:block"/><div className="flex min-w-0 flex-1 flex-col"><h1>{title}</h1><main id="test-scroll" className="min-h-0 min-w-0 flex-1 overflow-auto p-4">{children}</main></div></div>}',
   '@/components/ui/Toast':'export const toast={error:m=>fixture.errors.push(m),warning:m=>fixture.warnings.push(m),success:m=>fixture.messages.push(m)};export function ToastContainer(){return null}',
 }
 const entry=`import React from 'react';import {createRoot} from 'react-dom/client';import {MemoryRouter,Routes,Route} from 'react-router-dom';import ActiveSession from '/src/features/inventory/ActiveSession.tsx';import '/src/index.css';createRoot(document.getElementById('root')).render(<MemoryRouter initialEntries={['/inventory/test']}><Routes><Route path='/inventory/:id' element={<ActiveSession/>}/></Routes></MemoryRouter>);`
 const bootstrap=`window.forsageDesktop={};window.fixture={errors:[],warnings:[],messages:[],writes:[],productWrites:[],complete:0};
 fixture.item=JSON.parse(sessionStorage.getItem('db-item')||'null')||{id:'item',product_id:'p',counted_stock:46,expected_stock:12,edit_revision:'r1',price_checked:true,observed_retail_price:null,updated_at:'2026-09-23T12:00:00Z',product:{id:'p',sku:'CIRCLE',name:'Тестовий круг',barcode:'2000177521924',unit:'шт',retail_price:1500,purchase_price:1000}};
-fixture.revision=()=>JSON.stringify([fixture.removed,fixture.item]);
-fixture.api={pendingScans:()=>[],getSession:async()=>({data:{id:'test',name:'Тест',status:'in_progress',edit_revision:fixture.revision(),items:fixture.removed?[]:[structuredClone(fixture.item)],price_issues:[],my_entries:[],summary:{total_products:1,counted_products:fixture.removed?0:1,matching_products:0,discrepancy_products:1,price_checked_products:1,price_mismatch_products:0,participants:1,total_expected_units:12,total_counted_units:fixture.item.counted_stock}}}),
+fixture.revision=()=>JSON.stringify([fixture.removed,fixture.item]);fixture.scans=[];fixture.finds=[];
+fixture.extraItems=Array.from({length:Number(sessionStorage.getItem('viewport-count')||0)},(_,i)=>({...structuredClone(fixture.item),id:'extra-'+i,product_id:'extra-p-'+i,product:{...fixture.item.product,id:'extra-p-'+i,name:'Довга ревізія товар '+i}}));
+fixture.api={pendingScans:()=>[],getSession:async()=>({data:{id:'test',name:'Тест',status:'in_progress',edit_revision:fixture.revision(),items:fixture.removed?[]:[structuredClone(fixture.item),...fixture.extraItems],price_issues:[],my_entries:[],summary:{total_products:1+fixture.extraItems.length,counted_products:fixture.removed?0:1+fixture.extraItems.length,matching_products:0,discrepancy_products:1,price_checked_products:1,price_mismatch_products:0,participants:1,total_expected_units:12,total_counted_units:fixture.item.counted_stock}}}),
+findProduct:async(id,body)=>{fixture.finds.push(body);return {data:structuredClone(fixture.item.product)}},scan:async(id,body)=>{fixture.scans.push(body);fixture.item.counted_stock++;return {data:{item:structuredClone(fixture.item)}}},
 setItemQty:async(id,itemId,qty,opts)=>{fixture.writes.push({qty,revision:opts.expectedRevision});if(fixture.hold)await new Promise(r=>fixture.release=r);if(fixture.fail)throw Error('Тестова відмова запису');if(opts.expectedRevision!==fixture.item.edit_revision)throw Error('DOCUMENT_CONFLICT: Позиція змінилася');fixture.item.counted_stock=qty;fixture.item.edit_revision='r'+(Number(fixture.item.edit_revision.slice(1))+1);sessionStorage.setItem('db-item',JSON.stringify(fixture.item));return {data:structuredClone(fixture.item)}},
 updateProducts:async(id,edits)=>{fixture.productWrites.push(structuredClone(edits));if(fixture.productHold)await new Promise(r=>fixture.releaseProduct=r);if(fixture.productFail)throw Error('Тестова відмова запису товару');for(const edit of edits){for(const key of Object.keys(edit.base))if(fixture.item.product[key]!==edit.base[key]&&fixture.item.product[key]!==edit.values[key])throw Error('DOCUMENT_CONFLICT: Товар змінився');Object.assign(fixture.item.product,edit.values)}sessionStorage.setItem('db-item',JSON.stringify(fixture.item));return [structuredClone(fixture.item.product)]},
 removeItem:async(id,itemId,opts)=>{if(opts.expectedRevision!==fixture.item.edit_revision)throw Error('DOCUMENT_CONFLICT: Позиція змінилася');fixture.removed=true;return {data:{ok:true}}},
 complete:async(id,opts)=>{if(opts.expectedRevision!==fixture.revision())throw Error('DOCUMENT_CONFLICT: Ревізія змінилася');fixture.complete++;return {data:{items_updated:1}}}};`
-const server=await createServer({cacheDir:createSmokeCache(),configFile:false,root:path.join(root,'apps/web'),logLevel:'error',esbuild:{jsx:'automatic'},resolve:{alias:{'@':path.join(root,'apps/web/src')}},server:{host:'127.0.0.1',port:0},plugins:[tailwindcss(),{
+const server=await createServer({cacheDir:createSmokeCache(),configFile:false,root:path.join(root,'apps/web'),logLevel:'error',esbuild:{jsx:'automatic'},resolve:{alias:{'@':path.join(root,'apps/web/src')}},server:{host:'127.0.0.1',port:0,watch:null,hmr:false},plugins:[tailwindcss(),{
   name:'inventory-fixture',enforce:'pre',resolveId(id){if(id==='virtual:inventory-revision.tsx'||Object.hasOwn(mocks,id))return '\0'+id},
   async load(id){if(id==='\0virtual:inventory-revision.tsx')return transformWithEsbuild(entry,'fixture.tsx',{loader:'tsx',jsx:'automatic'});let source=id.startsWith('\0')?mocks[id.slice(1)]:undefined;for(const [name,mock] of Object.entries(mocks))if(id.replaceAll('\\','/').replace(/\.tsx?$/,'').endsWith('/src/'+name.slice(2)))source=mock;if(source)return transformWithEsbuild(source,'mock.tsx',{loader:'tsx',jsx:'automatic'})},
   configureServer(server){server.middlewares.use('/inventory-revision-test',async(_req,res)=>{res.setHeader('content-type','text/html; charset=utf-8');res.end(await server.transformIndexHtml('/inventory-revision-test','<html><body><div id="root"></div><script>'+bootstrap+'</script><script type="module" src="/@id/__x00__virtual:inventory-revision.tsx"></script></body></html>'))})},
@@ -43,6 +45,46 @@ try{
   page.on('pageerror',e=>{errors.push(e.message);console.error(e.message)});page.on('dialog',d=>d.accept())
   await page.route('**/*',route=>new URL(route.request().url()).origin===new URL(base).origin?route.continue():(blocked.push(route.request().url()),route.abort()))
   await page.goto(base+'inventory-revision-test')
+  const search=page.getByPlaceholder('Назва, VIN/артикул або штрихкод')
+  await search.waitFor()
+  await page.evaluate(()=>{fixture.searchResults=[fixture.item.product,{...fixture.item.product,id:'other',sku:'OTHER',barcode:'2000000000002',name:'Інший круг'}]})
+  await search.fill('WX WA9428');await page.waitForTimeout(350);await search.press('Enter');await page.waitForTimeout(100)
+  assert.equal(await page.evaluate(()=>fixture.scans.length),0,'Text search must not increment the first fuzzy result')
+  assert.equal(await page.evaluate(()=>fixture.finds.length),0,'Text query must not fall through to a code write')
+  await search.fill('2000177521924');await page.waitForTimeout(350)
+  await search.dispatchEvent('keydown',{key:'Enter',code:'Enter',isComposing:true})
+  assert.equal(await page.evaluate(()=>fixture.scans.length),0)
+  await search.press('Enter');await page.waitForFunction(()=>fixture.scans.length===1)
+  assert.equal(await page.evaluate(()=>fixture.item.counted_stock),47,'Exact barcode stays one-step')
+  await search.fill('круг');await page.waitForTimeout(350);await search.press('ArrowDown')
+  assert.equal(await page.locator(':focus').getAttribute('type'),'button')
+  await page.locator(':focus').press('Enter');await page.waitForFunction(()=>fixture.scans.length===2)
+  assert.equal(await page.evaluate(()=>fixture.complete),0)
+  await page.evaluate(()=>{localStorage.clear();sessionStorage.clear();sessionStorage.setItem('viewport-count','35')});await page.reload()
+  console.log('PASS: inventory ambiguous text does not count; exact code and explicit keyboard selection count once; IME is inert')
+  const complete=page.getByRole('button',{name:'Завершити та застосувати залишки',exact:true})
+  await complete.waitFor()
+  for(const zoom of [1,1.25,1.5]){
+    await page.setViewportSize({width:Math.floor(1366/zoom),height:Math.floor(768/zoom)})
+    for(const fraction of [0,0.5,1]){
+      await page.evaluate(f=>{const pane=document.getElementById('test-scroll');pane.scrollTop=(pane.scrollHeight-pane.clientHeight)*f},fraction)
+      const box=await complete.boundingBox()
+      assert.ok(box&&box.y>=0&&box.y+box.height<=768/zoom,`Inventory completion visible at ${zoom*100}% scroll ${fraction}`)
+      assert.equal(await complete.evaluate(button=>{const r=button.getBoundingClientRect();return button.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))}),true)
+    }
+    const last=page.getByRole('spinbutton',{name:'Фактична кількість'}).last()
+    await last.scrollIntoViewIfNeeded()
+    assert.equal(await last.evaluate(input=>{const r=input.getBoundingClientRect();return document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)===input}),true,'Inventory footer does not hide the last counted row')
+    await complete.click()
+    const confirm=page.getByRole('button',{name:'Так, завершити',exact:true})
+    const confirmBox=await confirm.boundingBox()
+    assert.ok(confirmBox&&confirmBox.y>=0&&confirmBox.y+confirmBox.height<=768/zoom,'Reviewed completion fits short zoomed viewport')
+    await page.getByRole('button',{name:'Ні',exact:true}).click()
+    assert.equal(await page.evaluate(()=>fixture.complete),0)
+  }
+  await page.setViewportSize({width:1280,height:900})
+  await page.evaluate(()=>{localStorage.clear();sessionStorage.clear()});await page.reload()
+  console.log('PASS: existing inventory completion reachable at 1366×768 and 125/150%, still explicit confirmation')
   const input=page.getByRole('spinbutton',{name:'Фактична кількість'})
   await input.waitFor();await input.fill('98')
   await page.evaluate(()=>{fixture.item.counted_stock=56;fixture.item.edit_revision='r2';sessionStorage.setItem('db-item',JSON.stringify(fixture.item))})

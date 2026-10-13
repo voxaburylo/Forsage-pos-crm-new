@@ -4,7 +4,8 @@ import { Trash2, Plus, Copy, ClipboardList } from 'lucide-react'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
 import { customerApi } from './customerApi'
-import { orderApi, type CustomerOrder } from '@/features/orders/orderApi'
+import type { CustomerOrder } from '@/features/orders/orderApi'
+import { readOrderHistoryPage } from '@/features/orders/orderHistoryPage'
 import { customerVehiclesApi } from './customerVehiclesApi'
 import CustomerNotes from './CustomerNotes'
 import CustomerPreferences from './CustomerPreferences'
@@ -49,6 +50,7 @@ export default function CustomerDetailPage() {
   const [deleting, setDeleting] = useState(false)
   const request = useRef(0)
   const orderBusy = useRef(false)
+  const orderOffset = useRef(0)
   const leave = useUnsavedChanges(draftState.dirty, draftState.busy || deleting)
 
   useEffect(() => {
@@ -59,15 +61,18 @@ export default function CustomerDetailPage() {
       if (active()) setErrors((old) => ({ ...old, [section]: error instanceof Error ? error.message : 'Не вдалося завантажити' }))
     }
     setErrors({}); setLoading(true); setCustomer(null); setCars([]); setCustomerOrders([])
-    setDeposit(null); setDepositError(''); setHasMore(false)
+    setDeposit(null); setDepositError(''); setHasMore(false); orderOffset.current = 0
     customerApi.get(id).then(({ data }) => { if (active()) setCustomer(data) }).catch(failed('Картка'))
       .finally(() => { if (active()) setLoading(false) })
     customerVehiclesApi.list(id).then(({ data }) => { if (active()) setCars(data) }).catch(failed('Автомобілі'))
     posCustomerMoneyApi.getDeposit(id).then(({ data }) => { if (active()) setDeposit(data as typeof deposit) })
       .catch((e) => { if (active()) setDepositError(e instanceof Error ? e.message : 'Не вдалося завантажити кошти клієнта') })
     orderBusy.current = true; setOrdersLoading(true)
-    orderApi.list(0, {}, 25, { customer_id: id }).then(({ data, meta }) => {
-      if (active()) { setCustomerOrders(data); setHasMore(meta.has_more) }
+    readOrderHistoryPage({ customer_id: id }).then(({ data, hasMore, nextOffset, incomplete }) => {
+      if (active()) {
+        setCustomerOrders(data); setHasMore(hasMore); orderOffset.current = nextOffset
+        if (incomplete) setErrors(old => ({ ...old, Замовлення: 'Зв’язку з головним ПК немає. Показано збережені замовлення; повнота історії не підтверджена.' }))
+      }
     }).catch(failed('Замовлення')).finally(() => { if (active()) { orderBusy.current = false; setOrdersLoading(false) } })
     return () => { request.current++ }
   }, [id, revision])
@@ -77,11 +82,16 @@ export default function CustomerDetailPage() {
     const token = request.current
     orderBusy.current = true; setOrdersLoading(true)
     try {
-      const { data, meta } = await orderApi.list(customerOrders.length, {}, 25, { customer_id: id })
+      const { data, hasMore, nextOffset, incomplete } = await readOrderHistoryPage({ customer_id: id }, orderOffset.current)
       if (token !== request.current) return
       setCustomerOrders((old) => Array.from(new Map([...old, ...data].map((o) => [o.id, o])).values()))
-      setHasMore(meta.has_more)
-    } catch (e) { if (token === request.current) toast.error(e instanceof Error ? e.message : 'Не вдалося завантажити замовлення') }
+      setHasMore(hasMore); orderOffset.current = nextOffset
+      setErrors(old => {
+        const updated = { ...old }; delete updated.Замовлення
+        if (incomplete) updated.Замовлення = 'Зв’язку з головним ПК немає. Показано збережені замовлення; повнота історії не підтверджена.'
+        return updated
+      })
+    } catch (e) { if (token === request.current) setErrors(old => ({ ...old, Замовлення: 'Історію завантажено не повністю. ' + (e instanceof Error ? e.message : 'Не вдалося завантажити замовлення') })) }
     finally { if (token === request.current) { orderBusy.current = false; setOrdersLoading(false) } }
   }
   async function handleDelete() {
@@ -215,7 +225,7 @@ export default function CustomerDetailPage() {
           <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <ClipboardList size={16} className="text-gray-400" />
-              <h3 className="font-semibold text-gray-800 text-sm">Замовлення ({customerOrders.length})</h3>
+              <h3 className="font-semibold text-gray-800 text-sm">{hasMore || errors.Замовлення ? 'Завантажено замовлень' : 'Замовлення'} ({customerOrders.length})</h3>
             </div>
             {local && <button
               onClick={() => navigation.open(`/orders/new?customer_id=${customer.id}`)}

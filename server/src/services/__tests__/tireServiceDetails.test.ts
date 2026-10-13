@@ -1,12 +1,13 @@
 import { beforeEach, expect, it, vi } from 'vitest'
-const state = vi.hoisted(() => ({ fail:false, queries:[] as Array<{sql:string;params:unknown[]}> }))
+const state = vi.hoisted(() => ({ fail:false, archived:false, usersIncludeArchived:false, queries:[] as Array<{sql:string;params:unknown[]}> }))
 vi.mock('../../db/supabase.js',()=>({db:{}}))
 vi.mock('../../db/supabaseAdmin.js',()=>({supabaseAdmin:{}}))
 vi.mock('../../middleware/auth.js',()=>({requireAuth:vi.fn(),requireRole:()=>vi.fn()}))
-vi.mock('../adminService.js',()=>({listUsers:async()=>[
-  {id:'worker',role:'tire_worker',is_active:true,full_name:'Андрій',base_rate:0,rate_period:'day'},
+vi.mock('../adminService.js',()=>({listUsers:async(_tenant:string,includeArchived=false)=>{state.usersIncludeArchived=includeArchived;return [
+  {id:'worker',role:'tire_worker',is_active:!state.archived,deleted_at:state.archived?'2026-10-02':null,full_name:'Андрій',base_rate:state.archived?50000:0,rate_period:'day'},
   {id:'cashier',role:'cashier',is_active:true,full_name:'Никита'},
-]}))
+  ...(state.archived?[{id:'empty-archived',role:'tire_worker',is_active:false,deleted_at:'2026-10-02',full_name:'Без робіт',base_rate:50000,rate_period:'day'}]:[]),
+]}}))
 vi.mock('../../db/pg.js',()=>({runTransaction:vi.fn(),pool:{query:async(sql:string,params:unknown[])=>{
   state.queries.push({sql,params})
   if(sql.includes('FROM salary_payments p') && sql.includes('SUM(')) return {rows:[{employee_id:'worker',earned:'12600',paid:'10000',penalty:'0',commission_earned:'12600',daily_rate:'0'}]}
@@ -18,7 +19,7 @@ vi.mock('../../db/pg.js',()=>({runTransaction:vi.fn(),pool:{query:async(sql:stri
 }}}))
 import router from '../../routes/salary.js'
 const handler=(router as any).stack.find((layer:any)=>layer.route?.path==='/tire-service-report').route.stack.at(-1).handle
-beforeEach(()=>{state.fail=false;state.queries=[]})
+beforeEach(()=>{state.fail=false;state.archived=false;state.usersIncludeArchived=false;state.queries=[]})
 async function request(){const json=vi.fn(),next=vi.fn();await handler({query:{date:'2026-09-22'},user:{tenant_id:'shop'}},{json},next);return{json,next}}
 it('returns cashier, work, notes and actual operation dates with saved commissions',async()=>{
   const {json,next}=await request();expect(next).not.toHaveBeenCalled()
@@ -38,4 +39,15 @@ it('scopes all five reads by tenant and work date, excludes deleted records and 
 })
 it('fails the entire report instead of silently showing missing operations as zeros',async()=>{
   state.fail=true;const {json,next}=await request();expect(json).not.toHaveBeenCalled();expect(next.mock.calls[0][0].message).toBe('Report details unavailable')
+})
+it('retains inactive historical work and recorded salary without projecting a new rate or enabling payout',async()=>{
+  state.archived=true
+  const {json,next}=await request();expect(next).not.toHaveBeenCalled()
+  const report=json.mock.calls[0][0]
+  expect(state.usersIncludeArchived).toBe(true)
+  expect(report.receipts).toHaveLength(1)
+  expect(report.salary_operations).toHaveLength(1)
+  expect(report.data).toHaveLength(1)
+  expect(report.data[0]).toMatchObject({employee_id:'worker',employee_active:false,earned:12600,paid:10000,due:2600,daily_rate_projected:0,salary_ready:false,payable_due:0})
+  expect(report.totals.service_revenue).toBe(36000)
 })

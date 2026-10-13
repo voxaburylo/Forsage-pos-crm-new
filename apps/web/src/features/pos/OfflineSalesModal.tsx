@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useDialogEscape } from '@/hooks/useDialogEscape'
 import { AlertTriangle, ChevronDown, Printer, RefreshCw, Receipt, WifiOff, X } from 'lucide-react'
 import { getCachedProductsByIds, getPendingSales, type PendingSale } from '@/lib/offlineDB'
 import { formatMoney } from '@/lib/utils'
@@ -18,6 +19,7 @@ interface Props {
 export function OfflineSalesModal({
   open, online, syncing, refreshKey, onClose, onSync,
 }: Props) {
+  useDialogEscape(open, onClose)
   const scopeKey = useAuthStore((state) => state.session?.user?.id ?? '')
   const [sales, setSales] = useState<PendingSale[]>([])
   const [loading, setLoading] = useState(false)

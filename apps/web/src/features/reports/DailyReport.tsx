@@ -2,6 +2,9 @@ import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useLatestRequest } from '@/hooks/useLatestRequest'
 import { useScopedAction } from '@/hooks/useScopedAction'
+import { useListViewState, useViewNavigation } from '@/hooks/useViewNavigation'
+import { soldItemReceiptsHref } from '@/features/sales/saleHistoryView'
+import { tireLinkContext } from './reportViewContext'
 import { BarChart, ResponsiveContainer, CartesianGrid } from 'recharts'
 import { ChartBar as Bar, ChartTooltip as Tooltip, ChartXAxis as XAxis, ChartYAxis as YAxis } from '@/lib/rechartsCompat'
 import { BarChart2, AlertTriangle, Users, TrendingUp, Trash2, DollarSign, Download, Wrench, ClipboardCopy } from 'lucide-react'
@@ -9,7 +12,7 @@ import * as XLSX from 'xlsx'
 import { reportApi } from './reportApi'
 import { REASON_LABEL } from '@/types/writeoff'
 import type { WriteoffReason } from '@/types/writeoff'
-import type { SalesPeriodReport, LowStockProduct, Debtor } from '@/types/report'
+import type { SalesPeriodReport, LowStockProduct, Debtor, SoldItem } from '@/types/report'
 import { AnalyticsLayout as Layout } from '@/features/analytics/AnalyticsLayout'
 import { Card, Table, Badge } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
@@ -65,16 +68,24 @@ function dateKeyDaysAgo(days: number): string {
 }
 
 export default function DailyReport() {
+  const { open } = useViewNavigation('/analytics/sales')
   const [searchParams] = useSearchParams()
-  const role = (useAuthStore((state) => state.session)?.user?.app_metadata?.role as string | undefined) ?? ''
+  const session = useAuthStore((state) => state.session)
+  const role = (session?.user?.app_metadata?.role as string | undefined) ?? ''
+  const userScope = `${session?.user?.id ?? ''}:${role}`
   const canSeeFullReports = role === 'owner' || role === 'admin'
   const canSeeTireReport = canSeeFullReports || role === 'cashier'
-  const [tab, setTab]           = useState<Tab>(() => searchParams.get('tab') === 'tire' && canSeeTireReport ? 'tire' : canSeeFullReports ? 'today' : 'sold')
-  const [summaryPeriod, setSummaryPeriod] = useState<SummaryPeriod>('today')
+  const [savedTab, setTab] = useListViewState<Tab>('reports.tab', () => canSeeFullReports ? 'today' : 'sold')
+  const linkKey = userScope + ':' + searchParams.toString()
+  const [appliedLink, setAppliedLink] = useState<string | null>(null)
+  const enteringTireLink = canSeeTireReport && searchParams.get('tab') === 'tire' && appliedLink !== linkKey
+  const tireEntry = tireLinkContext(searchParams, businessDateKey())
+  const tab = enteringTireLink ? 'tire' : savedTab
+  const [summaryPeriod, setSummaryPeriod] = useListViewState<SummaryPeriod>('reports.summaryPeriod', 'today')
   const summaryActive = tab === 'today' || tab === 'weekly' || tab === 'period'
-  const [dateFrom, setDateFrom] = useState('')
-  const [dateTo, setDateTo]     = useState('')
-  const reportScope = JSON.stringify([tab,dateFrom,dateTo,role,businessDateKey()])
+  const [dateFrom, setDateFrom] = useListViewState('reports.dateFrom', '')
+  const [dateTo, setDateTo] = useListViewState('reports.dateTo', '')
+  const reportScope = JSON.stringify([tab,dateFrom,dateTo,userScope,businessDateKey()])
   const [reportState,setReportState] = useState<{key:string;data:SalesPeriodReport}|null>(null)
   const [weeklyState,setWeeklyState] = useState<{key:string;data:WeekDay[]}|null>(null)
   const [summaryError,setSummaryError] = useState<{key:string;message:string}|null>(null)
@@ -93,14 +104,14 @@ export default function DailyReport() {
 
   // Продані товари за період — один зведений список для дозамовлення.
   const todayKey = businessDateKey()
-  const [soldFrom, setSoldFrom] = useState(todayKey)
-  const [soldTo, setSoldTo] = useState(todayKey)
-  const [soldSupplierId, setSoldSupplierId] = useState('')
-  const [soldSellerId, setSoldSellerId] = useState('')
-  const [soldSearch, setSoldSearch] = useState('')
+  const [soldFrom, setSoldFrom] = useListViewState('reports.soldFrom', todayKey)
+  const [soldTo, setSoldTo] = useListViewState('reports.soldTo', todayKey)
+  const [soldSupplierId, setSoldSupplierId] = useListViewState('reports.soldSupplier', '')
+  const [soldSellerId, setSoldSellerId] = useListViewState('reports.soldSeller', '')
+  const [soldSearch, setSoldSearch] = useListViewState('reports.soldSearch', '')
   const {rows: allSoldItems, loading: soldLoading, error: soldError} = useSoldItemsReport(
     tab === 'today' ? todayKey : soldFrom, tab === 'today' ? todayKey : soldTo,
-    tab === 'today' || tab === 'sold', tab + ':' + role)
+    tab === 'today' || tab === 'sold', tab + ':' + userScope)
   const supplierOptions = useMemo(() => soldSupplierOptions(allSoldItems), [allSoldItems])
   const sellerOptions = useMemo(() => soldSellerOptions(allSoldItems), [allSoldItems])
   const soldItems = useMemo(() => tab === 'sold'
@@ -111,19 +122,30 @@ export default function DailyReport() {
     : supplierOptions.find(item => item.id === soldSupplierId)?.name ?? 'Вибраний постачальник'
   const sellerLabel = !soldSellerId ? 'Усі продавці' : sellerOptions.find(item=>item.id===soldSellerId)?.name ?? 'Вибраний продавець'
   const soldHeading = `Продані товари: ${soldFrom} — ${soldTo} | ${supplierLabel} | ${sellerLabel}${soldSearch.trim() ? ' | Пошук: '+soldSearch.trim() : ''}`
-  const [tireDate, setTireDate] = useState(() => {
-    const requested = searchParams.get('date') ?? ''
-    return /^\d{4}-\d{2}-\d{2}$/.test(requested) && requested <= todayKey &&
-      !Number.isNaN(Date.parse(requested)) && new Date(requested).toISOString().slice(0, 10) === requested ? requested : todayKey
-  })
-  const [tireEmployeeId, setTireEmployeeId] = useState(searchParams.get('employee') ?? '')
-  const [tireReport, setTireReport] = useState<TireServiceReport | null>(null)
+  const openSoldItem = (item: SoldItem) => open(soldItemReceiptsHref({
+    productId: item.product_id, name: item.name, from: soldFrom, to: soldTo,
+    sellerId: soldSellerId, sellerName: sellerLabel,
+  }))
+  const [savedTireDate, setTireDate] = useListViewState('reports.tireDate', todayKey)
+  const [savedTirePeriod, setTirePeriod] = useListViewState('reports.tirePeriod', '')
+  const [savedTireEmployee, setTireEmployeeId] = useListViewState('reports.tireEmployee', '')
+  const tireDate = enteringTireLink ? tireEntry.date : savedTireDate
+  const tirePeriod = enteringTireLink ? tireEntry.period : savedTirePeriod
+  const tireEmployeeId = enteringTireLink ? tireEntry.employee : savedTireEmployee
+  useEffect(() => {
+    if (!enteringTireLink) return
+    setTab('tire'); setTireDate(tireEntry.date); setTirePeriod(tireEntry.period); setTireEmployeeId(tireEntry.employee)
+    setAppliedLink(linkKey)
+  }, [enteringTireLink, linkKey, tireEntry.date, tireEntry.period, tireEntry.employee, setTab, setTireDate, setTirePeriod, setTireEmployeeId])
+  const tireReportScope = JSON.stringify([tab, tireDate, userScope])
+  const [tireReportState, setTireReportState] = useState<{ key: string; data: TireServiceReport } | null>(null)
+  const tireReport = tireReportState?.key === tireReportScope ? tireReportState.data : null
   const [tireError, setTireError] = useState(false)
   const tireRows = useMemo(() => tireReport?.data.filter(row => !tireEmployeeId || row.employee_id === tireEmployeeId) ?? [], [tireReport, tireEmployeeId])
   const [tireLoading, setTireLoading] = useState(false)
-  const tireAction = useScopedAction(JSON.stringify([tab, tireDate, tireEmployeeId, role]))
-  const reportRequests = useLatestRequest([tab, dateFrom, dateTo, role, todayKey])
-  const tireRequests = useLatestRequest([tab, tireDate])
+  const tireAction = useScopedAction(JSON.stringify([tab, tireDate, tireEmployeeId, userScope]))
+  const reportRequests = useLatestRequest([tab, dateFrom, dateTo, userScope, todayKey])
+  const tireRequests = useLatestRequest([tab, tireDate, userScope])
 
   // A changed filter is not a report: do not export previous rows under new dates.
   useEffect(() => {
@@ -136,13 +158,13 @@ export default function DailyReport() {
     setWriteoffErrorState(null)
     setProfit(null)
     setLoading(false)
-  }, [tab, dateFrom, dateTo])
+  }, [tab, dateFrom, dateTo, userScope])
 
   useEffect(() => {
-    setTireReport(null)
+    setTireReportState(null)
     setTireError(false)
     setTireLoading(false)
-  }, [tab, tireDate])
+  }, [tab, tireDate, userScope])
 
 
 
@@ -275,16 +297,16 @@ export default function DailyReport() {
     try {
       const report = await staffApi.tireServiceReport(tireDate)
       if (!isCurrent()) return
-      setTireReport(report)
+      setTireReportState({ key: tireReportScope, data: report })
     } catch {
       if (!isCurrent()) return
-      setTireReport(null)
+      setTireReportState(null)
       setTireError(true)
       toast.error('Не вдалося завантажити звіт шиномонтажу')
     } finally {
       if (isCurrent()) setTireLoading(false)
     }
-  }, [canSeeTireReport, tireDate])
+  }, [canSeeTireReport, tireDate, tireReportScope])
 
   async function payTireSalary(row: TireServiceReportRow, fundSource: SalaryFundSource) {
     if (!isDesktopRuntime() || !canSeeFullReports || tireLoading || tireError || tireReport?.date !== tireDate || !row.salary_ready || row.payable_due <= 0) return
@@ -726,7 +748,7 @@ export default function DailyReport() {
               </div>
             ) : (
               <>
-              <SoldItemsMobile items={soldItems} showSuppliers />
+              <SoldItemsMobile items={soldItems} showSuppliers onOpenItem={openSoldItem} />
               <div className="hidden md:block max-h-[65vh] overflow-auto">
                 <table className="w-full min-w-[900px] text-sm">
                   <thead className="sticky top-0 bg-gray-50 text-xs text-gray-500 shadow-sm">
@@ -745,7 +767,7 @@ export default function DailyReport() {
                       <tr key={item.product_id} className={item.qty_on_hand <= 0 ? 'bg-red-50/60' : 'hover:bg-gray-50'}>
                         <td data-label="Артикул" className="px-4 py-2 font-mono text-xs text-gray-600">{item.sku || '—'}</td>
                         <td data-label="Штрихкод" className="px-2 py-2 font-mono text-xs text-gray-600">{item.barcode || '—'}</td>
-                        <td data-label="Назва" className="px-2 py-2 font-medium text-gray-900">{item.name}<div className="mt-1 text-xs font-normal text-gray-500">{soldSupplierNames(item)}<br />Продавці: {soldSellerNames(item)}</div></td>
+                        <td data-label="Назва" className="px-2 py-2 font-medium text-gray-900"><button type="button" onClick={() => openSoldItem(item)} title="Показати відповідні чеки" className="text-left hover:underline text-yellow-800">{item.name}</button><div className="mt-1 text-xs font-normal text-gray-500">{soldSupplierNames(item)}<br />Продавці: {soldSellerNames(item)}</div></td>
                         <td data-label="Полиця" className="px-2 py-2 text-gray-500">{item.storage_bin || '—'}</td>
                         <td data-label="Чисто продано" className="px-2 py-2 text-right font-bold text-gray-900">{item.qty_net} {item.unit}{item.qty_returned > 0 && <div className="text-xs font-normal text-gray-500">Продано {item.qty_sold}; повернуто {item.qty_returned}</div>}</td>
                         <td data-label="Залишок" className={`px-2 py-2 text-right font-semibold ${item.qty_on_hand <= 0 ? 'text-red-600' : 'text-gray-600'}`}>
@@ -765,9 +787,9 @@ export default function DailyReport() {
 
       {/* Шиномонтаж — чеки, касова історія та зарплата */}
       {tab === 'tire' && canSeeTireReport && <TireServiceDetails
-        report={tireReport} date={tireDate} today={todayKey} employeeId={tireEmployeeId}
+            report={tireReport} date={tireDate} today={todayKey} employeeId={tireEmployeeId} period={tirePeriod}
         loading={tireLoading} error={tireError}
-        onDate={date => { if (!tireAction.isBusy()) setTireDate(date) }}
+        onDate={date => { if (!tireAction.isBusy()) { setTireDate(date); if (date && tirePeriod && !date.startsWith(tirePeriod)) setTirePeriod('') } }}
         onEmployee={id => { if (!tireAction.isBusy()) setTireEmployeeId(id) }}
         onRefresh={() => { if (!tireAction.isBusy()) void loadTireReport() }} canPay={canSeeFullReports} canMutate={isDesktopRuntime()}
         busy={tireAction.busy}

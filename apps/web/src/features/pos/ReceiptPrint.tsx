@@ -2,6 +2,7 @@ import { receiptPrintErrorMessage } from './receiptPrintError'
 import { createPortal } from 'react-dom'
 import qrcode from 'qrcode-generator'
 import type { Sale } from '@/types/sale'
+import { saleLineLabel } from '@/features/sales/saleLineLabel'
 import { kopecksToHryvnia } from '@/types/product'
 import { formatDateTime } from '@/lib/utils'
 import { PrintService } from '@/lib/printService'
@@ -127,7 +128,7 @@ export function ReceiptPrint({ sale, shopName, shopAddress, shopPhone, sellerNam
       {/* Позиції */}
       {(sale.sale_items ?? []).map((item, i) => (
         <div key={i} style={{ marginBottom: '1mm' }}>
-          <div className="rp-item-name">{item.product?.name ?? item.product_id}</div>
+          <div className="rp-item-name">{saleLineLabel(item)}</div>
           <div className="rp-row rp-item-price">
             <span>{kopecksToHryvnia(item.unit_price)} ₴ × <span className="rp-quantity">{item.qty} {item.product?.unit ?? 'шт'}</span></span>
             <span className="rp-bold">{kopecksToHryvnia(item.total)} ₴</span>

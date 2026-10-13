@@ -59,7 +59,7 @@ export class LocalOrderRepository {
     this.pos = new LocalPosRepository(db)
   }
 
-  listOrders(input: { tenant_id?: string; offset?: number; limit?: number; search?: string; status?: string; customer_id?: string; exclude_ids?: string[] } = {}): any[] {
+  listOrders(input: { tenant_id?: string; offset?: number; limit?: number; search?: string; status?: string; customer_id?: string; chat_id?: string; exclude_ids?: string[] } = {}): any[] {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const offset = pageInteger(input.offset ?? 0, 0, 0, Number.MAX_SAFE_INTEGER)
     const limit = pageInteger(input.limit ?? 200, 200, 1, 500)
@@ -71,6 +71,7 @@ export class LocalOrderRepository {
     const excluded = Array.isArray(input.exclude_ids) ? input.exclude_ids.filter(id => typeof id === 'string').slice(0, 500) : []
     if (excluded.length) { statusSql += ` AND o.id NOT IN (${excluded.map(() => '?').join(',')})`; params.push(...excluded) }
     if (input.customer_id) { statusSql += ' AND o.customer_id = ?'; params.push(input.customer_id) }
+    if (input.chat_id) { statusSql += ' AND o.chat_id = ?'; params.push(input.chat_id) }
     if (statuses.length > 0) {
       statusSql += ` AND o.status IN (${statuses.map(() => '?').join(',')})`
       params.push(...statuses)

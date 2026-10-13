@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Search, Loader2, Printer } from 'lucide-react'
 import { Modal } from '@/components/ui'
-import { toast } from '@/components/ui/Toast'
 import { formatMoney, formatDateTime } from '@/lib/utils'
 import { saleApi } from './saleApi'
 import type { Sale } from '@/types/sale'
@@ -11,6 +10,7 @@ interface Props {
   onClose:  () => void
   /** Викликається з id обраного чека — батьківський компонент завантажує його у слот друку й друкує */
   onSelect: (saleId: string) => void
+  onHistory?: (query: string) => void
 }
 
 const PAY_LABEL: Record<string, string> = {
@@ -38,10 +38,12 @@ function looksLikeProductBarcode(value: string) {
  * Пошук і повторний друк чеків прямо з каси.
  * За замовчуванням показує останні 14 днів; скан товару знаходить чеки з цим товаром.
  */
-export function ReceiptFinderModal({ open, onClose, onSelect }: Props) {
+export function ReceiptFinderModal({ open, onClose, onSelect, onHistory }: Props) {
   const [query, setQuery]     = useState('')
   const [results, setResults] = useState<Sale[]>([])
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [retry, setRetry] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
 
   // Автофокус при відкритті + скидання стану при закритті
@@ -68,11 +70,15 @@ export function ReceiptFinderModal({ open, onClose, onSelect }: Props) {
   // Пошук із debounce
   useEffect(() => {
     if (!open) return
+    let cancelled = false
     const term = query.trim()
+    // Do not leave selectable results from the previous query during debounce.
+    setResults([])
+    setError('')
+    setLoading(true)
     const handle = setTimeout(async () => {
-      setLoading(true)
       try {
-        const base = { status: 'completed', date_from: recentReceiptsFrom() }
+        const base = { status: 'completed', date_from: recentReceiptsFrom(), history_filter_version: '1' }
         const barcode = normalizeBarcode(term)
         const requests = term
           ? (looksLikeProductBarcode(term)
@@ -86,18 +92,19 @@ export function ReceiptFinderModal({ open, onClose, onSelect }: Props) {
         let found: Sale[] = []
         for (const params of requests) {
           const res = await saleApi.list(params, { silent: true, timeoutMs: RECEIPT_SEARCH_TIMEOUT_MS })
+          if (cancelled) return
           found = (res as any).data ?? []
           if (found.length > 0 || !term) break
         }
-        setResults(found)
+        if (!cancelled) setResults(found)
       } catch (e) {
-        toast.error(e instanceof Error ? e.message : 'Не вдалося завантажити чеки')
+        if (!cancelled) setError(e instanceof Error ? e.message : 'Не вдалося завантажити чеки')
       } finally {
-        setLoading(false)
+        if (!cancelled) setLoading(false)
       }
     }, 250)
-    return () => clearTimeout(handle)
-  }, [query, open])
+    return () => { cancelled = true; clearTimeout(handle) }
+  }, [query, open, retry])
 
   return (
     <Modal open={open} onClose={onClose} title="Пошук чека" size="md">
@@ -108,6 +115,12 @@ export function ReceiptFinderModal({ open, onClose, onSelect }: Props) {
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !loading) {
+                event.preventDefault()
+                setRetry((value) => value + 1)
+              }
+            }}
             placeholder="Номер чека, телефон, ім'я, VIN або штрихкод товару…"
             className="w-full border border-gray-300 rounded-lg pl-9 pr-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300"
           />
@@ -118,6 +131,10 @@ export function ReceiptFinderModal({ open, onClose, onSelect }: Props) {
             <div className="flex items-center justify-center py-10 text-gray-400">
               <Loader2 size={20} className="animate-spin" />
             </div>
+          ) : error ? (
+            <p role="alert" className="px-4 py-6 text-center text-sm text-red-600">
+              {error}. Натисніть Enter у полі пошуку, щоб повторити.
+            </p>
           ) : results.length === 0 ? (
             <div className="py-10 text-center text-sm text-gray-400">
               {query.trim() ? 'Нічого не знайдено за останні 14 днів' : 'Останні чеки за 14 днів'}
@@ -174,6 +191,10 @@ export function ReceiptFinderModal({ open, onClose, onSelect }: Props) {
 
         <p className="text-xs text-gray-400">
           Показані чеки за останні 14 днів. Натисніть на чек, щоб роздрукувати його повторно.
+          {' '}<a href={`/sales?search=${encodeURIComponent(query.trim())}`} className="text-yellow-800 underline"
+            onClick={event => { if (onHistory) { event.preventDefault(); onHistory(query.trim()) } }}>
+            Перегляд усіх чеків і повернення
+          </a>
         </p>
       </div>
     </Modal>

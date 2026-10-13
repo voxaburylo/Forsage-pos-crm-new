@@ -27,7 +27,7 @@ export interface CustomerOrderItem {
 }
 
 export interface CustomerOrder {
-  lan_sync?: { state: 'pending' | 'blocked' | 'cached'; message: string; local_id?: string; cached_at?: string }
+  lan_sync?: { state: 'pending' | 'blocked' | 'cached'; message: string; local_id?: string; cached_at?: string; history_incomplete?: boolean }
   id: string
   order_number: number | null
   kp_number: string | null
@@ -98,20 +98,21 @@ const ORDER_FINALIZE_TIMEOUT_MS = 30_000
 function requestOrderSync() {
   window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
 }
-export type OrderListFilters = { search?: string; status?: string; customer_id?: string }
+export type OrderListFilters = { search?: string; status?: string; customer_id?: string; chat_id?: string }
 
 
 export const orderApi = {
   list: async (offset = 0, opts: OrderRequestOptions = {}, limit = 200, filters: OrderListFilters = {}) => {
     const local = desktopBridge()?.orders?.list
     if (local) {
-      const rows = await local({ offset, limit: limit + 1, search: filters.search, status: filters.status, customer_id: filters.customer_id }) as CustomerOrder[]
+      const rows = await local({ offset, limit: limit + 1, search: filters.search, status: filters.status, customer_id: filters.customer_id, chat_id: filters.chat_id }) as CustomerOrder[]
       return { data: rows.slice(0, limit), meta: { has_more: rows.length > limit, offset, per_page: limit } }
     }
     const params = new URLSearchParams({ per_page: String(limit), offset: String(offset) })
     if (filters.search?.trim()) params.set('search', filters.search.trim())
     if (filters.status?.trim()) params.set('status', filters.status.trim())
     if (filters.customer_id) params.set('customer_id', filters.customer_id)
+    if (filters.chat_id) params.set('chat_id', filters.chat_id)
     return api.get<{ data: CustomerOrder[]; meta: { has_more: boolean; offset: number; per_page: number } }>(`/api/v1/customer-orders?${params.toString()}`, { timeoutMs: ORDER_READ_TIMEOUT_MS, ...opts })
   },
 

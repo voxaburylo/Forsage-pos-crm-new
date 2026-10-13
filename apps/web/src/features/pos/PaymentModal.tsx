@@ -6,6 +6,7 @@ import { adminApi } from '@/features/admin/adminApi'
 import { customerApi } from '@/features/customers/customerApi'
 import { formatMoney } from '@/lib/utils'
 import { desktopBridge } from '@/lib/desktopBridge'
+import { useDialogEscape } from '@/hooks/useDialogEscape'
 import { canUseIntegratedTerminal, runPaymentConfirmation } from './paymentContract'
 
 interface SplitAmounts {
@@ -21,6 +22,16 @@ interface Props {
 }
 
 type Method = 'cash' | 'card' | 'debt' | 'mixed' | 'transfer'
+
+type BonusAvailability =
+  | { status: 'idle' | 'loading' | 'error' }
+  | { status: 'ready'; customerId: string; goodsTotal: number; balance: number; maximum: number }
+
+function validBonusAmount(value: unknown): number {
+  const amount = Number(value)
+  if (!Number.isSafeInteger(amount) || amount < 0) throw new Error('Некоректний бонусний баланс')
+  return amount
+}
 
 const FISCAL_KEY = 'forsage_pos_fiscal_enabled'
 
@@ -45,15 +56,28 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   const [terminalStep, setTerminalStep] = useState<'none' | 'waiting_auth'>('none')
   const [terminalAuthCode, setTerminalAuthCode] = useState('')
   const [terminalIntegrated, setTerminalIntegrated] = useState(false)
-  const [bonusBalance, setBonusBalance]   = useState(0)
-  const [maxBonus, setMaxBonus]           = useState(0)
   const [bonusInput, setBonusInput]       = useState('')
-  const [loyaltyEnabled, setLoyaltyEnabled] = useState(false)
+  const [bonusAvailability, setBonusAvailability] = useState<BonusAvailability>({ status: 'idle' })
+  const [bonusRetry, setBonusRetry] = useState(0)
   const [fiscal, setFiscal] = useState(() => localStorage.getItem(FISCAL_KEY) === 'true')
   const [cashalotEnabled, setCashalotEnabled] = useState<boolean | null>(null)
   const [splitCash, setSplitCash] = useState('')
   const [printAfterPayment, setPrintAfterPayment] = useState(false)
   const submittingRef = useRef(false)
+
+  function cancelTerminal() {
+    if (submittingRef.current) return
+    setTerminalStep('none')
+    setTerminalAuthCode('')
+    setPrintAfterPayment(false)
+  }
+  function requestClose() {
+    if (!submittingRef.current) onClose()
+  }
+  useDialogEscape(open, () => {
+    if (terminalStep === 'waiting_auth') cancelTerminal()
+    else requestClose()
+  }, { disabled: loading })
 
   // Кожен новий чек починаємо з готівки. Вибір термінала або іншого способу
   // стосується лише поточної оплати й не переноситься на наступного клієнта.
@@ -117,42 +141,44 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   }, [open])
 
   useEffect(() => {
-    setBonusBalance(0)
-    setMaxBonus(0)
     setBonusInput('')
-    setLoyaltyEnabled(false)
-    if (!open || !store.customer) return
+    if (!open || !store.customer || offline) {
+      setBonusAvailability({ status: 'idle' })
+      return
+    }
 
     let cancelled = false
     const customerId = store.customer.id
     const goodsTotal = Math.max(0, store.total - store.totalCoreDeposit)
+    setBonusAvailability({ status: 'loading' })
+    const apply = (balanceValue: unknown, maximumValue: unknown) => {
+      if (cancelled) return
+      const balance = validBonusAmount(balanceValue)
+      const maximum = Math.min(validBonusAmount(maximumValue), balance, goodsTotal)
+      setBonusAvailability({ status: 'ready', customerId, goodsTotal, balance, maximum })
+    }
+    const failed = () => { if (!cancelled) setBonusAvailability({ status: 'error' }) }
     if (desktopBridge()) {
       customerApi.get(customerId).then((res) => {
         if (cancelled) return
-        const balance = Number(res.data.bonus_balance ?? 0)
+        const balance = validBonusAmount(res.data.bonus_balance ?? 0)
         const maxRedeem = Math.min(balance, Math.floor(goodsTotal * 0.30))
-        setBonusBalance(balance)
-        setMaxBonus(maxRedeem)
-        setLoyaltyEnabled(balance > 0)
-      }).catch(() => {
-        if (!cancelled) {
-          setBonusBalance(0)
-          setMaxBonus(0)
-          setLoyaltyEnabled(false)
-        }
-      })
+        apply(balance, maxRedeem)
+      }).catch(failed)
       return () => { cancelled = true }
     }
     api.get<{ data: { balance: number; max_redeem: number } }>(
       '/api/v1/loyalty/customer/' + customerId + '/max-redeem?total=' + goodsTotal
     ).then((res) => {
-      if (cancelled) return
-      setBonusBalance(res.data.balance)
-      setMaxBonus(res.data.max_redeem)
-      setLoyaltyEnabled(res.data.max_redeem > 0 || res.data.balance > 0)
-    }).catch(() => {})
+      apply(res.data.balance, res.data.max_redeem)
+    }).catch(failed)
     return () => { cancelled = true }
-  }, [open, store.customer?.id, store.total, store.totalCoreDeposit])
+  }, [open, offline, store.customer?.id, store.total, store.totalCoreDeposit, bonusRetry])
+  const bonusReady = open && !offline && bonusAvailability.status === 'ready'
+    && bonusAvailability.customerId === store.customer?.id
+    && bonusAvailability.goodsTotal === Math.max(0, store.total - store.totalCoreDeposit)
+  const bonusBalance = bonusReady && bonusAvailability.status === 'ready' ? bonusAvailability.balance : 0
+  const maxBonus = bonusReady && bonusAvailability.status === 'ready' ? bonusAvailability.maximum : 0
   // Обчислення сум (потрібні і для діалогу термінала, і для основного UI)
   const _bonusRedeemed = Math.min(
     parsePaymentKopecks(bonusInput),
@@ -277,7 +303,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
           <div className="flex gap-3">
             <button
               type="button"
-              onClick={() => { setTerminalStep('none'); setTerminalAuthCode(''); setPrintAfterPayment(false) }}
+              onClick={cancelTerminal}
               disabled={loading}
               className="flex-1 py-3 rounded-xl bg-[#2C2C2C] text-gray-300 font-semibold hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
             >
@@ -306,7 +332,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
         onPointerDown={(event) => {
           // Закриваємо лише за реальним натисканням на фон. Звичайний click
           // може «долетіти» сюди від кнопки, яка щойно відкрила модалку.
-          if (event.button === 0 && !loading) onClose()
+          if (event.button === 0 && !loading) requestClose()
         }}
       />
       <div className="relative mx-4 flex max-h-[calc(100dvh-2rem)] w-full max-w-sm flex-col overflow-hidden rounded-2xl border border-gray-700 bg-[#1A1A1A]">
@@ -329,29 +355,42 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
             </div>
           )}
           {/* Бонуси */}
-          {loyaltyEnabled && store.customer && (
-            <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-xl px-4 py-3">
+            <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-xl px-4 py-3" aria-live="polite">
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
                   <Star size={14} className="text-yellow-400" />
                   <span className="text-yellow-400 text-xs font-medium">Бонуси клієнта</span>
                 </div>
-                <span className="text-yellow-300 text-sm font-bold">{formatMoney(bonusBalance)}</span>
+                {bonusReady && <span className="text-yellow-300 text-sm font-bold">{formatMoney(bonusBalance)}</span>}
               </div>
-              {maxBonus > 0 && (
+              {!store.customer ? (
+                <p className="text-xs text-gray-400">Для оплати бонусами виберіть клієнта в чеку.</p>
+              ) : offline ? (
+                <p className="text-xs text-gray-400">Бонуси недоступні у вебкасі без зв’язку.</p>
+              ) : bonusAvailability.status === 'error' ? (
+                <div className="text-xs text-amber-200" role="alert">
+                  <p>Не вдалося перевірити бонуси.</p>
+                  <button type="button" disabled={loading} onClick={() => setBonusRetry((value) => value + 1)} className="mt-1 underline disabled:opacity-40">Повторити перевірку бонусів</button>
+                </div>
+              ) : !bonusReady ? (
+                <p className="text-xs text-gray-400">Перевіряємо бонусний баланс…</p>
+              ) : bonusBalance === 0 ? (
+                <p className="text-xs text-gray-400">Бонусів для списання немає.</p>
+              ) : maxBonus === 0 ? (
+                <p className="text-xs text-gray-400">Для цього чека списання бонусів недоступне. Застава за деталі бонусами не оплачується.</p>
+              ) : (
                 <div>
                   <label className="text-gray-400 text-xs mb-1 block">
                     Списати бонусів (макс {formatMoney(Math.min(bonusBalance, maxBonus))})
                   </label>
                   <input type="number" min="0" step="0.01"
                     max={(Math.min(bonusBalance, maxBonus) / 100).toFixed(2)}
-                    value={bonusInput} onChange={(e) => setBonusInput(e.target.value)}
+                    value={bonusInput} onChange={(e) => setBonusInput(e.target.value)} disabled={loading}
                     placeholder="0.00"
                     className="w-full bg-[#2C2C2C] text-yellow-300 text-lg font-bold text-center rounded-lg px-3 py-2 border border-yellow-600/30 focus:outline-none focus:border-yellow-400" />
                 </div>
               )}
             </div>
-          )}
 
           {/* Вибір методу 3+2 */}
           <div className="grid grid-cols-3 gap-2">
@@ -493,7 +532,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
             ОПЛАТИТИ Й НАДРУКУВАТИ ЧЕК
           </button>
           <div className="flex gap-3">
-            <button type="button" onClick={onClose} disabled={loading}
+            <button type="button" onClick={requestClose} disabled={loading}
               className="flex-1 py-4 rounded-xl bg-[#2C2C2C] text-gray-300 font-semibold hover:bg-gray-700 transition-colors disabled:cursor-not-allowed disabled:opacity-40">Скасувати</button>
             <button type="button" onClick={() => handleConfirm(false)}
               disabled={loading || !cashValid || !debtOk || !splitValid}

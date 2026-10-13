@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { useDialogEscape } from '@/hooks/useDialogEscape'
 import { DollarSign, Wallet, X } from 'lucide-react'
 import { formatMoney } from '@/lib/utils'
 import { toast } from '@/components/ui/Toast'
@@ -35,6 +36,7 @@ export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null
   const [saving, setSaving] = useState(false)
   const busy = useRef(false)
   const safeClose = () => { if (!busy.current) onClose() }
+  useDialogEscape(open, safeClose, { disabled: saving })
   const role = useAuthStore((state) => (state.session?.user?.app_metadata?.role as string) ?? 'cashier')
   const canPayout = role === 'cashier' || role === 'owner' || role === 'admin'
   const currentShift = usePOSStore((state) => state.currentShift)

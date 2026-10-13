@@ -55,9 +55,9 @@ export function InventoryProductInput({ field, current, draft, disabled, onDraft
     className: 'w-full min-w-0 rounded-lg border border-gray-300 px-2 py-1 text-sm font-semibold outline-none focus:border-yellow-500 disabled:bg-gray-50',
   }
   return <div className="min-w-0">
-    {field === 'name' ? <textarea {...shared} rows={2} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.blur() } }} />
+    {field === 'name' ? <textarea {...shared} rows={2} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.blur() } }} />
       : <input {...shared} type={money ? 'number' : 'text'} min={money ? '0' : undefined} step={money ? '0.01' : undefined} inputMode={money ? 'decimal' : undefined}
-        onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur() } }} />}
+        onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.blur() } }} />}
     {saving && <span className="block text-xs text-gray-500">Зберігається…</span>}
     {draft && !saving && <div className="mt-1 text-xs text-amber-800">
       <span className="block break-words">Не збережено{changed ? ` · у базі: ${format(current)}` : ''}</span>

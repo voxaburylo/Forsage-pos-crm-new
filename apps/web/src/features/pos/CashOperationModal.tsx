@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { ArrowDownCircle, ArrowUpCircle } from 'lucide-react'
 import { cashOperationApi } from './cashOperationApi'
 import type { CashOperationType } from '@/types/cashOperation'
@@ -18,6 +18,8 @@ export function CashOperationModal({ open, shiftId, onClose }: Props) {
   const [note, setNote]       = useState('')
   const [source, setSource]   = useState('change_fund')
   const [saving, setSaving]   = useState(false)
+  const savingRef = useRef(false)
+  const safeClose = () => { if (!savingRef.current) onClose() }
 
   function reset() {
     setAmount('')
@@ -28,9 +30,11 @@ export function CashOperationModal({ open, shiftId, onClose }: Props) {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    if (savingRef.current) return
     const kopecks = Math.round(parseFloat(amount || '0') * 100)
     if (kopecks <= 0) { toast.error('Введіть суму більше 0'); return }
 
+    savingRef.current = true
     setSaving(true)
     try {
       await cashOperationApi.create(shiftId, type, kopecks, note.trim() || undefined, source)
@@ -41,12 +45,13 @@ export function CashOperationModal({ open, shiftId, onClose }: Props) {
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Помилка')
     } finally {
+      savingRef.current = false
       setSaving(false)
     }
   }
 
   return (
-    <Modal open={open} onClose={onClose} title="Готівкова операція" size="sm">
+    <Modal open={open} onClose={safeClose} title="Готівкова операція" size="sm">
       <form onSubmit={handleSubmit} className="space-y-4">
         {/* Тип операції */}
         <div className="grid grid-cols-2 gap-3">
@@ -127,7 +132,7 @@ export function CashOperationModal({ open, shiftId, onClose }: Props) {
         />
 
         <div className="flex gap-3 pt-1">
-          <Button type="button" variant="secondary" onClick={onClose} className="flex-1">
+          <Button type="button" variant="secondary" onClick={safeClose} disabled={saving} className="flex-1">
             Скасувати
           </Button>
           <Button

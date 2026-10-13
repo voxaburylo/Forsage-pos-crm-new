@@ -1,4 +1,5 @@
-import { useState, useMemo } from 'react'
+import { useMemo } from 'react'
+import { useListViewState } from '@/hooks/useViewNavigation'
 import { parseStaffRows, staffDateRange, staffExportRows, validStaffRange } from './staffData'
 import { useReportRows } from './useReportRows'
 import { ReportError } from './ReportError'
@@ -14,9 +15,9 @@ import { toast } from '@/components/ui/Toast'
 type Period = 'month' | 'quarter' | 'year'
 
 export default function StaffAnalytics() {
-  const [period, setPeriod] = useState<Period>('month')
-  const [customRange, setCustomRange] = useState({ startDate: '', endDate: '' })
-  const [isCustom, setIsCustom] = useState(false)
+  const [period, setPeriod] = useListViewState<Period>('staffAnalytics.period', 'month')
+  const [customRange, setCustomRange] = useListViewState('staffAnalytics.range', { startDate: '', endDate: '' })
+  const [isCustom, setIsCustom] = useListViewState('staffAnalytics.custom', false)
 
   const range = useMemo(() => {
     const fallback = staffDateRange(isCustom ? 'month' : period)

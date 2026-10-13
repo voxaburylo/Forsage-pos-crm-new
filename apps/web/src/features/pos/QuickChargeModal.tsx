@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useDialogEscape } from '@/hooks/useDialogEscape'
 import { X } from 'lucide-react'
 import { api } from '@/lib/api'
 import { usePOSStore } from '@/stores/posStore'
@@ -27,6 +28,8 @@ export function QuickChargeModal({
   const [workerId, setWorkerId] = useState('')
   const [saving, setSaving] = useState(false)
   const savingRef = useRef(false)
+  const safeClose = () => { if (!savingRef.current) onClose() }
+  useDialogEscape(open, safeClose, { disabled: saving })
   const isTire = kind === 'tire_service'
 
   useEffect(() => {
@@ -120,7 +123,7 @@ export function QuickChargeModal({
 
   return (
     <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/70" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/70" onClick={safeClose} />
       <div className="relative w-full max-w-md rounded-2xl border border-gray-700 bg-[#1A1A1A] p-5 text-white shadow-2xl">
         <div className="mb-5 flex items-center justify-between">
           <div>
@@ -129,7 +132,7 @@ export function QuickChargeModal({
               {isTire ? 'Сума може відрізнятися від прайсу' : 'Для б·у речі або товару, якого немає в каталозі'}
             </p>
           </div>
-          <button onClick={onClose} aria-label="Закрити"><X size={20} /></button>
+          <button onClick={safeClose} disabled={saving} aria-label="Закрити"><X size={20} /></button>
         </div>
 
         <div className="space-y-4">

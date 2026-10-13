@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useState } from 'react'
 import { Car, Copy, Plus, Save, Trash2 } from 'lucide-react'
 import { Button, Input, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
@@ -45,6 +45,7 @@ export function CustomerEditor({ customer, open, onClose, onSaved, onVehiclesCha
   const [tiers, setTiers] = useState<PriceTier[]>([])
   const [cars, setCars] = useState<CustomerVehicle[]>([])
   const [car, setCar] = useState<VehicleDraft>(EMPTY_CAR)
+  const [carBaseline, setCarBaseline] = useState(() => JSON.stringify(EMPTY_CAR))
   const [deposit, setDeposit] = useState<number | null>(null)
   const [loading, setLoading] = useState(false)
   const action = useScopedAction(`${open}:${customer?.id ?? ''}:${userId}:${role ?? ''}`)
@@ -55,7 +56,10 @@ export function CustomerEditor({ customer, open, onClose, onSaved, onVehiclesCha
   const [loadError, setLoadError] = useState('')
   const [revision, setRevision] = useState(0)
   const [initialForm, setInitialForm] = useState('')
-  const dirty = Boolean(current && (JSON.stringify(form) !== initialForm || JSON.stringify(car) !== JSON.stringify(EMPTY_CAR)))
+  const carSaveId = useId()
+  const carSequenceId = useId()
+  const carDirty = JSON.stringify(car) !== carBaseline
+  const dirty = Boolean(current && (JSON.stringify(form) !== initialForm || carDirty))
   useLayoutEffect(() => { onDraftStateChange?.({ dirty, busy: action.busy }) }, [dirty, action.busy, onDraftStateChange])
   useEffect(() => () => { onDraftStateChange?.({ dirty: false, busy: false }) }, [onDraftStateChange])
 
@@ -77,6 +81,7 @@ export function CustomerEditor({ customer, open, onClose, onSaved, onVehiclesCha
     setActionKind(null)
     setTiers([])
     setCar(EMPTY_CAR)
+    setCarBaseline(JSON.stringify(EMPTY_CAR))
     setLoading(true)
     customerApi.get(customer.id).then(({ data }) => { if (!cancelled) fill(data) })
       .catch((error) => { if (!cancelled) setLoadError(error instanceof Error ? error.message : 'Не вдалося завантажити картку') })
@@ -97,6 +102,19 @@ export function CustomerEditor({ customer, open, onClose, onSaved, onVehiclesCha
     setForm((old) => ({ ...old, [key]: value }))
   }
 
+  function clearCar() {
+    setCar(EMPTY_CAR)
+    setCarBaseline(JSON.stringify(EMPTY_CAR))
+  }
+
+  function selectCar(item: CustomerVehicle) {
+    if (action.isBusy() || car.id === item.id) return
+    if (carDirty && !confirm('Перейти до іншого автомобіля без збереження введених змін автомобіля?')) return
+    const selected = { id: item.id, brand: item.brand, model: item.model, year: item.year ? String(item.year) : '', vin: item.vin ?? '', notes: item.notes ?? '' }
+    setCar(selected)
+    setCarBaseline(JSON.stringify(selected))
+  }
+
   async function copyText(value: string, label: string) {
     const clean = value.trim()
     if (!clean) return
@@ -111,7 +129,10 @@ export function CustomerEditor({ customer, open, onClose, onSaved, onVehiclesCha
   async function submit(e: React.FormEvent) {
     e.preventDefault()
     if (action.isBusy() || loading || !canEdit) return
-    if (JSON.stringify(car) !== JSON.stringify(EMPTY_CAR)) { toast.error('Спочатку збережіть автомобіль або скасуйте його редагування'); return }
+    if (carDirty) {
+      document.getElementById(carSaveId)?.focus()
+      return
+    }
     if (!current || !form.phone.trim()) { toast.error("Телефон обов'язковий"); return }
     const attempt = action.begin()
     if (!attempt) return
@@ -128,7 +149,7 @@ export function CustomerEditor({ customer, open, onClose, onSaved, onVehiclesCha
   }
 
   async function saveCar() {
-    if (!current || !canEdit) return
+    if (!current || !canEdit || !carDirty) return
     if (action.isBusy() || loading || carsState !== 'ready') return
     if (!car.brand.trim() || !car.model.trim()) { toast.error('Вкажіть марку та модель'); return }
     if (car.year && (!Number.isInteger(Number(car.year)) || Number(car.year) < 1900 || Number(car.year) > new Date().getFullYear() + 1)) { toast.error('Вкажіть коректний рік автомобіля'); return }
@@ -144,7 +165,7 @@ export function CustomerEditor({ customer, open, onClose, onSaved, onVehiclesCha
       const nextCars = car.id ? cars.map((item) => item.id === car.id ? result.data : item) : [result.data, ...cars]
       setCars(nextCars)
       onVehiclesChanged?.(nextCars)
-      setCar(EMPTY_CAR)
+      clearCar()
       toast.success(car.id ? 'Автомобіль оновлено' : 'Автомобіль додано')
     } catch (error) { if (attempt.isCurrent()) toast.error(error instanceof Error ? error.message : 'Не вдалося зберегти автомобіль') }
     finally { attempt.finish() }
@@ -161,7 +182,7 @@ export function CustomerEditor({ customer, open, onClose, onSaved, onVehiclesCha
       const nextCars = cars.filter((value) => value.id !== item.id)
       setCars(nextCars)
       onVehiclesChanged?.(nextCars)
-      if (car.id === item.id) setCar(EMPTY_CAR)
+      if (car.id === item.id) clearCar()
     } catch (error) { if (attempt.isCurrent()) toast.error(error instanceof Error ? error.message : 'Не вдалося видалити автомобіль') }
     finally { attempt.finish() }
   }
@@ -216,7 +237,7 @@ export function CustomerEditor({ customer, open, onClose, onSaved, onVehiclesCha
           </details>
           </> : (
             <div className="rounded-lg border border-yellow-200 bg-white px-3 py-2.5 text-sm text-gray-600">
-              {canManageDiscount ? <Input label="Персональна знижка, %" type="number" min="0" max="100" step="any" value={form.discount_pct} onChange={(e) => set('discount_pct', e.target.value)} /> : <p>Цей клієнт накопичує бонуси. Процент накопичень змінює менеджер або адміністратор.</p>}
+              {canManageDiscount ? <Input label="Персональна знижка, %" type="number" min="0" max="100" step="any" value={form.discount_pct} onChange={(e) => set('discount_pct', e.target.value)} /> : <p>Цей клієнт накопичує кошти на рахунку. Процент накопичень змінює менеджер або адміністратор.</p>}
               {form.price_tier_id && <p className="mt-2">Знижка цінової групи має пріоритет над персональною. Цінову групу змінює менеджер.</p>}
               <p className="mt-2">Бонусний баланс і ціновий рівень змінює менеджер або адміністратор.</p>
             </div>
@@ -225,9 +246,10 @@ export function CustomerEditor({ customer, open, onClose, onSaved, onVehiclesCha
       </div>
       <section className="rounded-xl border border-blue-100 bg-blue-50/40 p-4">
         <h3 className="mb-3 flex items-center gap-2 font-semibold text-gray-900"><Car size={17}/> Автомобілі ({cars.length})</h3>
+        <p className="mb-3 text-sm text-gray-600">Автомобіль зберігається окремо від контактів і знижок клієнта. Після цього збережіть зміни картки.</p>
         {carsState !== 'ready' && <p role="status" className="mb-3 text-sm text-gray-500">{carsState === 'loading' ? 'Завантажуємо автомобілі…' : 'Не вдалося завантажити автомобілі. Натисніть «Оновити дані» нижче.'}</p>}
         <fieldset disabled={carsState !== 'ready'} className="min-w-0">
-        {cars.length > 0 && <div className="mb-4 grid gap-2 md:grid-cols-2">{cars.map((item)=><div key={item.id} className="flex items-center gap-2 rounded-lg border border-blue-100 bg-white p-3"><button type="button" onClick={()=>setCar({id:item.id,brand:item.brand,model:item.model,year:item.year?String(item.year):'',vin:item.vin??'',notes:item.notes??''})} className="min-w-0 flex-1 text-left"><p className="truncate text-sm font-semibold">{item.brand} {item.model} {item.year ? '· ' + item.year : ''}</p><p className="truncate font-mono text-xs text-gray-500">{item.vin||'VIN не вказано'}</p></button><button type="button" onClick={()=>deleteCar(item)} className="p-2 text-gray-300 hover:text-red-500"><Trash2 size={15}/></button></div>)}</div>}
+        {cars.length > 0 && <div className="mb-4 grid gap-2 md:grid-cols-2">{cars.map((item)=><div key={item.id} className="flex items-center gap-2 rounded-lg border border-blue-100 bg-white p-3"><button type="button" onClick={()=>selectCar(item)} className="min-w-0 flex-1 text-left"><p className="truncate text-sm font-semibold">{item.brand} {item.model} {item.year ? '· ' + item.year : ''}</p><p className="truncate font-mono text-xs text-gray-500">{item.vin||'VIN не вказано'}</p></button><button type="button" onClick={()=>deleteCar(item)} className="p-2 text-gray-300 hover:text-red-500"><Trash2 size={15}/></button></div>)}</div>}
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <Input label="Марка *" value={car.brand} onChange={(e)=>setCar({...car,brand:e.target.value})}/>
           <Input label="Модель *" value={car.model} onChange={(e)=>setCar({...car,model:e.target.value})}/>
@@ -235,10 +257,13 @@ export function CustomerEditor({ customer, open, onClose, onSaved, onVehiclesCha
           <Input label="VIN" value={car.vin} maxLength={17} onChange={(e)=>setCar({...car,vin:e.target.value.toUpperCase()})}/>
           <Input label="Примітка" value={car.notes} onChange={(e)=>setCar({...car,notes:e.target.value})}/>
         </div>
-        <div className="mt-3 flex gap-2"><Button type="button" variant="secondary" size="sm" loading={savingCar} icon={car.id?<Save size={14}/>:<Plus size={14}/>} onClick={saveCar}>{car.id?'Зберегти автомобіль':'Додати автомобіль'}</Button>{car.id&&<Button type="button" variant="secondary" size="sm" onClick={()=>setCar(EMPTY_CAR)}>Скасувати</Button>}</div>
+        <div className="mt-3 flex gap-2"><Button id={carSaveId} type="button" disabled={!carDirty} variant="secondary" size="sm" loading={savingCar} icon={car.id?<Save size={14}/>:<Plus size={14}/>} onClick={saveCar}>{car.id?'Зберегти автомобіль':'Додати автомобіль'}</Button>{(carDirty||car.id)&&<Button type="button" variant="secondary" size="sm" onClick={clearCar}>Скасувати</Button>}</div>
         </fieldset>
       </section>
-      <div className="flex flex-wrap gap-3 border-t border-gray-100 pt-4"><Button type="submit" loading={saving} icon={<Save size={16}/>} className="flex-1">Зберегти картку</Button><Button type="button" variant="secondary" onClick={() => { if (!action.isBusy() && (!dirty || confirm('Завантажити свіжі дані? Незбережені зміни цієї картки буде втрачено.'))) setRevision((n) => n + 1) }}>Оновити дані</Button>{!inline && <Button type="button" variant="secondary" onClick={requestClose}>Закрити</Button>}</div>
+      <div className="sticky bottom-0 z-10 border-t border-gray-100 bg-white py-3">
+        {carDirty && <p id={carSequenceId} role="status" className="mb-3 text-sm text-amber-800">Спочатку збережіть автомобіль або скасуйте його зміни. Потім збережіть картку клієнта.</p>}
+        <div className="flex flex-wrap gap-3"><Button type="submit" disabled={carDirty} aria-describedby={carDirty ? carSequenceId : undefined} loading={saving} icon={<Save size={16}/>} className="flex-1">Зберегти картку</Button><Button type="button" variant="secondary" onClick={() => { if (!action.isBusy() && (!dirty || confirm('Завантажити свіжі дані? Незбережені зміни цієї картки буде втрачено.'))) setRevision((n) => n + 1) }}>Оновити дані</Button>{!inline && <Button type="button" variant="secondary" onClick={requestClose}>Закрити</Button>}</div>
+      </div>
       </fieldset>
     </form>
   return inline ? content : <Modal open={open} onClose={requestClose} title="Картка клієнта" size="xl">{content}</Modal>

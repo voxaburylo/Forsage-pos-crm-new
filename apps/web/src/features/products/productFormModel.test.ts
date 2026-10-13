@@ -69,3 +69,27 @@ describe('reference creation acknowledgement', () => {
     expect(() => createdProductReference(response)).toThrow('підтвердити')
   })
 })
+
+describe('product reference draft validation', () => {
+  const categories = [{ id: 'category', name: 'Фільтри' }, { id: 'other', name: 'Оливи' }]
+  const brands = [{ id: 'brand', name: 'Mann' }, { id: 'bosch', name: 'Bosch' }]
+  it('resolves an exact typed label on save without discarding either confirmed ID', () => {
+    const input = form()
+    const result = productEditorPayload(input, true, {
+      category: { draft: '  оливи  ', options: categories }, brand: { draft: null, options: brands },
+    })
+    expect(result.category_id).toBe('other')
+    expect(result.brand_id).toBe('brand')
+    expect(input.category_id).toBe('category')
+  })
+  it.each(['Bos', 'Unknown', ''])('rejects unresolved brand text %j instead of silently erasing or keeping a misleading label', draft => {
+    expect(() => productEditorPayload(form(), true, { brand: { draft, options: brands } })).toThrow('Бренд')
+  })
+  it('does not guess between duplicate exact labels', () => {
+    expect(() => productEditorPayload(form(), true, { category: { draft: 'Фільтри', options: [...categories, { id: 'duplicate', name: 'ФІЛЬТРИ' }] } })).toThrow('Категорія')
+  })
+  it('keeps a confirmed legacy reference absent from the loaded options and supports explicit clearing', () => {
+    expect(productEditorPayload(form(), true, { brand: { draft: null, options: [] } }).brand_id).toBe('brand')
+    expect(productEditorPayload({ ...form(), brand_id: '' }, true, { brand: { draft: null, options: brands } }).brand_id).toBe('')
+  })
+})

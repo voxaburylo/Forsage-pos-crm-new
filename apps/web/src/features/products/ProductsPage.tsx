@@ -33,6 +33,7 @@ import {
 import { areAllDisplayedProductsSelected, toggleDisplayedProductsSelection } from './productSelection'
 import { canDeleteCatalog } from './catalogDeletePermissions'
 import { API_BASE_URL } from '@/lib/apiBaseUrl'
+import { catalogSearchScope } from './catalogSearchScope'
 
 // ─── Типи ────────────────────────────────────────────────────────────────────
 interface Category { id: string; name: string; sort_order: number }
@@ -126,23 +127,24 @@ export default function ProductsPage() {
       .catch(() => {})
   }
 
-  function resetSearchScope() {
-    setCategoryFilter('')
-    setBrandFilter('')
-    setLowStock(false)
-    setStockFilter('')
+  function updateSearchScope(source: 'text' | 'scan', value: string) {
+    const next = catalogSearchScope({ category: categoryFilter, brand: brandFilter, lowStock, stock: stockFilter }, source, value)
+    setCategoryFilter(next.category)
+    setBrandFilter(next.brand)
+    setLowStock(next.lowStock)
+    setStockFilter(next.stock)
   }
 
   function handleSearchChange(value: string) {
     setSearch(value)
     setPage(1)
     setPages({})
-    if (value.trim()) resetSearchScope()
+    updateSearchScope('text', value)
   }
 
   usePOSBarcodeScanner({
     onScan: (code) => {
-      resetSearchScope()
+      updateSearchScope('scan', code)
       setSearch(code)
       setDebouncedSearch(code)
       setPage(1)
@@ -244,10 +246,10 @@ export default function ProductsPage() {
     setLoadFailed(false)
     const filters: ProductFilters = {
       search: debouncedSearch.trim() || undefined,
-      low_stock: debouncedSearch ? undefined : lowStock ? 'true' : undefined,
-      stock_filter: debouncedSearch ? undefined : stockFilter || undefined,
-      category_id: debouncedSearch ? undefined : categoryFilter || undefined,
-      brand_id: debouncedSearch ? undefined : brandFilter || undefined,
+      low_stock: lowStock ? 'true' : undefined,
+      stock_filter: stockFilter || undefined,
+      category_id: categoryFilter || undefined,
+      brand_id: brandFilter || undefined,
       page,
       per_page: PRODUCTS_PER_PAGE,
       sort_field: sort?.field,

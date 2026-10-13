@@ -599,9 +599,9 @@ export class LocalStaffRepository {
 
   tireServiceReport(workDate = currentDate(), tenantId = DEFAULT_TENANT_ID): any {
     const workers = this.db.prepare(`
-      SELECT id AS employee_id, full_name AS employee_name, base_rate, rate_period
+      SELECT id AS employee_id, full_name AS employee_name, base_rate, rate_period, is_active, deleted_at
       FROM staff_users
-      WHERE tenant_id = ? AND is_active = 1 AND deleted_at IS NULL AND role = 'tire_worker'
+      WHERE tenant_id = ? AND role = 'tire_worker'
       ORDER BY full_name COLLATE NOCASE
     `).all(tenantId) as any[]
     const salaryRows = this.db.prepare(`
@@ -700,7 +700,11 @@ export class LocalStaffRepository {
     availableOn.setUTCDate(availableOn.getUTCDate() + 2)
     const salaryAvailableOn = availableOn.toISOString().slice(0, 10)
     const matured = currentDate() >= salaryAvailableOn
-    const data = workers.map((worker) => {
+    const data = workers.filter(worker => (Number(worker.is_active) === 1 && !worker.deleted_at)
+      || salaryByWorker.has(String(worker.employee_id))
+      || receipts.some(receipt => receipt.employee_id === worker.employee_id)
+      || handedByWorker.has(String(worker.employee_id))).map((worker) => {
+      const employeeActive = Number(worker.is_active) === 1 && !worker.deleted_at
       const salary = salaryByWorker.get(String(worker.employee_id)) ?? {}
       const workerReceipts = receipts.filter((receipt) => receipt.employee_id === worker.employee_id)
       const serviceRevenue = workerReceipts.reduce((sum, receipt) => sum + receipt.service_revenue, 0)
@@ -711,7 +715,7 @@ export class LocalStaffRepository {
       // obligation to deposit the same customer payment.
       const cashPending = 0
       const recordedDailyRate = money(salary.daily_rate)
-      const projectedDailyRate = recordedDailyRate === 0 && worker.rate_period === 'day' && workerReceipts.length > 0
+      const projectedDailyRate = employeeActive && recordedDailyRate === 0 && worker.rate_period === 'day' && workerReceipts.length > 0
         ? money(worker.base_rate)
         : 0
       const earned = money(salary.earned) + projectedDailyRate
@@ -719,9 +723,10 @@ export class LocalStaffRepository {
       const penalty = money(salary.penalty)
       const balance = earned - paid - penalty
       const due = Math.max(0, balance)
-      const salaryReady = matured && cashPending === 0
+      const salaryReady = employeeActive && matured && cashPending === 0
       return {
         employee_id: worker.employee_id, employee_name: worker.employee_name,
+        employee_active: employeeActive,
         services_qty: workerReceipts.reduce((sum, receipt) => sum + receipt.services_qty, 0),
         service_revenue: serviceRevenue, cash_revenue: cashRevenue, cash_register_received: cashRevenue,
         cash_handed_over: cashHandedOver, cash_pending: cashPending,

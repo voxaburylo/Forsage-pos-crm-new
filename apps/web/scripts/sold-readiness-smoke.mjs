@@ -50,7 +50,7 @@ f.render();
 `
 const server = await createServer({ cacheDir: createSmokeCache(), configFile: false,
   root: path.join(root, 'apps/web'), logLevel: 'error', esbuild: { jsx: 'automatic' },
-  resolve: { alias: { '@': path.join(root, 'apps/web/src') } }, server: { host: '127.0.0.1', port: 0 },
+  resolve: { alias: { '@': path.join(root, 'apps/web/src') } }, server: { host: '127.0.0.1', port: 0, hmr: false, watch: null },
   plugins: [tailwindcss(), { name: 'isolated-sold-items', enforce: 'pre',
     resolveId(id) { if (id === 'virtual:audit' || Object.hasOwn(mocks, id)) return '\0'+id },
     load(id) {
@@ -126,8 +126,15 @@ try {
   assert.equal(await page.locator('tbody tr').count(),0)
   console.log('PASS: date edits and late replies cannot export stale rows under new dates')
 
-  await page.evaluate(()=>{fixture.data[0].net_revenue=1;fixture.render()})
-  await page.getByRole('alert').waitFor()
+  await page.evaluate(()=>{fixture.data[0].net_revenue=1;fixture.requests=[];fixture.render()})
+  await page.getByRole('alert').filter({hasText:'Виберіть правильну дату початку й завершення'}).waitFor()
+  assert.equal(await page.getByLabel('Від',{exact:true}).inputValue(),'','remount preserves an unfinished date rather than silently resetting the report')
+  assert.equal(await page.getByLabel('Продавець',{exact:true}).inputValue(),'two')
+  assert.equal(await page.getByLabel('Постачальник для дозамовлення').inputValue(),'a')
+  assert.equal(await page.evaluate(()=>fixture.requests.length),0,'invalid saved dates must not query a different period')
+  await page.getByRole('button',{name:'Сьогодні',exact:true}).click()
+  await page.getByRole('alert').filter({hasText:'Звіт проданих товарів неповний або застарілий'}).waitFor()
+  assert.deepEqual(await page.evaluate(()=>fixture.requests),[{url:'/api/v1/reports/sold-items?from=2026-10-04&to=2026-10-04'}],'corrupt-data assertion reaches the adapter, not the invalid-date guard')
   assert.equal(await exportButton.isDisabled(),true)
   await page.evaluate(()=>{fixture.desktop=true;fixture.requests=[];fixture.data=structuredClone(fixture.good);fixture.render()})
   await page.locator('tbody tr').filter({hasText:'Фільтр WIX WA9428'}).first().waitFor()

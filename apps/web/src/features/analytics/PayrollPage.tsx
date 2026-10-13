@@ -4,6 +4,8 @@ import { useLatestRequest } from '@/hooks/useLatestRequest'
 import { useScopedAction } from '@/hooks/useScopedAction'
 import { useBusinessDay } from '@/hooks/useBusinessDay'
 import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
+import { useListViewState } from '@/hooks/useViewNavigation'
+import { payrollTireHref, validReportMonth } from '@/features/reports/reportViewContext'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { staffTransactionAmount } from '@/features/staff/staffFormModel'
 import { payrollOperationLabel } from '@/features/staff/payrollOperationLabel'
@@ -43,10 +45,16 @@ function periodLabel(period: string): string {
 export default function PayrollPage() {
   const [searchParams] = useSearchParams()
   const businessDay = useBusinessDay()
-  const [period, setPeriod] = useState(() => {
+  const [savedPeriod, setPeriod] = useListViewState('payroll.period', currentPeriod)
+  const [requestedPeriod, setRequestedPeriod] = useState(() => {
     const requested = searchParams.get('period') ?? ''
-    return /^\d{4}-(0[1-9]|1[0-2])$/.test(requested) && Number(requested.slice(0, 4)) > 0 ? requested : currentPeriod()
+    return validReportMonth(requested) ? requested : null
   })
+  const period = requestedPeriod ?? savedPeriod
+  useEffect(() => {
+    if (!requestedPeriod) return
+    setPeriod(requestedPeriod); setRequestedPeriod(null)
+  }, [requestedPeriod, setPeriod])
   const [requestedEmployee, setRequestedEmployee] = useState(() => searchParams.get('employee'))
   const [users, setUsers] = useState<AdminUser[]>([])
   const [summary, setSummary] = useState<EmployeeSummary[]>([])
@@ -283,10 +291,10 @@ export default function PayrollPage() {
         {selected && (
           <div className="space-y-5">
             {selected.role === 'tire_worker' && <Link
-              to={`/analytics/sales?tab=tire&employee=${encodeURIComponent(selected.id)}`}
+              to={payrollTireHref(selected.id, period)}
               aria-disabled={saving} onClick={event => { if (action.isBusy()) event.preventDefault() }}
               className="block rounded-lg border border-yellow-300 bg-yellow-50 px-4 py-3 text-sm font-semibold text-gray-900">
-              Роботи, чеки та розрахунок зарплати за день →
+              Роботи, чеки та розрахунок зарплати — {periodLabel(period)} →
             </Link>}
             {!ready && <p role="status" className="text-sm text-amber-800">{loadError ? 'Не вдалося оновити дані. Закрийте вікно та повторіть завантаження; збережена операція не скасовується.' : 'Оновлюємо розрахунок зарплати…'}</p>}
             {ready && <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -324,6 +332,10 @@ export default function PayrollPage() {
                         {formatBusinessDateTime(payment.created_at)} · {PAYMENT_LABELS[payment.method]}
                         {payment.note ? ` · ${payment.note}` : ''}
                       </p>
+                      {selected.role === 'tire_worker' && payment.work_date && <Link
+                        to={payrollTireHref(selected.id, period, payment.work_date)}
+                        aria-disabled={saving} onClick={event => { if (action.isBusy()) event.preventDefault() }}
+                        className="text-xs text-blue-700 underline">День робіт: {payment.work_date}</Link>}
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
                       <strong className={effect < 0 ? 'text-red-500' : 'text-green-600'}>{effect < 0 ? '−' : '+'}{formatMoney(Math.abs(effect))}</strong>

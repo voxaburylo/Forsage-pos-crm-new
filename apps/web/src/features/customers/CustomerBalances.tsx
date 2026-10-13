@@ -5,7 +5,7 @@ export function CustomerBalances({ customer, deposit }: { customer: Customer; de
   const account = deposit ?? customer.deposit_balance
   const values = [
     { label: 'Клієнт винен магазину', value: customer.debt_balance, color: 'text-red-700', hint: 'Борг за неоплачені покупки.' },
-    { label: 'Кошти клієнта', value: account, color: 'text-emerald-700', hint: 'Доступні для оплати або повернення через касу.' },
+    { label: 'Кошти клієнта', value: account, color: 'text-emerald-700', hint: 'Кошти на рахунку, окремо від бонусів. Звичайний чек у касі поки не оплачується з цього рахунку.' },
     { label: 'Бонуси', value: customer.bonus_balance, color: 'text-amber-700', hint: 'Окремий бонусний баланс, не готівка.' },
   ]
   return <div>

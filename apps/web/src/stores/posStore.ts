@@ -26,6 +26,7 @@ export interface POSCustomer {
   debtBalance:     number   // копійки
   tierDiscountPct: number   // % знижки рівня (0 = немає)
   tierName:        string | null
+  loyaltyMode?:    'discount' | 'cashback'
   vipLevel:        'standard' | 'bronze' | 'silver' | 'gold'
   riskProfile:     'low' | 'medium' | 'high'
 }

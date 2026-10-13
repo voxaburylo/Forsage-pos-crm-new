@@ -52,11 +52,20 @@ export const saleListSchema = z.object({
   search:      z.string().optional(),
   status:      z.string().optional(),
   product_barcode: z.string().optional(),
-  date_from:   z.string().optional(),
-  date_to:     z.string().optional(),
+  product_search: z.string().max(200).optional(),
+  product_id: z.string().uuid().optional(),
+  seller_id: z.union([z.string().uuid(), z.literal('__unknown__')]).optional(),
+  unit_price: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+  include_returns: z.literal('1').optional(),
+  history_filter_version: z.literal('1').optional(),
+  date_from:   z.string().refine(value => Number.isFinite(Date.parse(value)), 'Некоректна дата').optional(),
+  date_to:     z.string().refine(value => Number.isFinite(Date.parse(value)), 'Некоректна дата').optional(),
+  date_to_exclusive: z.string().refine(value => Number.isFinite(Date.parse(value)), 'Некоректна дата').optional(),
   page:        z.coerce.number().int().min(1).default(1),
   per_page:    z.coerce.number().int().min(1).max(100).default(20),
-})
+}).refine(value => !value.date_from || !value.date_to || Date.parse(value.date_from) <= Date.parse(value.date_to), { message: 'Некоректний період продажів', path: ['date_to'] })
+  .refine(value => !value.date_to || !value.date_to_exclusive, { message: 'Вкажіть лише одну кінцеву межу періоду продажів', path: ['date_to_exclusive'] })
+  .refine(value => !value.date_from || !value.date_to_exclusive || Date.parse(value.date_from) < Date.parse(value.date_to_exclusive), { message: 'Некоректний період продажів', path: ['date_to_exclusive'] })
 
 export type CreateSaleInput     = z.infer<typeof createSaleSchema>
 export type CalculatePriceInput = z.infer<typeof calculatePriceSchema>

@@ -12,16 +12,19 @@ export const MAX_SUPPLY_TEXT = 1_000_000
 export interface AiSupplyRow {
   name: string; source_name?: string; sku?: string; barcode?: string; category_name?: string; brand?: string; unit?: string
   qty: number; purchase_price_uah: number; purchase_price_note?: string
+  retail_price_uah?: number; storage_bin?: string
 }
 // For a foreign-currency source, parsed price values are still in source currency;
 // they MUST be converted before constructing an invoice action.
 export interface AiSupplyInput { text: string; products: AiSupplyRow[]; categoryCount: number; reviewReason?: string; sourceCurrency?: string; sourceChecks?: SupplySourceCheck[] }
-type Column = 'name' | 'sku' | 'barcode' | 'category_name' | 'brand' | 'unit' | 'qty' | 'purchase_price_uah' | 'line_total' | 'currency'
+type Column = 'name' | 'sku' | 'barcode' | 'category_name' | 'brand' | 'unit' | 'qty' | 'purchase_price_uah' | 'retail_price_uah' | 'storage_bin' | 'line_total' | 'currency'
 const clean = (v: unknown) => String(v ?? '').replace(/\u00a0/g, ' ').trim()
 function field(value: unknown): Column | null {
   const h = clean(value).toLocaleLowerCase('uk-UA').replace(/[._-]+/g, ' ').replace(/\s+/g, ' ')
   if (/^(сума|сумма|сума рядка|сумма строки|line total|amount|total)(?:\s*[,(/]?\s*(?:грн|uah|₴|usd|eur|pln|\$|€)\s*\)?)?$/.test(h)) return 'line_total'
   if (/^(валюта|валюта закупівлі|валюта закупки|currency|purchase currency)$/.test(h)) return 'currency'
+  if (/^(?:ціна продажу|цена продажи|продаж|роздрібна ціна|розничная цена|retail(?: price)?|sale price|price retail|price sale|price sell)(?:\s*[,(/]?\s*(?:грн|uah|₴)\s*\)?)?$/.test(h)) return 'retail_price_uah'
+  if (/^(комірка|ячейка|storage bin|bin)$/.test(h)) return 'storage_bin'
   if (/^(штрих\s?код|barcode|ean|ean13|ean 13|шк)$/.test(h)) return 'barcode'
   if (/^(артикул.*|sku|article|код|код товару|код товара|номенклатура код)$/.test(h)) return 'sku'
   if (/^(назва.*|найменування.*|наименование.*|товар|product|description|номенклатура|name)$/.test(h)) return 'name'
@@ -136,9 +139,12 @@ function parseRows(rows: unknown[][], sheet: string, rawRows = rows, rowOffset =
     const rawPrice = numericValue(columns.purchase_price_uah!)
     const price = typeof rawPrice === 'string' ? rawPrice.replace(/\s*(?:USD|EUR|PLN|\$|€)\s*$/i, '') : rawPrice
     const product: AiSupplyRow = { name, qty: decimal(numericValue(columns.qty!), 'qty', location), purchase_price_uah: decimal(price, 'price', location) }
-    for (const key of ['sku', 'barcode', 'category_name', 'brand', 'unit'] as const) {
+    for (const key of ['sku', 'barcode', 'category_name', 'brand', 'unit', 'storage_bin'] as const) {
       const index = columns[key], value = index === undefined ? '' : clean(row[index])
       if (value) product[key] = value
+    }
+    if (columns.retail_price_uah !== undefined && values[columns.retail_price_uah]) {
+      product.retail_price_uah = decimal(numericValue(columns.retail_price_uah), 'price', location + ', ціна продажу')
     }
     const unit = supplyRowUnit(headers[columns.qty!], row[columns.qty!], headers[columns.purchase_price_uah!], product.unit, location)
     if (unit) product.unit = unit
@@ -230,10 +236,10 @@ export function parseSupplyWorkbook(buffer: ArrayBuffer): AiSupplyInput {
     texts.push(`# Лист: ${sheetName}\n${csv}`)
     sourceSheets.push({ name:sheetName, rows, rawRows, rowOffset:range.s.r })
     const parsed = parseRows(rows, sheetName, rawRows, range.s.r)
-    if (parsed.products === null) complete = false
+    if (parsed.products === null && !isSupplyCoverSheet(sheetName, rows)) complete = false
     else {
-      products.push(...parsed.products)
-      summaryGroups.push({ products: parsed.products, summaries: parsed.summaries ?? [] })
+      products.push(...(parsed.products ?? []))
+      summaryGroups.push({ products: parsed.products ?? [], summaries: parsed.summaries ?? [] })
     }
     currencyTexts.push(parsed.currencyText ?? csv)
     reviewReason ??= parsed.reviewReason
@@ -243,6 +249,19 @@ export function parseSupplyWorkbook(buffer: ArrayBuffer): AiSupplyInput {
   const parsedInput = result(texts.join('\n\n'), complete ? products : [], reviewReason, currencyTexts.join('\n'), complete ? summaryGroups : [])
   if (!complete) parsedInput.sourceChecks = readSupplySourceChecks(sourceSheets)
   return parsedInput
+}
+
+/** Only explicitly named, entirely metadata-only covers can be omitted from goods. */
+export function isSupplyCoverSheet(name: string, rows: unknown[][]): boolean {
+  if (!/^(?:титул(?:ьний)?(?: аркуш)?|титульный(?: лист)?|обкладинка|обложка|cover(?: sheet)?)$/i.test(name.trim())) return false
+  const content = rows.map(row => row.map(clean).filter(Boolean)).filter(row => row.length)
+  return content.length > 0 && content.every(row => {
+    if (row.length > 2) return false
+    const label = row[0]
+    if (row.length === 1 && /^(?:накладна|накладная|видаткова накладна|прихідна накладна|invoice)(?:\s|№|$)/i.test(label)) return true
+    if (/^(?:валюта|currency)\s*:?$/i.test(label)) { assertSupplyCurrency(row[1], 'Титульний аркуш'); return true }
+    return /^(?:постачальник|поставщик|покупець|покупатель|одержувач|отримувач|дата|номер|договір|договор|адреса|адрес|телефон|supplier|customer|date|number|address|phone)\s*:?$/i.test(label)
+  })
 }
 
 export function supplyImportAction(products: AiSupplyRow[], source: string): AiPendingAction {

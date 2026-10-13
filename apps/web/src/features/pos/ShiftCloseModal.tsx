@@ -1,4 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useRef } from 'react'
+import { useDialogEscape } from '@/hooks/useDialogEscape'
 import { parseClosingSnapshot, parseCountedCash } from './shiftCashData'
 import { shiftApi } from './shiftApi'
 import type { ShiftReport } from '@/types/shift'
@@ -39,6 +40,7 @@ export function ShiftCloseModal({
   const [loading, setLoading]           = useState(false)
   const [closing, setClosing]           = useState(false)
   const closeInFlight = useRef(false)
+  useDialogEscape(open, () => { if (!closeInFlight.current) onClose() }, { disabled: closing })
   const [loadedShiftId, setLoadedShiftId] = useState<string | null>(null)
   const [loadError, setLoadError] = useState(false)
   const [tireWorkers, setTireWorkers]   = useState<TireServiceReportRow[]>([])

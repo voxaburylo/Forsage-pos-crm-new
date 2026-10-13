@@ -1,4 +1,5 @@
 import { X, Keyboard } from 'lucide-react'
+import { useDialogEscape } from '@/hooks/useDialogEscape'
 
 interface Props {
   open: boolean
@@ -12,6 +13,7 @@ const SHORTCUTS = [
 ]
 
 export function HelpModal({ open, onClose }: Props) {
+  useDialogEscape(open, onClose)
   if (!open) return null
 
   return (

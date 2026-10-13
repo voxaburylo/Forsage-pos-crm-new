@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef } from 'react'
 import { X } from 'lucide-react'
+import { useDialogEscape } from '@/hooks/useDialogEscape'
 
 interface Props {
   open: boolean
@@ -14,22 +15,12 @@ const SIZES = { sm: 'max-w-sm', md: 'max-w-lg', lg: 'max-w-2xl', xl: 'max-w-5xl'
 export function Modal({ open, onClose, title, children, size = 'md' }: Props) {
   const titleId = useId()
   const dialogRef = useRef<HTMLDivElement>(null)
-  const onCloseRef = useRef(onClose)
-
-  useEffect(() => {
-    onCloseRef.current = onClose
-  }, [onClose])
+  useDialogEscape(open, onClose)
 
   useEffect(() => {
     if (!open) return
     const previouslyFocused = document.activeElement as HTMLElement | null
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        e.stopPropagation()
-        onCloseRef.current()
-        return
-      }
       if (e.key === 'Tab') {
         const focusable = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(
           'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
@@ -67,7 +58,7 @@ export function Modal({ open, onClose, title, children, size = 'md' }: Props) {
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className={`relative bg-white rounded-2xl shadow-xl w-full ${SIZES[size]} animate-slide-up flex flex-col max-h-[92dvh]`}
+        className={`relative bg-white rounded-2xl shadow-xl w-full ${SIZES[size]} animate-slide-up flex flex-col max-h-full`}
       >
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-100 shrink-0">
           <h2 id={titleId} className="text-base font-semibold text-gray-900">{title}</h2>

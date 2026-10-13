@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { supplierApi } from './supplierApi'
+import { supplierKeyboardChoice } from './supplierKeyboardChoice'
 type Option = { id: string; name: string; phone?: string | null }
 
 export function InvoiceSupplierPicker({ value, onChange }: { value: string; onChange: (id: string) => void }) {
@@ -41,7 +42,7 @@ export function InvoiceSupplierPicker({ value, onChange }: { value: string; onCh
     }, query ? 250 : 0)
     return () => { cancelled = true; window.clearTimeout(timer) }
   }, [open, query, page, retry])
-  function show() { if (!open) { setQuery(''); setRows([]); setPage(1); setActive(-1); setOpen(true) } }
+  function show() { if (!open) { setRows([]); setPage(1); setActive(-1); setBusy(true); setOpen(true) } }
   function choose(option: Option) { setSelected(option); onChange(option.id); setOpen(false) }
   return <div ref={root} className="relative min-w-0 flex-1" onBlur={event => {
     if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false)
@@ -58,9 +59,15 @@ export function InvoiceSupplierPicker({ value, onChange }: { value: string; onCh
             event.preventDefault(); show()
             setActive(index => Math.max(0, Math.min(rows.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1))))
           }
-          if (event.key === 'Enter') { event.preventDefault(); if (open && !busy && rows[active]) choose(rows[active]) }
+          if (event.key === 'Enter') {
+            event.preventDefault()
+            if (open && !busy && !error) {
+              const option = supplierKeyboardChoice(rows, query, active, page >= pages)
+              if (option) choose(option)
+            }
+          }
         }} className="w-full px-3 py-2 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400" />
-      {value && <button type="button" aria-label="Прибрати постачальника" onClick={() => { onChange(''); setSelected(null); setOpen(false) }} className="px-2 text-gray-500">×</button>}
+      {value && <button type="button" aria-label="Прибрати постачальника" onClick={() => { onChange(''); setSelected(null); setQuery(''); setOpen(false) }} className="px-2 text-gray-500">×</button>}
     </div>
     {selectedError && <p role="alert" className="text-xs text-red-600">Не вдалося завантажити вибраного постачальника. <button type="button" onClick={() => setRetry(n => n + 1)} className="underline">Повторити</button></p>}
     {open && <div className="absolute z-40 mt-1 w-full rounded-xl border border-gray-200 bg-white shadow-lg max-h-72 overflow-y-auto">

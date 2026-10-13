@@ -27,9 +27,28 @@ export function createdProductReference(response: unknown): { id: string; name: 
   return { id: value.id, name: value.name }
 }
 
+export type ProductReferenceOption = { id: string; name: string }
+export type ProductReferenceDraft = { draft: string | null; options: readonly ProductReferenceOption[] }
+
+export function normalizeProductReferenceName(name: string): string {
+  return name.trim().replace(/\s+/g, ' ').toLowerCase()
+}
+
+/** Search text is not a replacement ID until an exact or explicit choice is confirmed. */
+export function resolveProductReference(confirmedId: string, reference: ProductReferenceDraft, label: string): string {
+  if (reference.draft === null) return confirmedId
+  const query = normalizeProductReferenceName(reference.draft)
+  if (!query && !confirmedId) return ''
+  const matches = reference.options.filter(option => normalizeProductReferenceName(option.name) === query)
+  if (query && matches.length === 1) return matches[0].id
+  throw new Error(`${label}: виберіть значення зі списку або скасуйте пошук клавішею Escape. Для очищення виберіть «Без ${label === 'Бренд' ? 'бренду' : 'категорії'}».`)
+}
+
 /** Validate the whole editor before starting a write; never send its observed stock. */
-export function productEditorPayload(form: ProductFormData, canSeeMargin: boolean): ProductCreateData {
+export function productEditorPayload(form: ProductFormData, canSeeMargin: boolean, references?: { category?: ProductReferenceDraft; brand?: ProductReferenceDraft }): ProductCreateData {
   const payload: ProductCreateData = { ...form }
+  if (references?.category) payload.category_id = resolveProductReference(form.category_id, references.category, 'Категорія')
+  if (references?.brand) payload.brand_id = resolveProductReference(form.brand_id, references.brand, 'Бренд')
   delete payload.qty_on_hand
   payload.sku = form.sku.trim()
   payload.name = form.name.trim()

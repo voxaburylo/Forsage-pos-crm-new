@@ -1,5 +1,7 @@
 import { db } from '../db/supabase.js'
-import { runTransaction } from '../db/pg.js'
+import { pool, runTransaction } from '../db/pg.js'
+import { readSaleOrderSource, readSalePeople } from './salePeople.js'
+import { saleHistoryQuery } from './saleHistorySearch.js'
 import { assertTenantSyncGenerationInTransaction } from './syncGeneration.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { getCurrentShift } from './shiftService.js'
@@ -33,6 +35,14 @@ export async function allocateSaleNumber(
 
 
 export async function listSales(query: SaleListQuery, tenantId: string) {
+  if (query.history_filter_version === '1' || query.product_search || query.product_id || query.seller_id || query.unit_price !== undefined || query.include_returns || query.date_to_exclusive) {
+    const built = saleHistoryQuery(query, tenantId)
+    const result = await pool.query(built.text, built.values)
+    const row = result.rows[0]
+    return { data: row?.data ?? [], filter_version: 1,
+      pagination: { page: query.page, per_page: query.per_page, total: row?.total ?? 0,
+        total_pages: Math.max(1, Math.ceil(Number(row?.total ?? 0) / query.per_page)) } }
+  }
   const { shift_id, customer_id, sale_number, search, status, product_barcode, date_from, date_to, page, per_page } = query
   const offset = (page - 1) * per_page
 
@@ -158,7 +168,11 @@ export async function getSale(id: string, tenantId: string) {
     .single()
 
   if (error || !data) throw new AppError('SALE_NOT_FOUND', 'Продаж не знайдено', 404)
-  return data
+  const [people, isOrderSale] = await Promise.all([
+    readSalePeople((sql, params) => pool.query(sql, params), tenantId, data.cashier_id, data.manager_id),
+    readSaleOrderSource((sql, params) => pool.query(sql, params), tenantId, data.id),
+  ])
+  return { ...data, ...people, is_order_sale: isOrderSale }
 }
 
 export async function calculatePrice(input: CalculatePriceInput, tenantId: string) {
@@ -965,10 +979,29 @@ export async function createSale(
     let bonusExpiresAt: string | null = null
     cardChargeAmount = cardAmount
 
-    if (useBonusAtomic && input.customer_id && input.payment_method !== 'debt') {
+    const bonusesSpent = input.bonuses_spent ?? 0
+    if (bonusesSpent > 0 && !input.customer_id) {
+      throw new AppError('CUSTOMER_REQUIRED', 'Для списання бонусів виберіть клієнта', 400)
+    }
+    if (bonusesSpent > input.discount) {
+      throw new AppError('INVALID_BONUS_DISCOUNT', 'Сума списання бонусів має входити до знижки чека', 400)
+    }
+    if (useBonusAtomic && input.customer_id && (input.payment_method !== 'debt' || bonusesSpent > 0)) {
       const { getSettings } = await import('./loyaltyService.js')
       const loyaltySettings = await getSettings(tenantId)
-      if (loyaltySettings.is_enabled && discountedTotal >= (loyaltySettings.min_purchase_kopecks ?? 0)) {
+      if (bonusesSpent > 0) {
+        if (!loyaltySettings.is_enabled) {
+          throw new AppError('LOYALTY_DISABLED', 'Бонусна програма вимкнена', 400)
+        }
+        // The payment preview uses discounted goods BEFORE bonus redemption,
+        // excluding refundable core deposits. Enforce that same configured cap
+        // before touching the bank terminal; balance is checked under row lock.
+        const maxRedeem = Math.floor((discountedTotal + bonusesSpent) * (loyaltySettings.max_redeem_pct / 100))
+        if (bonusesSpent > maxRedeem) {
+          throw new AppError('BONUS_LIMIT_EXCEEDED', 'Сума бонусів перевищує дозволений максимум для цього чека', 400)
+        }
+      }
+      if (input.payment_method !== 'debt' && loyaltySettings.is_enabled && discountedTotal >= (loyaltySettings.min_purchase_kopecks ?? 0)) {
         bonusesEarned = Math.round(discountedTotal * ((loyaltySettings.accrual_pct ?? 0) / 100))
         bonusExpiresAt = loyaltySettings.expiry_days
           ? new Date(Date.now() + Number(loyaltySettings.expiry_days) * 86400000).toISOString()

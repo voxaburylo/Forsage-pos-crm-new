@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useDialogEscape } from '@/hooks/useDialogEscape'
 import { usePOSStore } from '@/stores/posStore'
 import { saleApi } from './saleApi'
 import { toast } from '@/components/ui/Toast'
@@ -16,6 +17,9 @@ export function SuspendModal({ open, onClose, onSuspended }: Props) {
   const store = usePOSStore()
   const [cell, setCell] = useState('')
   const [saving, setSaving] = useState(false)
+  const savingRef = useRef(false)
+  const safeClose = () => { if (!savingRef.current) onClose() }
+  useDialogEscape(open, safeClose, { disabled: saving })
   const operationKeyRef = useRef<string | null>(null)
 
   useEffect(() => {
@@ -25,6 +29,7 @@ export function SuspendModal({ open, onClose, onSuspended }: Props) {
   if (!open) return null
 
   async function handleSuspend() {
+    if (savingRef.current) return
     const { currentShift, items, customer, notes, managerId } = store
     if (!currentShift || items.length === 0) return
 
@@ -32,6 +37,7 @@ export function SuspendModal({ open, onClose, onSuspended }: Props) {
     const operationKey = operationKeyRef.current ?? crypto.randomUUID()
     operationKeyRef.current = operationKey
 
+    savingRef.current = true
     setSaving(true)
     try {
       await saleApi.suspend(
@@ -61,13 +67,14 @@ export function SuspendModal({ open, onClose, onSuspended }: Props) {
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Не вдалося відкласти чек')
     } finally {
+      savingRef.current = false
       setSaving(false)
     }
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/70" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/70" onClick={safeClose} />
       <div className="relative bg-[#1A1A1A] rounded-2xl border border-gray-700 w-full max-w-sm mx-4 p-6 space-y-4">
         <h2 className="text-white text-lg font-bold">Відкласти чек</h2>
 
@@ -86,7 +93,7 @@ export function SuspendModal({ open, onClose, onSuspended }: Props) {
         </div>
 
         <div className="flex gap-3 pt-2">
-          <button onClick={onClose}
+          <button onClick={safeClose} disabled={saving}
             className="flex-1 py-3 rounded-xl bg-[#2C2C2C] text-gray-300 font-semibold hover:bg-gray-700 transition-colors">
             Скасувати
           </button>

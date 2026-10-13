@@ -1,5 +1,6 @@
 import { isDesktopAccessLocked } from '@/lib/desktopAccessState'
 import { customerDiscountPct } from '@/features/customers/customerDiscount'
+import { canEditCustomerCard } from '@/features/customers/customerEditPermissions'
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Zap, LogOut, ArrowLeftRight, RotateCcw, Home, LayoutGrid, CircleDollarSign, Wrench, ReceiptText } from 'lucide-react'
@@ -43,6 +44,7 @@ import { OfflineSalesModal } from './OfflineSalesModal'
 import { usePOSBarcodeScanner } from './usePOSBarcodeScanner'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { connectOpenReceipts } from './cartRecovery'
+import { useViewNavigation } from '@/hooks/useViewNavigation'
 
 function posCustomerFromCustomer(c: Customer): POSCustomer {
   const tierDiscountPct = customerDiscountPct(c)
@@ -53,6 +55,7 @@ function posCustomerFromCustomer(c: Customer): POSCustomer {
     debtBalance: c.debt_balance,
     tierDiscountPct,
     tierName: c.price_tier?.name ?? null,
+    loyaltyMode: c.loyalty_mode ?? 'discount',
     vipLevel: c.vip_level ?? 'standard',
     riskProfile: c.risk_profile ?? 'low',
   }
@@ -140,6 +143,7 @@ const PAYMENT_ATTEMPT_KEY = 'forsage_last_payment_attempt'
 
 export default function POSPage() {
   const navigate = useNavigate()
+  const { open: openView } = useViewNavigation('/pos')
   const { store, completeSale, checkShift, fiscalRecovery, resolveFiscalRecovery } = usePOS()
   const setPriceRounding = usePOSStore((state) => state.setPriceRounding)
   const [payOpen, setPayOpen]           = useState(false)
@@ -149,6 +153,9 @@ export default function POSPage() {
   const [customerEditOpen, setCustomerEditOpen] = useState(false)
   const [resumeCustomerSearch, setResumeCustomerSearch] = useState(false)
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null)
+  const [customerEditLoading, setCustomerEditLoading] = useState(false)
+  const customerEditRequest = useRef(0)
+  useEffect(() => () => { customerEditRequest.current += 1 }, [])
   const [closeOpen, setCloseOpen]       = useState(false)
   const [cashOpen, setCashOpen]         = useState(false)
   const [reconcileOpen, setReconcileOpen] = useState(false)
@@ -240,16 +247,32 @@ export default function POSPage() {
     return () => window.cancelAnimationFrame(frame)
   }, [store.isInitializing])
 
-  async function handleEditCustomerFromSearch(customer: Customer) {
+  async function openCustomerEditor(customerId: string, fromSearch: boolean) {
+    if (!canEditCustomerCard(role) || !effectiveOnline) return
+    const request = ++customerEditRequest.current
+    setCustomerEditLoading(true)
     try {
-      const { data } = await customerApi.get(customer.id)
+      const { data } = await customerApi.get(customerId)
+      if (request !== customerEditRequest.current) return
+      if (!fromSearch && usePOSStore.getState().customer?.id !== customerId) return
       setEditingCustomer(data)
-      setResumeCustomerSearch(true)
+      setResumeCustomerSearch(fromSearch)
       setCustomerOpen(false)
       setCustomerEditOpen(true)
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Не вдалося завантажити клієнта')
+      if (request === customerEditRequest.current) toast.error(error instanceof Error ? error.message : 'Не вдалося завантажити клієнта')
+    } finally {
+      if (request === customerEditRequest.current) setCustomerEditLoading(false)
     }
+  }
+
+  function handleEditCustomerFromSearch(customer: Customer) {
+    return openCustomerEditor(customer.id, true)
+  }
+
+  function handleEditSelectedCustomer() {
+    const customer = usePOSStore.getState().customer
+    if (customer && !customerEditLoading) void openCustomerEditor(customer.id, false)
   }
 
   const refreshSuspendedCount = useCallback(() => {
@@ -381,25 +404,12 @@ export default function POSPage() {
   // Гарячі клавіші
   useEffect(() => {
     function handleGlobalKeyDown(e: KeyboardEvent) {
-      // Не перехоплюємо якщо фокус на input (крім F-клавіш та Esc)
-      const isInput = document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA'
-      // Escape закриває відкриті модалки
-      const anyModalOpen = payOpen || customerOpen || customerEditOpen || closeOpen || cashOpen || reconcileOpen || debtPayOpen || suspendOpen || suspendedOpen || helpOpen || findReceiptOpen
-      if (e.key === 'Escape' && anyModalOpen) {
-        e.preventDefault()
-        setPayOpen(false)
-        setCustomerOpen(false)
-        setCustomerEditOpen(false)
-        setCloseOpen(false)
-        setCashOpen(false)
-        setReconcileOpen(false)
-        setDebtPayOpen(false)
-        setSuspendOpen(false)
-        setSuspendedOpen(false)
-        setHelpOpen(false)
-        setFindReceiptOpen(false)
-        return
-      }
+      // Dialogs own Escape (including dirty/busy guards). Never edit the basket
+      // behind them, even when focus is on a button instead of an input.
+      const anyModalOpen = payOpen || customerOpen || customerEditOpen || closeOpen || cashOpen || reconcileOpen || debtPayOpen || suspendOpen || suspendedOpen || helpOpen || findReceiptOpen || quickOpen || quickCharge !== null || offlineSalesOpen || mobileMenuOpen || Boolean(fiscalRecovery)
+      if (e.defaultPrevented || e.isComposing || anyModalOpen || document.querySelector('[role="dialog"][aria-modal="true"]')) return
+      const active = document.activeElement
+      const isInput = active instanceof HTMLElement && (active.matches('input, textarea, select') || active.isContentEditable)
 
       if (e.key === 'Escape' && !isInput) {
         searchRef.current?.clear()
@@ -432,7 +442,7 @@ export default function POSPage() {
     }
     window.addEventListener('keydown', handleGlobalKeyDown)
     return () => window.removeEventListener('keydown', handleGlobalKeyDown)
-  }, [store.items, store.selectedProductId, store.removeItem, store.updateQty, payOpen, customerOpen, customerEditOpen, closeOpen, cashOpen, reconcileOpen, debtPayOpen, suspendOpen, suspendedOpen, helpOpen, findReceiptOpen])
+  }, [store.items, store.selectedProductId, store.removeItem, store.updateQty, payOpen, customerOpen, customerEditOpen, closeOpen, cashOpen, reconcileOpen, debtPayOpen, suspendOpen, suspendedOpen, helpOpen, findReceiptOpen, quickOpen, quickCharge, offlineSalesOpen, mobileMenuOpen, fiscalRecovery])
 
   if (store.isInitializing) {
     return (
@@ -811,6 +821,8 @@ export default function POSPage() {
               <ReceiptPanel
                 onPay={() => { setPayOpen(true) }}
                 onSelectCustomer={() => setCustomerOpen(true)}
+                onEditCustomer={canEditCustomerCard(role) && effectiveOnline ? handleEditSelectedCustomer : undefined}
+                customerEditLoading={customerEditLoading}
                 onClear={originalClear}
                 onClearCustomer={() => { store.setCustomer(null); store.setAutomaticDiscountPct(0) }}
               />
@@ -1015,7 +1027,8 @@ export default function POSPage() {
       />
 
       <HelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
-      <ReceiptFinderModal open={findReceiptOpen} onClose={() => setFindReceiptOpen(false)} onSelect={handleReprintSale} />
+      <ReceiptFinderModal open={findReceiptOpen} onClose={() => setFindReceiptOpen(false)} onSelect={handleReprintSale}
+        onHistory={query => { setFindReceiptOpen(false); openView(`/sales?search=${encodeURIComponent(query)}`) }} />
       <SuspendModal open={suspendOpen} onClose={() => setSuspendOpen(false)} onSuspended={() => {
         setSuspendOpen(false)
         refreshSuspendedCount()

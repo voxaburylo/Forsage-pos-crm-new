@@ -9,10 +9,12 @@ import { pricingApi } from '@/features/admin/pricingApi'
 import type { PriceTier } from '@/features/admin/pricingApi'
 import { TAGS } from '@/types/customer'
 import { desktopBridge } from '@/lib/desktopBridge'
-import { canEditCustomerCard, canManageCustomerDiscount, canManageCustomerFinancials, canManageCustomerStatus } from './customerEditPermissions'
+import { canEditCustomerCard, canManageCustomerStatus } from './customerEditPermissions'
 import { CustomerCardBarcodeField } from './CustomerCardBarcodeField'
 import { useScopedAction } from '@/hooks/useScopedAction'
 import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
+import { CustomerCreationLoyaltyFields } from './CustomerCreationLoyaltyFields'
+import { customerCreationLoyaltyPayload, customerPhoneFromSearch, type CustomerLoyaltyMode } from './customerCreateModel'
 
 interface Props {
   open: boolean
@@ -52,9 +54,7 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
   const scopeKey = useAuthStore((state) => state.session?.user?.id ?? '')
   const role = useAuthStore((state) => state.session?.user?.app_metadata?.role as string | undefined)
   const canEdit = canEditCustomerCard(role)
-  const canManageFinancials = canManageCustomerFinancials(role)
   const canManageStatus = canManageCustomerStatus(role)
-  const canManageDiscount = canManageCustomerDiscount(role)
   const [mode, setMode]             = useState<Mode>('search')
   const [query, setQuery]           = useState('')
   const [results, setResults]       = useState<Customer[]>([])
@@ -68,6 +68,7 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
   const [tags, setTags] = useState<string[]>([])
   const [priceTierId, setPriceTierId] = useState('')
   const [discountPct, setDiscountPct] = useState('0')
+  const [loyaltyMode, setLoyaltyMode] = useState<CustomerLoyaltyMode>('discount')
   const [clientStatus, setClientStatus] = useState('client')
   const [carBrand, setCarBrand] = useState('')
   const [carModel, setCarModel] = useState('')
@@ -96,6 +97,7 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
       setTags([])
       setPriceTierId('')
       setDiscountPct('0')
+      setLoyaltyMode('discount')
       setClientStatus('client')
       setCarBrand('')
       setCarModel('')
@@ -107,7 +109,7 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
     }
   }, [open, scopeKey, resumeSearch])
 
-  const createDirty = Boolean(phone || name || email || notes || cardBarcode || tags.length || priceTierId || discountPct !== '0' || clientStatus !== 'client' || carBrand || carModel || carYear || carVin || carNotes)
+  const createDirty = Boolean(phone || name || email || notes || cardBarcode || tags.length || priceTierId || discountPct !== '0' || loyaltyMode !== 'discount' || clientStatus !== 'client' || carBrand || carModel || carYear || carVin || carNotes)
   useUnsavedChanges(open && createDirty, open && saving)
   function requestClose() {
     if (action.isBusy()) return
@@ -156,6 +158,12 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
     onEdit?.(c)
   }
 
+  function startCreate() {
+    if (action.isBusy() || !canEdit || offline) return
+    setPhone((current) => current || customerPhoneFromSearch(query))
+    setMode('create')
+  }
+
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
     if (action.isBusy() || !canEdit) return
@@ -164,8 +172,6 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
       return
     }
     if (!phone.trim()) { toast.error("Телефон обов'язковий"); return }
-    const discount = Number(discountPct.replace(',', '.'))
-    if (canManageDiscount && (!Number.isFinite(discount) || discount < 0 || discount > 100)) { toast.error('Знижка має бути від 0 до 100%'); return }
     const attempt = action.begin()
     if (!attempt) return
     try {
@@ -177,8 +183,7 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
         notes: notes.trim() || undefined,
         tags,
         ...(canManageStatus ? { client_status: clientStatus } : {}),
-        ...(canManageDiscount ? { discount_pct: discount } : {}),
-        ...(canManageFinancials ? { price_tier_id: priceTierId || null } : {}),
+        ...customerCreationLoyaltyPayload(role, { discount_pct: discountPct, loyalty_mode: loyaltyMode, price_tier_id: priceTierId }),
         card_barcode: cardBarcode.trim() || null,
         ...(hasVehicle ? {
           vehicle: {
@@ -215,7 +220,7 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
           <button
             key={m}
             disabled={saving}
-            onClick={() => { if (!action.isBusy()) setMode(m) }}
+            onClick={() => { if (!action.isBusy()) { if (m === 'create') startCreate(); else setMode(m) } }}
             className={
               'px-4 py-2 text-sm font-medium border-b-2 transition-colors ' +
               (mode === m
@@ -267,10 +272,7 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
             <div className="text-center py-4">
               <p className="text-sm text-gray-500 mb-3">Клієнта не знайдено</p>
               {!offline && (
-                <Button variant="secondary" size="sm" onClick={() => {
-                  setPhone(query.trim())
-                  setMode('create')
-                }}>
+                <Button variant="secondary" size="sm" onClick={startCreate}>
                   Створити нового
                 </Button>
               )}
@@ -345,7 +347,7 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
               Або{' '}
               <button
                 className="text-yellow-600 hover:underline"
-                onClick={() => setMode('create')}
+                onClick={startCreate}
               >
                 створіть нового клієнта
               </button>
@@ -393,19 +395,10 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
                 <option value="sto">СТО</option>
               </select>
             </div>
-            <Input disabled={!canManageDiscount} label="Персональна знижка (%)" type="number" min="0" max="100" step="any"
-              value={discountPct} onChange={(e) => setDiscountPct(e.target.value)} />
-            {canManageFinancials && tiers.length > 0 && (
-              <div className="sm:col-span-2">
-                <label className="mb-1 block text-sm font-medium text-gray-700">Ціновий рівень</label>
-                <select value={priceTierId} onChange={(e) => setPriceTierId(e.target.value)}
-                  className="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-yellow-400">
-                  <option value="">Стандартна ціна (роздріб)</option>
-                  {tiers.map((tier) => <option key={tier.id} value={tier.id}>{tier.name} (знижка {tier.discount_pct}%)</option>)}
-                </select>
-              </div>
-            )}
           </div>
+
+          <CustomerCreationLoyaltyFields role={role} mode={loyaltyMode} discount={discountPct} tierId={priceTierId} tiers={tiers}
+            onModeChange={setLoyaltyMode} onDiscountChange={setDiscountPct} onTierChange={setPriceTierId} />
 
           <div>
             <p className="mb-2 text-sm font-medium text-gray-700">Теги</p>

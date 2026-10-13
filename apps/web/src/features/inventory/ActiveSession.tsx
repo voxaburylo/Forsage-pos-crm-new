@@ -26,6 +26,7 @@ import { InventoryWriteQueue, waitForInventoryWrites } from './inventoryWriteQue
 import { InventoryInputGuard, parseInventoryNumber } from './inventoryInput'
 import { InventoryQuantityInput, normalizeQuantityDrafts, type InventoryQuantityDraft, type InventoryQuantityDrafts, type InventoryQuantitySaved } from './InventoryQuantityInput'
 import { InventoryProductInput, inventoryProductFields, normalizeProductDrafts, type InventoryProductDraft, type InventoryProductDrafts, type InventoryProductField } from './InventoryProductInput'
+import { findExactProductForQuery } from '@/features/suppliers/invoiceFormModel'
 
 interface ProductInfo {
   id: string
@@ -222,6 +223,8 @@ export default function ActiveSession() {
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
   const [searchResults, setSearchResults] = useState<ProductInfo[]>([])
+  const searchCommitRef = useRef(false)
+  const searchResultsRef = useRef<HTMLDivElement>(null)
   const [searching, setSearching] = useState(false)
   const [selected, setSelected] = useState<ProductInfo | null>(null)
   const [qty, setQty] = useState('1')
@@ -987,6 +990,8 @@ export default function ActiveSession() {
     initAudio()
     try {
       const { data } = await inventoryApi.findProduct(id, { code: code.trim() }, { silent: true, timeoutMs: INVENTORY_READ_TIMEOUT_MS }) as { data: ProductInfo }
+      if (inputRef.current?.value.trim() !== code.trim()) return
+      if (!findExactProductForQuery(code, [data])) throw new Error('Немає точного збігу. Виберіть товар зі списку.')
       await addProduct(data)
     } catch (error) {
       playErrorTone()
@@ -1013,8 +1018,22 @@ export default function ActiveSession() {
 
   async function submitSearch(event: React.FormEvent) {
     event.preventDefault()
-    if (searchResults[0]) await addProduct(searchResults[0])
-    else await resolveCode(query)
+    const value = query.trim()
+    if (!value || searchCommitRef.current) return
+    searchCommitRef.current = true
+    try {
+      const exact = findExactProductForQuery(value, searchResults)
+      if (exact) { await addProduct(exact); return }
+      const { data } = await productApi.search(value, 200, { silent: true, timeoutMs: INVENTORY_READ_TIMEOUT_MS })
+      if (inputRef.current?.value.trim() !== value) return
+      const confirmed = findExactProductForQuery(value, data)
+      if (confirmed) { await addProduct(confirmed as ProductInfo); return }
+      setSearchResults(data as ProductInfo[])
+      if (!data.length && /^\d{6,}$/.test(value)) { await resolveCode(value); return }
+      toast.warning('Виберіть потрібний товар зі списку. Enter додає лише однозначний точний збіг.')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося перевірити товар')
+    } finally { searchCommitRef.current = false }
   }
 
   async function saveCount() {
@@ -1285,12 +1304,18 @@ export default function ActiveSession() {
                   ref={inputRef}
                   value={query}
                   onChange={(event) => { setQuery(event.target.value); setSelected(null); setQuickCreateOpen(false) }}
+                  onKeyDown={event => {
+                    if (event.nativeEvent.isComposing) return
+                    if (event.key === 'ArrowDown' && searchResults.length) {
+                      event.preventDefault(); searchResultsRef.current?.querySelector<HTMLButtonElement>('button')?.focus()
+                    }
+                  }}
                   placeholder="Назва, VIN/артикул або штрихкод"
                   autoFocus
                   className="w-full rounded-xl border-2 border-yellow-400 bg-white py-3.5 pl-10 pr-3 text-base outline-none focus:border-yellow-500"
                 />
                 {searchResults.length > 0 && (
-                  <div className="absolute z-50 mt-1 max-h-72 w-full overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-xl">
+                  <div ref={searchResultsRef} className="absolute z-50 mt-1 max-h-72 w-full overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-xl">
                     {searchResults.map((product) => (
                       <button
                         key={product.id}
@@ -1464,7 +1489,7 @@ export default function ActiveSession() {
                 inputMode="numeric"
                 value={qty}
                 onChange={(event) => setQty(event.target.value)}
-                onKeyDown={(event) => { if (event.key === 'Enter') saveCount() }}
+                onKeyDown={(event) => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); void saveCount() } }}
                 className="w-full rounded-xl border-2 border-yellow-400 px-4 py-4 text-center text-3xl font-bold outline-none focus:border-yellow-500"
               />
               <div className="mt-2 grid grid-cols-4 gap-2">
@@ -1767,7 +1792,7 @@ export default function ActiveSession() {
         {session.price_issues.length > INVENTORY_PAGE_SIZE && <InventoryPager total={session.price_issues.length} page={pricePage} onChange={setPricePage} />}
 
         {isActive && canComplete && (
-          <div className="space-y-2">
+          <div className="sticky bottom-0 z-10 space-y-2 rounded-xl border-t border-gray-200 bg-white p-3 shadow-lg">
             <div className="flex justify-end">
               <Button onClick={openCompleteConfirm} loading={completing} icon={<CheckCircle size={16} />}>
                 {completing ? 'Застосовую залишки...' : pendingRowWrites ? 'Зберігаю правки рядків...' : 'Завершити та застосувати залишки'}
@@ -1840,12 +1865,14 @@ export default function ActiveSession() {
                 </div>
               )}
 
-              <p className="text-sm text-gray-600">Застосувати ці зміни й завершити ревізію?</p>
-              <div className="flex gap-2 justify-end">
-                <Button variant="secondary" onClick={() => setCompleteOpen(false)}>Ні</Button>
-                <Button onClick={completeSession} loading={completing} icon={<CheckCircle size={16} />}>
-                  Так, завершити
-                </Button>
+              <div className="sticky bottom-0 z-10 space-y-3 border-t border-gray-100 bg-white py-3">
+                <p className="text-sm text-gray-600">Застосувати ці зміни й завершити ревізію?</p>
+                <div className="flex gap-2 justify-end">
+                  <Button variant="secondary" onClick={() => setCompleteOpen(false)}>Ні</Button>
+                  <Button onClick={completeSession} loading={completing} icon={<CheckCircle size={16} />}>
+                    Так, завершити
+                  </Button>
+                </div>
               </div>
             </div>
           )

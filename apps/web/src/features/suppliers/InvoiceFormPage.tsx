@@ -3,13 +3,12 @@ import { AiInvoiceLineMatch } from './AiInvoiceLineMatch'
 import { useAiInvoiceMatching } from './useAiInvoiceMatching'
 import { bindInvoiceCandidate, invoiceMatchProblems, type InvoiceCandidate } from './aiInvoiceMatching'
 import type { InvoiceFundSource, InvoiceImportField, InvoiceImportMapping, InvoicePaymentMethod, LineItem, SupplierPaymentFundSource, SupplyInvoiceDraftData, SupplyInvoiceLocalDraft } from './invoiceFormModel'
-import { EMPTY_INVOICE_IMPORT_MAPPING, InvoiceImportMatchError, INVOICE_IMPORT_FIELDS, supplyInvoiceDraftKey, buildInvoiceImportItems, cleanImportCell, clearSupplyInvoiceDraft, draftFromServerInvoice, duplicateProductMessage, findExactProductForQuery, guessInvoiceImport, hasSupplyInvoiceDraftContent, invoiceItemsToLineItems, isDuplicateProductError, kopecksForForm, loadSupplyInvoiceDraft, makeAutoSku, makeDraftItem, makeLineKey, newestSupplyInvoiceDraft, normalizeBarcodeValue, normalizeExactInvoiceProductName, normalizeInvoiceUnit, normalizeSkuValue, parseDecimalInput, parseMoneyToKopecks, parseQty, persistSupplyInvoiceDraft, retailFromLocalGrid } from './invoiceFormModel'
+import { EMPTY_INVOICE_IMPORT_MAPPING, InvoiceImportMatchError, INVOICE_IMPORT_FIELDS, supplyInvoiceDraftKey, cleanImportCell, clearSupplyInvoiceDraft, draftFromServerInvoice, duplicateProductMessage, findExactProductForQuery, guessInvoiceImport, hasSupplyInvoiceDraftContent, invoiceItemsToLineItems, isDuplicateProductError, kopecksForForm, loadSupplyInvoiceDraft, makeDraftItem, makeLineKey, newestSupplyInvoiceDraft, normalizeBarcodeValue, normalizeExactInvoiceProductName, normalizeInvoiceUnit, normalizeSkuValue, parseDecimalInput, parseMoneyToKopecks, persistSupplyInvoiceDraft, retailFromLocalGrid } from './invoiceFormModel'
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useViewNavigation } from '@/hooks/useViewNavigation'
 import { Trash2, Barcode } from 'lucide-react'
 import { read, utils } from 'xlsx'
-import Papa from 'papaparse'
 import { supplierApi } from './supplierApi'
 import { sourceForPaymentMethod, methodForPaymentSource } from './supplierPaymentSelection'
 import { invoiceProductBase } from './invoiceFormModel'
@@ -31,6 +30,10 @@ import { formatMoney } from '@/lib/utils'
 import { desktopBridge, desktopProductToProduct } from '@/lib/desktopBridge'
 import { resolveCachedInvoiceProduct } from './invoiceProductCache'
 import { captureInvoiceQuantities, nextInvoiceItems } from './invoiceQuantityGuard'
+import { focusInvoiceLine } from './invoiceLineFocus'
+import { assertInvoiceSource, buildCheckedInvoiceImport, prepareInvoiceClipboard, rememberInvoiceLayout, restoredInvoiceLayout, supplyRowsForInvoicePreview, supplyRowsToInvoiceItems } from './invoiceImportInput'
+import { readAiSupplyInput } from '@/features/ai/readAiSupplyInput'
+import { isSupplyCoverSheet } from '@/features/ai/aiSupplyImport'
 
 export default function InvoiceFormPage() {
   const navigate = useNavigate()
@@ -61,6 +64,7 @@ export default function InvoiceFormPage() {
   const baseRevisionRef = useRef<string | undefined>(undefined)
   const commitInvoiceIdRef = useRef<string | undefined>(undefined)
   const [versionConflict, setVersionConflict] = useState<SupplyInvoice | null>(null)
+  const invoiceFormRef = useRef<HTMLFormElement>(null)
 
   const [supplierId, setSupplierId] = useState(preSelectedSupplier)
   const [invoiceNumber, setInvoiceNumber] = useState('')
@@ -69,6 +73,9 @@ export default function InvoiceFormPage() {
   const [serverDraftId, setServerDraftId] = useState<string | null>(isEdit && id ? id : null)
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(isEdit)
+  // A stored draft has the same capabilities as a new draft. A posted/cancelled
+  // conflict is kept visible for recovery, but must never become an editable copy.
+  const canEditDraft = !loading && (!versionConflict || versionConflict.status === 'draft')
   const [productSearch, setProductSearch] = useState('')
   const [productResults, setProductResults] = useState<Product[]>([])
   const [problemLineKey, setProblemLineKey] = useState<string | null>(null)
@@ -89,11 +96,13 @@ export default function InvoiceFormPage() {
   const [clipboardText, setClipboardText] = useState('')
   const [invoiceImportModal, setInvoiceImportModal] = useState(false)
   const [invoiceImportRows, setInvoiceImportRows] = useState<unknown[][]>([])
+  const [invoiceImportNumericRows, setInvoiceImportNumericRows] = useState<unknown[][] | undefined>()
   const [invoiceImportFileName, setInvoiceImportFileName] = useState('')
   const [invoiceImportMapping, setInvoiceImportMapping] = useState<InvoiceImportMapping>({ ...EMPTY_INVOICE_IMPORT_MAPPING })
   const [invoiceImportStartRow, setInvoiceImportStartRow] = useState(1)
   const [invoiceImportHeaderRow, setInvoiceImportHeaderRow] = useState<number | null>(null)
   const [resolvingImportedProducts, setResolvingImportedProducts] = useState(false)
+  const invoiceImportBusyRef = useRef(false)
   const [bulkMarkupSelection, setBulkMarkupSelection] = useState('')
   const [customPctOpen, setCustomPctOpen] = useState(false)
   const [customPctValue, setCustomPctValue] = useState('')
@@ -313,8 +322,8 @@ export default function InvoiceFormPage() {
   }, [invoiceDraftKey])
 
   const invoiceImportPreview = useMemo(
-    () => buildInvoiceImportItems(invoiceImportRows, invoiceImportMapping, invoiceImportStartRow),
-    [invoiceImportRows, invoiceImportMapping, invoiceImportStartRow],
+    () => buildCheckedInvoiceImport(invoiceImportRows, invoiceImportMapping, invoiceImportStartRow, invoiceImportHeaderRow, invoiceImportNumericRows),
+    [invoiceImportRows, invoiceImportMapping, invoiceImportStartRow, invoiceImportHeaderRow, invoiceImportNumericRows],
   )
   const invoiceImportColumnCount = useMemo(
     () => Math.max(0, ...invoiceImportRows.slice(0, 20).map((row) => row.length)),
@@ -481,7 +490,15 @@ export default function InvoiceFormPage() {
       window.clearTimeout(timer)
     }
   }, [productSearch])
+  const productSearchCommitRef = useRef(false)
+  const productResultListRef = useRef<HTMLDivElement>(null)
   async function handleProductSearchKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.nativeEvent.isComposing) return
+    if (e.key === 'ArrowDown' && productResults.length) {
+      e.preventDefault()
+      productResultListRef.current?.querySelector<HTMLButtonElement>('button')?.focus()
+      return
+    }
     if (e.key === 'Escape') {
       setProductSearch('')
       setProductResults([])
@@ -490,30 +507,26 @@ export default function InvoiceFormPage() {
     if (e.key !== 'Enter') return
     e.preventDefault()
     const query = productSearch.trim()
-    if (!query) {
-      addDraftItem()
-      return
-    }
-
-    const existingResult = findExactProductForQuery(query, productResults)
-    if (existingResult) {
-      addItem(existingResult)
-      return
-    }
-
+    if (!query || productSearchCommitRef.current) return
+    const input = e.currentTarget
+    productSearchCommitRef.current = true
     try {
+      const existingResult = findExactProductForQuery(query, productResults)
+      if (existingResult) { addItem(existingResult); return }
       const res = await productApi.search(query, 200)
+      if (input.value.trim() !== query) return
       const exactResult = findExactProductForQuery(query, res.data)
       if (exactResult) {
         addItem(exactResult)
         return
       }
+      setProductResults(res.data)
+      toast.warning('Виберіть потрібний товар зі списку. Новий товар додається через «+ Новий рядок».')
     } catch {
-      // якщо пошук не відповів — все одно дамо створити рядок вручну нижче
+      toast.error('Не вдалося перевірити товар. Повторіть пошук — рядок не додано.')
+    } finally {
+      productSearchCommitRef.current = false
     }
-
-    const looksLikeBarcode = /^\d{6,}$/.test(query)
-    addDraftItem(looksLikeBarcode ? { barcode: query } : { product_name: query }, looksLikeBarcode ? 'name' : 'sku')
   }
   // Швидке сканування штрихкодів: реф на кожен інпут ШК + режим-гід «по черзі»
   const barcodeRefs = useRef<(HTMLInputElement | null)[]>([])
@@ -552,6 +565,7 @@ export default function InvoiceFormPage() {
     setProblemLineKey(rowKey)
     toast.error(message)
     window.setTimeout(() => {
+      if (focusInvoiceLine(invoiceFormRef.current, rowKey, field)) return
       const index = itemsRef.current.findIndex((candidate) => candidate.client_key === rowKey)
       if (index >= 0) {
         const el = refsForField(field).current[index] ?? rowNameRefs.current[index]
@@ -562,7 +576,7 @@ export default function InvoiceFormPage() {
   }
 
   function handleRowFieldKeyDown(e: React.KeyboardEvent<HTMLInputElement>, index: number, field: RowField) {
-    if (e.key !== 'Enter' || e.shiftKey) return
+    if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) return
     e.preventDefault()
     const order: RowField[] = ['name', 'sku', 'barcode', 'qty', 'purchase', 'retail']
     const pos = order.indexOf(field)
@@ -570,7 +584,7 @@ export default function InvoiceFormPage() {
       focusRowField(index, order[pos + 1])
       return
     }
-    if (!isEdit && index >= items.length - 1) {
+    if (canEditDraft && index >= items.length - 1) {
       addDraftItem()
     } else {
       focusRowField(index + 1, 'name')
@@ -636,6 +650,7 @@ export default function InvoiceFormPage() {
   // Сканер = клавіатура: вводить код + Enter. На Enter — перехід на наступний рядок.
   // Наступний порожній шукаємо за фактичним value інпутів (а не за стейтом — уникаємо stale).
   function onBarcodeKeyDown(e: React.KeyboardEvent<HTMLInputElement>, i: number) {
+    if (e.nativeEvent.isComposing) return
     if (e.key === 'Escape' && scanGuide) {
       e.preventDefault(); setScanGuide(false); barcodeRefs.current[i]?.blur(); return
     }
@@ -820,54 +835,64 @@ export default function InvoiceFormPage() {
     })
   }
 
-  function openInvoiceImportPreview(rawRows: unknown[][], fileName = '') {
-    const rows = (rawRows ?? [])
-      .map((row) => Array.isArray(row) ? row : [])
-      .filter((row) => row.some((cell) => cleanImportCell(cell)))
+  function openInvoiceImportPreview(rawRows: unknown[][], fileName = '', numericRows?: unknown[][]) {
+    const indices = rawRows.map((row, index) => Array.isArray(row) && row.some(cleanImportCell) ? index : -1).filter(index => index >= 0)
+    const rows = indices.map(index => rawRows[index])
     if (rows.length === 0) {
       toast.warning('У файлі не знайдено рядків для імпорту')
       return
     }
     const detected = guessInvoiceImport(rows)
     setInvoiceImportRows(rows)
+    setInvoiceImportNumericRows(numericRows ? indices.map(index => numericRows[index]) : undefined)
     setInvoiceImportFileName(fileName)
-    setInvoiceImportMapping(detected.mapping)
+    setInvoiceImportMapping(restoredInvoiceLayout(rows, detected.headerRow) ?? detected.mapping)
     setInvoiceImportStartRow(detected.startRow)
     setInvoiceImportHeaderRow(detected.headerRow)
     setInvoiceImportModal(true)
   }
 
-  function handleFileImport(e: React.ChangeEvent<HTMLInputElement>) {
+  async function handleFileImport(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
+    e.target.value = ''
     if (!file) return
-
-    if (file.name.toLowerCase().endsWith('.csv')) {
-      Papa.parse(file, {
-        header: false,
-        skipEmptyLines: false,
-        complete: (results: any) => openInvoiceImportPreview(results.data, file.name),
-        error: () => toast.error('Помилка читання CSV файлу'),
-      })
-    } else {
-      const reader = new FileReader()
-      reader.onload = (evt) => {
-        try {
-          const data = new Uint8Array(evt.target?.result as ArrayBuffer)
-          const workbook = read(data, { type: 'array', cellText: true, cellNF: true })
-          const sheet = workbook.Sheets[workbook.SheetNames[0]]
-          const json = utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false }) as unknown[][]
-          openInvoiceImportPreview(json, file.name)
-        } catch {
-          toast.error('Помилка читання Excel файлу')
+    if (invoiceImportBusyRef.current) return
+    invoiceImportBusyRef.current = true
+    setResolvingImportedProducts(true)
+    try {
+      if (file.size > 10 * 1024 * 1024) throw new Error('Файл завеликий. Розділіть його на частини до 10 МБ.')
+      if (file.name.toLowerCase().endsWith('.csv')) {
+        const parsed = await prepareInvoiceClipboard(await file.text())
+        openInvoiceImportPreview(parsed.products ? supplyRowsForInvoicePreview(parsed.products) : parsed.rows ?? [], file.name)
+      } else {
+        const buffer = await file.arrayBuffer()
+        const parsed = await readAiSupplyInput({ buffer: buffer.slice(0), excel: true })
+        assertInvoiceSource(parsed)
+        if (parsed.products.length) openInvoiceImportPreview(supplyRowsForInvoicePreview(parsed.products), file.name)
+        else {
+          // Keep the existing manual mapping for a single unfamiliar table, but
+          // never silently discard a second unrecognized sheet.
+          const workbook = read(buffer, { type: 'array', cellText: true, cellNF: true })
+          const sheets = workbook.SheetNames.map(name => ({ name,
+            rows: utils.sheet_to_json<unknown[]>(workbook.Sheets[name], { header: 1, defval: '', raw: false, blankrows: true }),
+            numericRows: utils.sheet_to_json<unknown[]>(workbook.Sheets[name], { header: 1, defval: '', raw: true, blankrows: true }),
+          }))
+            .filter(sheet => sheet.rows.some(row => row.some(cleanImportCell)) && !isSupplyCoverSheet(sheet.name, sheet.rows))
+          if (sheets.length !== 1) throw new Error('У книзі кілька нерозпізнаних аркушів. Перевірте весь файл у наявному ШІ-розборі; жоден аркуш не пропущено.')
+          openInvoiceImportPreview(sheets[0].rows, file.name, sheets[0].numericRows)
         }
       }
-      reader.readAsArrayBuffer(file)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося прочитати файл. Жоден товар не додано.')
+    } finally {
+      invoiceImportBusyRef.current = false
+      setResolvingImportedProducts(false)
     }
-    e.target.value = ''
   }
 
   async function confirmInvoiceImport() {
-    if (resolvingImportedProducts) return
+    if (invoiceImportBusyRef.current) return
+    if (invoiceImportPreview.error) { toast.error(invoiceImportPreview.error); return }
     if (invoiceImportMapping.name == null && invoiceImportMapping.sku == null && invoiceImportMapping.barcode == null) {
       toast.error('Вкажіть хоча б колонку назви, артикула або штрихкоду')
       return
@@ -881,10 +906,12 @@ export default function InvoiceFormPage() {
       return
     }
     const importItems = invoiceImportPreview.items
+    invoiceImportBusyRef.current = true
     setResolvingImportedProducts(true)
     try {
       const resolved = await resolveExistingProductsForItems(importItems)
       appendLineItems(resolved.items)
+      rememberInvoiceLayout(invoiceImportRows, invoiceImportHeaderRow, invoiceImportMapping)
       toast.success(`Імпортовано ${resolved.items.length} товарів${resolved.matched ? `, знайдено в базі ${resolved.matched}` : ''}${invoiceImportPreview.skipped ? `, пропущено ${invoiceImportPreview.skipped} зайвих рядків` : ''}`)
     } catch (error) {
       const matchError = error instanceof InvoiceImportMatchError
@@ -893,6 +920,7 @@ export default function InvoiceFormPage() {
       appendLineItems(importItems)
       raiseInvoiceLineProblem(matchError.item.client_key, matchError.message, matchError.item)
     } finally {
+      invoiceImportBusyRef.current = false
       setResolvingImportedProducts(false)
       setInvoiceImportModal(false)
       setInvoiceImportRows([])
@@ -900,41 +928,13 @@ export default function InvoiceFormPage() {
     }
   }
   async function handleClipboardPaste() {
-    if (!clipboardText.trim() || resolvingImportedProducts) return
-    const lines = clipboardText.split('\n').filter(line => line.trim())
-    const newItems: LineItem[] = []
-
-    lines.forEach(line => {
-      const cols = line.split('\t')
-      if (cols.length < 2) return
-
-      const sku = cols[0]?.trim() || ''
-      const name = cols[1]?.trim() || ''
-      if (!sku && !name) return
-
-      const qty = parseQty(cols[2], 1)
-      const purchase = parseMoneyToKopecks(cols[3])
-      const retail = parseMoneyToKopecks(cols[4])
-      const bin = cols[5]?.trim() || null
-
-      const clientKey = makeLineKey()
-      newItems.push({
-        client_key: clientKey,
-        product_name: name || `Товар (${sku})`,
-        sku: sku || makeAutoSku(clientKey),
-        qty,
-        purchase_price: purchase,
-        retail_price: retail,
-        category_id: null,
-        unit: 'шт',
-        total: Math.round(qty * purchase),
-        storage_bin: bin || null,
-        is_new: true,
-      })
-    })
-
-    if (newItems.length > 0) {
-      setResolvingImportedProducts(true)
+    if (!clipboardText.trim() || invoiceImportBusyRef.current) return
+    invoiceImportBusyRef.current = true
+    setResolvingImportedProducts(true)
+    try {
+      const parsed = await prepareInvoiceClipboard(clipboardText)
+      if (!parsed.products) { openInvoiceImportPreview(parsed.rows ?? [], 'Буфер'); return }
+      const newItems = supplyRowsToInvoiceItems(parsed.products)
       try {
         const resolved = await resolveExistingProductsForItems(newItems)
         appendLineItems(resolved.items)
@@ -945,12 +945,13 @@ export default function InvoiceFormPage() {
           : new InvoiceImportMatchError(newItems[0], error)
         appendLineItems(newItems)
         raiseInvoiceLineProblem(matchError.item.client_key, matchError.message, matchError.item)
-      } finally {
-        setResolvingImportedProducts(false)
-        setClipboardText('')
       }
-    } else {
-      toast.error('Не вдалося розпарсити буфер. Скопіюйте таблицю з Excel.')
+      setClipboardText('')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося прочитати буфер. Введений текст збережено.')
+    } finally {
+      invoiceImportBusyRef.current = false
+      setResolvingImportedProducts(false)
     }
   }
 
@@ -1243,7 +1244,17 @@ export default function InvoiceFormPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (invoiceSubmitRef.current || resolvingImportedProducts) return
-    if (!aiMatching.ready) { toast.error(aiMatching.error || (aiMatching.pending ? 'Дочекайтеся перевірки товарів' : 'Перевірте червоні рядки накладної')); return }
+    if (!canEditDraft || versionConflict) { toast.warning('Спочатку звірте актуальну накладну. Зміни ще не проведено.'); return }
+    if (!aiMatching.ready) {
+      if (aiMatching.pending) toast.warning('Дочекайтеся перевірки товарів')
+      else if (aiMatching.error) aiMatching.retry()
+      else {
+        const first = itemsRef.current.find(item => invoiceMatchProblems(item).length > 0)
+        if (first) focusInvoiceLine(invoiceFormRef.current, first.client_key, 'sku', true)
+        toast.error('Перевірте виділений рядок накладної. Товари ще не проведено.')
+      }
+      return
+    }
     if (pendingPriceRef.current > 0) { toast.warning('Дочекайтеся розрахунку цін перед проведенням.'); return }
     // Desktop and mobile controls both exist in the DOM. Only the visible
     // quantity input is authoritative; never let its hidden twin overwrite it.
@@ -1376,7 +1387,10 @@ export default function InvoiceFormPage() {
       title={isEdit ? 'Редагувати накладну' : 'Нова приходна накладна'}
       onBack={closeInvoiceForm}
     >
-      <form data-supply-invoice-form="true" onSubmit={handleSubmit}>
+      <form ref={invoiceFormRef} data-supply-invoice-form="true" onSubmit={handleSubmit} onKeyDown={event => {
+        // Row/dropdown handlers keep their own Enter. Other inputs must never post implicitly.
+        if (event.key === 'Enter' && !event.nativeEvent.isComposing && !event.defaultPrevented && event.target instanceof HTMLInputElement) event.preventDefault()
+      }}>
         {versionConflict && <InvoiceVersionConflict current={versionConflict} items={items} busy={saving}
           onReload={() => {
             if (!confirm('Завантажити актуальну накладну з бази замість правок у цій формі? Поточні незбережені правки буде замінено.')) return
@@ -1398,7 +1412,7 @@ export default function InvoiceFormPage() {
             setVersionConflict(null)
           }}
           onOpen={() => open('/suppliers/invoices/' + versionConflict.id)} />}
-        <fieldset disabled={saving} className="min-w-0 border-0 p-0 m-0" aria-busy={saving}>
+        <fieldset disabled={saving || !canEditDraft} className="min-w-0 border-0 p-0 m-0" aria-busy={saving}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
           <Card>
             <div className="space-y-4">
@@ -1406,7 +1420,7 @@ export default function InvoiceFormPage() {
                 <label className="block text-sm font-medium text-gray-700 mb-1">Постачальник *</label>
                 <div className="flex gap-2">
                   <InvoiceSupplierPicker value={supplierId} onChange={setSupplierId} />
-                  {!isEdit && (
+                  {canEditDraft && (
                     <button type="button" onClick={() => setSupplierModal(true)}
                       className="px-3.5 py-2 bg-yellow-500 hover:bg-yellow-600 text-white font-bold text-sm rounded-lg transition-colors"
                       title="Швидке створення постачальника">
@@ -1429,7 +1443,7 @@ export default function InvoiceFormPage() {
         </div>
 
         {/* Спосіб додавання товарів */}
-        {!isEdit && (
+        {canEditDraft && (
           <Card className="mb-6">
             <div className="grid grid-cols-3 gap-1.5 border-b border-gray-100 pb-3 mb-4">
               <button type="button" onClick={() => setImportTab('manual')}
@@ -1449,7 +1463,7 @@ export default function InvoiceFormPage() {
             {importTab === 'manual' && (
               <div className="space-y-2">
                 <Input value={productSearch} onChange={(e) => setProductSearch(e.target.value)} onKeyDown={handleProductSearchKeyDown} placeholder="Знайти існуючий товар за назвою, артикулом або штрихкодом..." className="w-full" />
-                <p className="text-xs text-gray-400">Enter додає існуючий товар лише за точним штрихкодом, артикулом або точною назвою. Якщо точного збігу немає — створюється новий рядок.</p>
+                <p className="text-xs text-gray-400">Enter додає лише однозначний точний збіг. ↓ — вибрати зі списку; новий товар — «+ Новий рядок».</p>
               </div>
             )}
 
@@ -1467,7 +1481,7 @@ export default function InvoiceFormPage() {
             {importTab === 'clipboard' && (
               <div className="space-y-3">
                 <textarea value={clipboardText} onChange={(e) => setClipboardText(e.target.value)} rows={4}
-                  placeholder="Вставте скопійовану таблицю з Excel/Google Sheets сюди. Колонка 1: Артикул, Колонка 2: Назва, Колонка 3: К-сть, Колонка 4: Закупка..."
+                  placeholder="Вставте скопійовану таблицю з заголовками Назва, Кількість, Закупівля — колонки можуть бути в будь-якому порядку. Без заголовків: Артикул, Назва, К-сть, Закупка, Продаж, Комірка."
                   className="w-full border border-gray-200 rounded-lg p-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-yellow-400 resize-none" />
                 <Button type="button" onClick={handleClipboardPaste} loading={resolvingImportedProducts} disabled={resolvingImportedProducts}>
                   Імпортувати дані
@@ -1476,7 +1490,7 @@ export default function InvoiceFormPage() {
             )}
 
             {importTab === 'manual' && productResults.length > 0 && (
-              <div className="mt-2 max-h-96 overflow-y-auto bg-white border border-gray-200 rounded-lg shadow-sm">
+              <div ref={productResultListRef} className="mt-2 max-h-96 overflow-y-auto bg-white border border-gray-200 rounded-lg shadow-sm">
                 {productResults.map((p) => (
                   <button key={p.id} type="button" onClick={() => addItem(p)}
                     className="w-full px-3 py-2 text-left text-sm hover:bg-yellow-50 flex items-center justify-between gap-3">
@@ -1498,7 +1512,7 @@ export default function InvoiceFormPage() {
         <Card padding="none" className="mb-6">
           <div className="px-4 py-3 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <span className="text-sm font-semibold text-gray-800 shrink-0">Позиції ({items.length})</span>
-            {!isEdit && (
+            {canEditDraft && (
               <div className="flex flex-wrap items-center gap-2">
                 {items.length > 0 && (
                   <div className="flex items-center gap-2 mr-auto flex-wrap bg-gray-50 border border-gray-200 rounded-xl px-2.5 py-1.5">
@@ -1562,14 +1576,14 @@ export default function InvoiceFormPage() {
 
               </div>
             )}
-            {isEdit && (
-              <span className="text-xs text-green-600 font-semibold">Редагуєте чернетку: ціни, кількість і дані рядків можна змінювати.</span>
+            {isEdit && canEditDraft && (
+              <span className="text-xs text-green-600 font-semibold">Редагуєте чернетку: можна додавати, прибирати та змінювати товари. Уже внесена оплата зберігається.</span>
             )}
           </div>
 
 
 
-          {!isEdit && items.length > 0 && (
+          {canEditDraft && items.length > 0 && (
             <div className="flex items-center gap-2 mb-2">
               <button type="button" onClick={startScanGuide}
                 className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${scanGuide ? 'bg-yellow-400 text-black' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}>
@@ -1615,7 +1629,7 @@ export default function InvoiceFormPage() {
                 const cheaperElsewhere = best && supplierId && best.supplier_id !== supplierId && best.price < item.purchase_price
                 const hasProblem = invoiceMatchProblems(item).length > 0 || problemLineKey === item.client_key
                 return (
-                <tr key={item.client_key} className={hasProblem ? 'border-b border-red-200 bg-red-50/80 ring-2 ring-red-200' : 'border-b border-gray-50 hover:bg-gray-50/50'}>
+                <tr key={item.client_key} data-invoice-row={item.client_key} className={hasProblem ? 'border-b border-red-200 bg-red-50/80 ring-2 ring-red-200' : 'border-b border-gray-50 hover:bg-gray-50/50'}>
                   <td className="px-2 py-2 text-center">
                     <input
                       type="checkbox"
@@ -1768,7 +1782,7 @@ export default function InvoiceFormPage() {
                         onBlur={() => finishMoneyEdit(i, 'retail_price')}
 
                         className="w-full min-w-[80px] text-right border border-gray-200 rounded px-2 py-1 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white" />
-                      {!isEdit && (
+                      {canEditDraft && (
                         <select
                           value=""
                           title="Націнка: за таблицею або швидкий відсоток"
@@ -1791,9 +1805,9 @@ export default function InvoiceFormPage() {
                   </td>
                   <td className="px-4 py-2 text-right font-mono">{formatMoney(item.total)}</td>
                   <td className="px-2 py-2">
-                    {!isEdit && (
+                    {canEditDraft && (
                       <button type="button" onClick={() => removeItem(i)}
-                        className="text-red-300 hover:text-red-500 p-1"><Trash2 size={14} /></button>
+                        className="text-red-300 hover:text-red-500 p-1" aria-label="Видалити рядок"><Trash2 size={14} /></button>
                     )}
                   </td>
                 </tr>
@@ -1818,7 +1832,7 @@ export default function InvoiceFormPage() {
             {items.map((item, i) => {
               const hasProblem = invoiceMatchProblems(item).length > 0 || problemLineKey === item.client_key
               return (
-              <div key={item.client_key} className={hasProblem ? 'p-3 space-y-3 bg-red-50 ring-2 ring-red-200' : 'p-3 space-y-3'}>
+              <div key={item.client_key} data-invoice-row={item.client_key} className={hasProblem ? 'p-3 space-y-3 bg-red-50 ring-2 ring-red-200' : 'p-3 space-y-3'}>
                 <div className="flex items-start gap-2">
                   <input
                     type="checkbox"
@@ -1848,7 +1862,7 @@ export default function InvoiceFormPage() {
                       </div>
                     )}
                   </div>
-                  {!isEdit && (
+                  {canEditDraft && (
                     <button type="button" onClick={() => removeItem(i)}
                       className="shrink-0 p-2 text-red-300 hover:text-red-500" aria-label="Видалити рядок"><Trash2 size={16} /></button>
                   )}
@@ -1970,7 +1984,7 @@ export default function InvoiceFormPage() {
                 </div>
 
                 <div className="flex items-center justify-between gap-2 rounded-lg bg-gray-50 px-2.5 py-2">
-                  {!isEdit ? (
+                  {canEditDraft ? (
                     <select
                       value=""
                       onChange={(e) => {
@@ -2003,7 +2017,7 @@ export default function InvoiceFormPage() {
             )}
           </div>
 
-          {!isEdit && (
+          {canEditDraft && (
             <div className="p-3 border-t border-gray-100 bg-white">
               <Button type="button" onClick={() => addDraftItem()} className="w-full min-h-[48px]">
                 + Новий рядок
@@ -2105,12 +2119,12 @@ export default function InvoiceFormPage() {
           </Card>
         )}
 
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-3 rounded-xl border-t border-gray-200 bg-white px-3 py-3 shadow-lg">
           {aiMatching.pending && <span role="status" className="text-sm text-gray-500">Перевіряю товари…</span>}
           {aiMatching.error && <p role="alert" className="text-sm text-red-700">{aiMatching.error}</p>}
           {aiMatching.problemCount > 0 && <span className="text-sm text-red-700">Перевірте червоні рядки: {aiMatching.problemCount}</span>}
-          <Button type="submit" disabled={saving || resolvingImportedProducts || recalculatingPrices || !aiMatching.ready}>
-            {saving ? 'Проводимо...' : recalculatingPrices ? 'Розрахунок цін...' : 'Провести'}
+          <Button type="submit" disabled={saving || resolvingImportedProducts || recalculatingPrices || aiMatching.pending || Boolean(versionConflict)}>
+            {saving ? 'Проводимо...' : recalculatingPrices ? 'Розрахунок цін...' : aiMatching.error ? 'Повторити перевірку' : aiMatching.problemCount ? `Перевірити рядки (${aiMatching.problemCount})` : 'Провести'}
           </Button>
           <Button type="button" variant="outline" onClick={() => void cancelInvoiceForm()}>Скасувати</Button>
         </div>
@@ -2148,6 +2162,8 @@ export default function InvoiceFormPage() {
               </div>
             </div>
           </div>
+
+          {invoiceImportPreview.error && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{invoiceImportPreview.error}</p>}
 
           <div className="border border-gray-200 rounded-xl overflow-hidden">
             <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">

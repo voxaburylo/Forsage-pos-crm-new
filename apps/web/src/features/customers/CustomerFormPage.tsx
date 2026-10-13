@@ -9,11 +9,13 @@ import { Layout } from '@/components/Layout'
 import { Button, Input, Card } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/stores/authStore'
-import { canEditCustomerCard, canManageCustomerDiscount, canManageCustomerFinancials, canManageCustomerStatus } from './customerEditPermissions'
+import { canEditCustomerCard, canManageCustomerStatus } from './customerEditPermissions'
 import { CustomerCardBarcodeField } from './CustomerCardBarcodeField'
 import { useScopedAction } from '@/hooks/useScopedAction'
 import { useViewNavigation } from '@/hooks/useViewNavigation'
 import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
+import { CustomerCreationLoyaltyFields } from './CustomerCreationLoyaltyFields'
+import { customerCreationLoyaltyPayload, type CustomerLoyaltyMode } from './customerCreateModel'
 
 interface FormData {
   phone:         string
@@ -24,6 +26,7 @@ interface FormData {
   price_tier_id: string
   card_barcode:  string
   discount_pct:  string
+  loyalty_mode: CustomerLoyaltyMode
   client_status: string
   car_brand:     string
   car_model:     string
@@ -33,7 +36,7 @@ interface FormData {
 
 const EMPTY: FormData = {
   phone: '', full_name: '', email: '', notes: '', tags: [], price_tier_id: '',
-  card_barcode: '', discount_pct: '0', client_status: 'client',
+  card_barcode: '', discount_pct: '0', loyalty_mode: 'discount', client_status: 'client',
   car_brand: '', car_model: '', car_year: '', car_vin: '',
 }
 
@@ -50,9 +53,7 @@ function CustomerForm() {
   const navigation = useViewNavigation('/customers')
   const role = useAuthStore((s) => s.session?.user?.app_metadata?.role as string | undefined)
   const canEdit = canEditCustomerCard(role)
-  const canManageFinancials = canManageCustomerFinancials(role)
   const canManageStatus = canManageCustomerStatus(role)
-  const canManageDiscount = canManageCustomerDiscount(role)
 
   const [form, setForm]     = useState<FormData>(EMPTY)
   const [tiers, setTiers]   = useState<PriceTier[]>([])
@@ -80,8 +81,6 @@ function CustomerForm() {
     e.preventDefault()
     if (action.isBusy() || !canEdit) return
     if (!form.phone.trim()) { toast.error("Телефон обов'язковий"); return }
-    const discount = Number(form.discount_pct.replace(',', '.'))
-    if (canManageDiscount && (!Number.isFinite(discount) || discount < 0 || discount > 100)) { toast.error('Знижка має бути від 0 до 100%'); return }
 
     const attempt = action.begin()
     if (!attempt) return
@@ -93,8 +92,7 @@ function CustomerForm() {
         notes:         form.notes.trim(),
         tags:          form.tags,
         ...(canManageStatus ? { client_status: form.client_status } : {}),
-        ...(canManageDiscount ? { discount_pct: discount } : {}),
-        ...(canManageFinancials ? { price_tier_id: form.price_tier_id || null } : {}),
+        ...customerCreationLoyaltyPayload(role, form),
         card_barcode:  form.card_barcode.trim() || null,
         ...((form.car_vin.trim() || form.car_brand.trim() || form.car_model.trim()) ? {
           vehicle: {
@@ -174,35 +172,17 @@ function CustomerForm() {
               </div>
             }
 
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Персональна знижка (%)</label>
-                <input disabled={!canManageDiscount} type="number" min="0" max="100" step="any"
-                  value={form.discount_pct} onChange={(e) => set('discount_pct', e.target.value)}
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Статус клієнта</label>
-                <select disabled={!canManageStatus} value={form.client_status} onChange={(e) => set('client_status', e.target.value)}
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent">
-                  <option value="client">Звичайний клієнт</option>
-                  <option value="sto">СТО</option>
-                </select>
-              </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Статус клієнта</label>
+              <select disabled={!canManageStatus} value={form.client_status} onChange={(e) => set('client_status', e.target.value)}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent">
+                <option value="client">Звичайний клієнт</option>
+                <option value="sto">СТО</option>
+              </select>
             </div>
 
-            {canManageFinancials && tiers.length > 0 && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Ціновий рівень</label>
-                <select value={form.price_tier_id} onChange={(e) => set('price_tier_id', e.target.value)}
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent">
-                  <option value="">Стандартна ціна (роздріб)</option>
-                  {tiers.map((t) => (
-                    <option key={t.id} value={t.id}>{t.name} (знижка {t.discount_pct}%)</option>
-                  ))}
-                </select>
-              </div>
-            )}
+            <CustomerCreationLoyaltyFields role={role} mode={form.loyalty_mode} discount={form.discount_pct} tierId={form.price_tier_id} tiers={tiers}
+              onModeChange={(value) => set('loyalty_mode', value)} onDiscountChange={(value) => set('discount_pct', value)} onTierChange={(value) => set('price_tier_id', value)} />
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">Теги</label>

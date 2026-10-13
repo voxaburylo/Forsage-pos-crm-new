@@ -11,6 +11,8 @@ import { toast } from '@/components/ui/Toast'
 interface Props {
   onPay: () => void
   onSelectCustomer: () => void
+  onEditCustomer?: () => void
+  customerEditLoading?: boolean
   onClear: () => void
   onClearCustomer?: () => void
 }
@@ -212,7 +214,7 @@ const ReceiptItemRow = memo(function ReceiptItemRow({
   )
 })
 
-export function ReceiptPanel({ onPay, onSelectCustomer, onClear, onClearCustomer }: Props) {
+export function ReceiptPanel({ onPay, onSelectCustomer, onEditCustomer, customerEditLoading = false, onClear, onClearCustomer }: Props) {
   const store = usePOSStore()
   const userCanDiscount = canUserDiscount()
   const tabBarRef = useRef<HTMLDivElement>(null)
@@ -325,7 +327,13 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear, onClearCustomer
             <div className="flex min-w-0 flex-1 flex-col items-start leading-tight">
               <div className="flex max-w-full items-center gap-1.5">
                 <User size={14} className="shrink-0 text-yellow-400" />
-                <span className="truncate font-semibold text-yellow-400">{store.customer.name ?? store.customer.phone}</span>
+                {onEditCustomer ? (
+                  <button type="button" onClick={onEditCustomer} disabled={customerEditLoading}
+                    title="Редагувати вибраного клієнта" aria-label="Редагувати вибраного клієнта"
+                    className="truncate font-semibold text-yellow-400 underline decoration-dotted underline-offset-2 hover:text-yellow-200 disabled:opacity-50">
+                    {store.customer.name ?? store.customer.phone}
+                  </button>
+                ) : <span className="truncate font-semibold text-yellow-400">{store.customer.name ?? store.customer.phone}</span>}
                 {store.customer.vipLevel !== 'standard' && (
                   <span className={`shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded ${
                     store.customer.vipLevel === 'gold' ? 'bg-yellow-500 text-black' :
@@ -340,11 +348,11 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onClear, onClearCustomer
               {store.customer.riskProfile === 'high' && (
                 <span className="text-red-400 text-[10px] mt-0.5">⚠️ Проблемний клієнт</span>
               )}
-              {store.customer.tierName && (
-                <span className="text-yellow-600 text-[10px]">
-                  {store.customer.tierName} -{store.customer.tierDiscountPct}%
-                </span>
-              )}
+              <span className="text-yellow-600 text-[10px]">
+                {store.customer.loyaltyMode === 'cashback'
+                  ? 'Накопичення на рахунок · без знижки в чеку'
+                  : `${store.customer.tierName ?? 'Персональна знижка'}: ${store.customer.tierDiscountPct}%`}
+              </span>
             </div>
             <button
               onClick={onSelectCustomer}

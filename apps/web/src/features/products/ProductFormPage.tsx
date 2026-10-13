@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useScopedAction } from '@/hooks/useScopedAction'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { Save, Wand2, Plus } from 'lucide-react'
+import { Save, Wand2 } from 'lucide-react'
 import { productApi } from './productApi'
 import { pricingApi } from '@/features/admin/pricingApi'
 import { adminApi } from '@/features/admin/adminApi'
@@ -16,6 +16,7 @@ import { Button, Input, Card } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/stores/authStore'
 import { createdProductReference, productEditorPayload, productHasNegativeMargin, productMoneyInput, suggestedRetailText } from './productFormModel'
+import { ProductReferenceField } from './ProductReferenceField'
 
 const EMPTY: ProductFormData = {
   sku: '', name: '', barcode: '', brand_id: '', category_id: '',
@@ -43,6 +44,8 @@ export function ProductEditor({ embedded = false, disabled = false, onSaved, onB
 
   const [form, setForm] = useState<ProductFormData>(EMPTY)
   const [baseline, setBaseline] = useState(JSON.stringify(EMPTY))
+  const [catSearch, setCatSearch] = useState<string | null>(null)
+  const [brandSearch, setBrandSearch] = useState<string | null>(null)
   const [loading, setLoading] = useState(isEdit || !!cloneId)
   const [photoPending, setPhotoPending] = useState(false)
   const photoPendingRef = useRef(false)
@@ -57,8 +60,9 @@ export function ProductEditor({ embedded = false, disabled = false, onSaved, onB
   const scopeKey = JSON.stringify([id, cloneId, role])
   const writes = useScopedAction(scopeKey)
   const saving = writes.busy
-  const guard = useUnsavedChanges(!loading && JSON.stringify(form) !== baseline, saving || photoPending)
-  useEffect(() => { onBusyChange?.(saving || photoPending || (!loading && JSON.stringify(form) !== baseline)) }, [saving, photoPending, form, baseline, loading, onBusyChange])
+  const dirty = !loading && (JSON.stringify(form) !== baseline || catSearch !== null || brandSearch !== null)
+  const guard = useUnsavedChanges(dirty, saving || photoPending)
+  useEffect(() => { onBusyChange?.(saving || photoPending || dirty) }, [saving, photoPending, dirty, onBusyChange])
   const barcodeAction = useScopedAction(JSON.stringify([scopeKey, form.barcode]))
   const markupAction = useScopedAction(JSON.stringify([scopeKey, form.purchase_price, form.retail_price, form.category_id]))
   const [referencesReady, setReferencesReady] = useState(false)
@@ -68,10 +72,6 @@ export function ProductEditor({ embedded = false, disabled = false, onSaved, onB
   // Категорії та бренди для "креативних" селектів
   const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([])
   const [brands, setBrands] = useState<Array<{ id: string; name: string }>>([])
-  const [catSearch, setCatSearch] = useState('')
-  const [brandSearch, setBrandSearch] = useState('')
-  const [catOpen, setCatOpen] = useState(false)
-  const [brandOpen, setBrandOpen] = useState(false)
 
   // Шаблон характеристик для поточної категорії
   const selectedCatName = categories.find((c) => c.id === form.category_id)?.name ?? ''
@@ -225,7 +225,7 @@ export function ProductEditor({ embedded = false, disabled = false, onSaved, onB
 
   async function createReference(kind: 'category' | 'brand') {
     if (loading || !referencesReady || photoPendingRef.current) return
-    const name = (kind === 'category' ? catSearch : brandSearch).trim()
+    const name = ((kind === 'category' ? catSearch : brandSearch) ?? '').trim()
     if (!name) return
     const attempt = writes.begin()
     if (!attempt) return
@@ -236,11 +236,11 @@ export function ProductEditor({ embedded = false, disabled = false, onSaved, onB
       if (kind === 'category') {
         setCategories((previous) => [...previous.filter((item) => item.id !== data.id), data])
         set('category_id', data.id)
-        setCatSearch(''); setCatOpen(false)
+        setCatSearch(null)
       } else {
         setBrands((previous) => [...previous.filter((item) => item.id !== data.id), data])
         set('brand_id', data.id)
-        setBrandSearch(''); setBrandOpen(false)
+        setBrandSearch(null)
       }
       toast.success(kind === 'category' ? 'Категорію створено' : 'Бренд створено')
     } catch (error) {
@@ -263,14 +263,19 @@ export function ProductEditor({ embedded = false, disabled = false, onSaved, onB
     const attempt = writes.begin()
     if (!attempt) return
     try {
-      const payload = productEditorPayload(form, canSeeMargin)
+      const payload = productEditorPayload(form, canSeeMargin, {
+        category: { draft: catSearch, options: categories }, brand: { draft: brandSearch, options: brands },
+      })
+      const submittedForm = { ...form, category_id: payload.category_id ?? '', brand_id: payload.brand_id ?? '' }
       // The existing typed/source-aware cross-number tools below the card own this field.
       if (embedded) delete payload.cross_numbers
 
       if (isEdit) {
         const { data } = await productApi.update(id, payload)
         if (!attempt.isCurrent()) return
-        setBaseline(JSON.stringify(form))
+        setForm(submittedForm)
+        setBaseline(JSON.stringify(submittedForm))
+        setCatSearch(null); setBrandSearch(null)
         onSaved?.(data)
         if (!attempt.isCurrent()) return
         toast.success('Товар оновлено')
@@ -361,66 +366,10 @@ export function ProductEditor({ embedded = false, disabled = false, onSaved, onB
 
             {/* Категорія та Бренд зі швидким створенням */}
             <div className="grid grid-cols-2 gap-4">
-              <div className="relative">
-                <label className="block text-sm font-medium text-gray-700 mb-1">Категорія</label>
-                <div className="relative">
-                  <input value={catSearch || categories.find((c) => c.id === form.category_id)?.name || ''}
-                    onChange={(e) => { setCatSearch(e.target.value); setCatOpen(true); setForm((f) => ({ ...f, category_id: '' })) }}
-                    onFocus={() => setCatOpen(true)}
-                    onBlur={() => setTimeout(() => setCatOpen(false), 200)}
-                    placeholder="Пошук або створити..."
-                    className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
-                  {catOpen && (
-                    <div className="absolute z-10 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                      {categories
-                        .filter((c) => !catSearch || c.name.toLowerCase().includes(catSearch.toLowerCase()))
-                        .map((c) => (
-                          <button key={c.id} type="button" onClick={() => { setForm((f) => ({ ...f, category_id: c.id })); setCatSearch(''); setCatOpen(false) }}
-                            className="w-full text-left px-3 py-2 text-sm hover:bg-yellow-50 transition-colors">
-                            {c.name}
-                          </button>
-                        ))}
-                      {catSearch.trim() && !categories.some((c) => c.name.toLowerCase() === catSearch.toLowerCase()) && (
-                        <button type="button" onClick={() => void createReference('category')}
-                          className="w-full text-left px-3 py-2 text-sm text-yellow-700 hover:bg-yellow-50 font-medium flex items-center gap-1 transition-colors">
-                          <Plus size={14} /> + Створити "{catSearch.trim()}"
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </div>
-                {form.category_id && <p className="text-xs text-green-600 mt-0.5">✓ вибрано</p>}
-              </div>
-              <div className="relative">
-                <label className="block text-sm font-medium text-gray-700 mb-1">Бренд</label>
-                <div className="relative">
-                  <input value={brandSearch || brands.find((b) => b.id === form.brand_id)?.name || ''}
-                    onChange={(e) => { setBrandSearch(e.target.value); setBrandOpen(true); setForm((f) => ({ ...f, brand_id: '' })) }}
-                    onFocus={() => setBrandOpen(true)}
-                    onBlur={() => setTimeout(() => setBrandOpen(false), 200)}
-                    placeholder="Пошук або створити..."
-                    className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
-                  {brandOpen && (
-                    <div className="absolute z-10 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                      {brands
-                        .filter((b) => !brandSearch || b.name.toLowerCase().includes(brandSearch.toLowerCase()))
-                        .map((b) => (
-                          <button key={b.id} type="button" onClick={() => { setForm((f) => ({ ...f, brand_id: b.id })); setBrandSearch(''); setBrandOpen(false) }}
-                            className="w-full text-left px-3 py-2 text-sm hover:bg-yellow-50 transition-colors">
-                            {b.name}
-                          </button>
-                        ))}
-                      {brandSearch.trim() && !brands.some((b) => b.name.toLowerCase() === brandSearch.toLowerCase()) && (
-                        <button type="button" onClick={() => void createReference('brand')}
-                          className="w-full text-left px-3 py-2 text-sm text-yellow-700 hover:bg-yellow-50 font-medium flex items-center gap-1 transition-colors">
-                          <Plus size={14} /> + Створити "{brandSearch.trim()}"
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </div>
-                {form.brand_id && <p className="text-xs text-green-600 mt-0.5">✓ вибрано</p>}
-              </div>
+              <ProductReferenceField label="Категорія" emptyLabel="Без категорії" value={form.category_id} options={categories}
+                draft={catSearch} onDraft={setCatSearch} onChange={value => set('category_id', value)} onCreate={() => void createReference('category')} />
+              <ProductReferenceField label="Бренд" emptyLabel="Без бренду" value={form.brand_id} options={brands}
+                draft={brandSearch} onDraft={setBrandSearch} onChange={value => set('brand_id', value)} onCreate={() => void createReference('brand')} />
             </div>
 
             <div className={`grid grid-cols-1 gap-4 ${canSeeMargin ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>
@@ -592,13 +541,15 @@ export function ProductEditor({ embedded = false, disabled = false, onSaved, onB
               </label>
             </div>
 
-            <div className="flex gap-3 pt-2">
+            <div className="sticky bottom-0 z-10 flex flex-wrap gap-3 border-t border-gray-100 bg-white py-3">
               <Button type="submit" loading={saving} disabled={photoPending || barcodeAction.busy || markupAction.busy} icon={<Save size={16} />}>
                 {isEdit ? 'Зберегти зміни' : 'Створити товар'}
               </Button>
               <Button type="button" variant="secondary" onClick={() => {
                 if (embedded) {
-                  if (JSON.stringify(form) === baseline || confirm('Скасувати незбережені зміни?')) setForm(JSON.parse(baseline))
+                  if (!dirty || confirm('Скасувати незбережені зміни?')) {
+                    setForm(JSON.parse(baseline)); setCatSearch(null); setBrandSearch(null)
+                  }
                 } else back()
               }}>
                 Скасувати

@@ -15,7 +15,7 @@ const mocks = {
   '@/features/products/ImportModal': 'export function ImportModal(){return null}',
   '@/features/products/BulkEditModal': 'export function BulkEditModal(){return null}',
   '@/features/labels/LabelDesigner': 'export const printLabels=()=>{};export const loadProductLabelSettings=()=>({})',
-  '@/features/pos/usePOSBarcodeScanner': 'export const usePOSBarcodeScanner=()=>{}',
+  '@/features/pos/usePOSBarcodeScanner': 'export const usePOSBarcodeScanner=({onScan})=>{fixture.scan=onScan}',
   '@/stores/authStore': 'export const useAuthStore=selector=>selector({session:{user:{id:"test",app_metadata:{role:fixture.role}}}})',
   '@/lib/desktopBridge': 'export const desktopBridge=()=>fixture.bridge;export const isDesktopRuntime=()=>fixture.desktop',
   '@/lib/offlineDB': 'export const getCachedBrands=async()=>[];export const getCachedCategories=async()=>[];export const listProductsOffline=()=>{throw Error("Unexpected cache access")}',
@@ -27,7 +27,7 @@ const entry = `import React from 'react';import {createRoot} from 'react-dom/cli
 const root=createRoot(document.getElementById('root'));let version=0;fixture.mount=()=>root.render(<MemoryRouter key={version++}><ProductsPage/></MemoryRouter>);fixture.mount();`
 const bootstrap = `window.fixture={errors:[],success:[],writes:[],queries:[],desktop:true,role:'owner'};
 fixture.products=[1,2].map(n=>({id:'p'+n,name:'Тестовий товар '+n,sku:'TEST'+n,barcode:'200000000000'+n,retail_price:n*10000,purchase_price:5000,qty_on_hand:3,reorder_point:0,unit:'шт',is_active:true,storage_bin:'A-'+n,cross_numbers_count:0}));
-fixture.bridge={catalog:{listCategories:async()=>[],listBrands:async()=>[]}};
+fixture.bridge={catalog:{listCategories:async()=>[{id:'oil',name:'Оливи',sort_order:0}],listBrands:async()=>[{id:'elf',name:'Elf'}]}};
 fixture.api={list:async q=>{fixture.queries.push(q);return {data:structuredClone([fixture.products[q.page-1]]),pagination:{page:q.page,per_page:1,total:2,total_pages:2}}},update:async(id,patch)=>{fixture.writes.push({id,patch});await new Promise(r=>setTimeout(r,120));if(fixture.fail)throw Error('Збереження не виконано');const p=fixture.products.find(p=>p.id===id);Object.assign(p,patch.retail_price!==undefined?{retail_price:Math.round(Number(patch.retail_price)*100)}:patch);return {data:structuredClone(p)}}};`
 const server=await createServer({cacheDir:createSmokeCache(),configFile:false,root:path.join(root,'apps/web'),logLevel:'error',esbuild:{jsx:'automatic'},resolve:{alias:{'@':path.join(root,'apps/web/src')}},server:{host:'127.0.0.1',port:0},plugins:[{
   name:'catalog-edit-fixture',enforce:'pre',resolveId(id){if(id==='virtual:catalog-edit.tsx'||Object.hasOwn(mocks,id))return '\0'+id},
@@ -67,6 +67,24 @@ try {
   await first.getByTitle('Клік — змінити ціну').click();await price.fill('9999');await price.press('Escape')
   await first.getByTitle('Клік — змінити ціну').filter({hasText:'1300.00'}).waitFor()
   assert.equal(await page.evaluate(()=>fixture.writes.length),4)
+  await page.getByRole('button',{name:'Оливи',exact:true}).first().click()
+  await page.getByLabel('Фільтр за брендом').selectOption('elf')
+  await page.getByRole('button',{name:'Мало на складі',exact:true}).click()
+  await page.getByRole('button',{name:'₴0 Без ціни',exact:true}).click()
+  const search=page.getByPlaceholder('Пошук за артикулом, назвою, штрихкодом... (oem: для OEM)')
+  await search.fill('олива')
+  await page.waitForFunction(()=>fixture.queries.at(-1)?.search==='олива')
+  assert.deepEqual(await page.evaluate(()=>{const q=fixture.queries.at(-1);return [q.category_id,q.brand_id,q.low_stock,q.stock_filter]}),['oil','elf','true','no_price'])
+  assert.equal(await page.getByLabel('Фільтр за брендом').inputValue(),'elf')
+  await search.fill('1457434310')
+  await page.waitForFunction(()=>fixture.queries.at(-1)?.search==='1457434310')
+  assert.equal(await page.evaluate(()=>fixture.queries.at(-1).category_id),'oil')
+  await page.evaluate(()=>fixture.scan('2000177521924'))
+  await page.waitForFunction(()=>fixture.queries.at(-1)?.search==='2000177521924')
+  assert.deepEqual(await page.evaluate(()=>{const q=fixture.queries.at(-1);return [q.category_id??null,q.brand_id??null,q.low_stock??null,q.stock_filter??null]}),[null,null,null,null])
+  assert.equal(await page.getByLabel('Фільтр за брендом').inputValue(),'')
+  assert.equal(await page.evaluate(()=>fixture.writes.length),4)
+  console.log('PASS: actual catalog requests preserve all filters for text/numeric typing; scanner callback remains global and does not write products')
   await page.evaluate(()=>{fixture.role='cashier';fixture.mount()})
   await page.getByRole('button',{name:'Тестовий товар 1',exact:true}).waitFor()
   assert.equal(await first.getByTitle('Ціна',{exact:true}).isDisabled(),true)

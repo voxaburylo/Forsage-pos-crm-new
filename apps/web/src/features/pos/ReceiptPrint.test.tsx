@@ -35,3 +35,15 @@ it('still prepares a receipt when browser storage is unavailable', () => {
   vi.stubGlobal('localStorage', { getItem: () => { throw new Error('storage unavailable') } })
   expect(() => renderToStaticMarkup(<ReceiptPrint sale={sale} />)).not.toThrow()
 })
+it('prints original free-price line text when its product card is absent', () => {
+  const receipt = {
+    ...sale,
+    sale_items: [{ product_id: '', description: 'Демонтаж <скоба>', sku: 'WORK-123', qty: 1, unit_price: 32500, total: 32500, discount: 0 }],
+  } as Sale
+  const html = renderToStaticMarkup(<ReceiptPrint sale={receipt} />)
+  expect(html).toContain('<div class="rp-item-name">Демонтаж &lt;скоба&gt;</div>')
+  expect(html).toContain('325')
+  expect(html).toContain('РАЗОМ:')
+  expect(html).toContain('Дякуємо за покупку!')
+  expect(html).not.toContain('Назва недоступна')
+})

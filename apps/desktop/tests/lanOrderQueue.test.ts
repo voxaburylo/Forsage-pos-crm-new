@@ -42,6 +42,29 @@ describe('manager order-only offline workspace', () => {
     items: [{ name: 'Тестова деталь', qty: 2, sell_price: 15000, buy_price: 10000, product_id: product, source_type: product ? 'warehouse' : 'supplier' }] })
   const count = (db: LocalDatabase, table: string) => Number((db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as any).n)
 
+  it('does not report an uncached scoped history as empty while the hub is offline', async () => {
+    await expect(queue.list('hub-A', session, { customer_id: 'never-cached' })).rejects.toThrow(/зв’язку/)
+    await expect(queue.list('hub-A', session, { chat_id: 'never-cached' })).rejects.toThrow(/зв’язку/)
+  })
+  it('retains offline drafts but marks missing hub history as incomplete', async () => {
+    const first = await queue.save('hub-A', session, { ...payload(), chat_id: 'chat-A' })
+    await queue.save('hub-A', session, { ...payload(), chat_id: 'chat-B' })
+    const rows = await queue.list('hub-A', session, { chat_id: 'chat-A' })
+    expect(rows.map(row => row.id)).toEqual([first.id])
+    expect(rows[0].lan_sync).toMatchObject({ state: 'pending', history_incomplete: true })
+  })
+  it('keeps a scoped cached history with stale markers without leaking across users', async () => {
+    const saved = orders.saveOrder({ ...payload(), manager_id: session.id, chat_id: 'chat-A' })
+    orders.saveOrder({ ...payload(), manager_id: session.id, chat_id: 'chat-B' })
+    connected = true
+    expect((await queue.list('hub-A', session, { chat_id: 'chat-A' })).map(row => row.id)).toEqual([saved.id])
+    connected = false
+    const cached = await queue.list('hub-A', session, { chat_id: 'chat-A' })
+    expect(cached.map(row => row.id)).toEqual([saved.id])
+    expect(cached[0].lan_sync.state).toBe('cached')
+    await expect(queue.list('hub-A', { ...session, id: randomUUID() }, { chat_id: 'chat-A' })).rejects.toThrow(/зв’язку/)
+  })
+
   it('persists offline orders without touching either stock, money, reservations or cloud queue', async () => {
     const beforeOutbox = count(client, 'sync_outbox')
     const saved = await queue.save('hub-A', session, payload(productId))
@@ -152,7 +175,7 @@ describe('manager order-only offline workspace', () => {
   it('isolates drafts and cached records by employee, tenant and hub', async () => {
     const saved = await queue.save('hub-A', session, payload())
     for (const [scope, actor] of [['hub-B', session], ['hub-A', { ...session, id: randomUUID() }], ['hub-A', { ...session, tenant_id: 'other' }]] as const) {
-      expect(await queue.list(scope, actor)).toEqual([])
+      await expect(queue.list(scope, actor)).rejects.toThrow(/зв’язку/)
       await expect(queue.get(scope, actor, saved.id)).rejects.toThrow()
     }
   })
