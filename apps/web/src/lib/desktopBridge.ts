@@ -8,6 +8,18 @@ export type DesktopServerSessionSaveResult =
 
 export type DesktopLanMode = 'standalone' | 'hub' | 'client'
 
+/** Public first-run metadata: never contains the LAN key or staff/store data. */
+export interface DesktopLanFirstRunStatus {
+  canPair: boolean
+  mode: DesktopLanMode
+  configured: boolean
+}
+
+export interface DesktopLanDiscoveredHub {
+  address: string
+  name: string
+}
+
 export interface DesktopLanStatus {
   mode: DesktopLanMode
   port: number
@@ -476,6 +488,9 @@ interface ForsageDesktopBridge {
   }
   getRuntimeInfo: () => Promise<DesktopRuntimeInfo>
   lan?: {
+    firstRunStatus?: () => Promise<DesktopLanFirstRunStatus>
+    discover?: () => Promise<DesktopLanDiscoveredHub[]>
+    pair?: (input: { hubAddress: string; accessKey: string; port?: number }) => Promise<{ mode: 'client'; configured: true }>
     getStatus: () => Promise<DesktopLanStatus>
     update: (input: Partial<Pick<DesktopLanStatus, 'mode' | 'port' | 'hubAddress' | 'accessKey' | 'allowedUserId'>>) => Promise<DesktopLanStatus>
     test: () => Promise<DesktopLanStatus>

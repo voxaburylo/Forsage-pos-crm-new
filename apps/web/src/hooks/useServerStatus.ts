@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { request } from '@/lib/api'
+import { isDesktopRuntime } from '@/lib/desktopBridge'
+import { canUseCloudBackground } from '@/lib/lanFirstRun'
 
 const POLL_INTERVAL = 30_000
 
@@ -14,37 +16,41 @@ const POLL_INTERVAL = 30_000
 const TIMEOUT_MS = 30_000
 
 export function useServerStatus() {
-  const [online, setOnline] = useState(() => navigator.onLine)
+  // Before the device mode is known, a desktop must not start cloud jobs.
+  // Native catalog/order actions do not depend on this cloud-health indicator.
+  const [online, setOnline] = useState(() => !isDesktopRuntime() && navigator.onLine)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     let cancelled = false
 
     let checking = false
+    let activeController: AbortController | null = null
 
     async function check() {
       // Перевірка тепер довша за паузу між перевірками — не запускаємо другу
       // поверх першої, інакше на сплячому сервері вони почнуть накладатися.
-      if (checking) return
-      if (!navigator.onLine) {
-        if (!cancelled) setOnline(false)
-        if (!cancelled) timerRef.current = setTimeout(check, POLL_INTERVAL)
-        return
-      }
+      if (checking || cancelled) return
       checking = true
+      let timeout: ReturnType<typeof setTimeout> | undefined
       try {
+        if (!await canUseCloudBackground() || !navigator.onLine) {
+          if (!cancelled) setOnline(false)
+          return
+        }
+        if (cancelled) return
         const controller = new AbortController()
-        const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS)
+        activeController = controller
+        timeout = setTimeout(() => controller.abort(), TIMEOUT_MS)
         await request('/api/v1/health', { signal: controller.signal, silent: true } as any)
-        clearTimeout(timeout)
         if (!cancelled) setOnline(true)
       } catch {
         if (!cancelled) setOnline(false)
       } finally {
+        if (timeout) clearTimeout(timeout)
+        activeController = null
         checking = false
-      }
-      if (!cancelled) {
-        timerRef.current = setTimeout(check, POLL_INTERVAL)
+        if (!cancelled) timerRef.current = setTimeout(check, POLL_INTERVAL)
       }
     }
 
@@ -58,6 +64,7 @@ export function useServerStatus() {
     check()
     return () => {
       cancelled = true
+      activeController?.abort()
       if (timerRef.current) clearTimeout(timerRef.current)
       window.removeEventListener('offline', handleOffline)
       window.removeEventListener('online', handleOnline)

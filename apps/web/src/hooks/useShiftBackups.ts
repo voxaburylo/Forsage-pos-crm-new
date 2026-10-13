@@ -3,12 +3,14 @@ import { useEffect } from 'react'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/authStore'
+import { canUseCloudBackground } from '@/lib/lanFirstRun'
 
 export function useShiftBackups(serverOnline: boolean) {
   const user = useAuthStore(state => state.session?.user)
+  const offlineMode = useAuthStore(state => state.offlineMode)
   useEffect(() => {
     const backup = desktopBridge()?.shiftBackups
-    if (!backup || !serverOnline || !user || !['owner','admin','cashier'].includes(String(user.app_metadata?.role))) return
+    if (!backup || !serverOnline || offlineMode || !user || !['owner','admin','cashier'].includes(String(user.app_metadata?.role))) return
     let stopped = false, busy = false
     let delayUntil = 0, failures = 0
     async function run() {
@@ -16,6 +18,7 @@ export function useShiftBackups(serverOnline: boolean) {
       busy = true
       let id = ''
       try {
+        if (!await canUseCloudBackground() || stopped) return
         const [job] = await backup!.pending()
         if (!job || stopped) { delayUntil = Date.now() + 120_000; return }
         id = job.id
@@ -43,5 +46,5 @@ export function useShiftBackups(serverOnline: boolean) {
     window.addEventListener('online', resume)
     void run()
     return () => { stopped = true; window.clearInterval(timer); window.removeEventListener('forsage:desktop-access-changed', wake); window.removeEventListener('forsage:desktop-sync-requested',wake); window.removeEventListener('online', resume) }
-  }, [serverOnline, user?.id])
+  }, [serverOnline, offlineMode, user?.id, user?.app_metadata?.role])
 }

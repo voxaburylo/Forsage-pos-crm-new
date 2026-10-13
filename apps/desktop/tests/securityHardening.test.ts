@@ -12,8 +12,13 @@ describe('desktop authorization boundary', () => {
     expect(isDesktopChannelAllowed('desktop:supply:post-invoice', 'manager')).toBe(true)
     expect(isDesktopChannelAllowed('desktop:pos:list-sales', 'manager')).toBe(true)
   })
-  it('exposes only authentication endpoints before authentication', () => {
-    expect([...PUBLIC_DESKTOP_CHANNELS]).toEqual(['desktop:auth:login', 'desktop:auth:login-online', 'desktop:auth:logout', 'desktop:auth:remembered-status', 'desktop:auth:restore'])
+  it('exposes only authentication and narrowly gated clean-PC onboarding before authentication', () => {
+    expect([...PUBLIC_DESKTOP_CHANNELS]).toEqual(['desktop:auth:login', 'desktop:auth:login-online', 'desktop:auth:logout', 'desktop:auth:remembered-status', 'desktop:auth:restore',
+      'desktop:lan:first-run-status', 'desktop:lan:discover', 'desktop:lan:pair'])
+    for (const channel of ['desktop:lan:get-status', 'desktop:lan:update', 'desktop:lan:test', 'desktop:staff:list-users', 'desktop:backup:restore']) {
+      expect(PUBLIC_DESKTOP_CHANNELS.has(channel)).toBe(false)
+      expect(isDesktopChannelAllowed(channel, 'manager')).toBe(false)
+    }
   })
 
   it('keeps cashdesk actions available to cashiers but blocks administration and stock mutation', () => {

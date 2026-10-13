@@ -1,6 +1,7 @@
 import { isDesktopAccessLocked } from '@/lib/desktopAccessState'
 import { api } from '@/lib/api'
 import { selectDesktopPushBatch, validateDesktopPushResults } from './desktopSyncBatch'
+import { canUseCloudBackground } from './lanFirstRun'
 import {
   desktopBridge,
   isDesktopRuntime,
@@ -45,6 +46,7 @@ async function executeDesktopOutboxPush(limit = 50): Promise<DesktopPushResult> 
 
   pushExecutionActive = true
   try {
+    if (!await canUseCloudBackground()) return { pushed: 0, failed: 0, pending: 0, resetRequired: false }
     const [pendingOperations, state] = await Promise.all([
       desktop.sync.listPending(limit),
       desktop.sync.getPullState(),

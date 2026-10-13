@@ -55,6 +55,9 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
   },
   getRuntimeInfo: () => ipcRenderer.invoke('desktop:get-runtime-info'),
   lan: {
+    firstRunStatus: () => ipcRenderer.invoke('desktop:lan:first-run-status'),
+    discover: () => ipcRenderer.invoke('desktop:lan:discover'),
+    pair: (input: { hubAddress: string; accessKey: string; port?: number }) => ipcRenderer.invoke('desktop:lan:pair', input),
     getStatus: () => ipcRenderer.invoke('desktop:lan:get-status'),
     update: (input: unknown) => ipcRenderer.invoke('desktop:lan:update', input),
     test: () => ipcRenderer.invoke('desktop:lan:test'),

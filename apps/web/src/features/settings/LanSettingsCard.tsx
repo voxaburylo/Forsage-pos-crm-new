@@ -6,7 +6,7 @@ import { desktopBridge, type DesktopLanMode, type DesktopLanStatus } from '@/lib
 
 function modeDescription(mode: DesktopLanMode): string {
   if (mode === 'hub') return 'Головна база магазину. Компʼютер менеджера працює з нею напряму через локальну мережу.'
-  if (mode === 'client') return 'Робоче місце менеджера. Товари, клієнти та замовлення беруться з головного ПК каси.'
+  if (mode === 'client') return 'Робоче місце менеджера. Дані магазину беруться з головного ПК; без звʼязку можна зберігати замовлення для передавання пізніше.'
   return 'Звичайна автономна робота цього компʼютера без підключення інших робочих місць.'
 }
 
@@ -87,7 +87,7 @@ export function LanSettingsCard() {
         <Network size={20} className="mt-0.5 text-blue-600" />
         <div>
           <h3 className="text-sm font-semibold text-gray-900">Робота компʼютерів через локальну мережу</h3>
-          <p className="mt-1 text-xs text-gray-500">Працює без інтернету. Усі операції виконуються в одній базі на ПК каси.</p>
+          <p className="mt-1 text-xs text-gray-500">Працює без інтернету. Головна база залишається на ПК каси. Прихід, ревізія та інші складські операції потребують звʼязку з ним.</p>
         </div>
       </div>
 
@@ -122,7 +122,7 @@ export function LanSettingsCard() {
               <option value="">Оберіть менеджера</option>
               {staff.map((user) => <option key={user.id} value={user.id}>{user.full_name} — {user.role}</option>)}
             </select>
-            <p className="mt-1 text-[11px] text-emerald-800">Код працюватиме тільки з обліковим записом цього працівника.</p>
+            <p className="mt-1 text-[11px] text-emerald-800">Код вводиться один раз під час першого запуску нового ПК менеджера. Після підключення працівник входить за своїм звичайним номером телефону та паролем; доступ надається лише вибраному обліковому запису.</p>
           </label>
           {hubUrls.length > 0 && (
             <div>
@@ -133,6 +133,7 @@ export function LanSettingsCard() {
                   {url} <Copy size={13} />
                 </button>
               ))}
+              <p className="mt-2 text-[11px] text-emerald-800">Новий ПК шукає головний автоматично. Якщо пошук заблоковано мережею, скопіюйте цю адресу та введіть її вручну на екрані підключення.</p>
             </div>
           )}
           {status?.accessKey && (
@@ -145,6 +146,7 @@ export function LanSettingsCard() {
             </div>
           )}
           <p className="text-[11px] leading-4 text-emerald-800">Коли Windows запитає дозвіл для мережі, виберіть лише «Приватні мережі». Публічні мережі дозволяти не потрібно.</p>
+          <p className="text-[11px] leading-4 text-emerald-800">Перевірене оновлення програми передається на ПК менеджера через цю мережу. Воно встановлюється після звичайного закриття програми менеджером, не перериваючи відкриту роботу; база магазину при цьому не копіюється.</p>
         </div>
       )}
 
@@ -171,6 +173,7 @@ export function LanSettingsCard() {
               </span>
             )}
           </div>
+          <p className="md:col-span-2 text-[11px] leading-4 text-gray-600">Код зберігається після початкового підключення — для щоденної роботи вводьте лише свій логін і пароль. Якщо адреса головного ПК змінилася, уточніть її в його налаштуваннях. Оновлення надходить від головного ПК і застосовується лише після звичайного закриття цієї програми.</p>
         </div>
       )}
 

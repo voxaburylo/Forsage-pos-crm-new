@@ -40,6 +40,7 @@ jobs:
       - run: node apps/desktop/scripts/build-info.cjs
       - run: node apps/desktop/scripts/verify-build.cjs
       - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/backup-worker-smoke.cjs
+      - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/lan-first-run-smoke.cjs
       - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/backup-photos-smoke.cjs
       - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/backup-crash-smoke.cjs
       - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/backup-restore-crash-smoke.cjs
@@ -49,6 +50,8 @@ jobs:
       - run: node apps/desktop/scripts/readiness-crash-smoke.cjs
       - run: pnpm exec playwright install chromium
       - run: node apps/web/scripts/shift-close-smoke.mjs
+      - run: node apps/web/scripts/lan-first-run-ui-smoke.mjs
+      - run: node apps/web/scripts/lan-background-ui-smoke.mjs
       - run: node apps/web/scripts/dashboard-readiness-smoke.mjs
       - run: node apps/web/scripts/abc-readiness-smoke.mjs
       - run: node apps/web/scripts/staff-readiness-smoke.mjs

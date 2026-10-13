@@ -66,6 +66,8 @@ import { getPrintSession, isPrintSession } from './print/printSession'
 import { assertPrintRuntimeFiles } from './print/printRuntime'
 import { isLanProxyChannel, LocalNetworkCoordinator, type LanSession } from './lan/localNetwork'
 import { LanOrderQueue } from './lan/orderQueue'
+import { assertLanIdentityConnection, canPairEmptyClient, cacheLanIdentity, hasLanIdentity, loginLanClient } from './lan/clientIdentity'
+import { createPortableReleaseSource, downloadPortableUpdate, launchPortableUpdateAfterQuit, readPortableUpdateOutcome, type StagedUpdate } from './updates/portableUpdate'
 import { LanOrderClient } from './lan/orderClient'
 import { isSpoolerGuardError, postflightPrinter, preflightPrinter } from './print/spoolerGuard'
 import { desktopTenantArgumentPositions, isDesktopChannelAllowed, PUBLIC_DESKTOP_CHANNELS } from './security/desktopAuthorization'
@@ -160,6 +162,11 @@ let localNetwork: LocalNetworkCoordinator | null = null
 let lanOrderQueue: LanOrderQueue | null = null
 let lanOrderClient: LanOrderClient | null = null
 let lanOrderTimer: ReturnType<typeof setInterval> | null = null
+let lanPairInProgress = false
+let lanUpdateTimer: ReturnType<typeof setInterval> | null = null
+let lanUpdateFlight: Promise<void> | null = null
+let lanUpdateAbort: AbortController | null = null
+let stagedLanUpdate: StagedUpdate | null = null
 type DesktopIpcListener = (event: IpcMainInvokeEvent, ...args: any[]) => unknown
 const desktopCommandHandlers = new Map<string, DesktopIpcListener>()
 const activeDesktopCommands = new Set<Promise<unknown>>()
@@ -210,6 +217,37 @@ function completeDesktopLogin(user: { id: string; tenant_id: string; role: strin
   getRememberedAccess().remember(storedUser)
   rememberedSessionRequired = true
   desktopAuthSession = { id: user.id, tenant_id: user.tenant_id, role: user.role }
+  void checkLanUpdate()
+}
+
+/** Background binary transfer only. Normal quit owns installation; no remote file paths or DB copying. */
+function checkLanUpdate(): Promise<void> {
+  if (lanUpdateFlight) return lanUpdateFlight
+  if (databaseMaintenance || !app.isPackaged || !process.env.PORTABLE_EXECUTABLE_FILE
+    || !process.env.LOCALAPPDATA || !desktopBuildInfo?.releaseId || localNetwork?.getStatus().mode !== 'client') return Promise.resolve()
+  let session: LanSession
+  try { session = requireDesktopSession() } catch { return Promise.resolve() }
+  const network = localNetwork
+  lanUpdateAbort = new AbortController()
+  const signal = lanUpdateAbort.signal
+  lanUpdateFlight = downloadPortableUpdate({
+    localAppData: process.env.LOCALAPPDATA,
+    currentReleaseId: desktopBuildInfo.releaseId,
+    signal,
+    transport: {
+      describe: () => network.requestUpdateMetadata(session, signal),
+      chunk: input => network.requestUpdateChunk(input, session, signal),
+    },
+  }).then(result => {
+    if (result.state === 'ready') {
+      stagedLanUpdate = result.update
+      blackBox?.record('lan-update-ready', { release: result.update.releaseId })
+    }
+  }).catch(error => {
+    // Offline is expected. No repeated global banner, no attempt to use the cloud.
+    blackBox?.record('lan-update-deferred', { error })
+  }).finally(() => { lanUpdateFlight = null; lanUpdateAbort = null })
+  return lanUpdateFlight
 }
 
 function diagnosticValue(value: unknown, depth = 0): string {
@@ -311,6 +349,7 @@ function requireCashalot(): CashalotService {
 }
 
 function requireDesktopSession(): { id: string; tenant_id: string; role: string } {
+  if (localNetwork) assertLanIdentityConnection(requireLocalDatabase(), localNetwork.getStatus())
   const contextualSession = desktopSessionContext.getStore()
   if (contextualSession) {
     const current = activeSession(requireLocalDatabase(), contextualSession)
@@ -596,6 +635,7 @@ async function executeDesktopCommand(
   assertLocalDataAuthority(channel)
   if (databaseMaintenance) throw new Error('База готується до перезапуску. Дочекайтеся завершення.')
   if (!PUBLIC_DESKTOP_CHANNELS.has(channel)) {
+    assertLanIdentityConnection(requireLocalDatabase(), localNetwork!.getStatus())
     if (!session) throw new Error('Необхідно увійти в програму')
     session = activeSession(requireLocalDatabase(), session)
     if (!session) throw new Error('Доступ працівника вимкнено. Увійдіть заново.')
@@ -1052,7 +1092,22 @@ app.whenReady().then(async () => {
       detail: 'Робочі дані не змінено. ' + (error instanceof Error ? error.message : String(error)) })
   })
   cashalot = new CashalotService(dataRoot)
-  localNetwork = new LocalNetworkCoordinator(dataRoot, executeLanCommand, resolveLanSession)
+  let releaseSource: ReturnType<typeof createPortableReleaseSource> = null
+  try {
+    releaseSource = createPortableReleaseSource({ packaged: app.isPackaged,
+      portableExecutable: process.env.PORTABLE_EXECUTABLE_FILE, releaseId: desktopBuildInfo?.releaseId })
+    if (process.env.LOCALAPPDATA) {
+      const outcome = readPortableUpdateOutcome(process.env.LOCALAPPDATA)
+      if (outcome) writeDesktopDiagnostic('lan-update-outcome', outcome)
+    }
+  } catch (error) {
+    // Optional update delivery must never prevent the shop from opening.
+    writeDesktopDiagnostic('lan-update-source-unavailable', error)
+  }
+  localNetwork = new LocalNetworkCoordinator(dataRoot, executeLanCommand, resolveLanSession, {
+    authenticate: async (phone, password) => requireLocalStaff().loginWithPassword(phone, password),
+    ...(releaseSource ? { updateMetadata: () => releaseSource.describe(), updateChunk: input => releaseSource.chunk(input) } : {}),
+  })
   lanOrderQueue = new LanOrderQueue(localDatabase, (channel, args, session) => localNetwork!.invoke(channel, args, session))
   lanOrderClient = new LanOrderClient(localNetwork, lanOrderQueue)
   lanOrderTimer = setInterval(() => {
@@ -1065,12 +1120,54 @@ app.whenReady().then(async () => {
       .finally(() => activeDesktopCommands.delete(work))
   }, 15_000)
   lanOrderTimer.unref()
+  lanUpdateTimer = setInterval(() => { void checkLanUpdate() }, 5 * 60_000)
+  lanUpdateTimer.unref()
 
   handleDesktopIpc('desktop:get-runtime-info', () => ({ ...requireLocalDatabase().info(), build: desktopBuildInfo }))
 
+  handleDesktopIpc('desktop:lan:first-run-status', () => {
+    const status = localNetwork!.getStatus()
+    try { assertLanIdentityConnection(requireLocalDatabase(), status) }
+    catch { return { mode: 'client', configured: false, canPair: false } }
+    return { mode: status.mode, configured: status.mode === 'client' && Boolean(status.hubAddress && status.accessKey),
+      canPair: !desktopAuthSession && canPairEmptyClient(requireLocalDatabase(), status.mode, lanOrderQueue!.hasPending()) }
+  })
+  handleDesktopIpc('desktop:lan:discover', async () => {
+    const status = localNetwork!.getStatus()
+    if (desktopAuthSession || !canPairEmptyClient(requireLocalDatabase(), status.mode, lanOrderQueue!.hasPending())) {
+      throw new Error('Пошук підключення доступний лише під час першого запуску чистого ПК менеджера')
+    }
+    const hubs = await localNetwork!.discoverHubs()
+    return hubs.map(hub => ({ address: hub.hubAddress, name: hub.name }))
+  })
+  handleDesktopIpc('desktop:lan:pair', async (_event, input: unknown) => {
+    if (lanPairInProgress) throw new Error('Підключення вже перевіряється')
+    if (desktopAuthSession || !canPairEmptyClient(requireLocalDatabase(), localNetwork!.getStatus().mode, lanOrderQueue!.hasPending())) {
+      throw new Error('На цьому ПК вже є профіль або дані. Початкове підключення не змінено.')
+    }
+    if (!input || typeof input !== 'object') throw new Error('Вкажіть головний ПК та код підключення')
+    const candidate = input as Record<string, unknown>
+    if (typeof candidate.hubAddress !== 'string' || candidate.hubAddress.length > 256
+      || typeof candidate.accessKey !== 'string' || candidate.accessKey.length > 256
+      || (candidate.port !== undefined && (!Number.isInteger(candidate.port) || Number(candidate.port) < 1024 || Number(candidate.port) > 65535))) {
+      throw new Error('Некоректні налаштування підключення')
+    }
+    lanPairInProgress = true
+    desktopLoginGeneration++
+    try {
+      await localNetwork!.pairRemote({ hubAddress: candidate.hubAddress, accessKey: candidate.accessKey, port: candidate.port as number | undefined })
+      return { mode: 'client', configured: true }
+    } finally { lanPairInProgress = false }
+  })
   handleDesktopIpc('desktop:lan:get-status', () => localNetwork?.getStatus())
   handleDesktopIpc('desktop:lan:update', (_event, input) => {
     if (lanOrderQueue?.hasPending()) throw new Error('Спочатку передайте або перевірте всі офлайн-замовлення. Зміна головного ПК зараз може розділити бази.')
+    if (hasLanIdentity(requireLocalDatabase())) {
+      const current = localNetwork!.getStatus()
+      if (input?.mode !== 'client' || (input.accessKey !== undefined && input.accessKey !== current.accessKey)) {
+        throw new Error('ПК менеджера не може стати окремою касою або підключитися до іншого магазину. Дані збережено.')
+      }
+    }
     return localNetwork?.update(input)
   })
   handleDesktopIpc('desktop:lan:test', () => localNetwork?.testConnection())
@@ -1283,13 +1380,26 @@ app.whenReady().then(async () => {
     return requireLocalSupplierCatalog().resolveImport(operationId, session.id, session.tenant_id)
   })
 
-  handleDesktopIpc('desktop:auth:login', (_event, phone: string, password: string) => {
-    desktopLoginGeneration++
-    const user = requireLocalStaff().loginWithPassword(phone, password)
+  handleDesktopIpc('desktop:auth:login', async (_event, phone: string, password: string) => {
+    if (lanPairInProgress) throw new Error('Дочекайтеся завершення підключення до головного ПК')
+    const generation = ++desktopLoginGeneration
+    const network = localNetwork!
+    assertLanIdentityConnection(requireLocalDatabase(), network.getStatus())
+    const localLogin = () => requireLocalStaff().loginWithPassword(phone, password)
+    const user = network.getStatus().mode === 'client'
+      ? await loginLanClient({
+        remote: () => network.loginRemote(phone, password),
+        cache: profile => {
+          if (generation !== desktopLoginGeneration) throw new Error('Спробу входу скасовано')
+          cacheLanIdentity(requireLocalDatabase(), profile, phone, password, network.getStatus().accessKey)
+        }, local: localLogin,
+      }) : localLogin()
+    if (generation !== desktopLoginGeneration) throw new Error('Спробу входу скасовано')
     completeDesktopLogin(user)
     return user
   })
   handleDesktopIpc('desktop:auth:login-online', async (_event, phone: string, password: string) => {
+    if (lanPairInProgress || localNetwork?.getStatus().mode === 'client' || hasLanIdentity(requireLocalDatabase())) throw new Error('Вхід ПК менеджера перевіряє головний ПК без інтернету')
     const generation = ++desktopLoginGeneration
     const result = await loginOnlineAndProvisionLocal(phone, password, generation)
     if (generation !== desktopLoginGeneration) throw Error('Спробу входу скасовано')
@@ -1316,11 +1426,13 @@ app.whenReady().then(async () => {
     getRememberedAccess().serverSession(requireDesktopSession()))
   handleDesktopIpc('desktop:auth:remembered-status', () => rememberedStatus())
   handleDesktopIpc('desktop:auth:restore', () => {
+    assertLanIdentityConnection(requireLocalDatabase(), localNetwork!.getStatus())
     desktopLoginGeneration++
     const user = getRememberedAccess().restore()
     if (!user) return null
     desktopAuthSession = { id:user.id, tenant_id:user.tenant_id, role:user.role }
     rememberedSessionRequired = true
+    void checkLanUpdate()
     return user
   })
   handleDesktopIpc('desktop:auth:logout', () => {
@@ -1823,7 +1935,12 @@ app.whenReady().then(async () => {
     input: LocalFiscalReturnIntentCancelInput,
   ) => requireLocalPos().cancelPreparedFiscalReturnIntent(operationId, input))
 
-  await localNetwork.startConfigured()
+  // A restored old config must not downgrade a paired manager to plaintext LAN
+  // even for the initial health check before a user has logged in.
+  let safeNetworkConfig = false
+  try { assertLanIdentityConnection(localDatabase, localNetwork.getStatus()); safeNetworkConfig = true }
+  catch (error) { writeDesktopDiagnostic('lan-client-config-blocked', error) }
+  if (safeNetworkConfig) await localNetwork.startConfigured()
   await createWindow()
 }).catch((error: unknown) => {
   writeDesktopDiagnostic('startup-failed', error)
@@ -1866,6 +1983,9 @@ app.on('before-quit', (event) => {
   databaseMaintenance = true
   if (lanOrderTimer) clearInterval(lanOrderTimer)
   lanOrderTimer = null
+  if (lanUpdateTimer) clearInterval(lanUpdateTimer)
+  lanUpdateTimer = null
+  lanUpdateAbort?.abort()
   stopBackupScheduler?.()
   stopBackupScheduler = null
   void (async () => {
@@ -1873,12 +1993,20 @@ app.on('before-quit', (event) => {
       await localNetwork?.stop()
       // Не закриваємо SQLite під оплатою/фіскальною відповіддю, що ще триває.
       await Promise.allSettled([...activeDesktopCommands])
+      await lanUpdateFlight
       await lanOrderQueue?.settle()
       cashalot?.stopWorker()
       await shiftBackups?.stop()
       await localDatabase?.waitForBackup().catch((error) => writeDesktopDiagnostic('backup-on-quit-failed', error))
       await localDatabase?.waitForBackgroundWrite().catch((error) => writeDesktopDiagnostic('copy-on-quit-failed', error))
       localDatabase?.close()
+      if (stagedLanUpdate && localNetwork?.getStatus().mode === 'client'
+        && process.env.LOCALAPPDATA && process.env.PORTABLE_EXECUTABLE_FILE) {
+        try {
+          await launchPortableUpdateAfterQuit({ packaged: app.isPackaged, portableExecutable: process.env.PORTABLE_EXECUTABLE_FILE,
+            localAppData: process.env.LOCALAPPDATA, update: stagedLanUpdate, parentPid: process.pid, quitConfirmed: true })
+        } catch (error) { writeDesktopDiagnostic('lan-update-install-deferred', error) }
+      }
     } catch (error) { writeDesktopDiagnostic('database-close-failed', error) }
     finally {
       quitAfterCleanup = true

@@ -3,6 +3,7 @@ import type { Session } from '@supabase/supabase-js'
 import { desktopBridge, isDesktopRuntime } from './desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
 import { restoreDesktopServerSession } from './desktopServerSession'
+import { lanNeedsSetup, readLanFirstRunStatus } from './lanFirstRun'
 
 function phoneToEmail(phone: string): string {
   const digits = phone.replace(/\D/g, '')
@@ -163,20 +164,28 @@ export async function signIn(phone: string, password: string) {
   const email = phoneToEmail(normalized)
 
   if (isDesktopRuntime()) {
+    const lanStatus = await readLanFirstRunStatus()
+    assertCurrent()
+    if (lanNeedsSetup(lanStatus)) throw new Error('Спочатку завершіть підключення цього ПК до головного ПК')
+    const lanClient = lanStatus?.mode === 'client'
     const desktopAuth = desktopBridge()?.auth
     const localLogin = desktopAuth?.login
+    if (lanClient && !localLogin) throw new Error('Локальний вхід недоступний. Перезапустіть програму; хмарний вхід не запускався.')
     if (localLogin) {
       try {
         const localUser = await localLogin(normalized, password)
         assertCurrent()
         const session = createDesktopSession(localUser)
         useAuthStore.getState().setOfflineSession(session)
-        // Локальний пароль перевірено — відкриваємо програму одразу. Паралельно
-        // отримуємо справжню Supabase-сесію для синхронізації та веб-розділів.
-        startDesktopServerConnection(email, password, generation)
+        // Локальний пароль перевірено — відкриваємо програму одразу. Лише
+        // головний/самостійний ПК під'єднує хмарну сесію; LAN-клієнт працює через hub.
+        if (!lanClient) startDesktopServerConnection(email, password, generation)
         return session
       } catch (localError) {
         assertCurrent()
+        // A LAN worker belongs to the hub. Cloud provisioning or background
+        // password retries could establish a different identity/store here.
+        if (lanClient) throw localError
         const message = localError instanceof Error ? localError.message : ''
         if (message.includes('Забагато спроб') || /LOCAL_AUTH_(ARCHIVED|DISABLED)/.test(message) || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
           throw localError
@@ -250,13 +259,16 @@ export function restoreDesktopSession(): Promise<Session | null> {
   restoreFlight = (async () => {
     let timeout: ReturnType<typeof setTimeout> | undefined
     try {
-      const user = await Promise.race([
+      const localRestore = Promise.race([
         restore(),
         new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error('RESTORE_TIMEOUT')), 5000) }),
       ])
+      const [user, lanStatus] = await Promise.all([localRestore, readLanFirstRunStatus()])
+      if (lanNeedsSetup(lanStatus)) return null
       if (!user || generation !== desktopServerLoginGeneration) return null
       const session = createDesktopSession(user)
       useAuthStore.getState().setOfflineSession(session)
+      if (lanStatus?.mode === 'client') return session
       // Local access stays immediate; main may restore the encrypted server tokens
       // belonging to this same day permission. Passwords are never restored.
       const stillCurrent = () => generation === desktopServerLoginGeneration && useAuthStore.getState().session?.user.id === user.id
@@ -282,6 +294,13 @@ export async function signOut() {
     // Do not report successful logout if main could not remove that permission.
     await localLogout()
     useAuthStore.getState().setSession(null)
+    try {
+      if ((await readLanFirstRunStatus())?.mode === 'client') return
+    } catch {
+      // The local permission was revoked. If mode cannot be verified, do not
+      // contact cloud auth on a potentially LAN-only workstation.
+      return
+    }
     let timeout: ReturnType<typeof setTimeout> | undefined
     try {
       await Promise.race([
@@ -296,6 +315,11 @@ export async function signOut() {
 }
 
 export async function getSession() {
+  if (isDesktopRuntime()) {
+    const status = await readLanFirstRunStatus()
+    if (lanNeedsSetup(status)) return null
+    if (status?.mode === 'client') return useAuthStore.getState().session
+  }
   const { data } = await supabase.auth.getSession()
   if (data.session && isProgramAccessDenied(data.session.user)) {
     await supabase.auth.signOut().catch(() => {})

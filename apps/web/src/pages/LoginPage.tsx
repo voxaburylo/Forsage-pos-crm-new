@@ -7,6 +7,7 @@ import { homePathForRole } from '@/components/ProtectedRoute'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { confirmDesktopUnlocked } from '@/lib/desktopAccessState'
 import { API_BASE_URL } from '@/lib/apiBaseUrl'
+import { LanFirstRun } from '@/features/lan/LanFirstRun'
 const PHONE_REGEX = /^\+?380\d{9}$/
 function normalizePhone(value: string): string {
   const digits = value.replace(/\D/g, '')
@@ -16,6 +17,10 @@ function normalizePhone(value: string): string {
   return value
 }
 export default function LoginPage({ onUnlocked }: { onUnlocked?: () => void } = {}) {
+  return <LanFirstRun><LoginForm onUnlocked={onUnlocked} /></LanFirstRun>
+}
+
+function LoginForm({ onUnlocked }: { onUnlocked?: () => void }) {
   const navigate = useNavigate()
   const [phone, setPhone] = useState('')
   const [password, setPassword] = useState('')

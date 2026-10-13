@@ -15,6 +15,9 @@ export const PUBLIC_DESKTOP_CHANNELS = new Set([
   'desktop:auth:logout',
   'desktop:auth:remembered-status',
   'desktop:auth:restore',
+  'desktop:lan:first-run-status',
+  'desktop:lan:discover',
+  'desktop:lan:pair',
 ])
 
 const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
