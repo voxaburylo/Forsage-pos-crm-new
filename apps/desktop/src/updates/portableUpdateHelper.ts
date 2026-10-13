@@ -1,6 +1,7 @@
 /** Fixed, audited helper: no downloaded commands, no ExecutionPolicy override, no process termination.
  * The job is local JSON passed in an environment variable; every output path is derived again here.
  * File.Replace is the sole operation that mutates the installed EXE, with an atomic recovery copy.
+ * C# Restore preserves a genuine CLR null; Windows PowerShell converts $null string arguments to empty strings.
  */
 export const PORTABLE_UPDATE_POWERSHELL = String.raw`
 $ErrorActionPreference = 'Stop'
@@ -31,6 +32,9 @@ public static class ForsageUpdateFile {
       if (i.Links != 1 || (i.Attributes & 0x400) != 0) throw new IOException("Linked update file rejected");
       return i.Volume+":"+i.IndexHigh+":"+i.IndexLow+":"+i.CreationHigh+":"+i.CreationLow;
     }
+  }
+  public static void Restore(string source, string destination) {
+    File.Replace(source, destination, null, false);
   }
 }
 '@
@@ -164,7 +168,7 @@ try {
       $null = ExeSafe $backup $job.previousHash 0
       $null = ExeSafe $target $job.sha256 $job.size
       if (-not (ShopClosed)) { throw 'Program reopened before recovery' }
-      [IO.File]::Replace($backup, $target, $null, $false)
+      [ForsageUpdateFile]::Restore($backup, $target)
       $backupIdentity = $null
       $null = ExeSafe $target $job.previousHash 0
       $state = 'rolled-back'
