@@ -92,6 +92,10 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     listProductBarcodes: () =>
       ipcRenderer.invoke('desktop:catalog:list-product-barcodes'),
     agentScan: (input: unknown) => ipcRenderer.invoke('desktop:catalog:agent-scan', input),
+    cleanupScan: () => ipcRenderer.invoke('desktop:catalog:cleanup-scan'),
+    cleanupPreview: (input: unknown) => ipcRenderer.invoke('desktop:catalog:cleanup-preview', input),
+    cleanupApply: (input: unknown) => ipcRenderer.invoke('desktop:catalog:cleanup-apply', input),
+    cleanupApplySku: (input: unknown) => ipcRenderer.invoke('desktop:catalog:cleanup-apply-sku', input),
     agentApply: (input: unknown) => ipcRenderer.invoke('desktop:catalog:agent-apply', input),
     listCategories: () =>
       ipcRenderer.invoke('desktop:catalog:list-categories'),

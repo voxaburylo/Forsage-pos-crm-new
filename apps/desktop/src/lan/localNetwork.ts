@@ -137,6 +137,7 @@ export function isLanProxyChannel(channel: string): boolean {
   if (!channel.startsWith('desktop:')) return false
   return ![
     'desktop:auth:',
+    'desktop:catalog:cleanup-',
     'desktop:lan:',
     'desktop:orders:offline-status',
     'desktop:orders:discard-offline',

@@ -76,6 +76,7 @@ describe('каталог операцій синхронізації', () => {
       // що перевірка на виході черги тепер стереже.
       expect(isSyncOperationAllowed(role, 'staff_user.created')).toBe(false)
       expect(isSyncOperationAllowed(role, 'settings.updated')).toBe(false)
+      expect(isSyncOperationAllowed(role, 'product.catalog_cleanup')).toBe(false)
     }
     // А шинники й спостерігачі не надсилають нічого взагалі.
     for (const role of ['tire_worker', 'sto_viewer']) {

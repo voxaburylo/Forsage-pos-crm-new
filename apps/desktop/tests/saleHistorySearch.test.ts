@@ -41,6 +41,35 @@ it('uses actual instants across legacy offset dates and excludes adjacent days',
   sale('start', '2026-10-04T00:00:00+03:00'); sale('end', to); sale('before', '2026-10-03T20:59:59.999Z'); sale('after', '2026-10-04T21:00:00Z')
   expect(pos.listSales({ date_from: from, date_to: to }).data.map(row => row.id)).toEqual(['end', 'start'])
 })
+it('keeps source-only historical barcodes searchable after their live index moves to the merged target', () => {
+  sale('source-receipt'); sale('wrong-price', at, null, 'p', 70000); sale('target-receipt', at, null, 'other')
+  db.prepare("INSERT INTO product_barcodes(id,tenant_id,product_id,barcode,created_at,updated_at) VALUES ('moved',?,'other','OLD-EXTRA-01',?,?)").run(tenant, at, at)
+  db.prepare("UPDATE products SET deleted_at=?,specs_json=? WHERE id='p'").run(at, JSON.stringify({ merged_into_product_id: 'other', cleanup_barcodes: ['OLD-EXTRA-01', 'SOURCE-ONLY-02'] }))
+  for (const query of ['OLD-EXTRA-01', 'SOURCE-ONLY-02']) {
+    expect(pos.listSales({ product_barcode: query, product_id: 'p', unit_price: 62500 }).data.map(row => row.id)).toEqual(['source-receipt'])
+    expect(pos.listSales({ product_search: query, product_id: 'p', unit_price: 62500 }).data.map(row => row.id)).toEqual(['source-receipt'])
+    expect(pos.listSales({ search: query }).data.map(row => row.id)).toContain('source-receipt')
+  }
+  expect(pos.listSales({ product_barcode: 'SOURCE-ONLY-02', product_id: 'other' }).pagination.total).toBe(0)
+  db.prepare("UPDATE products SET tenant_id='foreign' WHERE id='p'").run()
+  expect(pos.listSales({ product_barcode: 'SOURCE-ONLY-02' }).pagination.total).toBe(0)
+  expect(pos.listSales({ search: 'SOURCE-ONLY-02' }).pagination.total).toBe(0)
+})
+it('uses a merged source barcode only on the actual returned line', () => {
+  sale('source-return', '2026-10-01T10:00:00Z'); refund('source-refund', 'source-return')
+  sale('wrong-return', '2026-10-01T10:00:00Z')
+  db.prepare("INSERT INTO sale_items(id,tenant_id,sale_id,product_id,qty,unit_price,total,created_at,updated_at) VALUES ('other-line',?,'wrong-return','other',1,62500,62500,?,?)").run(tenant, at, at)
+  refund('wrong-refund', 'wrong-return', 'other-line', 'other')
+  db.prepare("UPDATE products SET deleted_at=?,specs_json=? WHERE id='p'").run(at, JSON.stringify({ merged_into_product_id: 'other', cleanup_barcodes: ['SOURCE-RETURN-CODE'] }))
+  expect(pos.listSales({ product_barcode: 'SOURCE-RETURN-CODE', unit_price: 62500, date_from: from, date_to: to, include_returns: '1' }).data.map(row => row.id)).toEqual(['source-return'])
+})
+it.each(['not-json', 'null', '{}', '{"cleanup_barcodes":["INVALID-CODE"]}', '{"merged_into_product_id":"other","cleanup_barcodes":"INVALID-CODE"}', '{"merged_into_product_id":"other","cleanup_barcodes":[123,{"code":"INVALID-CODE"}]}'])('ignores invalid historical barcode metadata without breaking receipt search: %s', value => {
+  sale('receipt')
+  db.prepare("UPDATE products SET specs_json=? WHERE id='p'").run(value)
+  expect(pos.listSales({ product_barcode: 'INVALID-CODE' }).pagination.total).toBe(0)
+  expect(pos.listSales({ search: '123' }).pagination.total).toBe(0)
+  expect(pos.listSales({ product_search: 'Помпа' }).pagination.total).toBe(1)
+})
 it('uses an exclusive next-day boundary without changing the inclusive legacy bound', () => {
   sale('end', to); sale('next-day', '2026-10-04T21:00:00Z')
   expect(pos.listSales({ date_from: from, date_to_exclusive: '2026-10-04T21:00:00Z' }).data.map(row => row.id)).toEqual(['end'])

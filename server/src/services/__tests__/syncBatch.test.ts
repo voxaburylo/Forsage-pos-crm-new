@@ -20,6 +20,19 @@ function operation(
 }
 
 describe('sync batch isolation', () => {
+  it('keeps cleanup and later source-card writes pending after a failed source dependency', async () => {
+    const ops=[operation(1,'product','source','product.upsert'),
+      operation(2,'product','target','product.catalog_cleanup',{target_id:'target',source_ids:['source']}),
+      operation(3,'product','other','product.upsert')]
+    const apply=vi.fn(async(item:SyncBatchOperation)=>{if(item.sequence===1)throw new Error('parent missing')})
+    expect((await processSyncBatch(ops,apply)).map(row=>row.sequence)).toEqual([1,3])
+  })
+  it('does not let later metadata for a failed cleanup source bypass that cleanup', async () => {
+    const ops=[operation(1,'product','target','product.catalog_cleanup',{target_id:'target',source_ids:['source']}),
+      operation(2,'product','source','product.upsert'),operation(3,'product','other','product.upsert')]
+    const apply=vi.fn(async(item:SyncBatchOperation)=>{if(item.sequence===1)throw new Error('cleanup failed')})
+    expect((await processSyncBatch(ops,apply)).map(row=>row.sequence)).toEqual([1,3])
+  })
   it('continues with unrelated operations after one failure', async () => {
     const operations = [
       operation(1, 'product', 'product-a', 'product.upsert'),

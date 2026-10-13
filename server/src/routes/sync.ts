@@ -8,6 +8,13 @@ import { streamSyncJson } from '../lib/streamSyncJson.js'
 const router = Router()
 router.use(requireAuth)
 
+// Clients must see this protocol before allowing a local catalog merge.
+// No migration is needed; the mirror uses existing product/specs metadata.
+router.get('/capabilities', (_req, res) => {
+  res.setHeader('Cache-Control', 'private, no-store')
+  res.json({ data: { catalog_cleanup: 1 } })
+})
+
 const querySchema = z.object({
   since: z.string().datetime({ offset: true }).optional(),
   include_references: z.enum(['true', 'false']).optional().transform((value) => value === 'true'),

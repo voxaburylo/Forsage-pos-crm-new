@@ -3,13 +3,22 @@ export interface SaleHistoryFilters {
   include_returns?: string; date_from?: string; date_to?: string; date_to_exclusive?: string
 }
 
+// Live barcode rows move to the canonical card during cleanup. Only the source's
+// preserved codes belong to its historical receipts; do not borrow target codes.
+const sourceBarcodeHistory = `CASE WHEN json_valid(p.specs_json) THEN CASE
+  WHEN json_type(p.specs_json,'$.cleanup_barcodes')='array'
+    AND json_type(p.specs_json,'$.merged_into_product_id')='text'
+    AND length(trim(json_extract(p.specs_json,'$.merged_into_product_id')))>0
+  THEN json_extract(p.specs_json,'$.cleanup_barcodes') ELSE '[]' END ELSE '[]' END`
+
 export function productHistoryTextMatch(line: string, query: string, params: unknown[]) {
   const tokens = query.trim().toLocaleLowerCase('uk-UA').split(/\s+/).filter(Boolean)
   return tokens.map(token => {
     params.push(token)
     return `instr(forsage_lower(COALESCE(${line}.description,'') || ' ' || COALESCE(${line}.sku,'') || ' ' ||
       COALESCE(p.name,'') || ' ' || COALESCE(p.sku,'') || ' ' || COALESCE(p.barcode,'') || ' ' ||
-      COALESCE((SELECT group_concat(pb.barcode,' ') FROM product_barcodes pb WHERE pb.product_id=${line}.product_id AND pb.tenant_id=s.tenant_id AND pb.deleted_at IS NULL),'')), ?) > 0`
+      COALESCE((SELECT group_concat(pb.barcode,' ') FROM product_barcodes pb WHERE pb.product_id=${line}.product_id AND pb.tenant_id=s.tenant_id AND pb.deleted_at IS NULL),'') || ' ' ||
+      COALESCE((SELECT group_concat(hb.value,' ') FROM json_each(${sourceBarcodeHistory}) hb WHERE hb.type='text'),'')), ?) > 0`
   }).join(' AND ') || '1=1'
 }
 
@@ -28,8 +37,9 @@ export function saleHistoryFilters(input: SaleHistoryFilters, params: unknown[])
     if (barcode) {
       conditions.push(`(p.barcode = ? OR p.sku = ? OR ${line}.sku = ? OR EXISTS (
         SELECT 1 FROM product_barcodes pb WHERE pb.product_id=${line}.product_id
-          AND pb.tenant_id=s.tenant_id AND pb.deleted_at IS NULL AND pb.barcode = ?))`)
-      params.push(barcode, barcode, barcode, barcode)
+          AND pb.tenant_id=s.tenant_id AND pb.deleted_at IS NULL AND pb.barcode = ?)
+        OR EXISTS(SELECT 1 FROM json_each(${sourceBarcodeHistory}) hb WHERE hb.type='text' AND hb.value = ?))`)
+      params.push(barcode, barcode, barcode, barcode, barcode)
     }
     return conditions.join(' AND ')
   }

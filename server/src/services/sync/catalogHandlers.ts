@@ -11,6 +11,7 @@ import { isUuid } from './syncCore.js'
 import type { SyncOutboxOperation } from './syncCore.js'
 import { assertProductReferenceExists } from './syncGuards.js'
 import { randomUUID } from 'node:crypto'
+import { lockCatalogMirror, preserveCleanupSpecs, staleCleanupCatalogWrite } from './catalogCleanupMirror.js'
 
 export async function applyCategoryUpsert(tenantId: string, operation: SyncOutboxOperation, role: string): Promise<void> {
   const payload = operation.payload ?? {}
@@ -153,6 +154,7 @@ export async function applyProductUpsert(tenantId: string, operation: SyncOutbox
   }
 
   await runTransaction(async (client) => {
+    await lockCatalogMirror(client, tenantId)
     const existingResult = await client.query(
       `SELECT id, sku, name, barcode, brand_id, category_id, unit,
               purchase_price, retail_price, qty_on_hand, reorder_point, notes,
@@ -160,10 +162,14 @@ export async function applyProductUpsert(tenantId: string, operation: SyncOutbox
               storage_bin, is_favorite, photo_url, specs, additional_barcodes
        FROM products
        WHERE id = $1 AND tenant_id = $2
-       LIMIT 1`,
+       LIMIT 1 FOR UPDATE`,
       [productId, tenantId],
     )
     const existing = existingResult.rows[0] ?? null
+    if (existing && staleCleanupCatalogWrite(existing.specs, payload, operation)) return
+    if (payload.specs?.merged_into_product_id) {
+      throw new AppError('SYNC_CATALOG_CLEANUP_REQUIRED', 'Об’єднану картку можна передати лише як повну перевірену операцію злиття', 409)
+    }
     const owns = (key: string): boolean => Object.prototype.hasOwnProperty.call(payload, key)
     const fromPayload = (key: string, fallback: any): any => owns(key) ? payload[key] : fallback
     const toNumber = (value: any, fallback = 0): number => {
@@ -246,7 +252,7 @@ export async function applyProductUpsert(tenantId: string, operation: SyncOutbox
       fromPayload('storage_bin', existing?.storage_bin ?? null),
       fromPayload('is_favorite', existing?.is_favorite ?? false) === true,
       photoUrl,
-      fromPayload('specs', existing?.specs ?? {}),
+      preserveCleanupSpecs(fromPayload('specs', existing?.specs ?? {}), existing?.specs),
       JSON.stringify(additionalBarcodes),
       updatedAt,
     ]
@@ -392,6 +398,9 @@ export async function applyProductUpsert(tenantId: string, operation: SyncOutbox
 export async function applyProductDeleted(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
   const deletedAt = operation.applied_at ?? operation.created_at
   await runTransaction(async (client) => {
+    await lockCatalogMirror(client, tenantId)
+    const existing = (await client.query('SELECT specs FROM products WHERE id=$1 AND tenant_id=$2 FOR UPDATE', [operation.aggregate_id, tenantId])).rows[0]
+    if (existing && staleCleanupCatalogWrite(existing.specs, operation.payload, operation)) return
     await client.query(
       `UPDATE products
        SET deleted_at = $3, is_active = false, updated_at = $3

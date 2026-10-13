@@ -10,8 +10,27 @@ function nowIso(): string {
 }
 
 const PRODUCT_SEARCH_REPAIR_KEY = 'product_search_index_repair_version'
-const PRODUCT_SEARCH_REPAIR_VERSION = 2
+const PRODUCT_SEARCH_REPAIR_VERSION = 3
 const MAX_MONEY_VALUE = 2_147_483_647
+const CLEANUP_SPEC_KEYS = ['cleanup_sources', 'cleanup_stock_review', 'cleanup_mirror_receipts',
+  'cleanup_mirrored_at', 'cleanup_barcodes', 'merged_into_product_id', 'merge_operation_id'] as const
+
+/** Ordinary card edits cannot create, replace or erase reviewed merge provenance. */
+function preserveCatalogCleanupSpecs(input: unknown, storedJson: string | null | undefined): Record<string, unknown> {
+  let stored: unknown
+  try { stored = JSON.parse(storedJson || '{}') }
+  catch { throw new Error('Характеристики товару пошкоджено. Збереження зупинено, щоб не втратити історію об’єднання.') }
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored))
+    throw new Error('Характеристики товару пошкоджено. Збереження зупинено, щоб не втратити історію об’єднання.')
+  if (input !== undefined && input !== null && (typeof input !== 'object' || Array.isArray(input)))
+    throw new Error('Невірний формат характеристик товару')
+  const result = { ...(input ?? {}) as Record<string, unknown> }
+  for (const key of CLEANUP_SPEC_KEYS) {
+    delete result[key]
+    if (Object.prototype.hasOwnProperty.call(stored, key)) result[key] = (stored as Record<string, unknown>)[key]
+  }
+  return result
+}
 
 function validMoney(value: number | undefined, field: string): number {
   const normalized = Number(value ?? 0)
@@ -144,26 +163,50 @@ function normalizedSkuLookup(raw: string): string {
   return raw.normalize('NFKC').trim().toLocaleUpperCase('uk-UA')
 }
 
-function productSearchText(product: LocalProductUpsert): string {
+export function productSearchText(product: LocalProductUpsert, aliases: string[] = []): string {
   return normalizeSearchText([
     product.sku,
     product.name,
     product.barcode,
     product.storage_bin,
     ...(product.additional_barcodes ?? []),
+    ...aliases,
+    ...[product.sku, ...aliases].flatMap(value => articleSearchTerms(String(value ?? ''))),
   ].filter(Boolean).join(' '))
+}
+
+/** Refresh only the derived index: never stock, prices, history or synchronization state. */
+export function refreshProductSearchText(db: LocalDatabase, productId: string, tenantId: string): string {
+  const product = db.prepare('SELECT id,sku,name,barcode,storage_bin FROM products WHERE tenant_id=? AND id=?').get(tenantId, productId) as LocalProductUpsert | undefined
+  if (!product) throw new Error('Товар для індексу пошуку не знайдено')
+  const barcodes = db.prepare('SELECT barcode FROM product_barcodes WHERE tenant_id=? AND product_id=? AND deleted_at IS NULL ORDER BY barcode').all(tenantId, productId) as { barcode: string }[]
+  const aliases = db.prepare('SELECT alias FROM product_aliases WHERE tenant_id=? AND product_id=? AND deleted_at IS NULL ORDER BY alias,id').all(tenantId, productId) as { alias: string }[]
+  const next = productSearchText({ ...product, additional_barcodes: barcodes.map(row => row.barcode) }, aliases.map(row => row.alias))
+  db.prepare('UPDATE products SET search_text=? WHERE tenant_id=? AND id=?').run(next, tenantId, productId)
+  return next
+}
+
+type AliasIndex = Map<string, Set<string>>
+function addAliasIndex(index: AliasIndex, productId: string, alias: string): void {
+  const key = normalizeCatalogCode(alias)
+  if (!key) return
+  const ids = index.get(key) ?? new Set<string>()
+  ids.add(productId); index.set(key, ids)
 }
 
 export class LocalCatalogRepository {
   private batchSkuIndex: { tenantId: string; rows: Array<{ id: string; key: string; deleted_at: string | null }> } | null = null
+  private batchAliasIndex: { tenantId: string; ids: AliasIndex } | null = null
 
   /** Scoped to one synchronous transaction: never keep a stale catalog between commands. */
   withSkuLookupIndex<T>(tenantId: string, work: () => T): T {
     const previous = this.batchSkuIndex
+    const previousAliases = this.batchAliasIndex
     const rows = this.db.prepare(`SELECT id, sku, deleted_at FROM products WHERE tenant_id = ?
       ORDER BY CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END, updated_at DESC`).all(tenantId) as Array<{ id: string; sku: string; deleted_at: string | null }>
     this.batchSkuIndex = { tenantId, rows: rows.map(row => ({ id: row.id, key: normalizedSkuLookup(row.sku), deleted_at: row.deleted_at })) }
-    try { return work() } finally { this.batchSkuIndex = previous }
+    this.batchAliasIndex = { tenantId, ids: this.readAliasIndex(tenantId) }
+    try { return work() } finally { this.batchSkuIndex = previous; this.batchAliasIndex = previousAliases }
   }
 
   constructor(private readonly db: LocalDatabase) {
@@ -201,17 +244,16 @@ export class LocalCatalogRepository {
         extra_barcodes?: string | null
       }>
 
+      const aliases = new Map<string, string[]>()
+      for (const row of this.db.prepare('SELECT tenant_id,product_id,alias FROM product_aliases WHERE deleted_at IS NULL ORDER BY tenant_id,product_id,alias,id').all() as {tenant_id:string;product_id:string;alias:string}[]) {
+        const key = row.tenant_id + '\0' + row.product_id
+        const entries = aliases.get(key) ?? []; entries.push(row.alias); aliases.set(key, entries)
+      }
       const update = this.db.prepare('UPDATE products SET search_text = ? WHERE id = ? AND tenant_id = ?')
       const repairedAt = nowIso()
       this.db.transaction(() => {
         for (const row of rows) {
-          const next = normalizeSearchText([
-            row.sku,
-            row.name,
-            row.barcode,
-            row.storage_bin,
-            row.extra_barcodes,
-          ].filter(Boolean).join(' '))
+          const next = productSearchText({ ...row, additional_barcodes: row.extra_barcodes ? [row.extra_barcodes] : [] }, aliases.get(row.tenant_id + '\0' + row.id) ?? [])
           if (next && next !== (row.search_text ?? '')) update.run(next, row.id, row.tenant_id)
         }
         this.db.prepare(`
@@ -320,6 +362,7 @@ export class LocalCatalogRepository {
     const stockBefore = this.findStoredProductById(input.id, tenantId)
     const mergeTarget = this.mergedTargetId(input.id, tenantId)
     if (mergeTarget) throw new Error('Цю картку об’єднано з основним товаром. Знайдіть його за старим штрихкодом; дубль не відновлено.')
+    const productSpecs = preserveCatalogCleanupSpecs(input.specs, (stockBefore as (LocalProduct & { specs_json?: string | null }) | null)?.specs_json)
     const previousTimestamp = Date.parse(stockBefore?.updated_at ?? '')
     const timestamp = new Date(Math.max(Date.now(), Number.isFinite(previousTimestamp) ? previousTimestamp + 1 : 0)).toISOString()
 
@@ -378,7 +421,7 @@ export class LocalCatalogRepository {
         input.storage_bin ?? null,
         input.is_favorite === true ? 1 : 0,
         input.photo_url ?? null,
-        JSON.stringify(input.specs ?? {}),
+        JSON.stringify(productSpecs),
         searchText,
         timestamp,
         timestamp,
@@ -521,6 +564,7 @@ export class LocalCatalogRepository {
           insertCross.run(randomUUID(), tenantId, input.id, num, timestamp, timestamp)
         }
       }
+      refreshProductSearchText(this.db, input.id, tenantId)
     })
 
     const product = this.findById(input.id, tenantId)
@@ -696,6 +740,16 @@ export class LocalCatalogRepository {
     const active = this.findStoredProductBySku(sku, tenantId, false)
     if (active) return this.attachAvailability([active as LocalProduct], tenantId)[0] ?? null
 
+    // An old article is an identity alias only when its full normalized spelling
+    // identifies exactly one active card. Never choose a partial/fuzzy name match.
+    const aliases = this.batchAliasIndex?.tenantId === tenantId ? this.batchAliasIndex.ids : this.readAliasIndex(tenantId)
+    const aliasIds = aliases.get(normalizeCatalogCode(sku))
+    if (aliasIds?.size) {
+      if (aliasIds.size !== 1) return null
+      const matched = this.findById([...aliasIds][0], tenantId)
+      return matched?.is_active === 1 ? matched : null
+    }
+
     // Старі імпорти використовували код постачальника як SKU, а після
     // очищення дублів така картка лишилась tombstone. Використовуємо її як
     // місток до єдиної активної картки з тим самим штрихкодом або назвою.
@@ -707,6 +761,15 @@ export class LocalCatalogRepository {
       name: deleted.name,
       barcode: deleted.barcode,
     }, deleted, tenantId)
+  }
+
+  private readAliasIndex(tenantId: string): AliasIndex {
+    const index: AliasIndex = new Map()
+    for (const row of this.db.prepare(`SELECT a.product_id,a.alias FROM product_aliases a JOIN products p
+      ON p.id=a.product_id AND p.tenant_id=a.tenant_id WHERE a.tenant_id=? AND a.deleted_at IS NULL
+      AND p.deleted_at IS NULL AND p.is_active=1`).all(tenantId) as {product_id:string;alias:string}[])
+      addAliasIndex(index, row.product_id, row.alias)
+    return index
   }
 
   private findStoredProductById(id: string, tenantId: string): (LocalProduct & { deleted_at: string | null }) | null {

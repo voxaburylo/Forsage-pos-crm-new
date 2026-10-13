@@ -106,6 +106,7 @@ function CatalogAgentContent({userId}:{userId:string}) {
   const rows = visible.slice(page * 50, page * 50 + 50)
   const value = (key: string, val: any) => key === 'retail_price' ? formatMoney(Number(val)) : key === 'category_id' ? scan?.categories.find(c => c.id === val)?.name ?? 'Без категорії' : String(val ?? '—')
   return <Layout title="Перевірка каталогу">
+    <p className="mb-3 text-sm"><Link className="underline" to="/admin/catalog-cleanup">Об’єднати номенклатуру та перенести артикули з назв →</Link></p>
     <div className="mb-4 flex flex-wrap gap-3 text-sm"><span className="border-b-2 border-yellow-400 pb-2 font-semibold">Перевірка каталогу</span><Link className="pb-2 text-gray-600" to="/ai-assistant">ШІ-помічник / розбір накладної</Link><Link className="pb-2 text-gray-600" to="/audit">Журнал змін</Link></div>
     <Card className="mb-4">
       <h2 className="font-bold">Перевірити → переглянути → підтвердити</h2>

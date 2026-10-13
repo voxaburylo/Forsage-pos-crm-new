@@ -2,6 +2,7 @@ import type { LocalDatabase } from '../db/localDatabase'
 import type { LocalSyncOutboxOperation } from '../db/localTypes'
 import { attachWriteoffCopyDetails } from './writeoffCopyDetails'
 import { attachSupplierInvoiceCopyDetails } from './supplierInvoiceCopyDetails'
+import { canonicalProductId } from './canonicalProduct'
 
 /**
  * Enrich missing legacy copy fields from the exact local document, never today's
@@ -83,6 +84,10 @@ export function attachBalanceSnapshots(db: LocalDatabase, operations: LocalSyncO
       const ids = new Set<string>()
       if (operation.aggregate_type === 'product') ids.add(operation.aggregate_id)
       if (typeof payload.product_id === 'string') ids.add(payload.product_id)
+      if (operation.operation_type === 'product.catalog_cleanup') {
+        if (typeof payload.target_id === 'string') ids.add(payload.target_id)
+        for (const id of Array.isArray(payload.source_ids) ? payload.source_ids : []) if (typeof id === 'string') ids.add(id)
+      }
       for (const item of Array.isArray(payload.items) ? payload.items : []) {
         if (typeof item?.product_id === 'string') ids.add(item.product_id)
       }
@@ -109,8 +114,19 @@ export function attachBalanceSnapshots(db: LocalDatabase, operations: LocalSyncO
       const productIds = [...ids]
       for (let start=0; start<productIds.length; start+=400) {
         const part=productIds.slice(start,start+400)
-        products.push(...db.prepare(`SELECT id,qty_on_hand FROM products WHERE tenant_id=? AND id IN (${part.map(()=>'?').join(',')})`)
-          .all(operation.tenant_id,...part))
+        const rows = db.prepare(`SELECT id,qty_on_hand,specs_json FROM products WHERE tenant_id=? AND id IN (${part.map(()=>'?').join(',')})`)
+          .all(operation.tenant_id,...part) as Array<{ id: string; qty_on_hand: number; specs_json: string | null }>
+        products.push(...rows.map(({ id, qty_on_hand }) => ({ id, qty_on_hand })))
+        // No extra query per ordinary stock row. Only explicit merged identities
+        // need resolution; old documents keep their original IDs.
+        for (const row of rows) if (row.specs_json?.includes('merged_into_product_id')) {
+          const canonical = canonicalProductId(db, operation.tenant_id, row.id)
+          if (canonical && !ids.has(canonical)) {
+            ids.add(canonical)
+            const current = db.prepare('SELECT id,qty_on_hand FROM products WHERE id=? AND tenant_id=?').get(canonical, operation.tenant_id)
+            if (current) products.push(current)
+          }
+        }
       }
       if (!customersByTenant.has(operation.tenant_id)) {
         customersByTenant.set(operation.tenant_id, db.prepare(`SELECT id, COALESCE(debt_balance,0) debt_balance,

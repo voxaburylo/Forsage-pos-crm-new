@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import * as childProcess from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -41,6 +41,19 @@ function runHelper(f: ReturnType<typeof fixture>) {
     env: { ...process.env, FORSAGE_UPDATE_JOB: Buffer.from(JSON.stringify(f.job)).toString('base64') }, windowsHide: true, timeout: 20_000,
   })
 }
+function scriptPathCheck(filePath: string, check: 'LocalPath' | 'DirectorySafe' | 'FileSafe' = 'LocalPath') {
+  // Run the actual fixed path guards only: no process query, quit, update or executable mutation.
+  const guards = PORTABLE_UPDATE_POWERSHELL.slice(0, PORTABLE_UPDATE_POWERSHELL.indexOf('$job = $null;'))
+  const script = guards + `\ntry { $value = ${check} $env:FORSAGE_TEST_PATH; @{ accepted=$true; value=$value } | ConvertTo-Json -Compress } catch { @{ accepted=$false; message=$_.Exception.Message } | ConvertTo-Json -Compress }`
+  return JSON.parse(execFileSync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
+    env: { ...process.env, FORSAGE_TEST_PATH: filePath }, encoding: 'utf8', windowsHide: true, timeout: 20_000,
+  }).trim()) as { accepted: boolean; value?: string; message?: string }
+}
+function shortPath(filePath: string) {
+  return execFileSync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '(New-Object -ComObject Scripting.FileSystemObject).GetFolder($env:FORSAGE_TEST_PATH).ShortPath'], {
+    env: { ...process.env, FORSAGE_TEST_PATH: filePath }, encoding: 'utf8', windowsHide: true, timeout: 20_000,
+  }).trim()
+}
 afterEach(() => {
   vi.restoreAllMocks(); vi.unstubAllEnvs()
   vi.mocked(childProcess.spawn).mockReset()
@@ -53,6 +66,34 @@ it('uses a fixed bounded hidden helper without policy bypass, downloaded script 
   expect(PORTABLE_UPDATE_POWERSHELL).toContain('[IO.File]::Replace($backup, $target, $null, $false)')
 })
 describe.skipIf(!platformSupported)('real Windows helper on isolated synthetic files, production gates unchanged', () => {
+  it('accepts an existing 8.3 folder alias, but rejects traversal, junctions and hard-linked files', ({ skip }) => {
+    const f = fixture(), alias = shortPath(f.root)
+    if (alias.toLowerCase() === f.root.toLowerCase()) { skip(); return }
+    const canonical = execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', '[IO.Path]::GetFullPath($env:FORSAGE_TEST_PATH)'], {
+      env: { ...process.env, FORSAGE_TEST_PATH: alias }, encoding: 'utf8', windowsHide: true, timeout: 20_000,
+    }).trim()
+    expect(scriptPathCheck(alias)).toEqual({ accepted: true, value: canonical })
+    expect(scriptPathCheck(alias, 'DirectorySafe').accepted).toBe(true)
+    for (const candidate of [alias + '\\.', alias + '\\..\\' + path.basename(alias), alias + '\\', alias + '.', alias + ' ']) {
+      expect(scriptPathCheck(candidate).accepted, candidate).toBe(false)
+    }
+    const realFolder = path.join(f.root, 'ordinary-folder'), junction = path.join(f.root, 'redirected-folder')
+    mkdirSync(realFolder); symlinkSync(realFolder, junction, 'junction')
+    expect(scriptPathCheck(junction, 'DirectorySafe').accepted).toBe(false)
+    linkSync(f.destination, path.join(f.root, 'second-link.exe'))
+    expect(scriptPathCheck(path.join(alias, 'synthetic.exe'), 'FileSafe').accepted).toBe(false)
+  }, 30_000)
+  it('records a rejected synthetic update outcome when the job paths use 8.3 folder names', ({ skip }) => {
+    const f = fixture(), alias = shortPath(f.root)
+    if (alias.toLowerCase() === f.root.toLowerCase()) { skip(); return }
+    f.job.root = path.join(alias, 'Forsage', 'updates'); f.job.destination = path.join(alias, 'synthetic.exe')
+    seedJob(f); writeFileSync(f.update.filePath, 'MZ-corrupt')
+    runHelper(f)
+    expect(hash(readFileSync(f.destination))).toBe(f.job.previousHash)
+    expect(readPortableUpdateOutcome(f.root)?.state).toBe('failed')
+    expect(existsSync(f.destination + '.update-lock')).toBe(false)
+    expect(existsSync(path.join(f.directory, 'install.lock'))).toBe(false)
+  })
   it('rejects a modified staged executable before touching the target or any database file', () => {
     const f = fixture(); seedJob(f); writeFileSync(f.update.filePath, 'MZ-corrupt')
     runHelper(f)

@@ -83,6 +83,10 @@ function unsyncedProductWorkExists(productExpression: string, tenantExpression: 
           json_valid(o.payload_json)
           AND (
             json_extract(o.payload_json, '$.product_id') = ${productExpression}
+            OR (o.operation_type = 'product.catalog_cleanup' AND EXISTS (
+              SELECT 1 FROM json_each(o.payload_json, '$.source_ids') source
+              WHERE source.value = ${productExpression}
+            ))
             OR EXISTS (
               SELECT 1 FROM json_each(o.payload_json, '$.items') item
               WHERE json_valid(item.value)
@@ -846,6 +850,12 @@ export class LocalSyncRepository {
       return
     }
 
+    if (operation.operation_type === 'product.catalog_cleanup') {
+      clearRow('products', operation.aggregate_id)
+      for (const id of Array.isArray(payload.source_ids) ? payload.source_ids : []) clearRow('products', id)
+      return
+    }
+
     if (operation.operation_type.startsWith('category.')) {
       clearRow('categories', operation.aggregate_id)
       if (operation.operation_type === 'category.deleted') {
@@ -1305,10 +1315,20 @@ export class LocalSyncRepository {
   private coalesceSupersededProductOperations(): void {
     const rows = this.db.prepare(`
       SELECT sequence, aggregate_id, operation_type, payload_json
-      FROM sync_outbox
+      FROM sync_outbox product_version
       WHERE aggregate_type = 'product'
         AND operation_type IN ('product.upsert', 'product.deleted')
         AND status IN ('pending', 'failed')
+        AND NOT EXISTS (
+          SELECT 1 FROM sync_outbox cleanup
+          WHERE cleanup.tenant_id=product_version.tenant_id
+            AND cleanup.operation_type='product.catalog_cleanup' AND cleanup.status<>'synced'
+            AND json_valid(cleanup.payload_json)
+            AND (cleanup.aggregate_id=product_version.aggregate_id OR EXISTS (
+              SELECT 1 FROM json_each(cleanup.payload_json,'$.source_ids') source
+              WHERE source.value=product_version.aggregate_id
+            ))
+        )
       ORDER BY aggregate_id, sequence DESC
     `).all() as ProductOutboxVersion[]
     if (rows.length < 2) return

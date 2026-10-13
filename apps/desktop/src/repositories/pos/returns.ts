@@ -13,6 +13,7 @@ import { allocateRefundPool, money, nowIso, operationId, payloadHash } from './p
 import { randomUUID } from 'node:crypto'
 import { LocalPosSales } from './sales'
 import { addStockQuantity, stockQuantity } from '../stockQuantity'
+import { canonicalProductId } from '../canonicalProduct'
 
 export class LocalPosReturns extends LocalPosSales {
   listReturns(input: { tenant_id?: string; page?: number; per_page?: number } = {}): {
@@ -245,13 +246,15 @@ export class LocalPosReturns extends LocalPosSales {
           timestamp,
         )
         if (ready.stock_action === 'return_to_stock' && item.product_id) {
-          const product = this.getProductForUpdate(item.product_id, tenantId)
+          const stockProductId = canonicalProductId(this.db, tenantId, item.product_id)
+          if (!stockProductId) throw new Error('Основну картку для повернення не знайдено. Повернення не проведено.')
+          const product = this.getProductForUpdate(stockProductId, tenantId)
           if (product && product.is_service !== 1) {
             const nextQty = addStockQuantity(Number(product.qty_on_hand ?? 0), item.quantity)
             this.db.prepare(`
               UPDATE products SET qty_on_hand = ?, dirty_at = ?, updated_at = ?
               WHERE id = ? AND tenant_id = ?
-            `).run(nextQty, timestamp, timestamp, item.product_id, tenantId)
+            `).run(nextQty, timestamp, timestamp, stockProductId, tenantId)
             this.db.prepare(`
               INSERT INTO inventory_movements (
                 id, tenant_id, product_id, source_type, source_id, qty_delta, qty_after,
@@ -262,7 +265,7 @@ export class LocalPosReturns extends LocalPosSales {
             `).run(
               randomUUID(),
               tenantId,
-              item.product_id,
+              stockProductId,
               returnId,
               item.quantity,
               nextQty,
@@ -486,7 +489,8 @@ export class LocalPosReturns extends LocalPosSales {
       if (!productId || source.product_id !== productId) {
         throw new Error('Товар не відповідає позиції чека')
       }
-      if (stockAction === 'return_to_stock' && !this.getProductForUpdate(productId, tenantId)) {
+      const stockProductId = stockAction === 'return_to_stock' ? canonicalProductId(this.db, tenantId, productId) : null
+      if (stockAction === 'return_to_stock' && (!stockProductId || !this.getProductForUpdate(stockProductId, tenantId))) {
         throw new Error(`Товар «${source.product_name}» видалений або неактивний. Спочатку відновіть картку товару. Повернення не проведено.`)
       }
       if (

@@ -52,6 +52,10 @@ export function outboxDependencyKeys(row: OutboxDependencyRow, payload: any): st
   addReference('supplier', payload?.duplicate_supplier_id)
   addReference('supplier', payload?.import?.supplier_id)
   addReference('product', payload?.product_id)
+  if (row.operation_type === 'product.catalog_cleanup') {
+    addReference('product', payload?.target_id)
+    for (const id of Array.isArray(payload?.source_ids) ? payload.source_ids : []) addReference('product', id)
+  }
   addReference('invoice', payload?.invoice_id)
   for (const item of Array.isArray(payload?.items) ? payload.items : []) {
     addReference('product', item?.product_id)

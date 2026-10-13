@@ -36,6 +36,10 @@ function dependencyKeys(operation: SyncBatchOperation): string[] {
   addReference('supplier', payload.duplicate_supplier_id)
   addReference('supplier', payload.import?.supplier_id)
   addReference('product', payload.product_id)
+  if (operation.operation_type === 'product.catalog_cleanup') {
+    addReference('product', payload.target_id)
+    for (const sourceId of Array.isArray(payload.source_ids) ? payload.source_ids : []) addReference('product', sourceId)
+  }
   addReference('invoice', payload.invoice_id)
   for (const item of Array.isArray(payload.items) ? payload.items : []) {
     addReference('product', item?.product_id)

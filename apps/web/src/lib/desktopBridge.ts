@@ -515,6 +515,10 @@ interface ForsageDesktopBridge {
   restoreBackup?: (fileName: string) => Promise<DesktopDatabaseBackup>
   catalog: {
     agentScan?: (input: { min_markup: number }) => Promise<any>
+    cleanupScan?: () => Promise<import('../features/admin/catalogCleanupModel').CleanupScan>
+    cleanupPreview?: (input: { target_id: string; source_ids: string[]; stock_review: 'pending' | 'checked' }) => Promise<import('../features/admin/catalogCleanupModel').CleanupPreview>
+    cleanupApply?: (input: import('../features/admin/catalogCleanupModel').CleanupMergeInput & { operation_id: string }) => Promise<{ operation_id: string; target_id: string; source_ids: string[]; quantity_after: number; backupPath: string }>
+    cleanupApplySku?: (input: { operation_id: string; product_id: string; sku: string; preview_fingerprint: string; reason: string }) => Promise<{ updated: number; backupPath: string }>
     agentApply?: (input: { operation_id: string; items: any[] }) => Promise<{ updated: number; backupPath: string }>
     findByBarcode: (barcode: string) => Promise<DesktopProduct | null>
     findById?: (id: string) => Promise<DesktopProduct | null>

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { Package, Tag, Plus, Trash2, AlertTriangle, Pencil, Check, X, Search, Globe } from 'lucide-react'
 import { adminApi } from './adminApi'
 import { Layout } from '@/components/Layout'
@@ -316,6 +316,7 @@ export default function AdminPage() {
 
   return (
     <Layout title="Адміністрування">
+      <div className="mb-4"><Link className="text-sm underline" to="/admin/catalog-cleanup">Очищення номенклатури: дублі та артикули</Link></div>
       <div className="flex gap-2 mb-6">
         {TABS.map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)}

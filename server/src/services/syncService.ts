@@ -31,6 +31,7 @@ import { applyCustomerUpsert, applyCustomerDeleted, applyCustomerVehicleUpsert, 
 import { applySupplierUpsert, applySupplierDeleted, applySupplierMerged, applySupplierInvoiceCreated, applySupplierInvoiceUpdated, applySupplierInvoicePosted, applySupplierInvoicePaymentAdded, applySupplierInvoiceCancelled, applySupplierInvoiceDeleted } from './sync/supplierHandlers.js'
 import { applyInventoryCreated, applyInventoryStarted, applyInventoryDeleted, applyInventoryCompleted, applyReserveCreated, applyReserveReleased, applyWarehouseMovementCreated, applyWriteoffCreated } from './sync/inventoryHandlers.js'
 import { applyCategoryUpsert, applyCategoryDeleted, applyBrandUpsert, applyBrandDeleted, applyProductUpsert, applyProductDeleted } from './sync/catalogHandlers.js'
+import { applyCatalogCleanupMirror } from './sync/catalogCleanupMirror.js'
 import { applyOrderUpsert, applyOrderDeleted, applyOrderStatusUpdated, applyOrderItemStatusUpdated, applyOrderItemsArrived, applyOrderCanceled, applyOrderPaymentAdded, applyOrderCompleted } from './sync/orderHandlers.js'
 import { applyShiftOpened, applyShiftClosed, applySaleCompleted, applyReturnCreated, applySuspendedSale, applySuspendedSaleClosed, applyCashOperationCreated } from './sync/salesHandlers.js'
 // Читання (pull) живе в ./sync/pullService.ts; лишаємо адресу тут, щоб
@@ -155,6 +156,12 @@ async function applyLocalOperation(params: {
 
   if (operation.operation_type === 'product.upsert') {
     await applyProductUpsert(tenantId, operation)
+    await clearProductSearchCache()
+    return
+  }
+
+  if (operation.operation_type === 'product.catalog_cleanup') {
+    await applyCatalogCleanupMirror(tenantId, operation)
     await clearProductSearchCache()
     return
   }

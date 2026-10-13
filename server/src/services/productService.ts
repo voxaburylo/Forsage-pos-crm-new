@@ -8,6 +8,7 @@ import { normalizeArticle, normalizeOemValue } from '../validators/productValida
 import { logAction } from './auditService.js'
 import { buildProductSearchTerms } from './searchService.js'
 import { SimpleCache } from '../lib/simpleCache.js'
+import { isMergedCatalogSource, preserveCleanupSpecs } from './catalogCleanupGuards.js'
 import type {
   CreateProductInput,
   UpdateProductInput,
@@ -220,12 +221,20 @@ export async function createProduct(input: CreateProductInput, _userId: string, 
   // Унікальний індекс products_tenant_id_sku_key покриває і soft-deleted рядки,
   // тому шукаємо дубль БЕЗ фільтра deleted_at — інакше «привид» у кошику
   // валив insert сирою помилкою constraint.
-  const { data: existing } = await db
+  const { data: existing, error: existingError } = await db
     .from(TABLE)
-    .select('id, deleted_at')
+    .select('id, deleted_at, specs, updated_at')
     .eq('sku', input.sku)
     .eq('tenant_id', tenantId)
     .maybeSingle()
+
+  if (existingError) throw new AppError('DB_ERROR', existingError.message, 500)
+  if (isMergedCatalogSource(existing?.specs)) {
+    throw new AppError('PRODUCT_MERGED', 'Цю картку об’єднано з іншою. Використайте головну картку товару.', 409)
+  }
+  if (Object.prototype.hasOwnProperty.call(productInput, 'specs')) {
+    productInput.specs = preserveCleanupSpecs(productInput.specs, existing?.specs) as any
+  }
 
   if (existing && !existing.deleted_at) {
     throw new AppError('SKU_DUPLICATE', `Артикул "${input.sku}" вже існує`, 409)
@@ -252,14 +261,20 @@ export async function createProduct(input: CreateProductInput, _userId: string, 
   // Дубль лише серед видалених — «воскрешаємо» той самий рядок під новими даними
   // (створити новий не дасть унікальний індекс, а відновлення зберігає історію товару)
   if (existing && existing.deleted_at) {
-    const { data, error } = await db
+    let restore = db
       .from(TABLE)
       .update({ ...productInput, ...normalized, deleted_at: null, updated_at: new Date().toISOString() })
       .eq('id', existing.id)
       .eq('tenant_id', tenantId)
+      .is('specs->>merged_into_product_id', null)
+    restore = existing.updated_at == null ? restore.is('updated_at', null) : restore.eq('updated_at', existing.updated_at)
+    const { data, error } = await restore
       .select('*, brand:brands(id,name), category:categories(id,name)')
       .single()
 
+    if (error?.code === 'PGRST116' || (!error && !data)) {
+      throw new AppError('PRODUCT_CHANGED', 'Картка змінилася під час збереження. Оновіть дані та перевірте товар.', 409)
+    }
     if (error) throw new AppError('DB_ERROR', error.message, 500)
     if (crossNumbers !== undefined) await setProductCrossNumbers(data.id, crossNumbers, tenantId, _userId)
   await analogCache.clear()
@@ -290,6 +305,9 @@ export async function createProduct(input: CreateProductInput, _userId: string, 
 
 export async function updateProduct(id: string, input: UpdateProductInput, userId: string, tenantId: string) {
   const existing = await getProduct(id, tenantId)
+  if (isMergedCatalogSource(existing.specs)) {
+    throw new AppError('PRODUCT_MERGED', 'Цю картку об’єднано з іншою. Використайте головну картку товару.', 409)
+  }
 
   // Перевірка унікальності SKU при зміні артикулу
   if (input.sku !== undefined && input.sku !== existing.sku) {
@@ -328,6 +346,8 @@ export async function updateProduct(id: string, input: UpdateProductInput, userI
 
   const { cross_numbers: crossNumbers, ...productInput } = input as UpdateProductInput & { cross_numbers?: string[] }
   const updateData: any = { ...productInput, updated_at: new Date().toISOString() }
+  const specsChanged = Object.prototype.hasOwnProperty.call(productInput, 'specs')
+  if (specsChanged) updateData.specs = preserveCleanupSpecs(productInput.specs, existing.specs)
   if (input.oem_number !== undefined) {
     updateData.normalized_oem = normalizeOemValue(input.oem_number)
   }
@@ -335,15 +355,22 @@ export async function updateProduct(id: string, input: UpdateProductInput, userI
     updateData.normalized_supplier_article = normalizeOemValue((input as any).supplier_article)
   }
 
-  const { data, error } = await db
+  let update = db
     .from(TABLE)
     .update(updateData)
     .eq('id', id)
     .eq('tenant_id', tenantId)
     .is('deleted_at', null)
+    .is('specs->>merged_into_product_id', null)
+  // A merge between the read and this write must not lose newly added markers.
+  if (specsChanged) update = existing.updated_at == null ? update.is('updated_at', null) : update.eq('updated_at', existing.updated_at)
+  const { data, error } = await update
     .select('*, brand:brands(id,name), category:categories(id,name)')
     .single()
 
+  if (error?.code === 'PGRST116' || (!error && !data)) {
+    throw new AppError('PRODUCT_CHANGED', 'Картка змінилася під час збереження. Оновіть дані та перевірте товар.', 409)
+  }
   if (error) {
     if (error.code === '23505') {
       throw new AppError('SKU_DUPLICATE', `Артикул "${input.sku}" вже існує (можливо, у видаленому товарі)`, 409)

@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { catalogReviewSchema, reviewCatalog } from '../services/catalogAgentService.js'
+import { duplicateReviewSchema, reviewCatalogDuplicates } from '../services/catalogDuplicateReviewService.js'
 import { z } from 'zod'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
@@ -56,6 +57,14 @@ router.post('/test', requireRole('owner', 'admin'), async (req, res, next) => {
     const model = (typeof req.body?.model === 'string' && req.body.model) || cfg.model
     res.json({ data: await testKey(key, model) })
   } catch (err) { next(err) }
+})
+
+router.post('/catalog-duplicates-review', requireRole('owner', 'admin'), async (req, res, next) => {
+  try {
+    const input = duplicateReviewSchema.safeParse(req.body)
+    if (!input.success) throw new AppError('VALIDATION_ERROR', 'Некоректні групи порівняння товарів', 422)
+    res.json({ data: await reviewCatalogDuplicates(req.user!.tenant_id, req.user!.id, input.data) })
+  } catch (error) { next(error) }
 })
 
 router.post('/catalog-review', requireRole('owner', 'admin'), async (req, res, next) => {

@@ -9,6 +9,7 @@ Set-StrictMode -Version Latest
 Add-Type -TypeDefinition @'
 using System;
 using System.IO;
+using System.Text;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 public static class ForsageUpdateFile {
@@ -17,6 +18,13 @@ public static class ForsageUpdateFile {
     public uint Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
   }
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetFileInformationByHandle(SafeFileHandle file, out Info info);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern uint GetLongPathName(string path, StringBuilder result, uint length);
+  public static string LongPath(string path) {
+    var result = new StringBuilder(32768);
+    uint length = GetLongPathName(path, result, (uint)result.Capacity);
+    if (length == 0 || length >= result.Capacity) throw new IOException("Cannot resolve update path");
+    return result.ToString();
+  }
   public static string Identity(string path) {
     using (var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)) {
       Info i; if (!GetFileInformationByHandle(file.SafeFileHandle, out i)) throw new IOException("Cannot inspect update file");
@@ -28,8 +36,15 @@ public static class ForsageUpdateFile {
 '@
 function LocalPath([string]$p) {
   if ($p -notmatch '^[A-Za-z]:\\' -or $p.Substring(2).Contains(':') -or $p.Length -gt 240) { throw 'Invalid local update path' }
+  # .NET Framework expands valid 8.3 names (e.g. RUNNER~1) in GetFullPath.
+  # Permit only that filesystem spelling change, never lexical traversal or Win32 trimming.
+  if ($p.Length -gt 3) {
+    foreach ($part in $p.Substring(3).Split('\')) {
+      if (-not $part -or $part -eq '.' -or $part -eq '..' -or $part -match '[. ]$|[/:<>"|?*\x00-\x1f]') { throw 'Noncanonical update path' }
+    }
+  }
   $full = [IO.Path]::GetFullPath($p)
-  if (-not [string]::Equals($full, $p, [StringComparison]::OrdinalIgnoreCase)) { throw 'Noncanonical update path' }
+  if ($full.Length -gt 240 -or -not [string]::Equals($full, [ForsageUpdateFile]::LongPath($p), [StringComparison]::OrdinalIgnoreCase)) { throw 'Noncanonical update path' }
   return $full
 }
 function DirectorySafe([string]$p) {

@@ -34,6 +34,13 @@ beforeEach(() => {
   calls.pull.mockResolvedValue({ cursor: '2026-10-09T10:00:00Z', products: [] })
   calls.bootstrap.mockResolvedValue({ exported_at: '2026-10-09T10:00:00Z', products: [] })
 })
+it('advertises catalog cleanup v1 only behind authentication without reading store data', async () => {
+  expect((await fetch(url+'/capabilities')).status).toBe(401)
+  const response=await fetch(url+'/capabilities',{headers:{'x-test-role':'owner'}})
+  expect(response.status).toBe(200)
+  expect(await response.json()).toEqual({data:{catalog_cleanup:1}})
+  expect(calls.pull).not.toHaveBeenCalled();expect(calls.bootstrap).not.toHaveBeenCalled();expect(calls.push).not.toHaveBeenCalled()
+})
 it.each(['changes','bootstrap'])('streams the existing %s endpoint with the same envelope', async endpoint => {
   const response = await fetch(url + '/' + endpoint, { headers: { 'x-test-role': 'owner' } })
   expect(response.status).toBe(200)

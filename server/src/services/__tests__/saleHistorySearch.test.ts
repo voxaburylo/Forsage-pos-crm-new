@@ -12,7 +12,7 @@ beforeAll(async () => {
     CREATE TABLE customers(id uuid PRIMARY KEY,tenant_id uuid,phone text,full_name text,card_barcode text);
     CREATE TABLE customer_vehicles(id uuid,tenant_id uuid,customer_id uuid,vin text,deleted_at timestamptz);
     CREATE TABLE customer_cars(LIKE customer_vehicles);
-    CREATE TABLE products(id uuid PRIMARY KEY,tenant_id uuid,name text,sku text,barcode text,retail_price integer,deleted_at timestamptz);
+    CREATE TABLE products(id uuid PRIMARY KEY,tenant_id uuid,name text,sku text,barcode text,retail_price integer,deleted_at timestamptz,specs jsonb);
     CREATE TABLE sale_items(id uuid PRIMARY KEY,tenant_id uuid,sale_id uuid,product_id uuid,description text,sku text,unit_price integer,qty numeric,total integer,deleted_at timestamptz);
     CREATE TABLE product_barcodes(id uuid,tenant_id uuid,product_id uuid,barcode text,deleted_at timestamptz);
     CREATE TABLE customer_orders(id uuid,tenant_id uuid,sale_id uuid,manager_id uuid,deleted_at timestamptz);
@@ -48,6 +48,47 @@ it('preserves receipt/client/VIN general search, including legacy cars', async (
   await db.query('UPDATE sales SET customer_id=$1', [id(7)])
   await db.query('INSERT INTO customer_cars VALUES ($1,$2,$3,$4,NULL)', [id(8), tenant, id(7), 'VIN-LEGACY'])
   for (const search of ['R-10', '671234567', 'петренко', 'CARD-1', 'VIN-LEGACY']) expect((await run({ search })).total).toBe(1)
+})
+it('keeps source-only historical barcodes searchable after their live index moves to the merged target', async () => {
+  await sale(10); await sale(11, at, null, 70000); await sale(12)
+  await db.query('UPDATE sale_items SET product_id=$1 WHERE id=$2', [other, id(12)])
+  await db.query('INSERT INTO product_barcodes VALUES ($1,$2,$3,$4,NULL)', [id(6), tenant, other, 'OLD-EXTRA-01'])
+  await db.query('UPDATE products SET deleted_at=$1,specs=$2 WHERE id=$3', [at, { merged_into_product_id: other, cleanup_barcodes: ['OLD-EXTRA-01', 'SOURCE-ONLY-02'] }, product])
+  for (const query of ['OLD-EXTRA-01', 'SOURCE-ONLY-02']) {
+    expect((await run({ product_barcode: query, product_id: product, unit_price: 62500 })).data.map(row => row.id)).toEqual([id(10)])
+    expect((await run({ product_search: query, product_id: product, unit_price: 62500 })).data.map(row => row.id)).toEqual([id(10)])
+    expect((await run({ search: query })).data.map(row => row.id)).toContain(id(10))
+  }
+  expect((await run({ product_barcode: 'SOURCE-ONLY-02', product_id: other })).total).toBe(0)
+  await db.query('UPDATE products SET tenant_id=$1 WHERE id=$2', [id(999), product])
+  expect((await run({ product_barcode: 'SOURCE-ONLY-02' })).total).toBe(0)
+  expect((await run({ search: 'SOURCE-ONLY-02' })).total).toBe(0)
+})
+it('uses a merged source barcode only on the actual returned line', async () => {
+  await sale(10, '2026-10-01T10:00:00Z'); await sale(11, '2026-10-01T10:00:00Z')
+  await db.query('INSERT INTO sale_items(id,tenant_id,sale_id,product_id,unit_price) VALUES ($1,$2,$3,$4,62500)', [id(12), tenant, id(11), other])
+  for (const [r, source, line] of [[20, 10, 10], [21, 11, 12]]) {
+    await db.query("INSERT INTO returns VALUES ($1,$2,$3,'completed',$4,NULL)", [id(r), tenant, id(source), at])
+    await db.query('INSERT INTO return_items VALUES ($1,$2,$1,$3,NULL)', [id(r), tenant, id(line)])
+  }
+  await db.query('UPDATE products SET deleted_at=$1,specs=$2 WHERE id=$3', [at, { merged_into_product_id: other, cleanup_barcodes: ['SOURCE-RETURN-CODE'] }, product])
+  expect((await run({ product_barcode: 'SOURCE-RETURN-CODE', unit_price: 62500, date_from: from, date_to: to, include_returns: '1' })).data.map(row => row.id)).toEqual([id(10)])
+})
+it.each([null, {}, { cleanup_barcodes: ['INVALID-CODE'] }, { merged_into_product_id: other, cleanup_barcodes: 'INVALID-CODE' }, { merged_into_product_id: other, cleanup_barcodes: [123, { code: 'INVALID-CODE' }] }])('ignores invalid historical barcode metadata: %j', async value => {
+  await sale(10)
+  await db.query('UPDATE products SET specs=$1 WHERE id=$2', [value, product])
+  expect((await run({ product_barcode: 'INVALID-CODE' })).total).toBe(0)
+  expect((await run({ search: '123' })).total).toBe(0)
+  expect((await run({ product_search: 'Помпа' })).total).toBe(1)
+})
+it('keeps legacy server schemas without a specs column searchable', async () => {
+  await sale(10)
+  await db.exec('BEGIN; ALTER TABLE products DROP COLUMN specs')
+  try {
+    expect((await run({ product_barcode: '5449000351081' })).total).toBe(1)
+    expect((await run({ product_search: 'Помпа' })).total).toBe(1)
+    expect((await run({ search: 'Помпа' })).total).toBe(1)
+  } finally { await db.exec('ROLLBACK') }
 })
 it('includes only source receipts for the actual returned product on its return date', async () => {
   await sale(10, '2026-10-01T10:00:00Z', manager); await sale(11, '2026-10-01T10:00:00Z', manager)

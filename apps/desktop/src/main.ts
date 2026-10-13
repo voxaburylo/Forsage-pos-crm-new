@@ -14,6 +14,9 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, net, shell, safeStorage, pow
 import { RememberedAccess, type RememberedUser } from './security/rememberedAccess'
 import { DesktopSessionLifecycleError, serverSessionCacheResultForError } from './security/desktopSessionLifecycle'
 import { verifyAndRememberServerSession } from './security/serverSession'
+import { CatalogCleanupRepository } from './repositories/catalogCleanupRepository'
+import { scanCatalogCleanup } from './repositories/catalogCleanupWorker'
+import { checkCleanupCapability, cleanupCartBlockers } from './security/catalogCleanupSafety'
 import { createMirrorSigner } from './security/mirrorIdentity'
 import { LocalDatabase, LocalDatabaseOpenError, OutdatedBuildError, type LocalDatabaseOpenResult } from './db/localDatabase'
 import { startBackupScheduler } from './db/backupScheduler'
@@ -333,6 +336,44 @@ function requireLocalPurchases(): LocalPurchaseRepository {
   return new LocalPurchaseRepository(localDatabase)
 }
 
+let cleanupMutationInProgress = false
+function cleanupSession() {
+  const session = requireDesktopSession()
+  // AsyncLocalStorage may still hold the caller after reload/crash/lease expiry.
+  // Destructive catalog work must also prove the actual current UI session.
+  if ((rememberedSessionRequired && rememberedStatus().locked) || !desktopAuthSession
+    || desktopAuthSession.id !== session.id || desktopAuthSession.tenant_id !== session.tenant_id)
+    throw new Error('Сесію завершено або змінено. Увійдіть і повторіть перевірку.')
+  if (localNetwork?.getStatus().mode === 'client') throw new Error('Очищення номенклатури виконується лише на головному ПК')
+  if (!['owner', 'admin'].includes(session.role)) throw new Error('Очищення номенклатури доступне власнику та адміністратору')
+  return { ...session, generation: desktopLoginGeneration }
+}
+function assertCleanupSession(before: ReturnType<typeof cleanupSession>) {
+  const current = cleanupSession()
+  if (current.id !== before.id || current.tenant_id !== before.tenant_id || current.generation !== before.generation)
+    throw new Error('Сесію змінено. Повторіть перевірку під поточним працівником.')
+}
+async function cleanupCapability(session: ReturnType<typeof cleanupSession>) {
+  try {
+    const config = requireTrustedAuthConfig()
+    return await checkCleanupCapability(config.apiUrl ?? '', getRememberedAccess().serverSession(session)?.access_token, net.fetch)
+  } catch { return { available: false, reason: 'Потрібна сумісна серверна версія та серверний вхід. Сканування доступне локально.' } }
+}
+async function cleanupRepository(session: ReturnType<typeof cleanupSession>) {
+  const capability = await cleanupCapability(session)
+  const entries: unknown = await mainWindow?.webContents.executeJavaScript(`(() => {
+    const values = [];
+    for (let i=0; i<localStorage.length; i++) {
+      const key=localStorage.key(i);
+      if (key && (key.startsWith('forsage_pos_open_receipts_v2:') || key==='forsage_pos_cart')) values.push([key,localStorage.getItem(key)]);
+    }
+    return values;
+  })()`)
+  assertCleanupSession(session)
+  return new CatalogCleanupRepository(requireLocalDatabase(), { canMirrorMerge: () => capability.available,
+    externalBlockers: ids => cleanupCartBlockers(entries, ids) })
+}
+
 function requireLocalSync(): LocalSyncRepository {
   if (!localSync) throw new Error('LOCAL_SYNC_NOT_READY')
   return localSync
@@ -366,6 +407,7 @@ function requireDesktopSession(): { id: string; tenant_id: string; role: string 
 interface TrustedAuthConfig {
   supabaseUrl: string
   supabaseAnonKey: string
+  apiUrl?: string
 }
 
 interface DesktopOnlineLoginResult {
@@ -421,6 +463,7 @@ function requireTrustedAuthConfig(): TrustedAuthConfig {
   trustedAuthConfig = {
     supabaseUrl: url.toString().replace(/\/$/, ''),
     supabaseAnonKey: String(config.supabaseAnonKey),
+    apiUrl: typeof config.apiUrl === 'string' ? config.apiUrl : undefined,
   }
   return trustedAuthConfig
 }
@@ -1326,6 +1369,38 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:catalog:upsert-product', () => assertLocalDataAuthority('desktop:catalog:upsert-product'))
   handleDesktopIpc('desktop:catalog:analytics', (_event, input) => localAnalytics(requireLocalDatabase(), input))
   handleDesktopIpc('desktop:catalog:agent-scan', (_event, input) => runCatalogAgent(requireLocalDatabase().dataRoot, 'scan', input ?? {}, requireDesktopSession().id))
+  handleDesktopIpc('desktop:catalog:cleanup-scan', async () => {
+    const session = cleanupSession()
+    const [result, capability] = await Promise.all([
+      scanCatalogCleanup(requireLocalDatabase().dataRoot, session.tenant_id), cleanupCapability(session),
+    ])
+    assertCleanupSession(session)
+    return { ...result, capability }
+  })
+  handleDesktopIpc('desktop:catalog:cleanup-preview', async (_event, input) => {
+    const session = cleanupSession(), repository = await cleanupRepository(session)
+    return repository.preview({ ...input, tenant_id: session.tenant_id })
+  })
+  handleDesktopIpc('desktop:catalog:cleanup-apply', async (_event, input) => {
+    if (cleanupMutationInProgress) throw new Error('Попереднє очищення ще виконується. Дочекайтеся результату.')
+    const session = cleanupSession(); cleanupMutationInProgress = true
+    try {
+      const backupPath = await requireLocalDatabase().backupNow()
+      const repository = await cleanupRepository(session)
+      assertCleanupSession(session)
+      // Synchronous SQLite transaction: no async gap after the final cart/session checks.
+      return { ...repository.apply({ ...input, tenant_id: session.tenant_id }, session.id), backupPath }
+    } finally { cleanupMutationInProgress = false }
+  })
+  handleDesktopIpc('desktop:catalog:cleanup-apply-sku', async (_event, input) => {
+    if (cleanupMutationInProgress) throw new Error('Попереднє очищення ще виконується. Дочекайтеся результату.')
+    const session = cleanupSession(); cleanupMutationInProgress = true
+    try {
+      const backupPath = await requireLocalDatabase().backupNow()
+      assertCleanupSession(session)
+      return { ...new CatalogCleanupRepository(requireLocalDatabase()).applySku({ ...input, tenant_id: session.tenant_id }, session.id), backupPath }
+    } finally { cleanupMutationInProgress = false }
+  })
   handleDesktopIpc('desktop:catalog:agent-apply', async (_event, input) => {
     const userId = requireDesktopSession().id
     const backupPath = await requireLocalDatabase().backupNow()

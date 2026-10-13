@@ -102,6 +102,7 @@ export const SYNC_OPERATIONS: Record<string, SyncOperationSpec> = {
   'order.status_updated': { scope: 'shop' },
   'order.updated': { references: ['customer', 'product'], scope: 'shop' },
   'product.deleted': { scope: 'admin' },
+  'product.catalog_cleanup': { references: ['product'], scope: 'admin' },
   'product.upsert': { creates: 'product', references: ['brand', 'category'], scope: 'shop' },
   'reserve.created': { references: ['product'], scope: 'shop' },
   'reserve.released': { scope: 'shop' },

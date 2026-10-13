@@ -1,5 +1,12 @@
 import type { SaleListQuery } from '../validators/saleSchema.js'
 
+// Sources retain their original barcode provenance when live indexes move to a
+// canonical card. to_jsonb keeps this compatible with schemas without specs.
+const sourceBarcodeHistory = `CASE WHEN jsonb_typeof(to_jsonb(p)->'specs'->'cleanup_barcodes')='array'
+  AND jsonb_typeof(to_jsonb(p)->'specs'->'merged_into_product_id')='string'
+  AND length(trim(to_jsonb(p)->'specs'->>'merged_into_product_id'))>0
+  THEN to_jsonb(p)->'specs'->'cleanup_barcodes' ELSE '[]'::jsonb END`
+
 /** Read-only receipt search: one snapshot, tenant-scoped EXISTS, no 1000-ID prefilter cap. */
 export function saleHistoryQuery(input: SaleListQuery, tenantId: string) {
   const values: unknown[] = [tenantId]
@@ -13,11 +20,13 @@ export function saleHistoryQuery(input: SaleListQuery, tenantId: string) {
     for (const token of (genericSearch ? input.search ?? '' : input.product_search ?? '').trim().toLocaleLowerCase('uk-UA').split(/\s+/).filter(Boolean)) {
       checks.push(`strpos(lower(COALESCE(to_jsonb(${alias})->>'description','') || ' ' || COALESCE(to_jsonb(${alias})->>'sku','') || ' ' ||
         COALESCE(p.name,'') || ' ' || COALESCE(p.sku,'') || ' ' || COALESCE(p.barcode,'') || ' ' ||
-        COALESCE((SELECT string_agg(pb.barcode,' ') FROM product_barcodes pb WHERE pb.product_id=${alias}.product_id AND pb.tenant_id=s.tenant_id AND to_jsonb(pb)->>'deleted_at' IS NULL),'')),${bind(token)})>0`)
+        COALESCE((SELECT string_agg(pb.barcode,' ') FROM product_barcodes pb WHERE pb.product_id=${alias}.product_id AND pb.tenant_id=s.tenant_id AND to_jsonb(pb)->>'deleted_at' IS NULL),'') || ' ' ||
+        COALESCE((SELECT string_agg(hb.code #>> '{}',' ') FROM jsonb_array_elements(${sourceBarcodeHistory}) hb(code) WHERE jsonb_typeof(hb.code)='string'),'')),${bind(token)})>0`)
     }
     if (!genericSearch && input.product_barcode) {
       const code = bind(input.product_barcode.trim())
-      checks.push(`(p.barcode=${code} OR p.sku=${code} OR to_jsonb(${alias})->>'sku'=${code} OR EXISTS(SELECT 1 FROM product_barcodes pb WHERE pb.product_id=${alias}.product_id AND pb.tenant_id=s.tenant_id AND to_jsonb(pb)->>'deleted_at' IS NULL AND pb.barcode=${code}))`)
+      checks.push(`(p.barcode=${code} OR p.sku=${code} OR to_jsonb(${alias})->>'sku'=${code} OR EXISTS(SELECT 1 FROM product_barcodes pb WHERE pb.product_id=${alias}.product_id AND pb.tenant_id=s.tenant_id AND to_jsonb(pb)->>'deleted_at' IS NULL AND pb.barcode=${code})
+        OR EXISTS(SELECT 1 FROM jsonb_array_elements(${sourceBarcodeHistory}) hb(code) WHERE jsonb_typeof(hb.code)='string' AND hb.code #>> '{}'=${code}))`)
     }
     return checks.join(' AND ')
   }

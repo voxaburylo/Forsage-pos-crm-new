@@ -74,4 +74,5 @@ fs.mkdirSync(desktopDistPath, { recursive: true })
 fs.writeFileSync(authConfigPath, JSON.stringify({
   supabaseUrl: supabaseUrl.toString().replace(/\/$/, ''),
   supabaseAnonKey: valueFor('VITE_SUPABASE_ANON_KEY'),
+  apiUrl: apiUrl.toString().replace(/\/$/, ''),
 }), { encoding: 'utf8', mode: 0o600 })
