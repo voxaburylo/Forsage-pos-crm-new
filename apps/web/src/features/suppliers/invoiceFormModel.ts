@@ -38,6 +38,17 @@ export function invoiceProductBase(product: { name: string; sku: string; retail_
   return { name: product.name.trim(), sku: product.sku.trim(), retail_price: product.retail_price,
     barcode: text(product.barcode), category_id: text(product.category_id), storage_bin: text(product.storage_bin), photo_url: text(product.photo_url) }
 }
+/**
+ * Ціна продажу, яка потрапить у картку після проведення: ціна рядка або, якщо
+ * в рядку нуль, поточна ціна вже наявного товару. Проблема — нуль або ціна не
+ * вища за закупівельну (націнку не зроблено).
+ */
+export function invoiceLineRetailProblem(item: Pick<LineItem, 'purchase_price' | 'retail_price' | 'product_base'>): 'zero' | 'not_above_purchase' | null {
+  const retail = item.retail_price > 0 ? item.retail_price : item.product_base?.retail_price ?? 0
+  if (!(retail > 0)) return 'zero'
+  if (item.purchase_price > 0 && retail <= item.purchase_price) return 'not_above_purchase'
+  return null
+}
 export type InvoicePaymentMethod = 'cash' | 'card' | 'transfer'
 export type SupplierPaymentFundSource = 'cashbox' | 'owner_funds' | 'bank_account' | 'business_card'
 export type InvoiceFundSource = SupplierPaymentFundSource | 'split_cashbox_owner'

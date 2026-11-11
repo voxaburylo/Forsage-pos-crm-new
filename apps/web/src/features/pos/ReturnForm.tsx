@@ -35,6 +35,7 @@ import {
 } from '@/lib/desktopBridge'
 import { usePOSBarcodeScanner } from './usePOSBarcodeScanner'
 import { orderApi } from '@/features/orders/orderApi'
+import { adminApi } from '@/features/admin/adminApi'
 
 const REASONS = Object.entries(RETURN_REASON_LABELS) as [ReturnReason, string][]
 const METHODS = Object.entries(REFUND_METHOD_LABELS) as [RefundMethod, string][]
@@ -43,6 +44,12 @@ const CONDITIONS = Object.entries(ITEM_CONDITION_LABELS) as [ItemCondition, stri
 
 function normalizeBarcode(value: string) {
   return value.replace(/\s/g, '').trim()
+}
+
+/** Повних днів від оформлення чека; null, якщо дата невідома. */
+function saleAgeInDays(completedAt?: string): number | null {
+  const ageMs = completedAt ? Date.now() - new Date(completedAt).getTime() : NaN
+  return Number.isFinite(ageMs) && ageMs > 0 ? Math.floor(ageMs / 86_400_000) : null
 }
 
 function looksLikeProductBarcode(value: string) {
@@ -120,6 +127,19 @@ export default function ReturnForm() {
   // Фіскальний номер оригінального чека (якщо продаж був через ПРРО)
   const session = useAuthStore((state) => state.session)
   const [saleFiscalNumber, setSaleFiscalNumber] = useState<string | null>(null)
+  // Налаштування «Днів на повернення»: попереджаємо про прострочений чек.
+  const [returnDays, setReturnDays] = useState(0)
+  const [saleAgeDays, setSaleAgeDays] = useState<number | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    adminApi.getSettings()
+      .then((res) => {
+        const days = Number(res.data?.return_days)
+        if (!cancelled && Number.isFinite(days) && days > 0) setReturnDays(days)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
   // Фіскальний номер чека повернення (після FiscalizeReturnCheck)
   const [returnFiscalNumber, setReturnFiscalNumber] = useState<string | null>(null)
   const [searchParams] = useSearchParams()
@@ -276,6 +296,7 @@ export default function ReturnForm() {
   async function selectSale(sale: FoundSale, version = ++requestVersion.current) {
     if (submitBusy.current || pendingReturn || version !== requestVersion.current) return
     setFound(sale)
+    setSaleAgeDays(saleAgeInDays(sale.completed_at))
     setSearching(false)
     setCandidates([])
     setSelected([]); setSaleItems([]); setSaleFiscalNumber(null); setStep(1)
@@ -361,6 +382,8 @@ export default function ReturnForm() {
       toast.error('Уточніть причину')
       return
     }
+    if (saleAgeDays !== null && returnDays > 0 && saleAgeDays > returnDays
+      && !window.confirm(`Чек #${found.sale_number} оформлено ${saleAgeDays} дн. тому — строк повернення з налаштувань (${returnDays} дн.) минув.\n\nОформити повернення?`)) return
 
     const returnBody = {
       sale_id: found.id,
@@ -761,6 +784,11 @@ export default function ReturnForm() {
               {found.status === 'returned'
                 ? '⛔ Цей чек вже повернуто'
                 : 'Чек #' + found.sale_number + ' — сума: ' + formatMoney(found.total) + ' (' + saleItems.length + ' поз.)'}
+            </div>
+          )}
+          {found && found.status !== 'returned' && saleAgeDays !== null && returnDays > 0 && saleAgeDays > returnDays && (
+            <div className="mt-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
+              Чек оформлено {saleAgeDays} дн. тому — строк повернення ({returnDays} дн.) минув
             </div>
           )}
         </Card>

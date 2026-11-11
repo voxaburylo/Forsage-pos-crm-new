@@ -63,6 +63,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   const [cashalotEnabled, setCashalotEnabled] = useState<boolean | null>(null)
   const [splitCash, setSplitCash] = useState('')
   const [printAfterPayment, setPrintAfterPayment] = useState(false)
+  const [debtLimit, setDebtLimit] = useState(0)
   const submittingRef = useRef(false)
 
   function cancelTerminal() {
@@ -135,8 +136,10 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
         setTerminalIntegrated(canUseIntegratedTerminal(
           Boolean(desktopBridge()), !!d.bank_terminal_enabled, d.terminal_provider,
         ))
+        const limit = Number(d.default_debt_limit_kopecks)
+        setDebtLimit(Number.isFinite(limit) && limit > 0 ? limit : 0)
       })
-      .catch(() => { if (!cancelled) setTerminalIntegrated(false) })
+      .catch(() => { if (!cancelled) { setTerminalIntegrated(false); setDebtLimit(0) } })
     return () => { cancelled = true }
   }, [open])
 
@@ -196,6 +199,10 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   const change       = Math.max(0, cashReceived - toPay)
   const cashValid    = method !== 'cash' || cashReceived >= toPay
   const debtOk       = method !== 'debt' || !!store.customer
+  // Налаштування «Ліміт боргу»: 0 означає, що ліміт не задано. Продаж не
+  // блокуємо — касир бачить попередження й підтверджує.
+  const debtAfterSale = Number(store.customer?.debtBalance ?? 0) + toPay
+  const debtOverLimit = method === 'debt' && !!store.customer && debtLimit > 0 && debtAfterSale > debtLimit
 
   const splitCashKopecks = parsePaymentKopecks(splitCash)
   const splitCardKopecks = Math.max(0, toPay - splitCashKopecks)
@@ -217,6 +224,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
 
   async function handleConfirm(shouldPrint = false) {
     if (!cashValid || !debtOk || !splitValid || submittingRef.current) return
+    if (debtOverLimit && !window.confirm(`Борг клієнта після цього продажу буде ${formatMoney(debtAfterSale)} — більше за ліміт ${formatMoney(debtLimit)} з налаштувань.\n\nПродати в борг?`)) return
 
     setPrintAfterPayment(shouldPrint)
 
@@ -485,6 +493,13 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
           {method === 'debt' && !store.customer && (
             <div className="bg-red-900/30 border border-red-500/50 rounded-xl px-4 py-3">
               <p className="text-red-400 text-sm text-center">Вкажіть клієнта в чеку для продажу в борг</p>
+            </div>
+          )}
+          {debtOverLimit && (
+            <div className="bg-amber-900/25 border border-amber-500/40 rounded-xl px-4 py-3">
+              <p className="text-amber-200 text-sm text-center">
+                Борг клієнта стане {formatMoney(debtAfterSale)} — це більше за ліміт {formatMoney(debtLimit)}
+              </p>
             </div>
           )}
 

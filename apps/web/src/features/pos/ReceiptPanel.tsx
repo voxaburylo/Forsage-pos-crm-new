@@ -7,6 +7,8 @@ import { useAuthStore } from '@/stores/authStore'
 import { kopecksToHryvnia } from '@/types/product'
 import { formatMoney } from '@/lib/utils'
 import { toast } from '@/components/ui/Toast'
+import { adminApi } from '@/features/admin/adminApi'
+import { posLineGross } from './posMoney'
 
 interface Props {
   onPay: () => void
@@ -31,13 +33,19 @@ const ReceiptItemRow = memo(function ReceiptItemRow({
   item,
   isSelected,
   userCanDiscount,
+  maxDiscountPct,
 }: {
   item: POSItem
   isSelected: boolean
   userCanDiscount: boolean
+  maxDiscountPct: number
 }) {
   const [isEditingQty, setIsEditingQty] = useState(false)
   const [qtyDraft, setQtyDraft] = useState(String(item.qty))
+  // Поки касир набирає знижку, показуємо саме набраний текст. Раніше поле
+  // після кожної цифри переписувалось у «5.00», і набрати «50» було неможливо.
+  const [discountDraft, setDiscountDraft] = useState<string | null>(null)
+  const discountBeforeEdit = useRef(item.discount)
   const qtyInputRef = useRef<HTMLInputElement>(null)
   const remove = () => usePOSStore.getState().removeItem(item.productId)
   const updateQty = (qty: number) => usePOSStore.getState().updateQty(item.productId, qty)
@@ -69,6 +77,24 @@ const ReceiptItemRow = memo(function ReceiptItemRow({
         : `Недостатньо на складі: ${item.name} (доступно ${item.qtyOnHand} ${item.unit})`)
     }
     updateQty(qty)
+  }
+
+  const parseDiscount = (raw: string) => {
+    const value = Number(raw.trim().replace(',', '.'))
+    return Number.isFinite(value) && value > 0 ? Math.round(value * 100) : 0
+  }
+
+  const finishDiscountEdit = () => {
+    if (discountDraft === null) return
+    const kopecks = parseDiscount(discountDraft)
+    setDiscountDraft(null)
+    const gross = posLineGross(item.unitPrice, item.qty)
+    const pct = gross > 0 ? Math.min(kopecks, gross) / gross * 100 : 0
+    // Налаштування «Максимальна знижка»: попереджаємо, рішення лишається за касиром.
+    if (kopecks !== discountBeforeEdit.current && maxDiscountPct < 100 && pct > maxDiscountPct + 0.005
+      && !window.confirm(`Знижка ${pct.toFixed(1)}% на «${item.name}» більша за максимальну з налаштувань (${maxDiscountPct}%).\n\nЗалишити таку знижку?`)) {
+      usePOSStore.getState().setDiscount(item.productId, discountBeforeEdit.current)
+    }
   }
 
   return (
@@ -191,13 +217,21 @@ const ReceiptItemRow = memo(function ReceiptItemRow({
           <div className="mt-2 flex items-center gap-2">
             <label className="text-gray-500 text-xs">Знижка:</label>
             <input
-              type="number" min="0" step="0.01"
-              value={(item.discount / 100).toFixed(2)}
+              type="text" inputMode="decimal"
+              value={discountDraft ?? (item.discount / 100).toFixed(2)}
               onClick={(e) => e.stopPropagation()}
-              onChange={(e) => {
-                const value = parseFloat(e.target.value) || 0
-                usePOSStore.getState().setDiscount(item.productId, Math.round(value * 100))
+              onFocus={(e) => {
+                discountBeforeEdit.current = item.discount
+                setDiscountDraft(item.discount > 0 ? (item.discount / 100).toFixed(2) : '')
+                const target = e.currentTarget
+                window.setTimeout(() => target.select(), 0)
               }}
+              onChange={(e) => {
+                setDiscountDraft(e.target.value)
+                usePOSStore.getState().setDiscount(item.productId, parseDiscount(e.target.value))
+              }}
+              onBlur={finishDiscountEdit}
+              onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
               className="w-24 bg-[#2C2C2C] text-orange-400 text-sm text-center rounded-xl px-3 py-2 border border-gray-700 focus:outline-none focus:border-orange-400"
             />
             <span className="text-gray-500 text-xs">₴</span>
@@ -217,7 +251,20 @@ const ReceiptItemRow = memo(function ReceiptItemRow({
 export function ReceiptPanel({ onPay, onSelectCustomer, onEditCustomer, customerEditLoading = false, onClear, onClearCustomer }: Props) {
   const store = usePOSStore()
   const userCanDiscount = canUserDiscount()
+  const [maxDiscountPct, setMaxDiscountPct] = useState(100)
   const tabBarRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!userCanDiscount) return
+    let cancelled = false
+    adminApi.getSettings()
+      .then((res) => {
+        const pct = Number(res.data?.max_discount_pct)
+        if (!cancelled && Number.isFinite(pct) && pct >= 0) setMaxDiscountPct(pct)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [userCanDiscount])
   const tabTouchStart = useRef(0)
 
   // Swipe між вкладками
@@ -389,6 +436,7 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onEditCustomer, customer
               item={item}
               isSelected={store.selectedProductId === item.productId}
               userCanDiscount={userCanDiscount}
+              maxDiscountPct={maxDiscountPct}
             />
           ))
         )}

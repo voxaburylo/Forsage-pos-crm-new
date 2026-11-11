@@ -921,7 +921,7 @@ export default function QuoteEditorPage() {
                 <span>{totalItems.length} позицій {mode === 'draft' && hasVariants ? `· ${totalItems.filter(i => i.variants.length > 0).length} з варіантами` : ''}</span>
                 {mode === 'direct' && (
                   <span className="text-gray-900 font-bold text-base">
-                    Разом: {formatMoney(totalItems.reduce((acc, it) => acc + (parseFloat(it.sell_price) * parseInt(it.qty) * 100), 0))} ₴
+                    Разом: {formatMoney(totalItems.reduce((acc, it) => acc + Math.round((parseFloat(it.sell_price) || 0) * 100) * (parseInt(it.qty) || 1), 0))} ₴
                   </span>
                 )}
               </div>

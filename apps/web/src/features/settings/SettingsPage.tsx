@@ -445,9 +445,9 @@ export default function SettingsPage() {
               <input type="number" min={0} max={100} step={0.1}
                 aria-label="Максимальна знижка у відсотках"
                 value={form.max_discount_pct ?? 0}
-                onChange={(e) => set('max_discount_pct', parseFloat(e.target.value))}
+                onChange={(e) => set('max_discount_pct', Math.min(100, Math.max(0, parseFloat(e.target.value) || 0)))}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
-              <p className="text-xs text-gray-400 mt-1">Знижка понад це значення потребує підтвердження власника</p>
+              <p className="text-xs text-gray-400 mt-1">Знижка понад це значення потребує підтвердження на касі</p>
             </div>
 
             <div className="flex items-center justify-between py-2">
@@ -597,7 +597,7 @@ export default function SettingsPage() {
               <input type="number" min={0}
                 aria-label="Ліміт боргу за замовчуванням у гривнях"
                 value={((form.default_debt_limit_kopecks ?? 100000) / 100).toFixed(0)}
-                onChange={(e) => set('default_debt_limit_kopecks', Math.round(parseFloat(e.target.value) * 100))}
+                onChange={(e) => set('default_debt_limit_kopecks', Math.max(0, Math.round((parseFloat(e.target.value) || 0) * 100)))}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
               <p className="text-xs text-gray-400 mt-1">
                 Поточний ліміт: {formatMoney(form.default_debt_limit_kopecks ?? 100000)}

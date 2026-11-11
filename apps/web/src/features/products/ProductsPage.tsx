@@ -29,6 +29,7 @@ import { canAdvanceCatalogPage, loadCatalogPage, type CatalogSource } from './ca
 import {
   printLabels,
   loadProductLabelSettings,
+  confirmLabelPrices,
 } from '@/features/labels/LabelDesigner'
 import { areAllDisplayedProductsSelected, toggleDisplayedProductsSelection } from './productSelection'
 import { canDeleteCatalog } from './catalogDeletePermissions'
@@ -1070,6 +1071,7 @@ export default function ProductsPage() {
                       const qty = bulkQtys[p.id] ?? 0
                       return Array(qty).fill(p)
                     })
+                    if (!confirmLabelPrices(settings, items)) return
                     await printLabels(settings as any, items, false)
                     setBulkPrintOpen(false)
                     setSelectedIds(new Set())
