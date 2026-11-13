@@ -109,6 +109,50 @@ export async function applySuspendedSale(tenantId: string, userId: string, opera
   })
 }
 
+/**
+ * Каса повернула клієнту заставу за стару деталь. Гроші приходять окремою
+ * операцією `cash_operation.created`; тут лише статус позиції чека.
+ *
+ * Перехід тільки вперед (pending/returned → refunded), повторна доставка нічого
+ * не змінює. Чек торкаємо в тій самій транзакції, щоб наступний pull віддав
+ * касам оновлену позицію.
+ */
+export async function applySaleCoreDepositRefunded(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
+  const payload = operation.payload ?? {}
+  const saleId = String(payload.sale_id ?? operation.aggregate_id)
+  const saleItemId = String(payload.sale_item_id ?? '')
+  if (!isUuid(saleId) || !isUuid(saleItemId)) {
+    throw new AppError('SYNC_CORE_DEPOSIT_INVALID', 'Некоректне повернення застави', 400)
+  }
+  await runTransaction(async (client) => {
+    const found = await client.query(
+      `SELECT si.core_return_status, si.core_deposit_amount
+       FROM sale_items si
+       JOIN sales s ON s.id = si.sale_id AND s.tenant_id = si.tenant_id
+       WHERE si.id = $1 AND si.sale_id = $2 AND si.tenant_id = $3
+       FOR UPDATE OF si`,
+      [saleItemId, saleId, tenantId],
+    )
+    if (!found.rowCount) {
+      throw new AppError('SYNC_CORE_DEPOSIT_SALE_REQUIRED', 'Чек із заставою ще не скопійовано на сервер', 409)
+    }
+    const item = found.rows[0]
+    if (item.core_return_status === 'refunded') return
+    if (!['pending', 'returned'].includes(item.core_return_status) || !(Number(item.core_deposit_amount) > 0)) {
+      throw new AppError('SYNC_CORE_DEPOSIT_INVALID', 'За цією позицією чека немає застави до повернення', 422)
+    }
+    await client.query(
+      `UPDATE sale_items SET core_return_status = 'refunded'
+       WHERE id = $1 AND tenant_id = $2 AND core_return_status IN ('pending', 'returned')`,
+      [saleItemId, tenantId],
+    )
+    await client.query(
+      'UPDATE sales SET updated_at = $3 WHERE id = $1 AND tenant_id = $2',
+      [saleId, tenantId, operation.applied_at ?? operation.created_at],
+    )
+  })
+}
+
 export async function applySuspendedSaleClosed(tenantId: string, operation: SyncOutboxOperation): Promise<void> {
   await runTransaction(async (client) => {
     await client.query(

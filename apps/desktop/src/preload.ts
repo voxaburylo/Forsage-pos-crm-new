@@ -277,6 +277,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     getReturnByOperation: (id: string) => ipcRenderer.invoke('desktop:pos:get-return-by-operation', id),
     getSaleForReturn: (saleId: string, tenantId?: string) => ipcRenderer.invoke('desktop:pos:get-sale-for-return', saleId, tenantId),
     createReturn: (input: unknown) => ipcRenderer.invoke('desktop:pos:create-return', input),
+    refundCoreDeposit: (input: unknown) => ipcRenderer.invoke('desktop:pos:refund-core-deposit', input),
     getSale: (id: string, tenantId?: string) => ipcRenderer.invoke('desktop:pos:get-sale', id, tenantId),
     calculatePrices: (items: unknown[], tenantId?: string) => ipcRenderer.invoke('desktop:pos:calculate-prices', items, tenantId),
     suspendSale: (input: unknown) => ipcRenderer.invoke('desktop:pos:suspend-sale', input),

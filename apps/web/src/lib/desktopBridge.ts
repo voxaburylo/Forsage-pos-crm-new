@@ -718,6 +718,7 @@ interface ForsageDesktopBridge {
     getReturnByOperation?: (id: string) => Promise<any | null>
     getSaleForReturn?: (saleId: string, tenantId?: string) => Promise<any>
     createReturn?: (input: any) => Promise<any>
+    refundCoreDeposit?: (input: { sale_item_id: string; refund_id: string }) => Promise<{ data: { sale_id: string; sale_item_id: string; amount: number; replayed: boolean } }>
     getSale?: (id: string, tenantId?: string) => Promise<any>
     calculatePrices?: (items: Array<{ product_id: string; qty: number }>, tenantId?: string) => Promise<any[]>
     suspendSale?: (input: any) => Promise<any>

@@ -66,6 +66,7 @@ export class LocalPosReturns extends LocalPosSales {
              COALESCE(si.sku, p.sku, '') AS sku, COALESCE(p.unit, 'шт') AS unit,
              si.qty, si.unit_price, COALESCE(si.discount, 0) AS discount,
              si.total, COALESCE(si.core_deposit_amount, 0) AS core_deposit_amount,
+             COALESCE(si.core_return_status, 'none') AS core_return_status,
              COALESCE((
                SELECT SUM(ri.quantity)
                FROM customer_return_items ri
@@ -137,6 +138,9 @@ export class LocalPosReturns extends LocalPosSales {
         // Public form contract; keep the older name for repository/report consumers.
         available_refund: Math.max(0, refundableTotal - alreadyRefundedKopecks),
         refundable_kopecks: Math.max(0, refundableTotal - alreadyRefundedKopecks),
+        // Застава за стару деталь іде окремо від повернення товару.
+        core_return_status: String((item as any).core_return_status ?? 'none'),
+        core_deposit_total: money(Number(item.core_deposit_amount ?? 0) * Number(item.qty)),
       }
     })
     return {
@@ -156,6 +160,84 @@ export class LocalPosReturns extends LocalPosSales {
       },
       items,
     }
+  }
+
+  /**
+   * Клієнт приніс стару деталь: повертаємо заставу готівкою з каси.
+   *
+   * Одна дія на всю позицію чека. Гроші йдуть звичайною видачею з каси
+   * (`cash_out`) з приміткою, фіскального чека повернення немає — так вирішив
+   * власник. `refund_id` — це й номер касової операції: повтор того самого
+   * запиту нічого не видає вдруге.
+   */
+  refundCoreDeposit(input: {
+    tenant_id?: string
+    sale_item_id: string
+    refund_id: string
+    user_id: string
+  }): { data: { sale_id: string; sale_item_id: string; amount: number; replayed: boolean } } {
+    const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+    const refundId = operationId(input.refund_id)
+    if (!refundId) throw new Error('Відсутній номер операції повернення застави')
+    if (!input.user_id) throw new Error('Не вдалося визначити касира')
+    return this.db.transaction(() => {
+      const item = this.db.prepare(`
+        SELECT si.id, si.sale_id, si.qty, COALESCE(si.core_deposit_amount, 0) AS core_deposit_amount,
+               COALESCE(si.core_return_status, 'none') AS core_return_status,
+               COALESCE(p.name, si.description, 'Товар') AS product_name,
+               s.sale_number, s.status AS sale_status
+        FROM sale_items si
+        JOIN sales s ON s.id = si.sale_id AND s.tenant_id = si.tenant_id
+        LEFT JOIN products p ON p.id = si.product_id AND p.tenant_id = si.tenant_id
+        WHERE si.id = ? AND si.tenant_id = ? AND si.deleted_at IS NULL AND s.deleted_at IS NULL
+        LIMIT 1
+      `).get(input.sale_item_id, tenantId) as {
+        id: string; sale_id: string; qty: number; core_deposit_amount: number; core_return_status: string
+        product_name: string; sale_number: string; sale_status: string
+      } | undefined
+      if (!item) throw new Error('Позицію чека не знайдено')
+      const amount = money(Number(item.core_deposit_amount) * Number(item.qty))
+      const paid = this.db.prepare('SELECT tenant_id, type, amount, user_id FROM cash_operations WHERE id = ? LIMIT 1')
+        .get(refundId) as { tenant_id: string; type: string; amount: number; user_id: string | null } | undefined
+      if (paid) {
+        if (paid.tenant_id !== tenantId || paid.type !== 'cash_out' || Number(paid.amount) !== amount
+          || paid.user_id !== input.user_id || item.core_return_status !== 'refunded') {
+          throw new Error('Цей номер операції вже використано для іншої видачі з каси')
+        }
+        return { data: { sale_id: item.sale_id, sale_item_id: item.id, amount, replayed: true } }
+      }
+      if (!['completed', 'returned'].includes(item.sale_status)) throw new Error('За цим чеком заставу повернути не можна')
+      if (item.core_return_status === 'refunded') throw new Error('Заставу за цією позицією вже повернуто')
+      if (amount <= 0 || !['pending', 'returned'].includes(item.core_return_status)) {
+        throw new Error('За цією позицією немає застави до повернення')
+      }
+      const shiftId = this.findOpenShift(input.user_id, tenantId)
+      if (!shiftId) throw new Error('Для повернення застави готівкою відкрийте касову зміну')
+
+      const timestamp = nowIso()
+      const note = `Повернення застави за стару деталь: ${item.product_name}, чек ${item.sale_number}`
+      const changed = this.db.prepare(`
+        UPDATE sale_items SET core_return_status = 'refunded', updated_at = ?
+        WHERE id = ? AND tenant_id = ? AND core_return_status IN ('pending', 'returned')
+      `).run(timestamp, item.id, tenantId) as { changes: number | bigint }
+      if (Number(changed.changes) !== 1) throw new Error('Заставу за цією позицією вже повернуто')
+      // Поки сервер не підтвердив зміну, чек лишається «брудним»: черговий
+      // pull не поверне позиції старий статус і не дасть видати заставу вдруге.
+      this.db.prepare('UPDATE sales SET dirty_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?')
+        .run(timestamp, timestamp, item.sale_id, tenantId)
+      this.addCashOperation(tenantId, shiftId, input.user_id, 'cash_out', amount, note, timestamp, refundId)
+      this.addOutbox(tenantId, 'cash_operation', refundId, 'cash_operation.created', {
+        id: refundId, shift_id: shiftId, type: 'out', amount, note, source: 'cashbox', user_id: input.user_id,
+      }, timestamp)
+      this.addOutbox(tenantId, 'sale', item.sale_id, 'sale.core_deposit_refunded', {
+        sale_id: item.sale_id, sale_item_id: item.id, amount, cash_operation_id: refundId,
+        shift_id: shiftId, refunded_by: input.user_id, refunded_at: timestamp,
+      }, timestamp)
+      this.addAudit(tenantId, input.user_id, 'sale.core_deposit_refunded', 'sale', item.sale_id, {
+        sale_item_id: item.id, amount, cash_operation_id: refundId,
+      }, timestamp)
+      return { data: { sale_id: item.sale_id, sale_item_id: item.id, amount, replayed: false } }
+    })
   }
 
   getReturnByOperation(id: string, cashierId: string, tenantId = DEFAULT_TENANT_ID): any | null {

@@ -110,6 +110,7 @@ export const SYNC_OPERATIONS: Record<string, SyncOperationSpec> = {
   'salary_payment.created': { scope: 'admin' },
   'salary_payment.deleted': { scope: 'admin' },
   'sale.completed': { creates: 'sale', references: ['product', 'customer', 'shift'], scope: 'shop' },
+  'sale.core_deposit_refunded': { scope: 'shop' },
   'sale.suspended': { references: ['product', 'customer', 'shift'], scope: 'shop' },
   'sale.suspended_deleted': { scope: 'shop' },
   'sale.suspended_resumed': { scope: 'shop' },

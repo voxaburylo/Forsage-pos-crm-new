@@ -98,6 +98,10 @@ export default function ReturnForm() {
   const [candidates, setCandidates] = useState<FoundSale[]>([])
   const [candidateHint, setCandidateHint] = useState('')
   const [saleItems, setSaleItems] = useState<SaleItemForReturn[]>([])
+  // Застава за стару деталь: номер видачі сталий для позиції, тож повтор після
+  // невідомої відповіді не видасть гроші вдруге.
+  const depositRefundIds = useRef<Record<string, string>>({})
+  const [depositBusyId, setDepositBusyId] = useState<string | null>(null)
   const [selected, setSelected] = useState<SelectedItem[]>([])
   const [loadingItems, setLoadingItems] = useState(false)
   const [searching, setSearching] = useState(false)
@@ -370,6 +374,27 @@ export default function ReturnForm() {
         qty: val ? item.available_qty : 0,
       }))
     )
+  }
+
+  const depositItems = returnApi.canRefundCoreDeposit()
+    ? saleItems.filter((item) => (item.core_deposit_total ?? 0) > 0 && ['pending', 'returned'].includes(item.core_return_status ?? ''))
+    : []
+
+  async function refundDeposit(item: SaleItemForReturn) {
+    if (!found || depositBusyId || submitBusy.current) return
+    const amount = item.core_deposit_total ?? 0
+    if (!window.confirm(`Клієнт повернув стару деталь «${item.product_name}»?\n\nЗ каси буде видано ${formatMoney(amount)} готівкою.`)) return
+    const refundId = depositRefundIds.current[item.id] ?? (depositRefundIds.current[item.id] = crypto.randomUUID())
+    setDepositBusyId(item.id)
+    try {
+      const { data } = await returnApi.refundCoreDeposit(item.id, refundId)
+      toast.success(`Заставу ${formatMoney(data.amount)} повернуто готівкою з каси`)
+      setSaleItems((rows) => rows.map((row) => row.id === item.id ? { ...row, core_return_status: 'refunded' } : row))
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося повернути заставу')
+    } finally {
+      setDepositBusyId(null)
+    }
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -789,6 +814,20 @@ export default function ReturnForm() {
           {found && found.status !== 'returned' && saleAgeDays !== null && returnDays > 0 && saleAgeDays > returnDays && (
             <div className="mt-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
               Чек оформлено {saleAgeDays} дн. тому — строк повернення ({returnDays} дн.) минув
+            </div>
+          )}
+          {found && depositItems.length > 0 && (
+            <div className="mt-2 space-y-2 rounded-xl border border-yellow-300 bg-yellow-50 px-4 py-3">
+              <p className="text-sm font-semibold text-yellow-900">Застава за стару деталь</p>
+              {depositItems.map((item) => (
+                <div key={item.id} className="flex flex-wrap items-center justify-between gap-2 text-sm text-yellow-900">
+                  <span>{item.product_name} — {formatMoney(item.core_deposit_total ?? 0)}</span>
+                  <Button type="button" size="sm" variant="outline" loading={depositBusyId === item.id}
+                    disabled={depositBusyId !== null || submitting} onClick={() => void refundDeposit(item)}>
+                    Повернути заставу
+                  </Button>
+                </div>
+              ))}
             </div>
           )}
         </Card>

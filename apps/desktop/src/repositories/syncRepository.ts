@@ -1090,6 +1090,11 @@ export class LocalSyncRepository {
       clearRow('cash_operations', operation.aggregate_id)
       return
     }
+    if (operation.operation_type === 'sale.core_deposit_refunded') {
+      // Сервер записав, що заставу повернуто: чек знову можна оновлювати з pull.
+      clearRow('sales', operation.aggregate_id)
+      return
+    }
 
     if (operation.operation_type === 'reserve.created' || operation.operation_type === 'reserve.released') {
       clearRow('stock_reserves', operation.aggregate_id)
