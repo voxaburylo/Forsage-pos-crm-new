@@ -166,6 +166,8 @@ export default function ProductsPage() {
     try { kopecks = hryvniaToKopecks(priceDraft) }
     catch (error) { toast.error(error instanceof Error ? error.message : 'Невірна ціна'); return }
     if (p.retail_price === kopecks) { setEditPriceId(null); return }
+    if (p.purchase_price > 0 && kopecks < p.purchase_price
+      && !window.confirm(`Нова ціна «${p.name}» нижча за закупівельну. Каса такий товар не продасть.\n\nЗберегти цю ціну?`)) return
     priceSaveBusyRef.current = true
     setSavingPrice(true)
     try {

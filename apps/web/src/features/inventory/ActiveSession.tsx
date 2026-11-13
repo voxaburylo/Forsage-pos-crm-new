@@ -605,6 +605,8 @@ export default function ActiveSession() {
     const purchase = Math.round(parseFloat(String(editPurchase).replace(',', '.')) * 100)
     if (!Number.isFinite(retail) || retail < 0) { toast.error('Некоректна ціна продажу'); return }
     if (!Number.isFinite(purchase) || purchase < 0) { toast.error('Некоректна закупівельна ціна'); return }
+    if (purchase > 0 && retail < purchase
+      && !window.confirm('Ціна продажу нижча за закупівельну. Каса такий товар не продасть.\n\nЗберегти ці ціни?')) return
     setSavingPrice(true)
     try {
       await trackRowWrite(async () => {
