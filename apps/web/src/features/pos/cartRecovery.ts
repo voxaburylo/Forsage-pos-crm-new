@@ -34,9 +34,11 @@ export function parseOpenReceipts(raw: string | null): OpenReceipts | null {
         if (!Number.isFinite(qty) || qty <= 0 || !Number.isFinite(unitPrice) || unitPrice < 0) return []
         const discountPct = Number.isFinite(item.discountPct) ? Math.max(0, Math.min(100, item.discountPct)) : undefined
         const price = Math.round(unitPrice)
+        const purchasePrice = Math.round(nonnegative(item.purchasePrice))
         return [{ productId: String(item.productId), sku: String(item.sku ?? ''),
           name: String(item.name ?? item.sku ?? 'Товар'), unit: String(item.unit ?? 'шт'),
-          qty, unitPrice: price, discountPct, ...posLineAmounts({ unitPrice: price, qty, discount: Number(item.discount) || 0, discountPct }),
+          qty, unitPrice: price, discountPct, ...(purchasePrice > 0 ? { purchasePrice } : {}),
+          ...posLineAmounts({ unitPrice: price, qty, discount: Number(item.discount) || 0, discountPct, purchasePrice }),
           qtyOnHand: Number(item.qtyOnHand) || 0, requiresCoreReturn: item.requiresCoreReturn === true,
           coreDepositAmount: Number.isFinite(item.coreDepositAmount) ? nonnegative(item.coreDepositAmount) : 0,
           photoUrl: typeof item.photoUrl === 'string' ? item.photoUrl : null }]

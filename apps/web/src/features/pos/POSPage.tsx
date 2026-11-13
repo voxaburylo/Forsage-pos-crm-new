@@ -207,8 +207,14 @@ export default function POSPage() {
   const desktopRuntime = Boolean(desktopBridge())
   const effectiveOnline = desktopRuntime || serverOnline
   const { pendingCount, syncing, incrementPending, syncPendingSales } = useOfflineSync(serverOnline)
-  const [isEmployeeSale] = useState(false)
-  const [staffUsers, setStaffUsers]     = useState<Array<{ id: string; full_name: string; role: string; is_active?: boolean }>>([])
+  const [employeeDiscountPct, setEmployeeDiscountPct] = useState(0)
+  const [staffUsers, setStaffUsers]     = useState<Array<{ id: string; full_name: string; role: string; is_active?: boolean; phone?: string | null }>>([])
+  const setEmployeeDiscount = usePOSStore((state) => state.setEmployeeDiscount)
+  // «Знижка для працівників» діє сама, коли в чек обрано клієнта з телефоном
+  // активного працівника; окремої кнопки в касі немає.
+  useEffect(() => {
+    setEmployeeDiscount(employeeDiscountPct, staffUsers.filter((user) => user.is_active !== false).map((user) => user.phone))
+  }, [employeeDiscountPct, staffUsers, setEmployeeDiscount])
   const tireWorkers = useMemo(() => staffUsers.filter((user) => user.role === 'tire_worker' && user.is_active !== false), [staffUsers])
   const session = useAuthStore((s) => s.session)
   // Dashboard is restricted to office roles. Sending a cashier there caused
@@ -308,6 +314,7 @@ export default function POSPage() {
       .then((res: any) => {
         const data = res.data
         autoPrintRef.current = data.auto_print_receipt ?? false
+        setEmployeeDiscountPct(Number(data.employee_discount_pct) || 0)
         localStorage.setItem('forsage_receipt_width_mm', String(data.receipt_width_mm ?? 58))
         setPriceRounding({
           enabled: data.price_rounding_enabled === true,
@@ -987,7 +994,7 @@ export default function POSPage() {
         onCreated={(c: Customer) => {
           const posCustomer = posCustomerFromCustomer(c)
           store.setCustomer(posCustomer)
-          if (!isEmployeeSale) store.setAutomaticDiscountPct(posCustomer.tierDiscountPct)
+          store.setAutomaticDiscountPct(posCustomer.tierDiscountPct)
         }}
       />
 
@@ -999,7 +1006,7 @@ export default function POSPage() {
           const posCustomer = posCustomerFromCustomer(c)
           if (store.customer?.id === c.id) {
             store.setCustomer(posCustomer)
-            if (!isEmployeeSale) store.setAutomaticDiscountPct(posCustomer.tierDiscountPct)
+            store.setAutomaticDiscountPct(posCustomer.tierDiscountPct)
           }
           setEditingCustomer(c)
           setCustomerEditOpen(false)

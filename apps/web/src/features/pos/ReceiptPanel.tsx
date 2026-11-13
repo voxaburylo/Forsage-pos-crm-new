@@ -8,7 +8,7 @@ import { kopecksToHryvnia } from '@/types/product'
 import { formatMoney } from '@/lib/utils'
 import { toast } from '@/components/ui/Toast'
 import { adminApi } from '@/features/admin/adminApi'
-import { posLineGross } from './posMoney'
+import { posLineCost, posLineGross } from './posMoney'
 
 interface Props {
   onPay: () => void
@@ -94,6 +94,10 @@ const ReceiptItemRow = memo(function ReceiptItemRow({
     if (kopecks !== discountBeforeEdit.current && maxDiscountPct < 100 && pct > maxDiscountPct + 0.005
       && !window.confirm(`Знижка ${pct.toFixed(1)}% на «${item.name}» більша за максимальну з налаштувань (${maxDiscountPct}%).\n\nЗалишити таку знижку?`)) {
       usePOSStore.getState().setDiscount(item.productId, discountBeforeEdit.current)
+      return
+    }
+    if (posLineCost(item) > 0 && item.discount < Math.min(kopecks, gross)) {
+      toast.warning(`Знижку на «${item.name}» обмежено: товар не продається нижче закупівельної ціни`)
     }
   }
 
@@ -236,6 +240,9 @@ const ReceiptItemRow = memo(function ReceiptItemRow({
             />
             <span className="text-gray-500 text-xs">₴</span>
           </div>
+        )}
+        {item.discount > 0 && posLineCost(item) > 0 && item.total <= posLineCost(item) && (
+          <p className="mt-1 text-[11px] text-amber-300">Ціна по собівартості — нижче товар не продається</p>
         )}
         {isSelected && (
           <div className="mt-1.5 flex gap-3 text-gray-500 text-[10px]">

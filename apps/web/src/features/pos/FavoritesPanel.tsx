@@ -7,6 +7,7 @@ import { kopecksToHryvnia } from '@/types/product'
 import { usePOSStore } from '@/stores/posStore'
 import { playSuccessBeep, initAudio } from '@/lib/audioService'
 import { toast } from '@/components/ui/Toast'
+import { posSaleBlockReason } from './posMoney'
 import { formatMoney } from '@/lib/utils'
 import { useNavigate } from 'react-router-dom'
 
@@ -15,6 +16,7 @@ interface FoodItem {
   sku: string
   name: string
   retail_price: number
+  purchase_price?: number
   unit: string
   category?: { name: string } | null
 }
@@ -134,13 +136,17 @@ export function FavoritesPanel({ open, onClose }: { open?: boolean; onClose?: ()
         return
       }
       const qtyAvailable = product.qty_available ?? product.qty_on_hand
+      const unitPrice = price > 0 ? price : product.retail_price
+      const blocked = posSaleBlockReason({ name: product.name, unitPrice, purchasePrice: product.purchase_price })
+      if (blocked) { toast.error(blocked); return }
       usePOSStore.getState().addItem({
         productId: product.id,
         sku: product.sku,
         name: product.name,
         unit: product.unit,
         qty: 1,
-        unitPrice: price > 0 ? price : product.retail_price,
+        unitPrice,
+        purchasePrice: product.purchase_price,
         discount: 0,
         qtyOnHand: qtyAvailable,
         requiresCoreReturn: product.requires_core_return,
@@ -155,6 +161,8 @@ export function FavoritesPanel({ open, onClose }: { open?: boolean; onClose?: ()
 
   function addFoodProduct(p: FoodItem) {
     initAudio()
+    const blocked = posSaleBlockReason({ name: p.name, unitPrice: p.retail_price, purchasePrice: p.purchase_price })
+    if (blocked) { toast.error(blocked); return }
     usePOSStore.getState().addItem({
       productId: p.id,
       sku: p.sku,
@@ -162,6 +170,7 @@ export function FavoritesPanel({ open, onClose }: { open?: boolean; onClose?: ()
       unit: p.unit,
       qty: 1,
       unitPrice: p.retail_price,
+      purchasePrice: p.purchase_price,
       discount: 0,
       qtyOnHand: 999,
       requiresCoreReturn: false,

@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import type { Shift } from '@/types/shift'
 import { useAuthStore } from './authStore'
-import { posCoreTotal, posLineAmounts, posLineGross } from '@/features/pos/posMoney'
+import { posCoreTotal, posLineAmounts, posLineGross, posPhoneKey } from '@/features/pos/posMoney'
 
 export interface POSItem {
   productId: string
@@ -12,6 +12,7 @@ export interface POSItem {
   unitPrice: number    // копійки
   discount: number     // копійки
   discountPct?: number // автоматична знижка, що масштабується разом із кількістю
+  purchasePrice?: number // копійки; нижче цієї ціни знижка товар не опускає
   total: number        // копійки
   qtyOnHand: number    // поточний залишок на складі
   requiresCoreReturn?: boolean
@@ -150,6 +151,11 @@ interface POSState {
   setPriceRounding: (rounding: Partial<POSPriceRounding>) => void
   roundUnitPrice: (price: number) => number
 
+  // Налаштування «Знижка для працівників»: діє, коли в чек обрано клієнта
+  // з телефоном активного працівника.
+  employeeDiscount: { pct: number; phones: string[] }
+  setEmployeeDiscount: (pct: number, staffPhones: Array<string | null | undefined>) => void
+
   // Менеджер для комісійних (глобальний на всю зміну)
   managerId: string | null
   setManagerId: (id: string | null) => void
@@ -180,6 +186,12 @@ interface POSState {
     customer: POSCustomer | null
     notes?: string
   }) => boolean
+}
+
+function employeePctFor(customer: POSCustomer | null | undefined, policy: { pct: number; phones: string[] }): number {
+  if (!customer || !(policy.pct > 0)) return 0
+  const key = posPhoneKey(customer.phone)
+  return key && policy.phones.includes(key) ? policy.pct : 0
 }
 
 function updateTabInStore(set: any, get: any, tabId: string, updates: Partial<ReceiptTab>) {
@@ -236,6 +248,12 @@ export const usePOSStore = create<POSState>((set, get) => {
       })
     },
     roundUnitPrice: (price) => roundPOSUnitPrice(price, get().priceRounding),
+    employeeDiscount: { pct: 0, phones: [] },
+    setEmployeeDiscount: (pct, staffPhones) => {
+      const safePct = Number.isFinite(pct) ? Math.max(0, Math.min(100, pct)) : 0
+      const phones = [...new Set(staffPhones.map(posPhoneKey).filter(Boolean))]
+      set({ employeeDiscount: { pct: safePct, phones } })
+    },
     setManagerId: (id) => set({ managerId: id }),
 
     // Гетери — підтягуються з активної вкладки
@@ -383,7 +401,8 @@ export const usePOSStore = create<POSState>((set, get) => {
       const { tabs, activeTabId } = get()
       const tab = tabs.find((t) => t.id === activeTabId)
       if (!tab || !activeTabId) return
-      const safePct = Math.max(0, Math.min(100, pct))
+      // Працівник отримує більшу з двох знижок: свою з картки або знижку працівника.
+      const safePct = Math.max(0, Math.min(100, Math.max(pct, employeePctFor(tab.customer, get().employeeDiscount))))
       const updated = tab.items.map((item) => {
         // Ручну знижку менеджера не перезаписуємо автоматичною.
         if (item.discount > 0 && item.discountPct === undefined) return item
@@ -402,6 +421,10 @@ export const usePOSStore = create<POSState>((set, get) => {
       const { activeTabId } = get()
       if (!activeTabId) return
       const previousCustomer = get().getActiveTab()?.customer
+      const employeePct = employeePctFor(customer, get().employeeDiscount)
+      if (customer && employeePct > customer.tierDiscountPct) {
+        customer = { ...customer, tierDiscountPct: employeePct, tierName: 'Працівник' }
+      }
       updateTabInStore(set, get, activeTabId, {
         customer,
         ...(previousCustomer?.id !== customer?.id ? { bonusToRedeem: 0 } : {}),

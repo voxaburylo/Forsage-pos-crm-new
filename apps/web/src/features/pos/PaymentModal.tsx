@@ -8,6 +8,7 @@ import { formatMoney } from '@/lib/utils'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { useDialogEscape } from '@/hooks/useDialogEscape'
 import { canUseIntegratedTerminal, runPaymentConfirmation } from './paymentContract'
+import { posLineCost } from './posMoney'
 
 interface SplitAmounts {
   cash_amount: number
@@ -183,9 +184,12 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   const bonusBalance = bonusReady && bonusAvailability.status === 'ready' ? bonusAvailability.balance : 0
   const maxBonus = bonusReady && bonusAvailability.status === 'ready' ? bonusAvailability.maximum : 0
   // Обчислення сум (потрібні і для діалогу термінала, і для основного UI)
+  // Бонуси — теж знижка: вони не можуть опустити чек нижче закупівельної вартості товарів.
+  const bonusRoomAboveCost = Math.max(0, store.total - store.totalCoreDeposit - store.items.reduce((sum, item) => sum + posLineCost(item), 0))
+  const bonusCap = Math.min(bonusBalance, maxBonus, bonusRoomAboveCost)
   const _bonusRedeemed = Math.min(
     parsePaymentKopecks(bonusInput),
-    maxBonus, bonusBalance, Math.max(0, store.total - store.totalCoreDeposit),
+    bonusCap, Math.max(0, store.total - store.totalCoreDeposit),
   )
   const _toPay = Math.max(0, store.total - _bonusRedeemed)
 
@@ -389,10 +393,10 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
               ) : (
                 <div>
                   <label className="text-gray-400 text-xs mb-1 block">
-                    Списати бонусів (макс {formatMoney(Math.min(bonusBalance, maxBonus))})
+                    Списати бонусів (макс {formatMoney(bonusCap)})
                   </label>
                   <input type="number" min="0" step="0.01"
-                    max={(Math.min(bonusBalance, maxBonus) / 100).toFixed(2)}
+                    max={(bonusCap / 100).toFixed(2)}
                     value={bonusInput} onChange={(e) => setBonusInput(e.target.value)} disabled={loading}
                     placeholder="0.00"
                     className="w-full bg-[#2C2C2C] text-yellow-300 text-lg font-bold text-center rounded-lg px-3 py-2 border border-yellow-600/30 focus:outline-none focus:border-yellow-400" />

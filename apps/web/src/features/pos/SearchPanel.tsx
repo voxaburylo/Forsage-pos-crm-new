@@ -7,6 +7,7 @@ import type { Product } from '@/types/product'
 import { kopecksToHryvnia } from '@/types/product'
 import { usePOSStore } from '@/stores/posStore'
 import { toast } from '@/components/ui/Toast'
+import { posSaleBlockReason } from './posMoney'
 import { playSuccessBeep, playWarning, initAudio, playErrorTone } from '@/lib/audioService'
 import { CameraScanner } from './CameraScanner'
 import { findProductByScanOffline, searchCustomersOffline, searchProductsOffline } from '@/lib/offlineDB'
@@ -454,6 +455,12 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
 
   function addToReceipt(p: Product) {
     initAudio()
+    const blocked = posSaleBlockReason({ name: p.name, unitPrice: p.retail_price, purchasePrice: p.purchase_price })
+    if (blocked) {
+      playErrorTone()
+      toast.error(blocked)
+      return
+    }
     const store = usePOSStore.getState()
 
     const tierPct = store.automaticDiscountPct
@@ -486,6 +493,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       unit:      p.unit,
       qty:       1,
       unitPrice: p.retail_price,
+      purchasePrice: p.purchase_price,
       discount,
       discountPct: tierPct > 0 ? tierPct : undefined,
       qtyOnHand: qtyAvailable,

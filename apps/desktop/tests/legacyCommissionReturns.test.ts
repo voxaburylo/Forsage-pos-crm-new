@@ -11,10 +11,15 @@ import { LocalStaffRepository } from '../src/repositories/staffRepository'
 import { LocalProblemRepository } from '../src/repositories/problemRepository'
 import { LocalOrderRepository } from '../src/repositories/orderRepository'
 
+// Збиткові чеки в цьому файлі — історичні, створені до правила «не нижче
+// закупівельної ціни». Каса таких більше не проводить (tests/posCostFloor.test.ts),
+// але старі лишаються в базі, тож комісії та звіти мають рахувати їх як раніше.
+class PreRulePos extends LocalPosRepository { protected override assertSaleNotBelowCost(): void {} }
+
 describe('approved legacy commission policy: exact correction or review, never current rates', () => {
   let root: string, db: LocalDatabase, pos: LocalPosRepository, staff: LocalStaffRepository
   let shift: string, product: string, second: string
-  function connect() { db = new LocalDatabase(root); pos = new LocalPosRepository(db); staff = new LocalStaffRepository(db) }
+  function connect() { db = new LocalDatabase(root); pos = new PreRulePos(db); staff = new LocalStaffRepository(db) }
   function restart() { db.close(); connect() }
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-09-28T10:00:00Z'))

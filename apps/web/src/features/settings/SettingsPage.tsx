@@ -564,7 +564,7 @@ export default function SettingsPage() {
                 onChange={(e) => set('employee_discount_pct', parseFloat(e.target.value) || 0)}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
               <p className="text-xs text-gray-400 mt-1">
-                Автоматична знижка при виборі «Продаж працівнику» в касі
+Діє сама, коли в чек обрано клієнта з телефоном працівника. Нижче закупівельної ціни знижка не опускає
               </p>
             </div>
           </Card>
