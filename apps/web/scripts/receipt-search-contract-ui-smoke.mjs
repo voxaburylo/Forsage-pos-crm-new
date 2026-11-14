@@ -14,7 +14,7 @@ const mocks = {
   '@/lib/api': 'export const api={get:async url=>{if(!url.startsWith("/api/v1/sales?"))throw Error("Unexpected read "+url);return fixture.read(Object.fromEntries(new URL(url,location.origin).searchParams))},post:()=>{throw Error("Writes forbidden")}}',
   '@/lib/offlineDB': 'export const getLocalSyncState=async()=>({reset_generation:0})',
   '@/stores/authStore': 'const state={session:{user:{id:"synthetic-cashier",app_metadata:{role:"cashier",tenant_id:"synthetic"}}}};export const useAuthStore=Object.assign(select=>select(state),{getState:()=>state})',
-  '@/features/pos/returnApi': 'export const returnApi={hasPending:()=>false,getSaleItems:async id=>{fixture.itemReads.push(id);return{data:{sale:{id,fiscal_number:null},items:[]}}}}',
+  '@/features/pos/returnApi': 'export const returnApi={hasPending:()=>false,canRefundCoreDeposit:()=>false,getSaleItems:async id=>{fixture.itemReads.push(id);return{data:{sale:{id,fiscal_number:null},items:[]}}}}',
   '@/features/pos/usePOSBarcodeScanner': 'export const usePOSBarcodeScanner=()=>{}',
   '@/features/orders/orderApi': 'export const orderApi={}',
   '@/components/Layout': 'export function Layout({children,title}){return <main><h1>{title}</h1>{children}</main>}',

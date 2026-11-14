@@ -14,7 +14,7 @@ const mocks = {
   '@/features/products/productApi': 'export const productApi=fixture.api',
   '@/features/admin/adminApi': 'export const adminApi=fixture.admin',
   '@/features/admin/pricingApi': 'export const pricingApi=fixture.pricing',
-  '@/features/labels/LabelDesigner': 'export const printLabels=()=>{};export const loadProductLabelSettings=()=>({});export const DEFAULT_BIN_LABEL={}',
+  '@/features/labels/LabelDesigner': 'export const printLabels=()=>{};export const loadProductLabelSettings=()=>({});export const confirmLabelPrices=()=>true;export const DEFAULT_BIN_LABEL={}',
   '@/features/inventory/warehouseApi': 'export const warehouseApi=fixture.warehouse',
   '@/stores/authStore': 'export const useAuthStore=select=>select({session:{user:{app_metadata:{role:fixture.role}}},offlineMode:fixture.offline})',
   '@/components/Layout': 'export function Layout({children,title,actions}){return <main><h1>{title}</h1>{actions}{children}</main>}',
