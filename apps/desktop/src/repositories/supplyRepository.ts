@@ -199,18 +199,25 @@ export class LocalSupplyRepository {
       const originalTarget = this.db.prepare('SELECT * FROM suppliers WHERE id=? AND tenant_id=?').get(primaryId, tenantId)
       if (!primary.is_active) throw new Error('Основний постачальник має бути активним')
       const history = prepareSupplierHistory(this.db, tenantId, duplicateId, primaryId)
+      const writesBefore = Number((this.db.prepare('SELECT total_changes() n').get() as any).n)
+      let plannedWrites = 3 + (history?.payload.invoices.length ?? 0)
+        + (history?.payload.invoices.reduce((n,i)=>n+i.payments.length,0) ?? 0) + (history?.cash.length ?? 0)
+        + (history?.catalog?.payload.items.length ?? 0) + (history?.catalog?.payload.imports.length ?? 0)
       const timestamp = nowIso()
       let verifyHistory: (() => void) | undefined
+      let verifyCatalog: (() => void) | undefined
       if (history) {
         const cancelled = history.payload.invoices.filter(i => i.status === 'cancelled').map(i => this.getInvoice(i.id, tenantId))
         for (const invoice of cancelled) {
           const terminal = readSupplyTerminalReceipt(this.db, tenantId, invoice.id)
           if (terminal) {
+            plannedWrites++
             assertSupplyTerminalRetry(terminal, 'cancelled', undefined, invoice)
             assertSupplyTerminalMovements(this.db, invoice.id, terminal)
           }
         }
         verifyHistory = applySupplierHistory(this.db, tenantId, duplicateId, primaryId, timestamp)
+        verifyCatalog = history.catalog?.apply(timestamp)
         for (const invoice of history.payload.invoices.filter(i=>i.status==='deleted'))
           moveDeletedSupplierHistory(this.db,tenantId,invoice.id,duplicateId,primaryId,timestamp)
         for (const invoice of cancelled)
@@ -224,6 +231,7 @@ export class LocalSupplyRepository {
       const receiptKey = supplierMergeReceiptKey(tenantId, duplicateId)
       const receiptValue = JSON.stringify({ source: duplicateId, target: primaryId, result: primary,
         ...(history ? { history_payload: history.payload, previous_cash: history.cash,
+          ...(history.catalog ? { catalog_supplier_change_offsets: history.catalog.offsets } : {}),
           invoice_supplier_change_offsets: Object.fromEntries(history.payload.invoices.map(i => [i.id, invoiceSupplierChangeCount(this.db,tenantId,i.id)])) } : {}) })
       const saved = this.db.prepare('INSERT INTO app_meta(key,value_json,updated_at) VALUES(?,?,?)')
         .run(receiptKey, receiptValue, timestamp)
@@ -240,6 +248,9 @@ export class LocalSupplyRepository {
         || !isDeepStrictEqual(this.db.prepare('SELECT * FROM suppliers WHERE id=? AND tenant_id=?').get(primaryId, tenantId), originalTarget))
         throw new Error('Стан постачальників змінився під час об’єднання. Нічого не змінено.')
       verifyHistory?.()
+      verifyCatalog?.()
+      if (history?.catalog && Number((this.db.prepare('SELECT total_changes() n').get() as any).n) - writesBefore !== plannedWrites)
+        throw new Error('Неочікувані зміни під час злиття прайсів. Усі зміни цієї спроби скасовано.')
       if (!readSupplierMergeReceipt(this.db, tenantId, duplicateId, primaryId, id => this.getInvoice(id, tenantId)))
         throw new Error('Не вдалося підтвердити об’єднання постачальників. Нічого не змінено.')
       return primary

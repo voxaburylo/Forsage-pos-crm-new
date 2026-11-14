@@ -113,6 +113,19 @@ export class LocalPosSales extends LocalPosCustomers {
       const product = this.getProductForUpdate(item.product_id, tenantId)
       if (!product) throw new Error('Товар не знайдено')
       const qty = Number(item.qty ?? 0)
+      // FIX: раніше in_stock порівнював qty_on_hand без урахування резервів.
+      // Каса показувала «є на складі», але при оформленні каса викидала
+      // «Недостатньо товару», бо валідатор (sales.ts ~657) вираховує резерви.
+      // Тепер обидва місця використовують ту саму логіку: qty_on_hand − резерви.
+      const reserve = this.db.prepare(`
+        SELECT COALESCE(SUM(qty), 0) AS qty
+        FROM stock_reserves
+        WHERE tenant_id = ? AND product_id = ?
+          AND released_at IS NULL AND deleted_at IS NULL
+          AND (expires_at IS NULL OR unixepoch(expires_at) > unixepoch('now'))
+      `).get(tenantId, product.id) as { qty: number } | undefined
+      const qtyOnHand = Number(product.qty_on_hand ?? 0)
+      const available = subtractStockQuantity(qtyOnHand, Number(reserve?.qty ?? 0))
       return {
         product_id: product.id,
         sku: product.sku,
@@ -121,8 +134,9 @@ export class LocalPosSales extends LocalPosCustomers {
         unit_price: Number(product.retail_price ?? 0),
         qty,
         total: Number(product.retail_price ?? 0) * qty,
-        in_stock: Number(product.qty_on_hand ?? 0) >= qty,
-        qty_on_hand: Number(product.qty_on_hand ?? 0),
+        in_stock: available >= qty,
+        qty_on_hand: qtyOnHand,
+        qty_available: available,
       }
     })
   }

@@ -1,5 +1,6 @@
 import { runTransaction } from '../db/pg.js'
 import { AppError } from '../middleware/errorHandler.js'
+import { MVP_TENANT_ID } from '../config/constants.js'
 import { isUuid } from './sync/syncCore.js'
 import type { PoolClient } from 'pg'
 import { isDeepStrictEqual } from 'node:util'
@@ -55,7 +56,7 @@ export async function assertSupplierNotMerged(client: PoolClient, tenant: string
 /** This path handles unused duplicates only. Moving historical documents needs
  * an explicit copied merge transition; never invalidate their receipt hashes. */
 export async function mergeEmptySupplier(primaryId: string, duplicateId: string, tenant: string, timestamp = new Date().toISOString()) {
-  if (!isUuid(primaryId) || !isUuid(duplicateId) || !isUuid(tenant) || primaryId.toLowerCase() === duplicateId.toLowerCase()
+  if (!isUuid(primaryId) || !isUuid(duplicateId) || (tenant !== MVP_TENANT_ID && !isUuid(tenant)) || primaryId.toLowerCase() === duplicateId.toLowerCase()
     || !Number.isFinite(Date.parse(timestamp))) throw new AppError('SUPPLIER_MERGE_INVALID', 'Некоректна пара постачальників', 422)
   const primary = primaryId.toLowerCase(), duplicate = duplicateId.toLowerCase()
   return runTransaction(async client => {

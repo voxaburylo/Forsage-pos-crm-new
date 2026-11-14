@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto'
+import { supplierCatalogMergeSchema, lockSupplierCatalogMerge, prepareSupplierCatalogMerge,
+  verifySupplierCatalogMergeRetry } from './supplierCatalogMerge.js'
 import { z } from 'zod'
 import type { PoolClient } from 'pg'
 import { runTransaction } from '../../db/pg.js'
@@ -19,13 +21,15 @@ const paymentSchema = z.object({
 }).strict()
 const historySchema = z.object({
   history_version: z.literal(1), primary_supplier_id: invoiceId, duplicate_supplier_id: invoiceId,
+  created_at: invoiceDate.optional(), // Added by pushLocalOperations; not part of the transfer snapshot.
   invoices: z.array(z.object({
     id: invoiceId, snapshot: invoiceSnapshot, status: z.enum(['draft','posted','cancelled','deleted']),
     deleted_at: invoiceDate.optional(),
     posted_by: invoiceId.nullable(), posted_at: invoiceDate.nullable(),
     paid_amount: invoiceMoney, payment_method: z.enum(['cash','card','transfer']).nullable(),
     payments: z.array(paymentSchema).max(5000),
-  }).strict()).min(1).max(1000),
+  }).strict()).max(1000),
+  catalog: supplierCatalogMergeSchema.optional(),
 }).strict()
 type History = z.infer<typeof historySchema>
 const iso = (v: any) => v == null ? null : new Date(v).toISOString()
@@ -41,7 +45,8 @@ function parseHistory(value: unknown): History {
   const result = historySchema.safeParse(value)
   if (!result.success) invoiceInvalid()
   const copy = result.data
-  if (copy.primary_supplier_id === copy.duplicate_supplier_id
+  delete copy.created_at
+  if ((!copy.invoices.length && !copy.catalog) || copy.primary_supplier_id === copy.duplicate_supplier_id
     || new Set(copy.invoices.map(i => i.id)).size !== copy.invoices.length) invoiceInvalid()
   const paymentIds = new Set<string>()
   for (const i of copy.invoices) {
@@ -87,10 +92,16 @@ export async function mergedPaymentSupplierMatches(client: PoolClient, tenant: s
 export async function applySupplierHistoryMerged(tenant: string, operation: SyncOutboxOperation): Promise<void> {
   const copy = parseHistory(operation.payload)
   if (operation.operation_type !== 'supplier.merged' || operation.aggregate_id?.toLowerCase() !== copy.primary_supplier_id
+    || operation.tenant_id !== tenant || typeof operation.device_id !== 'string' || !operation.device_id.trim()
+    || !Number.isSafeInteger(operation.sequence) || operation.sequence <= 0
     || !invoiceId.safeParse(operation.operation_id).success || !invoiceDate.safeParse(operation.created_at).success
     || Buffer.byteLength(JSON.stringify(copy),'utf8') > 1_000_000) invoiceInvalid()
   const invoices = [...copy.invoices].sort((a,b) => a.id.localeCompare(b.id))
   await runTransaction(async client => {
+    if (copy.catalog) {
+      // Catalog writers acquire this before supplier/item rows; keep that order.
+      await lockSupplierCatalogMerge(client,tenant)
+    }
     // Match all invoice writers: invoice locks BEFORE supplier row locks.
     for (const i of invoices) await lockInvoiceCopy(client, tenant, checkpoint(operation, i.id))
     const rows = (await client.query('SELECT * FROM suppliers WHERE tenant_id=$1 AND id=ANY($2::uuid[]) ORDER BY id FOR UPDATE',
@@ -104,6 +115,7 @@ export async function applySupplierHistoryMerged(tenant: string, operation: Sync
         || saved.operation_id !== operation.operation_id.toLowerCase() || saved.device_id !== operation.device_id
         || Number(saved.source_sequence) !== operation.sequence || invoiceHash(saved.history_payload) !== invoiceHash(copy)) invoiceConflict()
       await assertNoSupplierReferences(client, source.id)
+      if (copy.catalog) await verifySupplierCatalogMergeRetry(client,tenant,target.id,copy.catalog,operation)
       for (const i of invoices) {
         const invoice = (await client.query('SELECT * FROM supply_invoices WHERE id=$1 FOR UPDATE',[i.id])).rows[0]
         if (!await checkInvoiceReceipt(client,tenant,checkpoint(operation,i.id),copy,invoice,true)) invoiceConflict()
@@ -112,7 +124,11 @@ export async function applySupplierHistoryMerged(tenant: string, operation: Sync
     }
     if (source.deleted_at || target.deleted_at || !target.is_active) invoiceConflict()
     if ((await client.query('SELECT 1 FROM supplier_invoice_copy_receipts WHERE tenant_id=$1 AND operation_id=$2',[tenant,operation.operation_id])).rowCount) invoiceConflict()
-    await assertNoSupplierReferences(client, source.id, ['supply_invoices','supplier_payments'])
+    await assertNoSupplierReferences(client, source.id, ['supply_invoices','supplier_payments',
+      ...(copy.catalog ? ['supplier_price_items','supplier_price_imports'] : [])])
+    const moveCatalog = copy.catalog
+      ? await prepareSupplierCatalogMerge(client,tenant,source.id,target.id,copy.catalog,operation.device_id,operation.sequence)
+      : undefined
     // A missing extra invoice (including another tenant/deleted draft) must not disappear.
     const all = (await client.query('SELECT id,tenant_id FROM supply_invoices WHERE supplier_id=$1 ORDER BY id',[source.id])).rows
     if (all.length !== invoices.length || all.some((r,n) => r.tenant_id !== tenant || r.id !== invoices[n].id)) invoiceConflict()
@@ -153,6 +169,7 @@ export async function applySupplierHistoryMerged(tenant: string, operation: Sync
         || !Number.isFinite(row.updated_at.getTime()))) invoiceConflict()
       await saveInvoiceReceipt(client,tenant,checkpoint(operation,i.id),copy)
     }
+    const verifyCatalog = await moveCatalog?.(operation.created_at)
     const archived = await client.query('UPDATE suppliers SET deleted_at=$3,is_active=false,updated_at=$3 WHERE tenant_id=$1 AND id=$2 RETURNING id,updated_at',[tenant,source.id,operation.created_at])
     if (archived.rowCount !== 1) invoiceConflict()
     const insertedReceipt = await client.query(`INSERT INTO supplier_merge_receipts(tenant_id,duplicate_id,primary_id,result,merged_at,operation_id,device_id,source_sequence,history_payload)
@@ -163,6 +180,7 @@ export async function applySupplierHistoryMerged(tenant: string, operation: Sync
       operation_id: operation.operation_id.toLowerCase(), device_id: operation.device_id,
       source_sequence: operation.sequence, history_payload: copy,
     })
+    await verifyCatalog?.()
     for (const expected of expectedHistory) {
       const actual = (await client.query('SELECT * FROM supply_invoices WHERE tenant_id=$1 AND id=$2',[tenant,expected.invoice.id])).rows[0]
       const payments = (await client.query('SELECT * FROM supplier_payments WHERE invoice_id=$1 ORDER BY id',[expected.invoice.id])).rows

@@ -488,6 +488,22 @@ export class LocalInventoryRepository {
         .get(item.product_id, tenantId) as { qty_on_hand?: number } | undefined
       const prevQty = num(prevRow?.qty_on_hand ?? 0)
       this.assertCountStillCurrent(sessionId, item, tenantId, prevQty)
+      // БАГ-10: якщо підрахована кількість менша за активні резерви — зупинити ревізію.
+      // Інакше available стає від'ємним і всі замовлення на цей товар зависнуть.
+      const reservedRow = this.db.prepare(`
+        SELECT COALESCE(SUM(qty), 0) AS qty
+        FROM stock_reserves
+        WHERE tenant_id = ? AND product_id = ? AND released_at IS NULL AND deleted_at IS NULL
+          AND (expires_at IS NULL OR expires_at > ?)
+      `).get(tenantId, item.product_id, timestamp) as { qty: number }
+      const totalReserved = num(reservedRow.qty)
+      if (totalReserved > 0 && counted < totalReserved) {
+        const productName = item.product?.name ?? item.product_id
+        throw new Error(
+          `Товар «${productName}»: підрахована кількість (${counted}) менша за активні резерви (${totalReserved}). ` +
+          `Перевірте та скасуйте зайві резерви або збільшіть кількість перед завершенням ревізії.`,
+        )
+      }
       this.db.prepare('UPDATE products SET qty_on_hand = ?, dirty_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?')
         .run(counted, timestamp, timestamp, item.product_id, tenantId)
       // Аудит: коригування ревізії лишає слід у русі складу (раніше не писалось,

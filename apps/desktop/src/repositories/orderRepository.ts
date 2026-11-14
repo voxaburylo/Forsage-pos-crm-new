@@ -415,9 +415,9 @@ export class LocalOrderRepository {
         WHERE order_id = ? AND tenant_id = ? AND deleted_at IS NULL
       `).run(timestamp, timestamp, timestamp, orderId, tenantId)
       this.db.prepare(`
-        UPDATE stock_reserves SET released_at = ?, updated_at = ?
+        UPDATE stock_reserves SET released_at = ?, dirty_at = ?, updated_at = ?
         WHERE order_id = ? AND tenant_id = ? AND released_at IS NULL AND deleted_at IS NULL
-      `).run(timestamp, timestamp, orderId, tenantId)
+      `).run(timestamp, timestamp, timestamp, orderId, tenantId)
       this.addOutbox(tenantId, 'customer_order', orderId, 'order.deleted', { id: orderId }, timestamp)
     })
     return { success: true }
@@ -1114,9 +1114,9 @@ export class LocalOrderRepository {
 
       this.db.prepare(`
         UPDATE stock_reserves
-        SET released_at = ?, updated_at = ?
+        SET released_at = ?, dirty_at = ?, updated_at = ?
         WHERE tenant_id = ? AND order_id = ? AND released_at IS NULL AND deleted_at IS NULL
-      `).run(timestamp, timestamp, tenantId, orderId)
+      `).run(timestamp, timestamp, timestamp, tenantId, orderId)
 
       this.db.prepare(`
         UPDATE customer_order_items

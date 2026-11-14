@@ -125,6 +125,7 @@ export class LocalSyncRepository {
     this.recoverAcknowledgedDirtyFlags()
     this.wakeStuckOperations()
     this.autoResolveStaleInventories()
+    this.releaseOrphanedReserves()
   }
 
   getPullState(): LocalSyncPullState {
@@ -436,6 +437,35 @@ export class LocalSyncRepository {
     if (ready.length === 0) return 0
 
     return this.queueInventoryCopies(ready.map((candidate) => candidate.sequence)).queued
+  }
+
+  /**
+   * БАГ-5 FIX (07.11.2026): При запуску звільняємо резерви, що залишились
+   * прив'язаними до замовлень у термінальному стані (completed / archived / canceled).
+   *
+   * Такі «примарні» резерви виникали через:
+   *   – clearChildren('stock_reserves', ...) у order.completed знімав лише dirty_at,
+   *     але не виставляв released_at (виправлено у БАГ-1, але старі рядки лишились);
+   *   – order.canceled не мав обробника звільнення резервів взагалі.
+   *
+   * Цей метод запускається один раз при кожному старті програми, тому «старі»
+   * бази також очищуються автоматично після оновлення.
+   */
+  private releaseOrphanedReserves(): void {
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      UPDATE stock_reserves
+      SET released_at = COALESCE(released_at, ?),
+          updated_at  = ?
+      WHERE released_at IS NULL
+        AND deleted_at  IS NULL
+        AND order_id    IS NOT NULL
+        AND EXISTS (
+          SELECT 1 FROM customer_orders o
+          WHERE o.id = stock_reserves.order_id
+            AND o.status IN ('completed', 'archived', 'canceled')
+        )
+    `).run(now, now)
   }
 
   /**
@@ -1021,6 +1051,16 @@ export class LocalSyncRepository {
       clearRow('customer_orders', operation.aggregate_id)
       clearChildren('customer_order_items', 'order_id', operation.aggregate_id)
       clearChildren('stock_reserves', 'order_id', operation.aggregate_id)
+      // FIX: clearChildren зупиняє брудний прапор, але не звільняє резерв.
+      // Строки з released_at = NULL залишаються «активними» у запиті доступного
+      // залишку (sales.ts), накопичуються після кожного виконаного замовлення і
+      // штучно зменшують qty_on_hand у попередженні «Недостатньо товару».
+      // Встановлюємо released_at тут, щоб не чекати наступного повного bootstrap.
+      this.db.prepare(`
+        UPDATE stock_reserves
+        SET released_at = COALESCE(released_at, ?), updated_at = ?
+        WHERE order_id = ? AND released_at IS NULL AND deleted_at IS NULL
+      `).run(operation.created_at, operation.created_at, operation.aggregate_id)
       clearRow('sales', payload?.sale_id)
       clearChildren('cash_operations', 'sale_id', payload?.sale_id)
       clearChildren('inventory_movements', 'source_id', operation.aggregate_id)
@@ -1039,6 +1079,15 @@ export class LocalSyncRepository {
     }
     if (operation.operation_type === 'order.status_updated' || operation.operation_type === 'order.canceled') {
       clearRow('customer_orders', operation.aggregate_id)
+      if (operation.operation_type === 'order.canceled') {
+        // БАГ-5 FIX: звільняємо резерв при скасуванні замовлення.
+        // Раніше reserves залишались активними вічно, блокуючи залишок.
+        this.db.prepare(`
+          UPDATE stock_reserves
+          SET released_at = COALESCE(released_at, ?), updated_at = ?
+          WHERE order_id = ? AND released_at IS NULL AND deleted_at IS NULL
+        `).run(operation.created_at, operation.created_at, operation.aggregate_id)
+      }
       return
     }
     if (operation.operation_type === 'order.item_status_updated') {

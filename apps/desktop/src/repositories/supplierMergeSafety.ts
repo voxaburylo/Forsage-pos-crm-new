@@ -1,4 +1,5 @@
 import type { LocalDatabase } from '../db/localDatabase'
+import { verifySupplierCatalogHistoryRetry } from './supplierCatalogMerge'
 import { terminalSupplier, deletedSupplierHistory, sameDeletedSupplierHistory } from './deletedSupplierHistory'
 import { readSupplyTerminalReceipt, assertSupplyTerminalRetry, assertSupplyTerminalMovements, assertUnpaidSupplyTerminal } from './supplyTerminalState'
 
@@ -125,7 +126,8 @@ export function readSupplierMergeReceipt(db: LocalDatabase, tenant: string, sour
   const cancelledIds = new Set<string>()
   if (history) {
     if (history.history_version !== 1 || history.primary_supplier_id !== target || history.duplicate_supplier_id !== source
-      || !Array.isArray(history.invoices) || !history.invoices.length) throw supplierMergeHistoryError()
+      || !Array.isArray(history.invoices) || (!history.invoices.length && !history.catalog)) throw supplierMergeHistoryError()
+    if (history.catalog) verifySupplierCatalogHistoryRetry(db,tenant,target,history.catalog,receipt.catalog_supplier_change_offsets)
     for (const before of history.invoices) {
       if (!Array.isArray(before.payments) || !['draft','posted','cancelled','deleted'].includes(before.status)) throw supplierMergeHistoryError()
       const current = db.prepare('SELECT * FROM supply_invoices WHERE id=?').get(before.id) as any

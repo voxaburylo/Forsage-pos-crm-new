@@ -316,10 +316,10 @@ it.each(['supplier_id','vendor_ref'])('blocks future references (%s), including 
   db.prepare('INSERT INTO future_refs VALUES(?,?,?,?)').run('ref', 'other', source, at)
   const before = snap(); expect(merge).toThrow(/історією/); expect(snap()).toEqual(before)
 })
-it('blocks supplier catalogue references', () => {
+it('blocks supplier catalogue references with an invalid legacy record ID', () => {
   db.prepare('INSERT INTO supplier_price_items(id,tenant_id,supplier_id,sku,name,created_at,updated_at) VALUES(?,?,?,?,?,?,?)')
     .run('item', tenant, source, 'S', 'Price row', at, at)
-  const before = snap(); expect(merge).toThrow(/прайси/); expect(snap()).toEqual(before)
+  const before = snap(); expect(merge).toThrow(/прайси/i); expect(snap()).toEqual(before)
 })
 it.each(['sync_outbox','app_meta'])('rolls back if %s write fails', table => {
   const condition = table === 'sync_outbox' ? "NEW.operation_type='supplier.merged'" : "NEW.key LIKE 'supplier-merge:%'"

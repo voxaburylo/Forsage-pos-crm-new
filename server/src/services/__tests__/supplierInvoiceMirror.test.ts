@@ -13,6 +13,9 @@ vi.mock('../../db/pg.js', () => ({ runTransaction: (fn: any) => state.db.transac
 vi.mock('../../db/supabase.js', () => ({ db: { rpc: () => { throw Error('stock RPC forbidden') } } }))
 import { applySupplierInvoiceCreated, applySupplierInvoiceUpdated, applySupplierInvoicePosted, applySupplierInvoiceCancelled, applySupplierInvoiceDeleted, applySupplierInvoicePaymentAdded } from '../sync/supplierHandlers.js'
 import { applySupplierMerged } from '../sync/supplierHandlers.js'
+import { MVP_TENANT_ID } from '../../config/constants.js'
+import { supplierCatalogMergeSchema } from '../sync/supplierCatalogMerge.js'
+import { applySupplierCatalogItemUpsert, applySupplierCatalogImported, applySupplierCatalogItemDeleted } from '../supplierCatalogSyncService.js'
 const tenant = randomUUID(), other = randomUUID(), actor = randomUUID(), uploader = randomUUID()
 const product = randomUUID(), second = randomUUID(), supplier = randomUUID(), shift = randomUUID()
 const at = '2026-09-28T12:00:00.000Z', applied = '2026-10-05T12:00:00.000Z'
@@ -37,6 +40,8 @@ beforeAll(async () => {
     CREATE TABLE sync_deletions(tenant_id uuid,entity_type text,entity_id uuid);
     CREATE TABLE products(id uuid PRIMARY KEY,tenant_id uuid,purchase_price int,qty_on_hand numeric,deleted_at timestamptz);
     CREATE TABLE suppliers(id uuid PRIMARY KEY,tenant_id uuid,deleted_at timestamptz,is_active boolean DEFAULT true,updated_at timestamptz);
+    CREATE TABLE supplier_price_items(id uuid PRIMARY KEY,tenant_id uuid,supplier_id uuid REFERENCES suppliers,sku text,barcode text,brand text,name text,price_kopecks int,qty text,warehouse_name text,created_at timestamptz,updated_at timestamptz,deleted_at timestamptz);
+    CREATE TABLE supplier_price_imports(id uuid PRIMARY KEY,tenant_id uuid,supplier_id uuid REFERENCES suppliers,filename text,mode text,warehouse_name text,status text,total_rows int,processed_rows int,errors_log jsonb,created_at timestamptz,updated_at timestamptz);
     CREATE TABLE shifts(id uuid PRIMARY KEY,tenant_id uuid,status text,opening_cash int);
     CREATE TABLE supply_invoices(id uuid PRIMARY KEY,tenant_id uuid NOT NULL,supplier_id uuid REFERENCES suppliers,invoice_number varchar(100),status text,total int NOT NULL,paid_amount int,payment_method text,notes text,created_at timestamptz,updated_at timestamptz,deleted_at timestamptz,posted_by uuid,posted_at timestamptz,draft_payload jsonb,draft_saved_at timestamptz,draft_saved_by uuid);
     CREATE TABLE supply_invoice_items(id uuid PRIMARY KEY,tenant_id uuid NOT NULL,invoice_id uuid NOT NULL REFERENCES supply_invoices,product_id uuid NOT NULL REFERENCES products,qty numeric(12,3) NOT NULL,purchase_price int NOT NULL,total int NOT NULL,created_at timestamptz NOT NULL,deleted_at timestamptz);
@@ -47,6 +52,8 @@ beforeAll(async () => {
 const migration = readFileSync(new URL('../../../../supabase/migrations/20261005170920_supplier_invoice_copy_receipts.sql', import.meta.url), 'utf8')
 beforeAll(async () => {
   await state.db.exec(migration)
+  await state.db.exec(readFileSync(new URL('../../../../supabase/migrations/20261007163229_supplier_catalog_copy_receipts.sql',import.meta.url),'utf8'))
+  await state.db.exec(readFileSync(new URL('../../../../supabase/migrations/20261010185339_supplier_catalog_ownership_proof.sql',import.meta.url),'utf8'))
   await state.db.exec(readFileSync(new URL('../../../../supabase/migrations/20261006081852_supplier_empty_merge_receipts.sql', import.meta.url), 'utf8'))
   await state.db.exec(readFileSync(new URL('../../../../supabase/migrations/20261006060854_supplier_invoice_terminal_receipts.sql', import.meta.url), 'utf8'))
   await state.db.exec(readFileSync(new URL('../../../../supabase/migrations/20261006091417_supplier_history_merge_receipts.sql', import.meta.url), 'utf8'))
@@ -54,7 +61,7 @@ beforeAll(async () => {
 afterAll(async () => state.db.close())
 beforeEach(async () => {
   state.fail = ''; state.queries = []
-  await state.db.exec('TRUNCATE sync_deletions,supplier_invoice_copy_receipts,cash_operations,supplier_payments,supply_invoice_items,supply_invoices,products,suppliers,shifts,auth.users CASCADE')
+  await state.db.exec('TRUNCATE supplier_catalog_copy_receipts,supplier_price_items,supplier_price_imports,sync_deletions,supplier_invoice_copy_receipts,cash_operations,supplier_payments,supply_invoice_items,supply_invoices,products,suppliers,shifts,auth.users CASCADE')
   await state.db.query('INSERT INTO products VALUES($1,$2,999,0,NULL),($3,$2,999,0,NULL)', [product, tenant, second])
   await state.db.query('INSERT INTO suppliers(id,tenant_id,deleted_at) VALUES($1,$2,NULL)', [supplier, tenant])
   await state.db.query("INSERT INTO shifts VALUES($1,$2,'closed',0)", [shift, tenant])
@@ -158,7 +165,7 @@ it.each(['supply_invoices','supplier_payments','suppliers','target','supplier_in
   await mergeApply(m);const after=await mergeState();await mergeApply(m);expect(await mergeState()).toEqual(after)
 })
 
-async function historyMerge(invoiceIds: string[], sourceId = supplier, destination = randomUUID()): Promise<any> {
+async function historyMerge(invoiceIds: string[], sourceId: string = supplier, destination: string = randomUUID()): Promise<any> {
   await state.db.query('INSERT INTO suppliers(id,tenant_id) VALUES($1,$2) ON CONFLICT DO NOTHING',[destination,tenant])
   const invoices = []
   for (const id of invoiceIds) {
@@ -174,8 +181,8 @@ async function historyMerge(invoiceIds: string[], sourceId = supplier, destinati
   return {tenant_id:tenant,operation_id:randomUUID(),device_id:'primary',sequence:100,aggregate_id:destination,aggregate_type:'supplier',operation_type:'supplier.merged',created_at:applied,
     payload:{history_version:1,primary_supplier_id:destination,duplicate_supplier_id:sourceId,invoices}}
 }
-const mergeState = async () => Promise.all(['suppliers','supply_invoices','supply_invoice_items','supplier_payments','cash_operations','products','supplier_merge_receipts','supplier_invoice_copy_receipts']
-  .map(t=>rows('SELECT * FROM '+t+' ORDER BY '+(t==='supplier_merge_receipts'?'duplicate_id':t==='supplier_invoice_copy_receipts'?'receipt_no':'id'))))
+const mergeState = async () => Promise.all(['suppliers','supply_invoices','supply_invoice_items','supplier_payments','cash_operations','products','supplier_merge_receipts','supplier_invoice_copy_receipts','supplier_price_items','supplier_price_imports','supplier_catalog_copy_receipts']
+  .map(t=>rows('SELECT * FROM '+t+' ORDER BY '+(t==='supplier_merge_receipts'?'duplicate_id':t==='supplier_invoice_copy_receipts'?'receipt_no':t==='supplier_catalog_copy_receipts'?'operation_id':'id'))))
 
 describe('deleted supplier history transfer', () => {
   it('keeps a deleted invoice and its lines hidden through two transfers and all old retries', async () => {
@@ -320,6 +327,448 @@ describe('draft and cancelled supplier history transfer', () => {
     const a=operation(),b=operation();await apply(a);await apply(b);await finish(terminal(b))
     const m=await historyMerge([a.aggregate_id,b.aggregate_id]),before=await mergeState();state.fail='INSERT INTO supplier_merge_receipts'
     await expect(mergeApply(m)).rejects.toThrow('injected storage failure');expect(await mergeState()).toEqual(before)
+  })
+})
+
+
+describe('catalog history in supplier transfers', () => {
+  let catalogSequence = 1
+  const catalogUpsert = (supplierId = supplier, overrides: any = {}): any => {
+    const row = { id: randomUUID(), supplier_id: supplierId, sku: 'SKU-' + randomUUID(), barcode: null,
+      brand: 'WIX', name: 'Filter ' + randomUUID(), price_kopecks: 12345, qty: '0.125',
+      warehouse_name: 'Main', created_at: at, ...overrides }
+    return { tenant_id: tenant, device_id: 'primary', operation_id: randomUUID(), sequence: catalogSequence++,
+      aggregate_id: row.id, operation_type: 'supplier_catalog.item_upserted', created_at: at, applied_at: at, payload: row }
+  }
+  const put = (op: any) => applySupplierCatalogItemUpsert(tenant, op)
+  const importCatalog = (supplierId = supplier, mode = 'add', warehouse: string|null = 'Main'): any => {
+    const id = randomUUID()
+    return { ...catalogUpsert(), aggregate_id: id, operation_type: 'supplier_catalog.imported',
+      payload: { mode, warehouse_name: warehouse,
+        import: { id, supplier_id: supplierId, filename: 'prices.xlsx', created_at: at }, items: [] } }
+  }
+  async function catalogMerge(ids: string[] = [], source = supplier, target?: string): Promise<any> {
+    const m = await historyMerge(ids,source,target)
+    const common = (r: any) => ({ id:r.id, warehouse_name:r.warehouse_name ?? null,
+      created_at:r.created_at.toISOString(), deleted_at:r.deleted_at?.toISOString() ?? null })
+    m.payload.catalog = { version:1,
+      items:(await rows('SELECT * FROM supplier_price_items WHERE supplier_id=$1 ORDER BY id',[source]))
+        .map(r => ({...common(r),sku:r.sku,barcode:r.barcode,brand:r.brand,name:r.name,price_kopecks:r.price_kopecks,qty:r.qty})),
+      imports:(await rows('SELECT * FROM supplier_price_imports WHERE supplier_id=$1 ORDER BY id',[source]))
+        .map(r => ({...common(r),filename:r.filename,mode:r.mode,warehouse_name:r.warehouse_name,status:r.status,
+          total_rows:r.total_rows,processed_rows:r.processed_rows,errors_log:r.errors_log})),
+    }
+    return m
+  }
+  beforeEach(() => {catalogSequence = 10})
+
+  it('accepts the actual SQLite outbox through delayed server import, deletion and merge, then retries after both databases restart', async () => {
+    const {mkdtempSync,rmSync}=await import('node:fs'),{tmpdir}=await import('node:os'),path=await import('node:path')
+    const {LocalDatabase}=await import(new URL('../../../../apps/desktop/src/db/localDatabase.ts',import.meta.url).href)
+    const {LocalSupplyRepository}=await import(new URL('../../../../apps/desktop/src/repositories/supplyRepository.ts',import.meta.url).href)
+    const {LocalSupplierCatalogRepository}=await import(new URL('../../../../apps/desktop/src/repositories/supplierCatalogRepository.ts',import.meta.url).href)
+    const root=mkdtempSync(path.join(tmpdir(),'forsage-catalog-parity-'));let local:any
+    try {
+      local=new LocalDatabase(root);const supply=new LocalSupplyRepository(local),catalog=new LocalSupplierCatalogRepository(local)
+      const s=supply.saveSupplier({tenant_id:tenant,name:'Source'}),t=supply.saveSupplier({tenant_id:tenant,name:'Target'})
+      await state.db.query('INSERT INTO suppliers(id,tenant_id,is_active) VALUES($1,$3,true),($2,$3,true)',[s.id,t.id,tenant])
+      const a=catalog.create({tenant_id:tenant,supplier_id:s.id,sku:'LOCAL-A',name:'Local A',qty:'1.25',price_kopecks:1250})
+      catalog.importRows('local.csv',[{source_row:1,sku:'LOCAL-B',name:'Local B',qty:'0.125',price_kopecks:333}],
+        {tenant_id:tenant,supplier_id:s.id,mode:'add'})
+      catalog.delete(a.id,tenant);supply.mergeSuppliers(t.id,s.id,tenant)
+      const b=local.prepare("SELECT id FROM supplier_price_items WHERE sku='LOCAL-B'").get()
+      catalog.update(b.id,{supplier_id:null,price_kopecks:999},tenant)
+      catalog.update(b.id,{supplier_id:t.id,price_kopecks:777},tenant)
+      const events=local.prepare("SELECT * FROM sync_outbox WHERE operation_type LIKE 'supplier_catalog.%' OR operation_type='supplier.merged' ORDER BY sequence").all()
+      const uploadAt=new Date(Date.now()+60_000).toISOString()
+      const requests=events.map((row:any)=>({...row,payload:{created_at:row.created_at,...JSON.parse(row.payload_json)},
+        created_at:uploadAt,applied_at:uploadAt}))
+      const send=async(op:any)=>{
+        if(op.operation_type==='supplier_catalog.item_upserted')await put(op)
+        else if(op.operation_type==='supplier_catalog.imported')await applySupplierCatalogImported(tenant,op)
+        else if(op.operation_type==='supplier_catalog.item_deleted')await applySupplierCatalogItemDeleted(tenant,op)
+        else await mergeApply(op)
+      }
+      for(const op of requests)await send(op)
+      const serverItems=await rows('SELECT id,supplier_id,sku,price_kopecks,qty,created_at,deleted_at FROM supplier_price_items WHERE supplier_id=$1 ORDER BY id',[t.id])
+      const localItems=local.prepare('SELECT id,supplier_id,sku,price_kopecks,qty,created_at,deleted_at FROM supplier_price_items WHERE supplier_id=? ORDER BY id').all(t.id)
+      expect(serverItems.map((r:any)=>({...r,created_at:r.created_at.toISOString(),deleted_at:r.deleted_at?.toISOString()??null})))
+        .toEqual(localItems.map((r:any)=>({...r,qty:String(r.qty)})))
+      local.exec('DELETE FROM sync_outbox');local.close();local=new LocalDatabase(root)
+      new LocalSupplyRepository(local).mergeSuppliers(t.id,s.id,tenant)
+      const dump=await state.db.dumpDataDir();await state.db.close();state.db=new PGlite({loadDataDir:dump});await state.db.waitReady
+      const before=await mergeState();for(const op of requests)await send(op);expect(await mergeState()).toEqual(before)
+    } finally {
+      local?.close()
+      if(path.dirname(root)===path.resolve(tmpdir())&&path.basename(root).startsWith('forsage-catalog-parity-'))rmSync(root,{recursive:true,force:true})
+    }
+  })
+
+
+  const addSupplier = async () => {
+    const id=randomUUID();await state.db.query('INSERT INTO suppliers(id,tenant_id) VALUES($1,$2)',[id,tenant]);return id
+  }
+  const moveCatalogItem = (p:any,to:string|null,sequence:number,extra:any={}) =>
+    ({...p,operation_id:randomUUID(),sequence,payload:{...p.payload,supplier_id:to,...extra}})
+
+  it.each(['third supplier','unassigned','return','merge then manual','manual then merge','old target merged later'])(
+    'acknowledges old transfer after proven %s without restoring old prices or ownership',async kind=>{
+      const p=catalogUpsert();await put(p);const m=await catalogMerge();await mergeApply(m)
+      const third=await addSupplier()
+      let current:string|null=third
+      const requests:any[]=[]
+      if(kind==='merge then manual') {
+        const next=await catalogMerge([],m.aggregate_id);next.sequence=110;await mergeApply(next);requests.push(next)
+      }
+      const move=moveCatalogItem(p,kind==='unassigned'?null:third,120,{price_kopecks:9999,qty:'7.5'})
+      await put(move);requests.push(move);current=move.payload.supplier_id
+      if(kind==='return') {
+        const back=moveCatalogItem(p,m.aggregate_id,130,{price_kopecks:7777});await put(back);requests.push(back);current=m.aggregate_id
+      }
+      if(kind==='manual then merge') {
+        const next=await catalogMerge([],third);next.sequence=130;await mergeApply(next);requests.push(next);current=next.aggregate_id
+      }
+      if(kind==='old target merged later') {
+        const unrelated=catalogUpsert(m.aggregate_id);unrelated.sequence=130;await put(unrelated)
+        const next=await catalogMerge([],m.aggregate_id);next.sequence=140;await mergeApply(next);requests.push(next)
+      }
+      const dump=await state.db.dumpDataDir();await state.db.close();state.db=await PGlite.create({loadDataDir:dump})
+      const before=await mergeState();await mergeApply(m);await put(p)
+      for(const request of requests)await (request.operation_type==='supplier.merged'?mergeApply(request):put(request))
+      expect(await mergeState()).toEqual(before)
+      expect((await rows('SELECT supplier_id,price_kopecks FROM supplier_price_items WHERE id=$1',[p.aggregate_id]))[0])
+        .toEqual({supplier_id:current,price_kopecks:kind==='return'?7777:9999})
+    })
+
+
+  it.each(['first application','exact retry'])('requires the ownership schema before catalog transfer: %s',async kind=>{
+    const p=catalogUpsert();await put(p)
+    const m=await catalogMerge()
+    if(kind==='exact retry')await mergeApply(m)
+    await state.db.exec('ALTER TABLE supplier_catalog_copy_receipts DROP COLUMN ownership_changed, DROP COLUMN previous_supplier_id, DROP COLUMN next_supplier_id')
+    try {
+      const before=await mergeState()
+      await expect(mergeApply(m)).rejects.toMatchObject({code:'SYNC_SCHEMA_UPGRADE_REQUIRED',status:503})
+      expect(await mergeState()).toEqual(before)
+    }finally{
+      await state.db.exec(readFileSync(new URL('../../../../supabase/migrations/20261010185339_supplier_catalog_ownership_proof.sql',import.meta.url),'utf8'))
+    }
+    await mergeApply(m)
+    const after=await mergeState()
+    await mergeApply(m)
+    expect(await mergeState()).toEqual(after)
+  })
+
+  it.each(['creation time','deletion time','old manual move'])('does not guess compatibility for unproven legacy %s',async kind=>{
+    const p=catalogUpsert();await put(p)
+    if(kind==='deletion time')await applySupplierCatalogItemDeleted(tenant,{...p,operation_id:randomUUID(),sequence:20,
+      operation_type:'supplier_catalog.item_deleted',payload:{id:p.aggregate_id,created_at:at}})
+    const m=await catalogMerge()
+    if(kind==='creation time')await state.db.query('UPDATE supplier_price_items SET created_at=$1 WHERE id=$2',[applied,p.aggregate_id])
+    if(kind==='deletion time')await state.db.query('UPDATE supplier_price_items SET deleted_at=$1 WHERE id=$2',[applied,p.aggregate_id])
+    if(kind==='old manual move') {
+      await mergeApply(m);const third=await addSupplier();const move=moveCatalogItem(p,third,120);await put(move)
+      await state.db.query('UPDATE supplier_catalog_copy_receipts SET ownership_changed=false,previous_supplier_id=NULL,next_supplier_id=NULL WHERE operation_id=$1',[move.operation_id])
+    }
+    const before=await mergeState();await expect(mergeApply(m)).rejects.toMatchObject({status:409});expect(await mergeState()).toEqual(before)
+  })
+
+  it('starts the ownership proof after the original merge, not from earlier item moves',async()=>{
+    const third=await addSupplier(),p=catalogUpsert(third);await put(p)
+    await put(moveCatalogItem(p,supplier,20))
+    const m=await catalogMerge();await mergeApply(m)
+    await put(moveCatalogItem(p,null,110));await put(moveCatalogItem(p,third,120))
+    const before=await mergeState();await mergeApply(m);expect(await mergeState()).toEqual(before)
+  })
+
+  it.each(['missing proof','wrong from','wrong to','wrong device','wrong tenant','earlier sequence','moved row without proof','supplier missing from shop'])(
+    'rejects a broken manual ownership chain: %s',async kind=>{
+      const p=catalogUpsert();await put(p);const m=await catalogMerge();await mergeApply(m)
+      const third=await addSupplier(),move=moveCatalogItem(p,third,120)
+      await put(move)
+      const id=move.operation_id
+      if(kind==='missing proof')await state.db.query('DELETE FROM supplier_catalog_copy_receipts WHERE operation_id=$1',[id])
+      if(kind==='wrong from')await state.db.query('UPDATE supplier_catalog_copy_receipts SET previous_supplier_id=$1 WHERE operation_id=$2',[supplier,id])
+      if(kind==='wrong to')await state.db.query('UPDATE supplier_catalog_copy_receipts SET next_supplier_id=NULL WHERE operation_id=$1',[id])
+      if(kind==='wrong device')await state.db.query("UPDATE supplier_catalog_copy_receipts SET device_id='foreign-writer' WHERE operation_id=$1",[id])
+      if(kind==='wrong tenant')await state.db.query('UPDATE supplier_catalog_copy_receipts SET tenant_id=$1 WHERE operation_id=$2',[other,id])
+      if(kind==='earlier sequence')await state.db.query('UPDATE supplier_catalog_copy_receipts SET source_sequence=50 WHERE operation_id=$1',[id])
+      if(kind==='moved row without proof')await state.db.query('UPDATE supplier_price_items SET supplier_id=$1 WHERE id=$2',[m.aggregate_id,p.aggregate_id])
+      if(kind==='supplier missing from shop')await state.db.query('UPDATE suppliers SET tenant_id=$1 WHERE id=$2',[other,third])
+      const before=await mergeState();await expect(mergeApply(m)).rejects.toMatchObject({status:409});expect(await mergeState()).toEqual(before)
+    })
+
+  it('does not invent ownership evidence for a price/name/warehouse edit or initial creation',async()=>{
+    const p=catalogUpsert();await put(p);const m=await catalogMerge();await mergeApply(m)
+    await put(moveCatalogItem(p,m.aggregate_id,120,{warehouse_name:'Other',name:'Updated',price_kopecks:999}))
+    expect(await rows('SELECT operation_id FROM supplier_catalog_copy_receipts WHERE ownership_changed')).toEqual([])
+    const before=await mergeState();await mergeApply(m);expect(await mergeState()).toEqual(before)
+  })
+
+  it('keeps evidence specific to each exact item in a transferred list',async()=>{
+    const a=catalogUpsert(),b=catalogUpsert();await put(a);await put(b)
+    const m=await catalogMerge();await mergeApply(m);const third=await addSupplier()
+    await put(moveCatalogItem(a,third,120));await put(moveCatalogItem(b,null,130))
+    const before=await mergeState();await mergeApply(m);expect(await mergeState()).toEqual(before)
+    await state.db.query('DELETE FROM supplier_catalog_copy_receipts WHERE aggregate_id=$1 AND ownership_changed',[b.aggregate_id])
+    const damaged=await mergeState();await expect(mergeApply(m)).rejects.toMatchObject({status:409});expect(await mergeState()).toEqual(damaged)
+  })
+
+  it.each(['skip proof','alter proof','after proof','before item'])('rolls back manual reassignment when storage damages %s',async kind=>{
+    const p=catalogUpsert();await put(p);const m=await catalogMerge();await mergeApply(m)
+    const third=await addSupplier(),move=moveCatalogItem(p,third,120)
+    const table=kind==='before item'?'supplier_price_items':'supplier_catalog_copy_receipts'
+    const timing=kind==='after proof'?'AFTER':'BEFORE'
+    const event=kind==='before item'?'UPDATE':'INSERT'
+    const body=kind==='skip proof'?'RETURN NULL;':kind==='alter proof'?'NEW.next_supplier_id:=NULL; RETURN NEW;':
+      kind==='before item'?'NEW.qty:=\'999\'; RETURN NEW;':"UPDATE supplier_price_items SET supplier_id=NULL; RETURN NEW;"
+    await state.db.exec('CREATE FUNCTION damage_ownership() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN '+body+' END $$; CREATE TRIGGER damage_ownership '+timing+' '+event+' ON '+table+' FOR EACH ROW EXECUTE FUNCTION damage_ownership()')
+    try {const before=await mergeState();await expect(put(move)).rejects.toMatchObject({status:409});expect(await mergeState()).toEqual(before)}
+    finally {await state.db.exec('DROP TRIGGER damage_ownership ON '+table+'; DROP FUNCTION damage_ownership()')}
+    await put(move);const before=await mergeState();await mergeApply(m);expect(await mergeState()).toEqual(before)
+  })
+
+  it('accepts source-time metadata injected by the sync transport without changing the immutable merge hash', async () => {
+    await put(catalogUpsert());const m=await catalogMerge()
+    m.payload.created_at=at;await mergeApply(m)
+    const before=await mergeState();delete m.payload.created_at;await mergeApply(m)
+    expect(await mergeState()).toEqual(before)
+  })
+  it('keeps local creation and deletion dates when an offline list reaches the server later', async () => {
+    const p=catalogUpsert();p.applied_at=applied;delete p.payload.created_at;await put(p)
+    expect((await rows('SELECT created_at FROM supplier_price_items WHERE id=$1',[p.aggregate_id]))[0].created_at.toISOString()).toBe(at)
+    const imp=importCatalog();imp.applied_at=applied;imp.payload.items=[catalogUpsert().payload]
+    delete imp.payload.items[0].created_at
+    await applySupplierCatalogImported(tenant,imp)
+    expect((await rows('SELECT created_at FROM supplier_price_items WHERE id=$1',[imp.payload.items[0].id]))[0].created_at.toISOString()).toBe(at)
+    const del={...p,operation_id:randomUUID(),sequence:50,operation_type:'supplier_catalog.item_deleted',payload:{id:p.aggregate_id,created_at:at}}
+    await applySupplierCatalogItemDeleted(tenant,del)
+    const stored=(await rows('SELECT * FROM supplier_price_items WHERE id=$1',[p.aggregate_id]))[0]
+    expect(stored.deleted_at.toISOString()).toBe(at);expect(stored.updated_at.toISOString()).toBe(applied)
+    const m=await catalogMerge();m.payload.created_at=applied;await mergeApply(m)
+    const before=await mergeState();await mergeApply(m);expect(await mergeState()).toEqual(before)
+  })
+  it('uses the source replacement date for archived rows, never the later upload date', async () => {
+    const p=catalogUpsert();await put(p)
+    const imp=importCatalog(supplier,'replace');imp.applied_at=applied;imp.payload.created_at=at
+    await applySupplierCatalogImported(tenant,imp)
+    expect((await rows('SELECT deleted_at FROM supplier_price_items WHERE id=$1',[p.aggregate_id]))[0].deleted_at.toISOString()).toBe(at)
+    await mergeApply(await catalogMerge())
+  })
+  it.each(['create','delete','replace'])('rejects invalid source date in %s without partial rows or receipts',async kind=>{
+    const p=catalogUpsert();await put(p)
+    const op=kind==='replace'?importCatalog(supplier,'replace'):{...p,operation_id:randomUUID(),sequence:50,
+      operation_type:kind==='delete'?'supplier_catalog.item_deleted':'supplier_catalog.item_upserted',payload:{...p.payload}}
+    op.payload.created_at='not-a-date'
+    const before=await mergeState()
+    await expect(kind==='delete'?applySupplierCatalogItemDeleted(tenant,op):kind==='replace'?applySupplierCatalogImported(tenant,op):put(op)).rejects.toThrow()
+    expect(await mergeState()).toEqual(before)
+  })
+
+
+  it('transfers a price list, import history and paid invoice once; original requests remain immutable', async () => {
+    const a=operation(25); await apply(a); await posting(post(a))
+    const p=catalogUpsert(); await put(p)
+    const imp=importCatalog(); await applySupplierCatalogImported(tenant,imp)
+    const m=await catalogMerge([a.aggregate_id])
+    const oldReceipts=await rows('SELECT * FROM supplier_catalog_copy_receipts ORDER BY operation_id')
+    const stock=await rows('SELECT * FROM products ORDER BY id'),cash=await rows('SELECT * FROM cash_operations ORDER BY id')
+    await mergeApply(m)
+    expect((await rows('SELECT * FROM supplier_price_items'))[0]).toMatchObject({id:p.aggregate_id,supplier_id:m.aggregate_id,qty:'0.125',price_kopecks:12345})
+    expect((await rows('SELECT * FROM supplier_price_imports'))[0]).toMatchObject({id:imp.aggregate_id,supplier_id:m.aggregate_id,filename:'prices.xlsx'})
+    expect((await invoiceRows())[0]).toMatchObject({supplier_id:m.aggregate_id,paid_amount:25,total:200})
+    const after=await mergeState()
+    await mergeApply(m); await put(p); await applySupplierCatalogImported(tenant,imp); await apply(a)
+    expect(await mergeState()).toEqual(after)
+    expect(await rows('SELECT * FROM supplier_catalog_copy_receipts ORDER BY operation_id')).toEqual(oldReceipts)
+    expect(await rows('SELECT * FROM products ORDER BY id')).toEqual(stock)
+    expect(await rows('SELECT * FROM cash_operations ORDER BY id')).toEqual(cash)
+  })
+
+  it.each(['only items','only history','deleted item','legacy scope'])('supports %s without recreating anything', async kind => {
+    if(kind==='only items'||kind==='deleted item') {
+      const p=catalogUpsert();await put(p)
+      if(kind==='deleted item') await applySupplierCatalogItemDeleted(tenant,{...p,sequence:30,operation_id:randomUUID(),operation_type:'supplier_catalog.item_deleted',payload:{id:p.aggregate_id}})
+    } else {
+      await applySupplierCatalogImported(tenant,importCatalog())
+      if(kind==='legacy scope') await state.db.exec('UPDATE supplier_price_imports SET mode=NULL,warehouse_name=NULL')
+    }
+    const m=await catalogMerge(); await mergeApply(m)
+    const before=await mergeState();await mergeApply(m);expect(await mergeState()).toEqual(before)
+    expect(await invoiceRows()).toEqual([])
+    if(kind==='deleted item') expect((await rows('SELECT deleted_at FROM supplier_price_items'))[0].deleted_at).not.toBeNull()
+  })
+
+  it.each(['source qty','source price','source name','omitted item','omitted import','foreign item','foreign import','pending import','wrong warehouse','wrong mode'])('rejects mismatched %s before all writes', async kind => {
+    const p=catalogUpsert();await put(p);await applySupplierCatalogImported(tenant,importCatalog())
+    const a=operation();await apply(a);const m=await catalogMerge([a.aggregate_id])
+    if(kind==='source qty') m.payload.catalog.items[0].qty='1'
+    if(kind==='source price') m.payload.catalog.items[0].price_kopecks++
+    if(kind==='source name') m.payload.catalog.items[0].name='different'
+    if(kind==='omitted item') m.payload.catalog.items=[]
+    if(kind==='omitted import') m.payload.catalog.imports=[]
+    if(kind==='foreign item') await state.db.query('UPDATE supplier_price_items SET tenant_id=$1',[other])
+    if(kind==='foreign import') await state.db.query('UPDATE supplier_price_imports SET tenant_id=$1',[other])
+    if(kind==='pending import') m.payload.catalog.imports[0].status='processing'
+    if(kind==='wrong warehouse') m.payload.catalog.items[0].warehouse_name=null
+    if(kind==='wrong mode') m.payload.catalog.imports[0].mode='replace'
+    const before=await mergeState();await expect(mergeApply(m)).rejects.toBeDefined();expect(await mergeState()).toEqual(before)
+  })
+
+  it.each(['sku','barcode','name'])('does not silently combine a conflicting %s at the destination', async field => {
+    const p=catalogUpsert(supplier,{barcode:'1234567890123'});await put(p)
+    const m=await catalogMerge()
+    await put(catalogUpsert(m.aggregate_id,{[field]:p.payload[field]}))
+    const before=await mergeState();await expect(mergeApply(m)).rejects.toMatchObject({status:409});expect(await mergeState()).toEqual(before)
+  })
+
+  it('keeps equal articles in different warehouses separate', async () => {
+    const p=catalogUpsert();await put(p);const m=await catalogMerge()
+    const q=catalogUpsert(m.aggregate_id,{sku:p.payload.sku,warehouse_name:'Branch'});await put(q)
+    const before=(await rows('SELECT * FROM supplier_price_items WHERE id=$1',[q.aggregate_id]))[0]
+    await mergeApply(m)
+    expect(await rows('SELECT * FROM supplier_price_items WHERE id=$1',[q.aggregate_id])).toEqual([before])
+    expect(await rows('SELECT * FROM supplier_price_items WHERE supplier_id=$1',[m.aggregate_id])).toHaveLength(2)
+  })
+
+  it.each(['supplier_price_items','supplier_price_imports','supplier_merge_receipts'])('rolls back invoice/catalog together when %s skips a write', async table => {
+    await put(catalogUpsert());await applySupplierCatalogImported(tenant,importCatalog())
+    const a=operation(25);await apply(a);const m=await catalogMerge([a.aggregate_id])
+    await state.db.exec('CREATE FUNCTION skip_catalog_merge() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$; CREATE TRIGGER skip_catalog_merge BEFORE '+(table.endsWith('receipts')?'INSERT':'UPDATE')+' ON '+table+' FOR EACH ROW EXECUTE FUNCTION skip_catalog_merge()')
+    try {const before=await mergeState();await expect(mergeApply(m)).rejects.toThrow();expect(await mergeState()).toEqual(before)}
+    finally {await state.db.exec('DROP TRIGGER skip_catalog_merge ON '+table+'; DROP FUNCTION skip_catalog_merge()')}
+    await mergeApply(m)
+  })
+
+  it('rechecks price contents after the final receipt insert', async () => {
+    await put(catalogUpsert());const m=await catalogMerge()
+    await state.db.exec('CREATE FUNCTION damage_catalog_merge() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN UPDATE supplier_price_items SET price_kopecks=1; RETURN NEW; END $$; CREATE TRIGGER damage_catalog_merge AFTER INSERT ON supplier_merge_receipts FOR EACH ROW EXECUTE FUNCTION damage_catalog_merge()')
+    try {const before=await mergeState();await expect(mergeApply(m)).rejects.toThrow();expect(await mergeState()).toEqual(before)}
+    finally {await state.db.exec('DROP TRIGGER damage_catalog_merge ON supplier_merge_receipts; DROP FUNCTION damage_catalog_merge()')}
+  })
+
+  it.each(['replace','new item','delete'])('blocks an unseen stale %s after transfer while allowing a newer action', async kind => {
+    const p=catalogUpsert();await put(p);const m=await catalogMerge();await mergeApply(m)
+    const stale=kind==='replace'?importCatalog(m.aggregate_id,'replace'):kind==='new item'?catalogUpsert(m.aggregate_id)
+      :{...p,sequence:30,operation_id:randomUUID(),operation_type:'supplier_catalog.item_deleted',payload:{id:p.aggregate_id}}
+    const apply=kind==='replace'?applySupplierCatalogImported:kind==='new item'?applySupplierCatalogItemUpsert:applySupplierCatalogItemDeleted
+    const before=await mergeState();await expect(apply(tenant,stale)).rejects.toMatchObject({status:409});expect(await mergeState()).toEqual(before)
+    stale.sequence=101;await apply(tenant,stale)
+  })
+
+  it('allows a delayed different warehouse and an unrelated supplier', async () => {
+    await put(catalogUpsert());const m=await catalogMerge();await mergeApply(m)
+    await put(catalogUpsert(m.aggregate_id,{warehouse_name:'Branch'}))
+    const separate=randomUUID();await state.db.query('INSERT INTO suppliers(id,tenant_id) VALUES($1,$2)',[separate,tenant])
+    await put(catalogUpsert(separate))
+  })
+
+  it('refuses a delayed merge after a newer destination replacement', async () => {
+    await put(catalogUpsert());const m=await catalogMerge()
+    const imp=importCatalog(m.aggregate_id,'replace');imp.sequence=101;await applySupplierCatalogImported(tenant,imp)
+    const before=await mergeState();await expect(mergeApply(m)).rejects.toMatchObject({status:409});expect(await mergeState()).toEqual(before)
+  })
+
+  it('retries both transfers through a chain and survives database restart', async () => {
+    const p=catalogUpsert();await put(p);const m=await catalogMerge();await mergeApply(m)
+    const next=await catalogMerge([],m.aggregate_id);next.sequence=200;await mergeApply(next)
+    const dump=await state.db.dumpDataDir();await state.db.close();state.db=await PGlite.create({loadDataDir:dump})
+    const before=await mergeState();await mergeApply(m);await mergeApply(next);await put(p);expect(await mergeState()).toEqual(before)
+  })
+
+  it.each(['missing row','foreign row','wrong destination','missing chain evidence','altered request'])('does not acknowledge a damaged retry: %s', async kind => {
+    const p=catalogUpsert();await put(p);const m=await catalogMerge();await mergeApply(m)
+    if(kind==='missing row') await state.db.exec('DELETE FROM supplier_price_items')
+    if(kind==='foreign row') await state.db.query('UPDATE supplier_price_items SET tenant_id=$1',[other])
+    if(kind==='wrong destination') await state.db.exec('UPDATE supplier_price_items SET supplier_id=NULL')
+    if(kind==='missing chain evidence') {
+      const next=await catalogMerge([],m.aggregate_id);next.sequence=200;await mergeApply(next)
+      await state.db.query('DELETE FROM supplier_merge_receipts WHERE duplicate_id=$1',[m.aggregate_id])
+    }
+    if(kind==='altered request') m.payload.catalog.items[0].name='altered'
+    const before=await mergeState();await expect(mergeApply(m)).rejects.toMatchObject({status:409});expect(await mergeState()).toEqual(before)
+  })
+
+  it('uses the catalog lock before supplier rows and accepts server timestamp triggers', async () => {
+    await put(catalogUpsert());const m=await catalogMerge()
+    await state.db.exec('CREATE FUNCTION touch_catalog_merge() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.updated_at=clock_timestamp(); RETURN NEW; END $$; CREATE TRIGGER touch_catalog_merge BEFORE UPDATE ON supplier_price_items FOR EACH ROW EXECUTE FUNCTION touch_catalog_merge()')
+    try {
+      state.queries=[];await mergeApply(m);const sql=state.queries
+      expect(sql[0]).toContain('pg_advisory_xact_lock(hashtext')
+      expect(sql.findIndex(q=>q.includes('FROM suppliers'))).toBeGreaterThan(0)
+      expect((await rows('SELECT updated_at FROM supplier_price_items'))[0].updated_at).not.toEqual(new Date(applied))
+      const before=await mergeState();await mergeApply(m);expect(await mergeState()).toEqual(before)
+    } finally {await state.db.exec('DROP TRIGGER touch_catalog_merge ON supplier_price_items; DROP FUNCTION touch_catalog_merge()')}
+  })
+
+
+
+  it('moves a 500-row list and parses each later merge manifest once on retry', async () => {
+    await state.db.query(`INSERT INTO supplier_price_items
+      (id,tenant_id,supplier_id,sku,barcode,brand,name,price_kopecks,qty,warehouse_name,created_at,updated_at)
+      SELECT gen_random_uuid(),$1,$2,'SKU-'||n,NULL,'WIX','Filter '||n,12345,'0.125','Main',$3,$3
+      FROM generate_series(1,500) n`,[tenant,supplier,at])
+    const m=await catalogMerge();await mergeApply(m)
+    const next=await catalogMerge([],m.aggregate_id);next.sequence=200;await mergeApply(next)
+    const before=await mergeState()
+    const parser=vi.spyOn(supplierCatalogMergeSchema,'safeParse')
+    try {await mergeApply(m);expect(parser).toHaveBeenCalledTimes(1)}
+    finally {parser.mockRestore()}
+    expect(await mergeState()).toEqual(before)
+    expect(await rows('SELECT id FROM supplier_price_items WHERE supplier_id=$1',[next.aggregate_id])).toHaveLength(500)
+  })
+
+  it('supports the original shop and keeps another shop unchanged', async () => {
+    await put(catalogUpsert());const m=await catalogMerge()
+    for(const table of ['suppliers','supplier_price_items','supplier_price_imports','supplier_catalog_copy_receipts'])
+      await state.db.query('UPDATE '+table+' SET tenant_id=$1',[MVP_TENANT_ID])
+    const foreign=randomUUID();await state.db.query('INSERT INTO suppliers(id,tenant_id) VALUES($1,$2)',[foreign,other])
+    const before=await rows('SELECT * FROM suppliers WHERE tenant_id=$1',[other])
+    m.tenant_id=MVP_TENANT_ID
+    await applySupplierMerged(MVP_TENANT_ID,m)
+    const after=await mergeState();await applySupplierMerged(MVP_TENANT_ID,m);expect(await mergeState()).toEqual(after)
+    expect(await rows('SELECT * FROM suppliers WHERE tenant_id=$1',[other])).toEqual(before)
+  })
+
+  it.each(['blank device','zero sequence','fractional sequence','foreign operation','duplicate item','empty catalog','unknown version','large payload'])('rejects invalid catalog merge %s atomically', async kind => {
+    await put(catalogUpsert());const m=await catalogMerge()
+    if(kind==='blank device') m.device_id=' '
+    if(kind==='zero sequence') m.sequence=0
+    if(kind==='fractional sequence') m.sequence=100.5
+    if(kind==='foreign operation') m.tenant_id=other
+    if(kind==='duplicate item') m.payload.catalog.items.push({...m.payload.catalog.items[0]})
+    if(kind==='empty catalog') m.payload.catalog.items=[]
+    if(kind==='unknown version') m.payload.catalog.version=2
+    if(kind==='large payload') m.payload.catalog.items[0].name='x'.repeat(1_000_001)
+    const before=await mergeState();await expect(mergeApply(m)).rejects.toBeDefined();expect(await mergeState()).toEqual(before)
+  })
+
+  it('blocks an unproven different-device overwrite of the transferred scope', async () => {
+    await put(catalogUpsert());const m=await catalogMerge();await mergeApply(m)
+    const imp=importCatalog(m.aggregate_id,'replace');imp.device_id='unproven-writer';imp.sequence=999
+    const before=await mergeState();await expect(applySupplierCatalogImported(tenant,imp)).rejects.toMatchObject({status:409})
+    expect(await mergeState()).toEqual(before)
+    const unrelated=importCatalog(m.aggregate_id,'replace','Branch');unrelated.device_id=imp.device_id
+    await applySupplierCatalogImported(tenant,unrelated)
+  })
+
+  it('permits new catalog updates, deletion and replacement after a confirmed transfer', async () => {
+    const p=catalogUpsert();await put(p);const m=await catalogMerge();await mergeApply(m)
+    const edit=catalogUpsert(m.aggregate_id,{...p.payload,supplier_id:m.aggregate_id,price_kopecks:9999});edit.sequence=101
+    await put(edit)
+    const replace=importCatalog(m.aggregate_id,'replace');replace.sequence=102
+    await applySupplierCatalogImported(tenant,replace)
+    const after=await mergeState();await mergeApply(m);await put(p);expect(await mergeState()).toEqual(after)
+    expect((await rows('SELECT * FROM supplier_price_items WHERE id=$1',[p.aggregate_id]))[0]).toMatchObject({price_kopecks:9999,supplier_id:m.aggregate_id})
+    expect((await rows('SELECT * FROM supplier_price_items WHERE id=$1',[p.aggregate_id]))[0].deleted_at).not.toBeNull()
+  })
+
+  it.each(['extra reference','old protocol'])('keeps the history guard for %s', async kind => {
+    await put(catalogUpsert());const a=operation();await apply(a);const m=await catalogMerge([a.aggregate_id])
+    if(kind==='old protocol') delete m.payload.catalog
+    else await state.db.exec("CREATE TABLE catalog_unknown_ref(supplier_id uuid); INSERT INTO catalog_unknown_ref VALUES('"+supplier+"')")
+    try {const before=await mergeState();await expect(mergeApply(m)).rejects.toMatchObject({status:409});expect(await mergeState()).toEqual(before)}
+    finally {if(kind==='extra reference') await state.db.exec('DROP TABLE catalog_unknown_ref')}
   })
 })
 

@@ -443,7 +443,9 @@ export class LocalSecondarySyncImporter {
         qty = excluded.qty,
         reserved_by = excluded.reserved_by,
         expires_at = excluded.expires_at,
-        released_at = excluded.released_at,
+        -- БАГ-7 FIX (07.11.2026): якщо резерв вже звільнено локально (released_at IS NOT NULL),
+        -- сервер не може його «відновити». COALESCE зберігає локальне значення.
+        released_at = COALESCE(stock_reserves.released_at, excluded.released_at),
         remote_updated_at = excluded.remote_updated_at,
         updated_at = excluded.updated_at,
         deleted_at = NULL

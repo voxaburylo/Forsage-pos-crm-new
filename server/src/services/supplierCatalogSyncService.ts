@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { isDeepStrictEqual } from 'node:util'
 import { catalogPriceKopecks, catalogQuantity } from '../lib/supplierCatalogNumbers.js'
 import { runTransaction } from '../db/pg.js'
 import { normalizeExactBarcode, normalizeExactProductName } from '../lib/productIdentity.js'
@@ -53,6 +54,13 @@ function cleanScope(value: unknown): string | null {
   return clean || null
 }
 
+function sourceTimestamp(value: unknown, fallback: string): string {
+  const date = value === undefined ? fallback : value instanceof Date && Number.isFinite(value.getTime()) ? value.toISOString() : value
+  if (typeof date !== 'string' || !Number.isFinite(Date.parse(date)))
+    throw new AppError('SYNC_SUPPLIER_CATALOG_INVALID', 'Некоректна первісна дата прайсу; дані не змінено', 400)
+  return new Date(date).toISOString()
+}
+
 function normalizeSku(value: unknown): string {
   return String(value ?? '').normalize('NFKC').trim().toLocaleUpperCase('uk-UA')
 }
@@ -81,7 +89,7 @@ function normalizeItem(raw: any, fallbackId: unknown, timestamp: string): Catalo
     price_kopecks: price,
     qty: quantity,
     warehouse_name: cleanScope(raw?.warehouse_name),
-    created_at: String(raw?.created_at ?? timestamp),
+    created_at: sourceTimestamp(raw?.created_at, timestamp),
     updated_at: timestamp,
   }
 }
@@ -222,8 +230,8 @@ export async function applySupplierCatalogItemUpsert(
     const receipt=await lockCatalogCopy(client,tenantId,operation,'supplier_catalog.item_upserted')
     if (!receipt) return
     // A confirmed legacy replay is a no-op, not a new numeric write.
-    const item = normalizeItem(operation.payload, operation.aggregate_id, timestamp)
-    const previous=(await client.query('SELECT tenant_id,supplier_id,warehouse_name FROM supplier_price_items WHERE id=$1 FOR UPDATE',[item.id])).rows[0]
+    const item = normalizeItem({ ...operation.payload, created_at: operation.payload?.created_at ?? operation.created_at }, operation.aggregate_id, timestamp)
+    const previous=(await client.query('SELECT * FROM supplier_price_items WHERE id=$1 FOR UPDATE',[item.id])).rows[0]
     if (previous && previous.tenant_id!==tenantId) throw catalogConflict()
     const scopes=[catalogScopeKey(item.supplier_id,item.warehouse_name)]
     if (previous) scopes.push(catalogScopeKey(previous.supplier_id,previous.warehouse_name))
@@ -241,7 +249,20 @@ export async function applySupplierCatalogItemUpsert(
       )
     }
     await upsertItems(client, tenantId, [item])
-    await saveCatalogReceipt(client,receipt,scopes)
+    const capture = (await client.query('SELECT * FROM supplier_price_items WHERE id=$1',[item.id])).rows[0]
+    const expected = { ...item, created_at: sourceTimestamp(previous?.created_at, item.created_at),
+      tenant_id: tenantId, deleted_at: null }
+    // updated_at may legitimately be assigned by the database timestamp trigger.
+    const fields = Object.keys(expected).filter(key => key !== 'updated_at')
+    if (!capture || !isDeepStrictEqual(
+      Object.fromEntries(fields.map(key => [key,key === 'created_at' ? sourceTimestamp(capture[key], '') : capture[key]])),
+      Object.fromEntries(fields.map(key => [key,expected[key as keyof typeof expected]])),
+    )) throw catalogConflict()
+    const ownership = previous && previous.supplier_id !== item.supplier_id
+      ? { from: previous.supplier_id as string | null, to: item.supplier_id } : undefined
+    await saveCatalogReceipt(client,receipt,scopes,ownership)
+    const actual = (await client.query('SELECT * FROM supplier_price_items WHERE id=$1',[item.id])).rows[0]
+    if (!isDeepStrictEqual(actual,capture)) throw catalogConflict()
   })
 }
 
@@ -260,9 +281,9 @@ export async function applySupplierCatalogItemDeleted(
     await assertCatalogSequence(client,receipt,scopes,[id])
     const deleted=await client.query(
       `UPDATE supplier_price_items
-       SET deleted_at = COALESCE(deleted_at, $1), updated_at = $1
+       SET deleted_at = COALESCE(deleted_at, $4), updated_at = $1
        WHERE id = $2 AND tenant_id = $3 RETURNING id`,
-      [timestamp, id, tenantId],
+      [timestamp, id, tenantId, sourceTimestamp(operation.payload?.created_at, operation.created_at)],
     )
     if (existing && deleted.rows.length!==1) throw catalogConflict()
     await saveCatalogReceipt(client,receipt,scopes)
@@ -290,6 +311,7 @@ export async function applySupplierCatalogImported(
     if (!receipt) return
     const items = payload.items.map((item: any) => normalizeItem({
       ...item, supplier_id: supplierId, warehouse_name: warehouseName,
+      created_at: item?.created_at ?? importRecord.created_at ?? payload.created_at ?? operation.created_at,
     }, item?.id, timestamp))
     if (new Set(items.map((item: CatalogItem) => item.id)).size !== items.length) throw catalogConflict()
     const scopes=[catalogScopeKey(supplierId,warehouseName)]
@@ -300,12 +322,12 @@ export async function applySupplierCatalogImported(
     if (mode === 'replace') {
       const removed=await client.query(
         `UPDATE supplier_price_items
-         SET deleted_at = COALESCE(deleted_at, $1), updated_at = $1
+         SET deleted_at = COALESCE(deleted_at, $5), updated_at = $1
          WHERE tenant_id = $2
            AND supplier_id IS NOT DISTINCT FROM $3::uuid
            AND warehouse_name IS NOT DISTINCT FROM $4::text
            AND deleted_at IS NULL RETURNING id`,
-        [timestamp, tenantId, supplierId, warehouseName],
+        [timestamp, tenantId, supplierId, warehouseName, sourceTimestamp(payload.created_at ?? importRecord.created_at, operation.created_at)],
       )
       if (removed.rows.length!==previousScope.length) throw catalogConflict()
     }
@@ -356,7 +378,7 @@ export async function applySupplierCatalogImported(
         Math.max(0, Math.round(Number(importRecord.total_rows) || items.length)),
         Math.max(0, Math.round(Number(importRecord.processed_rows) || items.length)),
         JSON.stringify(Array.isArray(importRecord.errors_log) ? importRecord.errors_log : []),
-        String(importRecord.created_at ?? timestamp),
+        sourceTimestamp(importRecord.created_at ?? payload.created_at, operation.created_at),
         timestamp,
         mode,
         warehouseName,
