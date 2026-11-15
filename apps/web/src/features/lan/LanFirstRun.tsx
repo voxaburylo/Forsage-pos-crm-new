@@ -132,6 +132,15 @@ function PairForm({ onPaired }: { onPaired: () => void }) {
       {searching ? <p role="status" className="text-sm text-gray-600">Шукаємо головний ПК у локальній мережі…</p> : <>
         {discoveryError && <p className="text-sm text-amber-800">{discoveryError}</p>}
         {!hubs.length && !discoveryError && <p className="text-sm text-gray-600">Головний ПК автоматично не знайдено. Можна ввести його адресу вручну.</p>}
+        {!hubs.length && <div className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-900" data-lan-not-found-help>
+          <p className="font-semibold">Перевірте на головному ПК каси:</p>
+          <ol className="ml-4 list-decimal">
+            <li>Форсаж відкрито, а в «Налаштування» → «Робота компʼютерів через локальну мережу» вибрано «Головний ПК каси» і натиснуто «Зберегти мережу».</li>
+            <li>Там само натисніть «Перевірити готовність» — усі пункти мають бути зелені. Червоний пункт про брандмауер виправляється кнопкою поруч.</li>
+            <li>Обидва компʼютери підключені до однієї мережі (той самий роутер або свіч).</li>
+          </ol>
+          <p className="mt-1">Адресу й код підключення показано в тому ж розділі на головному ПК.</p>
+        </div>}
         {hubs.length > 0 && <label className="block text-sm text-gray-700">Головний ПК
           <select aria-label="Головний ПК" value={selected} onChange={event => { setSelected(event.target.value); setManual(false) }} disabled={manual} className="mt-1 block w-full rounded-lg border p-3">
             {hubs.length > 1 && <option value="">Виберіть потрібний комп’ютер</option>}

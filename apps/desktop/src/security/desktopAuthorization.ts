@@ -58,6 +58,8 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   ['desktop:lan:get-status', OWNER_ROLES],
   ['desktop:lan:update', OWNER_ROLES],
   ['desktop:lan:test', OWNER_ROLES],
+  ['desktop:lan:diagnose', OWNER_ROLES],
+  ['desktop:lan:allow-firewall', OWNER_ROLES],
   ['desktop:bootstrap:import-snapshot', OWNER_ROLES],
   ['desktop:catalog:update-settings', OWNER_ROLES],
   ['desktop:catalog:create-category', RECEIVING_ROLES],

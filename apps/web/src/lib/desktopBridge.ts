@@ -28,8 +28,24 @@ export interface DesktopLanStatus {
   allowedUserId: string
   addresses: string[]
   running: boolean
+  discovery?: boolean
   connected: boolean
   lastError: string | null
+}
+
+export interface DesktopLanCheck {
+  id: string
+  state: 'ok' | 'problem' | 'unknown'
+  title: string
+  detail: string
+}
+
+export interface DesktopLanDiagnosis {
+  mode: DesktopLanMode
+  ready: boolean
+  checks: DesktopLanCheck[]
+  firewallCommand: string
+  canAllowFirewall: boolean
 }
 
 export interface DesktopDatabaseBackup {
@@ -494,6 +510,8 @@ interface ForsageDesktopBridge {
     getStatus: () => Promise<DesktopLanStatus>
     update: (input: Partial<Pick<DesktopLanStatus, 'mode' | 'port' | 'hubAddress' | 'accessKey' | 'allowedUserId'>>) => Promise<DesktopLanStatus>
     test: () => Promise<DesktopLanStatus>
+    diagnose?: () => Promise<DesktopLanDiagnosis>
+    allowFirewall?: () => Promise<DesktopLanDiagnosis>
   }
   problems?: {
     list: (options?: { includeResolved?: boolean; limit?: number }) => Promise<DesktopProblem[]>
