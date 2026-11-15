@@ -6,6 +6,7 @@ import { networkInterfaces } from 'node:os'
 import { performance } from 'node:perf_hooks'
 import path from 'node:path'
 import { LanUnavailableError } from './orderQueue'
+import { describeLanConnectFailure } from './diagnostics'
 import { discoverLanHubs, isPrivateLanAddress, privateHubAddress, startLanDiscovery, type LanDiscoveryOptions, type LanHubCandidate } from './discovery'
 import { LAN_BOOTSTRAP_VERSION, LanReplayGuard, lanRequestContext, normalizeConnectCode, openLanEnvelope, sealLanEnvelope, secureNonce, SECURE_MAX_WIRE_BYTES, type SecureEnvelope } from './secureTransport'
 
@@ -41,6 +42,8 @@ export interface LanBootstrapCapability { service: 'forsage-lan'; version: 3; bo
 export interface LanStatus extends LanConfig {
   addresses: string[]
   running: boolean
+  /** Автопошук по UDP відповідає іншим ПК. Без нього працює лише ручна адреса. */
+  discovery: boolean
   connected: boolean
   lastError: string | null
 }
@@ -182,6 +185,7 @@ export class LocalNetworkCoordinator {
       accessKey: this.config.accessKey,
       addresses: localAddresses(),
       running: this.server?.listening === true,
+      discovery: this.discoverySocket !== null,
       connected: this.config.mode === 'hub' ? this.server?.listening === true : this.connected,
       lastError: this.lastError,
     }
@@ -348,11 +352,12 @@ export class LocalNetworkCoordinator {
     const cancelled = () => controller.abort()
     if (signal?.aborted) throw new Error('LAN_REQUEST_CANCELLED')
     signal?.addEventListener('abort', cancelled, { once: true })
-    const timeout = setTimeout(() => controller.abort(), timeoutMs)
+    let timedOut = false
+    const timeout = setTimeout(() => { timedOut = true; controller.abort() }, timeoutMs)
     try {
       let response: Response
       try { response = await fetch(url, { ...init, redirect: 'manual', signal: controller.signal }) }
-      catch { if (signal?.aborted) throw new Error('LAN_REQUEST_CANCELLED'); throw new LanUnavailableError('Немає зв’язку з головним ПК') }
+      catch (error) { if (signal?.aborted) throw new Error('LAN_REQUEST_CANCELLED'); throw new LanUnavailableError(describeLanConnectFailure(error, timedOut)) }
       if (response.status >= 300 && response.status < 400) { await response.body?.cancel(); throw new Error('Перенаправлення захищеного LAN-запиту заборонено') }
       const chunks: Uint8Array[] = []; let size = 0
       const reader = response.body?.getReader()

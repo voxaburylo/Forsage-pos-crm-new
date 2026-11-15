@@ -69,6 +69,7 @@ import { getPrintSession, isPrintSession } from './print/printSession'
 import { assertPrintRuntimeFiles } from './print/printRuntime'
 import { isLanProxyChannel, LocalNetworkCoordinator, type LanSession } from './lan/localNetwork'
 import { LanOrderQueue } from './lan/orderQueue'
+import { buildLanDiagnosis, readFirewallState, requestFirewallRule } from './lan/diagnostics'
 import { assertLanIdentityConnection, canPairEmptyClient, cacheLanIdentity, hasLanIdentity, loginLanClient } from './lan/clientIdentity'
 import { createPortableReleaseSource, downloadPortableUpdate, launchPortableUpdateAfterQuit, readPortableUpdateOutcome, type StagedUpdate } from './updates/portableUpdate'
 import { LanOrderClient } from './lan/orderClient'
@@ -1214,6 +1215,19 @@ app.whenReady().then(async () => {
     return localNetwork?.update(input)
   })
   handleDesktopIpc('desktop:lan:test', () => localNetwork?.testConnection())
+  // Лише читання стану мережі та правил Windows. Дані магазину не зачіпаються.
+  handleDesktopIpc('desktop:lan:diagnose', async () => {
+    const status = localNetwork!.getStatus()
+    const firewall = status.mode === 'hub' ? await readFirewallState(status.port, process.execPath) : undefined
+    return buildLanDiagnosis(status, firewall)
+  })
+  // Правило додає сама Windows після свого підтвердження (UAC); без «Так» нічого не змінюється.
+  handleDesktopIpc('desktop:lan:allow-firewall', async () => {
+    const status = localNetwork!.getStatus()
+    if (status.mode !== 'hub') throw new Error('Дозвіл брандмауера потрібен лише на головному ПК каси')
+    await requestFirewallRule(status.port)
+    return buildLanDiagnosis(localNetwork!.getStatus(), await readFirewallState(status.port, process.execPath))
+  })
   handleDesktopIpc('desktop:problems:list', (_event, options?: { includeResolved?: boolean; limit?: number }) =>
     requireLocalProblems().list({ includeResolved: options?.includeResolved, limit: options?.limit }))
   handleDesktopIpc('desktop:problems:summary', () => requireLocalProblems().summary())

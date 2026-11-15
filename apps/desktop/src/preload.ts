@@ -61,6 +61,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     getStatus: () => ipcRenderer.invoke('desktop:lan:get-status'),
     update: (input: unknown) => ipcRenderer.invoke('desktop:lan:update', input),
     test: () => ipcRenderer.invoke('desktop:lan:test'),
+    diagnose: () => ipcRenderer.invoke('desktop:lan:diagnose'),
+    allowFirewall: () => ipcRenderer.invoke('desktop:lan:allow-firewall'),
   },
   problems: {
     list: (options?: { includeResolved?: boolean; limit?: number }) =>

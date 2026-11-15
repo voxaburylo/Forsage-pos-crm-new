@@ -3,6 +3,7 @@ import { CheckCircle2, Copy, Network, RefreshCw, WifiOff } from 'lucide-react'
 import { Button, Card } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { desktopBridge, type DesktopLanMode, type DesktopLanStatus } from '@/lib/desktopBridge'
+import { LanReadinessPanel } from './LanReadinessPanel'
 
 function modeDescription(mode: DesktopLanMode): string {
   if (mode === 'hub') return 'Головна база магазину. Компʼютер менеджера працює з нею напряму через локальну мережу.'
@@ -145,7 +146,7 @@ export function LanSettingsCard() {
               </button>
             </div>
           )}
-          <p className="text-[11px] leading-4 text-emerald-800">Коли Windows запитає дозвіл для мережі, виберіть лише «Приватні мережі». Публічні мережі дозволяти не потрібно.</p>
+          <p className="text-[11px] leading-4 text-emerald-800">Якщо Windows запитає дозвіл для мережі — дозвольте. Надійніше після збереження натиснути «Перевірити готовність» нижче: перевірка покаже, чи пропускає Windows другий ПК, і допоможе це виправити.</p>
           <p className="text-[11px] leading-4 text-emerald-800">Перевірене оновлення програми передається на ПК менеджера через цю мережу. Воно встановлюється після звичайного закриття програми менеджером, не перериваючи відкриту роботу; база магазину при цьому не копіюється.</p>
         </div>
       )}
@@ -176,6 +177,8 @@ export function LanSettingsCard() {
           <p className="md:col-span-2 text-[11px] leading-4 text-gray-600">Код зберігається після початкового підключення — для щоденної роботи вводьте лише свій логін і пароль. Якщо адреса головного ПК змінилася, уточніть її в його налаштуваннях. Оновлення надходить від головного ПК і застосовується лише після звичайного закриття цієї програми.</p>
         </div>
       )}
+
+      {status && status.mode !== 'standalone' && status.mode === mode && <LanReadinessPanel lan={lan} />}
 
       <div className="flex items-center justify-between gap-3">
         <label className="flex items-center gap-2 text-xs text-gray-500">
