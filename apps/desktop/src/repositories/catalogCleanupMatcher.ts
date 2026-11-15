@@ -11,6 +11,11 @@ export interface CleanupGroup {
   product_ids: string[]; suggested_target_id: string;
   /** 0–100, лише для порядку показу: спільний штрихкод або номер виробника — вище. */
   confidence: number;
+  /**
+   * Назви всіх карток групи збігаються повністю (після прибирання пробілів, регістру й порядку слів).
+   * Лише такі групи власник дозволив обʼєднувати без перегляду кожної пари.
+   */
+  same_name: boolean;
 }
 export interface CleanupSkuSuggestion { product_id: string; sku: string; evidence: string; blocked?: string }
 export interface CatalogCleanupAnalysis {
@@ -157,7 +162,7 @@ function prepare(p: CleanupProduct, brands: Map<string, string>): Features {
   return features
 }
 
-type Evidence = Pick<CleanupGroup, 'level' | 'reasons' | 'conflicts' | 'confidence'>
+type Evidence = Pick<CleanupGroup, 'level' | 'reasons' | 'conflicts' | 'confidence' | 'same_name'>
 /** Номер виробника: каталожний номер із назви або поле артикулу з літерами (WA6684), не внутрішній числовий код. */
 function makerCodes(item: Features): string[] {
   // Суто числовий номер (1102-2304024) — номер деталі автовиробника: його ставлять на свої
@@ -220,7 +225,7 @@ function compare(a: Features, b: Features): Evidence | null {
     : !uncertainty.length && (strong || (sameName && !minor.length)) ? 'exact' : 'review'
   const confidence = conflicts.length ? 0
     : Math.max(0, (sameBarcode ? 100 : sameMaker ? 90 : sameCode ? 75 : sameName ? 65 : 40) - uncertainty.length * 10 - minor.length * 2)
-  return { level, confidence, reasons: unique([...reasons, ...uncertainty, ...minor, ...(level === 'exact' ? ['Точний збіг правил, не статистична гарантія тотожності; потрібен перегляд перед злиттям'] : [])]), conflicts: unique(conflicts) }
+  return { level, confidence, same_name: sameName && level === 'exact', reasons: unique([...reasons, ...uncertainty, ...minor, ...(level === 'exact' ? ['Точний збіг правил, не статистична гарантія тотожності; потрібен перегляд перед злиттям'] : [])]), conflicts: unique(conflicts) }
 }
 function target(products: Features[]) {
   return [...products].sort((a, b) => {
@@ -299,14 +304,14 @@ export function analyzeCatalogCleanup(products: readonly CleanupProduct[]): Cata
       if (members.every(member => { const edge = evidence.get(keyFor(member, candidate)); return edge && (level === 'exact' ? edge.level === 'exact' : edge.level !== 'conflict') })) members.push(candidate)
     }
     const reasons: string[] = [], conflicts: string[] = []
-    let confidence = 100
+    let confidence = 100, same_name = level === 'exact'
     for (let i = 0; i < members.length; i++) for (let j = i + 1; j < members.length; j++) {
       const edge = evidence.get(keyFor(members[i], members[j]))!
-      reasons.push(...edge.reasons); conflicts.push(...edge.conflicts); confidence = Math.min(confidence, edge.confidence)
+      reasons.push(...edge.reasons); conflicts.push(...edge.conflicts); confidence = Math.min(confidence, edge.confidence); same_name &&= edge.same_name
     }
     for (const member of members) assigned.add(member)
     const product_ids = members.map(index => features[index].product.id).sort()
-    groups.push({ id: stableId([level, product_ids]), level, confidence, reasons: unique(reasons), conflicts: unique(conflicts), product_ids, suggested_target_id: target(members.map(index => features[index])) })
+    groups.push({ id: stableId([level, product_ids]), level, confidence, same_name, reasons: unique(reasons), conflicts: unique(conflicts), product_ids, suggested_target_id: target(members.map(index => features[index])) })
   }
   return { groups, sku_suggestions, warnings, stats: { products: products.length, candidate_pairs: pairs.size, skipped_large_blocks: skipped } }
 }

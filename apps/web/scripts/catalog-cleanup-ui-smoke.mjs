@@ -17,7 +17,7 @@ const mocks = {
 }
 const entry = `import React from'react';import{createRoot}from'react-dom/client';import{MemoryRouter}from'react-router-dom';import CatalogCleanupPage from'/src/features/admin/CatalogCleanupPage.tsx';import'/src/index.css';createRoot(document.getElementById('root')).render(<MemoryRouter><CatalogCleanupPage/></MemoryRouter>);`
 const bootstrap = `
-window.fixture={...window.testOptions,scans:0,previews:[],applies:[],skus:[],ai:[],listeners:[]};
+window.fixture={...window.testOptions,scans:0,previews:[],applies:[],skus:[],ai:[],listeners:[],tidyPlans:0,tidyApplies:[]};
 fixture.auth={session:{user:{id:'owner',app_metadata:{role:fixture.role??'owner',tenant_id:'shop'}}}};
 const product=(id,name,sku,qty,barcode)=>({id,name,sku,qty_on_hand:qty,barcode,additional_barcodes:['extra-'+id],brand:'Mannol',unit:'шт',fingerprint:'field-'+id,purchase_price:12000,retail_price:16000});
 fixture.products=[product('target','Олива Mannol 5W30 4л C3 повна назва для перевірки розміру та характеристик TARGET','8206-1',2,'2000000000010'),product('source','Олива Mannol 5W30 4л C3 повна назва іншої картки SOURCE','AUTO-02',1,'2000000000027'),product('sku','Mannol DEXRON III арт. 8206-1 1л','AUTO-03',0,'2000000000034')];
@@ -28,6 +28,7 @@ fixture.bridge={lan:{firstRunStatus:async()=>({mode:fixture.mode??'hub',configur
 cleanupScan:async()=>{fixture.scans++;if(fixture.scanFail)throw Error('Перевірка не оновилася');return fixture.scan()},
 cleanupPreview:async input=>{fixture.previews.push(input);if(fixture.holdPreview)await new Promise(resolve=>fixture.finishPreview=resolve);return{...input,fingerprint:'merge-snapshot',products:fixture.products.filter(p=>[input.target_id,...input.source_ids].includes(p.id)),blockers:fixture.blocked?['Є відкрита накладна']:[],warnings:['Історичні документи не переписуються'],quantity_before:[2,1],quantity_after:3,history_counts:{sale_items:4},barcodes:['2000000000010','2000000000027'],photos:[],can_apply:!fixture.blocked}},
 cleanupApply:async input=>{fixture.applies.push(input);if(fixture.holdApply)await new Promise(resolve=>fixture.finishApply=resolve);if(fixture.applyFail)throw Error('Відповідь втрачено');return{target_id:input.target_id,source_ids:input.source_ids,backupPath:'synthetic-backup'}},
+...(fixture.tidy?{cleanupTidyPlan:async()=>{fixture.tidyPlans++;return{steps:[{step:'prices',count:fixture.tidyDone?0:2,fingerprint:(fixture.tidyDone?'b':'a').repeat(64),examples:fixture.tidyDone?[]:[{name:'Ремінь',before:'612,30 грн',after:'615,00 грн'}]},{step:'names',count:0,fingerprint:'c'.repeat(64),examples:[]}],info:fixture.tidyDone?{lost_thousands:0,zero_or_below_cost:0,uncategorized_left:0,manual_duplicate_groups:0,garbage_kept:0}:{...{lost_thousands:0,zero_or_below_cost:0,uncategorized_left:0,manual_duplicate_groups:0,garbage_kept:0},lost_thousands:3}}},cleanupTidyApply:async input=>{fixture.tidyApplies.push(input);if(fixture.tidyFail){fixture.tidyFail=false;throw Error('Відповідь втрачено')}fixture.tidyDone=true;return{step:input.step,changed:2,skipped:[{name:'Картка',reason:'у відкритому чеку'}],backupPath:'synthetic-backup'}}}:{}),
 cleanupApplySku:async input=>{fixture.skus.push(input);if(fixture.holdSku)await new Promise(resolve=>fixture.finishSku=resolve);if(fixture.skuFail)throw Error('Відповідь втрачено');return{updated:1}},
 }};
 `
@@ -231,6 +232,36 @@ try {
   assert.equal(await groups(stalePreview).count(), 0)
   assert.equal(await stalePreview.evaluate(() => fixture.applies.length), 0)
   await stalePreview.close(); passed.push('late preview cannot cross user/tenant context or preserve another user’s selected cards')
+
+  const tidy = await setup({ tidy: true, tidyFail: true })
+  const panel = tidy.locator('[data-tidy-panel]')
+  await panel.getByRole('button', { name: 'Показати, що буде змінено', exact: true }).click()
+  await panel.locator('[data-tidy-step="prices"][data-tidy-count="2"]').waitFor()
+  // Крок без змін не можна запустити; те, що власник перевіряє сам, показано окремо.
+  assert.equal(await panel.locator('[data-tidy-step="names"]').getByRole('button', { name: 'Виконати', exact: true }).isDisabled(), true)
+  await panel.getByText(/Ціни на кшталт 1,09 грн при закупівлі від 100 грн: 3\./).waitFor()
+  assert.equal(await tidy.evaluate(() => fixture.tidyApplies.length), 0)
+  await panel.locator('[data-tidy-step="prices"]').getByRole('button', { name: 'Виконати', exact: true }).click()
+  const tidyDialog = tidy.getByRole('dialog', { name: 'Підтвердити крок наведення порядку' })
+  await tidyDialog.waitFor()
+  assert.equal(await tidyDialog.getByRole('button', { name: 'Виконати крок', exact: true }).isDisabled(), true)
+  await tidyDialog.getByLabel('Підтверджую крок', { exact: true }).check()
+  await tidyDialog.getByRole('button', { name: 'Виконати крок', exact: true }).click()
+  await tidyDialog.getByRole('alert').filter({ hasText: 'Відповідь втрачено' }).waitFor()
+  await tidyDialog.getByRole('button', { name: 'Виконати крок', exact: true }).click()
+  const tidyDone = panel.locator('[data-tidy-result="prices"]')
+  await tidyDone.waitFor()
+  assert.match(await tidyDone.innerText(), /2 цін округлено, пропущено 1/)
+  assert.match(await tidyDone.innerText(), /synthetic-backup/)
+  const tidyRequests = await tidy.evaluate(() => fixture.tidyApplies)
+  // Повтор після втраченої відповіді — той самий номер операції й той самий перелік.
+  assert.equal(tidyRequests.length, 2); assert.deepEqual(tidyRequests[1], tidyRequests[0])
+  assert.deepEqual(Object.keys(tidyRequests[0]).sort(), ['fingerprint', 'operation_id', 'step'])
+  assert.equal(tidyRequests[0].step, 'prices'); assert.equal(tidyRequests[0].fingerprint, 'a'.repeat(64)); assert.ok(tidyRequests[0].operation_id)
+  // Після кроку перелік складається наново: виконане в ньому вже не пропонується.
+  await panel.locator('[data-tidy-step="prices"][data-tidy-count="0"]').waitFor()
+  assert.equal(await tidy.evaluate(() => fixture.tidyPlans), 2)
+  await tidy.close(); passed.push('tidy panel: preview first, explicit confirmation, same-ID retry, skipped records and backup shown, list refreshed')
 
   assert.deepEqual(errors, []); assert.deepEqual(external, [])
   console.log(JSON.stringify({ passed, scenarios: passed.length, liveWrites: 0, externalRequests: external.length }, null, 2))

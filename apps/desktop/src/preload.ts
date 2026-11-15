@@ -98,6 +98,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     cleanupPreview: (input: unknown) => ipcRenderer.invoke('desktop:catalog:cleanup-preview', input),
     cleanupApply: (input: unknown) => ipcRenderer.invoke('desktop:catalog:cleanup-apply', input),
     cleanupApplySku: (input: unknown) => ipcRenderer.invoke('desktop:catalog:cleanup-apply-sku', input),
+    cleanupTidyPlan: () => ipcRenderer.invoke('desktop:catalog:cleanup-tidy-plan'),
+    cleanupTidyApply: (input: unknown) => ipcRenderer.invoke('desktop:catalog:cleanup-tidy-apply', input),
     agentApply: (input: unknown) => ipcRenderer.invoke('desktop:catalog:agent-apply', input),
     listCategories: () =>
       ipcRenderer.invoke('desktop:catalog:list-categories'),

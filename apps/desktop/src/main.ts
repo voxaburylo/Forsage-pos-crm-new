@@ -15,6 +15,7 @@ import { RememberedAccess, type RememberedUser } from './security/rememberedAcce
 import { DesktopSessionLifecycleError, serverSessionCacheResultForError } from './security/desktopSessionLifecycle'
 import { verifyAndRememberServerSession } from './security/serverSession'
 import { CatalogCleanupRepository } from './repositories/catalogCleanupRepository'
+import { CatalogTidyRepository } from './repositories/catalogTidyRepository'
 import { scanCatalogCleanup } from './repositories/catalogCleanupWorker'
 import { checkCleanupCapability, cleanupCartBlockers } from './security/catalogCleanupSafety'
 import { createMirrorSigner } from './security/mirrorIdentity'
@@ -1413,6 +1414,34 @@ app.whenReady().then(async () => {
       const backupPath = await requireLocalDatabase().backupNow()
       assertCleanupSession(session)
       return { ...new CatalogCleanupRepository(requireLocalDatabase()).applySku({ ...input, tenant_id: session.tenant_id }, session.id), backupPath }
+    } finally { cleanupMutationInProgress = false }
+  })
+  // Наведення порядку: перелік змін лише читає каталог; кожен крок виконується після резервної копії
+  // та з тими самими перевірками сесії, сервера й відкритих чеків, що й ручне об'єднання.
+  handleDesktopIpc('desktop:catalog:cleanup-tidy-plan', async () => {
+    const session = cleanupSession(), repository = await cleanupRepository(session)
+    return new CatalogTidyRepository(requireLocalDatabase(), repository).plan(session.tenant_id)
+  })
+  handleDesktopIpc('desktop:catalog:cleanup-tidy-apply', async (_event, input) => {
+    if (cleanupMutationInProgress) throw new Error('Попереднє очищення ще виконується. Дочекайтеся результату.')
+    const session = cleanupSession(); cleanupMutationInProgress = true
+    try {
+      const backupPath = await requireLocalDatabase().backupNow()
+      const repository = await cleanupRepository(session)
+      assertCleanupSession(session)
+      const run = new CatalogTidyRepository(requireLocalDatabase(), repository).begin({ ...input, tenant_id: session.tenant_id }, session.id)
+      // По одній картці з паузою: сотні збережень поспіль не мають «заморожувати» вікно каси.
+      // Після кожної паузи знову перевіряємо, що за касою той самий власник.
+      let paused = Date.now()
+      for (let index = 0; index < run.total; index++) {
+        run.step(index)
+        if (Date.now() - paused >= 40) {
+          await new Promise<void>(resolve => setImmediate(resolve))
+          try { assertCleanupSession(session) } catch (error) { run.finish(); throw error }
+          paused = Date.now()
+        }
+      }
+      return { ...run.finish(), backupPath }
     } finally { cleanupMutationInProgress = false }
   })
   handleDesktopIpc('desktop:catalog:agent-apply', async (_event, input) => {
