@@ -29,6 +29,7 @@ import { canAdvanceCatalogPage, loadCatalogPage, type CatalogSource } from './ca
 import {
   printLabels,
   loadProductLabelSettings,
+  confirmLabelPrices,
 } from '@/features/labels/LabelDesigner'
 import { areAllDisplayedProductsSelected, toggleDisplayedProductsSelection } from './productSelection'
 import { canDeleteCatalog } from './catalogDeletePermissions'
@@ -165,6 +166,8 @@ export default function ProductsPage() {
     try { kopecks = hryvniaToKopecks(priceDraft) }
     catch (error) { toast.error(error instanceof Error ? error.message : 'Невірна ціна'); return }
     if (p.retail_price === kopecks) { setEditPriceId(null); return }
+    if (p.purchase_price > 0 && kopecks < p.purchase_price
+      && !window.confirm(`Нова ціна «${p.name}» нижча за закупівельну. Каса такий товар не продасть.\n\nЗберегти цю ціну?`)) return
     priceSaveBusyRef.current = true
     setSavingPrice(true)
     try {
@@ -1070,6 +1073,7 @@ export default function ProductsPage() {
                       const qty = bulkQtys[p.id] ?? 0
                       return Array(qty).fill(p)
                     })
+                    if (!confirmLabelPrices(settings, items)) return
                     await printLabels(settings as any, items, false)
                     setBulkPrintOpen(false)
                     setSelectedIds(new Set())

@@ -8,7 +8,7 @@ import { pricingApi } from '@/features/admin/pricingApi'
 import { adminApi } from '@/features/admin/adminApi'
 import { productApi } from '@/features/products/productApi'
 import { inventoryApi } from '@/features/inventory/inventoryApi'
-import { loadProductLabelSettings, printLabels } from '@/features/labels/LabelDesigner'
+import { confirmLabelPrices, loadProductLabelSettings, printLabels } from '@/features/labels/LabelDesigner'
 import { Layout } from '@/components/Layout'
 import { Badge, Button, Card, Input, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
@@ -589,6 +589,7 @@ export default function ActiveSession() {
     setPrintingLabels('confirm')
     try {
       const settings = await loadProductLabelSettings()
+      if (!confirmLabelPrices(settings, items as any)) return
       await printLabels(settings as any, items as any, false)
       toast.success(`Відправлено етикеток: ${items.length}`)
       closeInventoryLabelModal()
@@ -604,6 +605,8 @@ export default function ActiveSession() {
     const purchase = Math.round(parseFloat(String(editPurchase).replace(',', '.')) * 100)
     if (!Number.isFinite(retail) || retail < 0) { toast.error('Некоректна ціна продажу'); return }
     if (!Number.isFinite(purchase) || purchase < 0) { toast.error('Некоректна закупівельна ціна'); return }
+    if (purchase > 0 && retail < purchase
+      && !window.confirm('Ціна продажу нижча за закупівельну. Каса такий товар не продасть.\n\nЗберегти ці ціни?')) return
     setSavingPrice(true)
     try {
       await trackRowWrite(async () => {

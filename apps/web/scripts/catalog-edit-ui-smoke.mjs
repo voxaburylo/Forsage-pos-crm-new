@@ -14,7 +14,7 @@ const mocks = {
   '@/features/products/MergeModal': 'export function MergeModal(){return null}',
   '@/features/products/ImportModal': 'export function ImportModal(){return null}',
   '@/features/products/BulkEditModal': 'export function BulkEditModal(){return null}',
-  '@/features/labels/LabelDesigner': 'export const printLabels=()=>{};export const loadProductLabelSettings=()=>({})',
+  '@/features/labels/LabelDesigner': 'export const printLabels=()=>{};export const loadProductLabelSettings=()=>({});export const confirmLabelPrices=()=>true',
   '@/features/pos/usePOSBarcodeScanner': 'export const usePOSBarcodeScanner=({onScan})=>{fixture.scan=onScan}',
   '@/stores/authStore': 'export const useAuthStore=selector=>selector({session:{user:{id:"test",app_metadata:{role:fixture.role}}}})',
   '@/lib/desktopBridge': 'export const desktopBridge=()=>fixture.bridge;export const isDesktopRuntime=()=>fixture.desktop',

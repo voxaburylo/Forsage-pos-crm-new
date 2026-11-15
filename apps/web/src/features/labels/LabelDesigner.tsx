@@ -1053,6 +1053,27 @@ export function printLabels(settings: LabelSettings, items: Array<Product | { la
   return printLabelDocument(buildLabelPrintDocument(settings, items, isBins))
 }
 
+/**
+ * Перед друком цінників: якщо на етикетці є ціна, а в товару вона нульова або
+ * не вища за закупівельну (націнку не зроблено) — питаємо підтвердження.
+ * Повертає true, коли друкувати можна.
+ */
+export function confirmLabelPrices(settings: Pick<LabelSettings, 'show_price'>, products: Array<Pick<Product, 'id' | 'name' | 'retail_price'> & { purchase_price?: number }>): boolean {
+  if (!settings.show_price) return true
+  const seen = new Set<string>()
+  const suspicious = products.filter((product) => {
+    if (seen.has(product.id)) return false
+    seen.add(product.id)
+    const retail = Number(product.retail_price) || 0
+    const purchase = Number(product.purchase_price) || 0
+    return retail <= 0 || (purchase > 0 && retail <= purchase)
+  })
+  if (suspicious.length === 0) return true
+  const names = suspicious.slice(0, 5).map((product) => `• ${product.name} — ${kopecksToHryvnia(product.retail_price)} грн`).join('\n')
+  const more = suspicious.length > 5 ? `\n… і ще ${suspicious.length - 5}` : ''
+  return window.confirm(`Увага: у ${suspicious.length} товар(ів) ціна продажу нульова або не вища за закупівельну — схоже, націнку не зроблено.\n\n${names}${more}\n\nДрукувати цінники з такими цінами?`)
+}
+
 // ================================================================
 // Головна сторінка
 // ================================================================
@@ -1603,6 +1624,7 @@ export default function LabelDesigner() {
         return null
       }
     }
+    if (!confirmLabelPrices(settings, printItems)) return null
     return buildLabelPrintDocument(settings, items, false)
   }
 

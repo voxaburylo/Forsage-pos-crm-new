@@ -1,4 +1,5 @@
 import type { LocalDatabase } from '../db/localDatabase'
+import { prepareSupplierCatalogHistory } from './supplierCatalogMerge'
 import { isDeepStrictEqual } from 'node:util'
 import { assertSupplierHasNoHistory, supplierMergeHistoryError } from './supplierMergeSafety'
 import { normalizeSupplyItem, checkedSupplyMoney } from './supplyValidation'
@@ -14,7 +15,8 @@ const money = (v: number) => {
 export function prepareSupplierHistory(db: LocalDatabase, tenant: string, source: string, target: string) {
   const documents = db.prepare('SELECT * FROM supply_invoices WHERE supplier_id=? ORDER BY id').all(source) as any[]
   const deleted = listDeletedSupplierHistory(db,tenant,source)
-  assertSupplierHasNoHistory(db, tenant, source, ['supply_invoices','supplier_payments','cash_operations'],
+  const catalog = prepareSupplierCatalogHistory(db,tenant,source,target)
+  assertSupplierHasNoHistory(db, tenant, source, ['supply_invoices','supplier_payments','cash_operations',...(catalog ? ['supplier_price_items','supplier_price_imports'] : [])],
     new Set(documents.filter(i => i.tenant_id === tenant && !i.deleted_at && i.status === 'cancelled').map(i => i.id)),new Set(deleted.map(i=>i.id)))
   const payments = db.prepare('SELECT * FROM supplier_payments WHERE supplier_id=? ORDER BY id').all(source) as any[]
   const cash = db.prepare('SELECT * FROM cash_operations WHERE supplier_id=? ORDER BY id').all(source) as any[]
@@ -70,12 +72,12 @@ export function prepareSupplierHistory(db: LocalDatabase, tenant: string, source
     || c.sale_id || c.employee_id)
     || JSON.stringify(cash.map(c => key(c.amount,c.shift_id,c.user_id,c.notes,c.created_at)).sort()) !== JSON.stringify(expectedCash)) throw conflict()
   const allInvoices = [...invoices,...deleted].sort((a,b)=>a.id.localeCompare(b.id))
-  if (!allInvoices.length) return null
+  if (!allInvoices.length && !catalog) return null
   if (new Set(allInvoices.map(i=>i.id)).size !== allInvoices.length) throw conflict()
-  const payload = { history_version: 1 as const, primary_supplier_id: target, duplicate_supplier_id: source, invoices: allInvoices }
+  const payload = { history_version: 1 as const, primary_supplier_id: target, duplicate_supplier_id: source, invoices: allInvoices, ...(catalog ? {catalog:catalog.payload} : {}) }
   if (allInvoices.length > 1000 || Buffer.byteLength(JSON.stringify(payload),'utf8') > 1_000_000)
     throw new Error('Історія надто велика для одного безпечного злиття. Потрібна окрема перевірка; нічого не змінено.')
-  return { payload, cash }
+  return { payload, cash, catalog }
 }
 
 export function applySupplierHistory(db: LocalDatabase, tenant: string, source: string, target: string, timestamp: string) {

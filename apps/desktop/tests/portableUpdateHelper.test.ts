@@ -63,7 +63,8 @@ it('uses a fixed bounded hidden helper without policy bypass, downloaded script 
   expect(Buffer.from(PORTABLE_UPDATE_POWERSHELL, 'utf16le').toString('base64').length).toBeLessThan(30_000)
   expect(PORTABLE_UPDATE_POWERSHELL).not.toMatch(/Stop-Process|taskkill|ExecutionPolicy|Invoke-WebRequest|Invoke-Expression/i)
   expect(PORTABLE_UPDATE_POWERSHELL).toContain('[IO.File]::Replace($pending, $target, $backup, $false)')
-  expect(PORTABLE_UPDATE_POWERSHELL).toContain('[IO.File]::Replace($backup, $target, $null, $false)')
+  expect(PORTABLE_UPDATE_POWERSHELL).toContain('[ForsageUpdateFile]::Restore($backup, $target)')
+  expect(PORTABLE_UPDATE_POWERSHELL).toContain('File.Replace(source, destination, null, false);')
 })
 describe.skipIf(!platformSupported)('real Windows helper on isolated synthetic files, production gates unchanged', () => {
   it('accepts an existing 8.3 folder alias, but rejects traversal, junctions and hard-linked files', ({ skip }) => {
@@ -122,8 +123,14 @@ describe.skipIf(!platformSupported)('real Windows helper on isolated synthetic f
     const f = fixture(); seedJob(f)
     writeFileSync(path.join(f.directory, `rollback-${f.job.previousHash}.exe`), 'MZ-corrupt-rollback')
     runHelper(f)
-    expect(hash(readFileSync(f.destination))).toBe(f.job.previousHash)
-    expect(readPortableUpdateOutcome(f.root)?.state).toBe('rolled-back')
+    const outcome = readPortableUpdateOutcome(f.root)
+    const helperResult = readFileSync(path.join(f.directory, `${f.job.jobId}.result.json`), 'utf8')
+    expect(hash(readFileSync(f.destination)), helperResult).toBe(f.job.previousHash)
+    expect(outcome?.state).toBe('rolled-back')
+    expect(readFileSync(path.join(f.directory, `rollback-${f.job.previousHash}.exe`), 'utf8')).toBe('MZ-corrupt-rollback')
+    expect(readdirSync(f.root).filter(name => name.includes('pending') || name.includes('backup') || name.includes('lock'))).toEqual([])
+    expect(existsSync(path.join(f.directory, 'install.lock'))).toBe(false)
+    expect(readFileSync(path.join(f.root, 'forsage.db'), 'utf8')).toBe('DO NOT TOUCH')
   })
 })
 describe('installation preparation fails closed before spawning', () => {

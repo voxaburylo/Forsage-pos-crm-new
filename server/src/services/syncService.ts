@@ -33,7 +33,7 @@ import { applyInventoryCreated, applyInventoryStarted, applyInventoryDeleted, ap
 import { applyCategoryUpsert, applyCategoryDeleted, applyBrandUpsert, applyBrandDeleted, applyProductUpsert, applyProductDeleted } from './sync/catalogHandlers.js'
 import { applyCatalogCleanupMirror } from './sync/catalogCleanupMirror.js'
 import { applyOrderUpsert, applyOrderDeleted, applyOrderStatusUpdated, applyOrderItemStatusUpdated, applyOrderItemsArrived, applyOrderCanceled, applyOrderPaymentAdded, applyOrderCompleted } from './sync/orderHandlers.js'
-import { applyShiftOpened, applyShiftClosed, applySaleCompleted, applyReturnCreated, applySuspendedSale, applySuspendedSaleClosed, applyCashOperationCreated } from './sync/salesHandlers.js'
+import { applyShiftOpened, applyShiftClosed, applySaleCompleted, applyReturnCreated, applySuspendedSale, applySuspendedSaleClosed, applyCashOperationCreated, applySaleCoreDepositRefunded } from './sync/salesHandlers.js'
 // Читання (pull) живе в ./sync/pullService.ts; лишаємо адресу тут, щоб
 // маршрути й далі брали його зі знайомого місця.
 export { getSyncChanges, getBootstrapSnapshot } from './sync/pullService.js'
@@ -393,6 +393,11 @@ async function applyLocalOperation(params: {
   }
   if (operation.operation_type === 'return.created') {
     await applyReturnCreated(tenantId, userId, operation)
+    return
+  }
+
+  if (operation.operation_type === 'sale.core_deposit_refunded') {
+    await applySaleCoreDepositRefunded(tenantId, operation)
     return
   }
 

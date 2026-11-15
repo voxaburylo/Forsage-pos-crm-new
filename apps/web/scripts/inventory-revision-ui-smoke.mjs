@@ -14,7 +14,7 @@ const mocks={
   '@/features/admin/adminApi':'export const adminApi={getSettings:async()=>({data:{quick_percents:[]}}),listCategories:async()=>({data:[]})}',
   '@/features/admin/pricingApi':'export const pricingApi={}',
   '@/features/products/productApi':'export const productApi={search:async()=>({data:fixture.searchResults||[]})}',
-  '@/features/labels/LabelDesigner':'export const loadProductLabelSettings=()=>({});export const printLabels=()=>{throw Error("Unexpected print")}',
+  '@/features/labels/LabelDesigner':'export const loadProductLabelSettings=()=>({});export const confirmLabelPrices=()=>true;export const printLabels=()=>{throw Error("Unexpected print")}',
   '@/features/pos/CameraScanner':'export function CameraScanner(){return null}',
   '@/features/pos/usePOSBarcodeScanner':'export const usePOSBarcodeScanner=()=>{}',
   '@/lib/audioService':'export const playErrorTone=()=>{};export const playSuccessBeep=()=>{};export const initAudio=()=>{}',

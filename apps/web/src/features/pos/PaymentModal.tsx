@@ -8,6 +8,7 @@ import { formatMoney } from '@/lib/utils'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { useDialogEscape } from '@/hooks/useDialogEscape'
 import { canUseIntegratedTerminal, runPaymentConfirmation } from './paymentContract'
+import { posLineCost } from './posMoney'
 
 interface SplitAmounts {
   cash_amount: number
@@ -63,6 +64,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   const [cashalotEnabled, setCashalotEnabled] = useState<boolean | null>(null)
   const [splitCash, setSplitCash] = useState('')
   const [printAfterPayment, setPrintAfterPayment] = useState(false)
+  const [debtLimit, setDebtLimit] = useState(0)
   const submittingRef = useRef(false)
 
   function cancelTerminal() {
@@ -135,8 +137,10 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
         setTerminalIntegrated(canUseIntegratedTerminal(
           Boolean(desktopBridge()), !!d.bank_terminal_enabled, d.terminal_provider,
         ))
+        const limit = Number(d.default_debt_limit_kopecks)
+        setDebtLimit(Number.isFinite(limit) && limit > 0 ? limit : 0)
       })
-      .catch(() => { if (!cancelled) setTerminalIntegrated(false) })
+      .catch(() => { if (!cancelled) { setTerminalIntegrated(false); setDebtLimit(0) } })
     return () => { cancelled = true }
   }, [open])
 
@@ -180,9 +184,12 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   const bonusBalance = bonusReady && bonusAvailability.status === 'ready' ? bonusAvailability.balance : 0
   const maxBonus = bonusReady && bonusAvailability.status === 'ready' ? bonusAvailability.maximum : 0
   // Обчислення сум (потрібні і для діалогу термінала, і для основного UI)
+  // Бонуси — теж знижка: вони не можуть опустити чек нижче закупівельної вартості товарів.
+  const bonusRoomAboveCost = Math.max(0, store.total - store.totalCoreDeposit - store.items.reduce((sum, item) => sum + posLineCost(item), 0))
+  const bonusCap = Math.min(bonusBalance, maxBonus, bonusRoomAboveCost)
   const _bonusRedeemed = Math.min(
     parsePaymentKopecks(bonusInput),
-    maxBonus, bonusBalance, Math.max(0, store.total - store.totalCoreDeposit),
+    bonusCap, Math.max(0, store.total - store.totalCoreDeposit),
   )
   const _toPay = Math.max(0, store.total - _bonusRedeemed)
 
@@ -196,6 +203,10 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   const change       = Math.max(0, cashReceived - toPay)
   const cashValid    = method !== 'cash' || cashReceived >= toPay
   const debtOk       = method !== 'debt' || !!store.customer
+  // Налаштування «Ліміт боргу»: 0 означає, що ліміт не задано. Продаж не
+  // блокуємо — касир бачить попередження й підтверджує.
+  const debtAfterSale = Number(store.customer?.debtBalance ?? 0) + toPay
+  const debtOverLimit = method === 'debt' && !!store.customer && debtLimit > 0 && debtAfterSale > debtLimit
 
   const splitCashKopecks = parsePaymentKopecks(splitCash)
   const splitCardKopecks = Math.max(0, toPay - splitCashKopecks)
@@ -217,6 +228,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
 
   async function handleConfirm(shouldPrint = false) {
     if (!cashValid || !debtOk || !splitValid || submittingRef.current) return
+    if (debtOverLimit && !window.confirm(`Борг клієнта після цього продажу буде ${formatMoney(debtAfterSale)} — більше за ліміт ${formatMoney(debtLimit)} з налаштувань.\n\nПродати в борг?`)) return
 
     setPrintAfterPayment(shouldPrint)
 
@@ -381,10 +393,10 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
               ) : (
                 <div>
                   <label className="text-gray-400 text-xs mb-1 block">
-                    Списати бонусів (макс {formatMoney(Math.min(bonusBalance, maxBonus))})
+                    Списати бонусів (макс {formatMoney(bonusCap)})
                   </label>
                   <input type="number" min="0" step="0.01"
-                    max={(Math.min(bonusBalance, maxBonus) / 100).toFixed(2)}
+                    max={(bonusCap / 100).toFixed(2)}
                     value={bonusInput} onChange={(e) => setBonusInput(e.target.value)} disabled={loading}
                     placeholder="0.00"
                     className="w-full bg-[#2C2C2C] text-yellow-300 text-lg font-bold text-center rounded-lg px-3 py-2 border border-yellow-600/30 focus:outline-none focus:border-yellow-400" />
@@ -485,6 +497,13 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
           {method === 'debt' && !store.customer && (
             <div className="bg-red-900/30 border border-red-500/50 rounded-xl px-4 py-3">
               <p className="text-red-400 text-sm text-center">Вкажіть клієнта в чеку для продажу в борг</p>
+            </div>
+          )}
+          {debtOverLimit && (
+            <div className="bg-amber-900/25 border border-amber-500/40 rounded-xl px-4 py-3">
+              <p className="text-amber-200 text-sm text-center">
+                Борг клієнта стане {formatMoney(debtAfterSale)} — це більше за ліміт {formatMoney(debtLimit)}
+              </p>
             </div>
           )}
 

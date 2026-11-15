@@ -12,6 +12,7 @@ vi.mock('../../db/pg.js', () => ({ runTransaction: (fn: any) => state.db.transac
   },
 })) }))
 import { mergeEmptySupplier, assertSupplierNotMerged } from '../supplierMergeSafety.js'
+import { MVP_TENANT_ID } from '../../config/constants.js'
 import { applySupplierMerged, applySupplierUpsert } from '../sync/supplierHandlers.js'
 const tenant = randomUUID(), other = randomUUID(), target = randomUUID(), source = randomUUID(), at = '2026-10-06T09:00:00Z'
 const migration = readFileSync(new URL('../../../../supabase/migrations/20261006081852_supplier_empty_merge_receipts.sql', import.meta.url), 'utf8')
@@ -47,6 +48,64 @@ it.each(['suppliers','supplier_merge_receipts'])('rejects silently skipped empty
 })
 const operation = (): any => ({ operation_type: 'supplier.merged', aggregate_id: target, operation_id: randomUUID(), tenant_id: tenant, device_id: 'local', sequence: 2, created_at: at, payload: { primary_supplier_id: target, duplicate_supplier_id: source } })
 
+
+it.each(['direct', 'sync'])('merges an empty supplier for the original shop through %s without changing other shops', async mode => {
+  await state.db.query('UPDATE suppliers SET tenant_id=$1', [MVP_TENANT_ID])
+  const foreignId = randomUUID()
+  await state.db.query('INSERT INTO suppliers(id,tenant_id,name) VALUES($1,$2,$3)', [foreignId, other, 'Foreign'])
+  const foreignBefore = await rows('SELECT * FROM suppliers WHERE tenant_id=$1', [other])
+  const op = { ...operation(), tenant_id: MVP_TENANT_ID }
+  const apply = () => mode === 'direct'
+    ? mergeEmptySupplier(target, source, MVP_TENANT_ID, at)
+    : applySupplierMerged(MVP_TENANT_ID, op)
+  await apply()
+  const after = await snap()
+  await apply()
+  expect(await snap()).toEqual(after)
+  expect(await rows('SELECT * FROM suppliers WHERE tenant_id=$1', [other])).toEqual(foreignBefore)
+  expect((await rows('SELECT * FROM suppliers WHERE id=$1', [source]))[0])
+    .toMatchObject({ tenant_id: MVP_TENANT_ID, is_active: false, deleted_at: new Date(at) })
+  expect(await rows('SELECT tenant_id,primary_id FROM supplier_merge_receipts WHERE duplicate_id=$1', [source]))
+    .toEqual([{ tenant_id: MVP_TENANT_ID, primary_id: target }])
+})
+
+it.each(['foreign-target', 'foreign-source', 'foreign-operation', 'unknown-legacy', 'invalid-tenant', 'legacy-primary', 'legacy-duplicate'])(
+  'keeps original-shop merge validation strict for %s', async kind => {
+    await state.db.query('UPDATE suppliers SET tenant_id=$1', [MVP_TENANT_ID])
+    let mergeTenant = MVP_TENANT_ID, primary = target, duplicate = source
+    if (kind === 'foreign-target' || kind === 'foreign-source') {
+      await state.db.query('UPDATE suppliers SET tenant_id=$1 WHERE id=$2', [other, kind === 'foreign-target' ? target : source])
+    }
+    if (kind === 'unknown-legacy') {
+      mergeTenant = '00000000-0000-0000-0000-000000000002'
+      await state.db.query('UPDATE suppliers SET tenant_id=$1', [mergeTenant])
+    }
+    if (kind === 'invalid-tenant') mergeTenant = 'invalid'
+    if (kind === 'legacy-primary' || kind === 'legacy-duplicate') {
+      await state.db.query('UPDATE suppliers SET id=$1 WHERE id=$2', [MVP_TENANT_ID, kind === 'legacy-primary' ? target : source])
+      if (kind === 'legacy-primary') primary = MVP_TENANT_ID
+      else duplicate = MVP_TENANT_ID
+    }
+    const before = await snap()
+    if (kind === 'foreign-operation') {
+      await expect(applySupplierMerged(MVP_TENANT_ID, { ...operation(), tenant_id: other })).rejects.toThrow()
+    } else {
+      await expect(mergeEmptySupplier(primary, duplicate, mergeTenant, at)).rejects.toThrow()
+    }
+    expect(await snap()).toEqual(before)
+  },
+)
+
+it.each(['supply_invoices', 'supplier_price_items', 'future_refs'])('still blocks original-shop merges with history in %s', async table => {
+  await state.db.query('UPDATE suppliers SET tenant_id=$1', [MVP_TENANT_ID])
+  const column = table === 'future_refs' ? 'vendor_ref' : 'supplier_id'
+  await state.db.query('INSERT INTO ' + table + '(id,tenant_id,' + column + ') VALUES($1,$2,$3)', [randomUUID(), MVP_TENANT_ID, source])
+  const before = await snap()
+  const references = await rows('SELECT * FROM ' + table)
+  await expect(mergeEmptySupplier(target, source, MVP_TENANT_ID, at)).rejects.toThrow(/історією/)
+  expect(await snap()).toEqual(before)
+  expect(await rows('SELECT * FROM ' + table)).toEqual(references)
+})
 
 it.each(['archive','receipt','target'])('rejects wrong persisted empty merge %s', async kind => {
   const table=kind==='receipt'?'supplier_merge_receipts':'suppliers'

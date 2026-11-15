@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { recordCatalogSupplierChange } from './supplierCatalogSupplierChanges'
 import {
   catalogCopyRows, validateCatalogRecord, catalogTimestamp, remoteCatalogIsOlder,
   verifyCatalogVersionContent, catalogHistoryCount, catalogHistoryErrors, catalogCopyText, invalidCatalogCopy,
@@ -299,7 +300,7 @@ export class LocalSupplierCatalogRepository {
       const id = randomUUID(), timestamp = nowIso()
       this.insertItem({ id, tenantId, normalized, match, timestamp }, guard)
       this.addOutbox(tenantId, 'supplier_catalog_item', id, 'supplier_catalog.item_upserted', {
-        id, ...normalized,
+        id, ...normalized, created_at: timestamp,
       }, timestamp, guard)
       guard.verify()
       return this.requireItem(id, tenantId)
@@ -317,8 +318,9 @@ export class LocalSupplierCatalogRepository {
       if (draftMatch.candidate) throw new Error('Така чернова позиція вже існує у вибраному прайсі')
       const match = this.productIndex(tenantId).match(normalized), timestamp = nowIso()
       this.updateItem(id, tenantId, normalized, match, timestamp, guard)
+      recordCatalogSupplierChange(this.db,guard,tenantId,id,current.supplier_id,normalized.supplier_id,timestamp)
       this.addOutbox(tenantId, 'supplier_catalog_item', id, 'supplier_catalog.item_upserted', {
-        id, ...normalized,
+        id, ...normalized, created_at: current.created_at,
       }, timestamp, guard)
       guard.verify()
       return this.requireItem(id, tenantId)
@@ -336,7 +338,7 @@ export class LocalSupplierCatalogRepository {
       `).run(timestamp, timestamp, timestamp, id, tenantId)
       guard.written(result)
       guard.expectItem({ ...before, deleted_at: timestamp, dirty_at: timestamp, updated_at: timestamp })
-      this.addOutbox(tenantId, 'supplier_catalog_item', id, 'supplier_catalog.item_deleted', { id }, timestamp, guard)
+      this.addOutbox(tenantId, 'supplier_catalog_item', id, 'supplier_catalog.item_deleted', { id, created_at: timestamp }, timestamp, guard)
       guard.verify()
     })
     return { ok: true }
@@ -407,7 +409,7 @@ export class LocalSupplierCatalogRepository {
         if (existingId) this.updateItem(itemId, tenantId, next, productMatch, timestamp, guard)
         else this.insertItem({ id: itemId, tenantId, normalized: next, match: productMatch, timestamp }, guard)
         draftIndex.add({ id: itemId, sku: next.sku, barcode: next.barcode, name: next.name })
-        changedItems.set(itemId, { id: itemId, ...next })
+        changedItems.set(itemId, { id: itemId, ...next, created_at: guard.item(itemId)!.created_at })
       }
 
       const name = filename.trim() || 'import.csv'
@@ -432,7 +434,7 @@ export class LocalSupplierCatalogRepository {
           total_rows: rows.length, processed_rows: rows.length, errors_log: errors,
           created_at: timestamp, updated_at: timestamp,
         },
-        mode: options.mode, warehouse_name: warehouseName, items: [...changedItems.values()],
+        mode: options.mode, warehouse_name: warehouseName, items: [...changedItems.values()], created_at: timestamp,
       }, timestamp, guard)
       guard.verify()
       capture?.(guard)

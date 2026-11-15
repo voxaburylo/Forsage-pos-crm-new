@@ -35,6 +35,7 @@ import {
 } from '@/lib/desktopBridge'
 import { usePOSBarcodeScanner } from './usePOSBarcodeScanner'
 import { orderApi } from '@/features/orders/orderApi'
+import { adminApi } from '@/features/admin/adminApi'
 
 const REASONS = Object.entries(RETURN_REASON_LABELS) as [ReturnReason, string][]
 const METHODS = Object.entries(REFUND_METHOD_LABELS) as [RefundMethod, string][]
@@ -43,6 +44,12 @@ const CONDITIONS = Object.entries(ITEM_CONDITION_LABELS) as [ItemCondition, stri
 
 function normalizeBarcode(value: string) {
   return value.replace(/\s/g, '').trim()
+}
+
+/** Повних днів від оформлення чека; null, якщо дата невідома. */
+function saleAgeInDays(completedAt?: string): number | null {
+  const ageMs = completedAt ? Date.now() - new Date(completedAt).getTime() : NaN
+  return Number.isFinite(ageMs) && ageMs > 0 ? Math.floor(ageMs / 86_400_000) : null
 }
 
 function looksLikeProductBarcode(value: string) {
@@ -91,6 +98,10 @@ export default function ReturnForm() {
   const [candidates, setCandidates] = useState<FoundSale[]>([])
   const [candidateHint, setCandidateHint] = useState('')
   const [saleItems, setSaleItems] = useState<SaleItemForReturn[]>([])
+  // Застава за стару деталь: номер видачі сталий для позиції, тож повтор після
+  // невідомої відповіді не видасть гроші вдруге.
+  const depositRefundIds = useRef<Record<string, string>>({})
+  const [depositBusyId, setDepositBusyId] = useState<string | null>(null)
   const [selected, setSelected] = useState<SelectedItem[]>([])
   const [loadingItems, setLoadingItems] = useState(false)
   const [searching, setSearching] = useState(false)
@@ -120,6 +131,19 @@ export default function ReturnForm() {
   // Фіскальний номер оригінального чека (якщо продаж був через ПРРО)
   const session = useAuthStore((state) => state.session)
   const [saleFiscalNumber, setSaleFiscalNumber] = useState<string | null>(null)
+  // Налаштування «Днів на повернення»: попереджаємо про прострочений чек.
+  const [returnDays, setReturnDays] = useState(0)
+  const [saleAgeDays, setSaleAgeDays] = useState<number | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    adminApi.getSettings()
+      .then((res) => {
+        const days = Number(res.data?.return_days)
+        if (!cancelled && Number.isFinite(days) && days > 0) setReturnDays(days)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
   // Фіскальний номер чека повернення (після FiscalizeReturnCheck)
   const [returnFiscalNumber, setReturnFiscalNumber] = useState<string | null>(null)
   const [searchParams] = useSearchParams()
@@ -276,6 +300,7 @@ export default function ReturnForm() {
   async function selectSale(sale: FoundSale, version = ++requestVersion.current) {
     if (submitBusy.current || pendingReturn || version !== requestVersion.current) return
     setFound(sale)
+    setSaleAgeDays(saleAgeInDays(sale.completed_at))
     setSearching(false)
     setCandidates([])
     setSelected([]); setSaleItems([]); setSaleFiscalNumber(null); setStep(1)
@@ -351,6 +376,27 @@ export default function ReturnForm() {
     )
   }
 
+  const depositItems = returnApi.canRefundCoreDeposit()
+    ? saleItems.filter((item) => (item.core_deposit_total ?? 0) > 0 && ['pending', 'returned'].includes(item.core_return_status ?? ''))
+    : []
+
+  async function refundDeposit(item: SaleItemForReturn) {
+    if (!found || depositBusyId || submitBusy.current) return
+    const amount = item.core_deposit_total ?? 0
+    if (!window.confirm(`Клієнт повернув стару деталь «${item.product_name}»?\n\nЗ каси буде видано ${formatMoney(amount)} готівкою.`)) return
+    const refundId = depositRefundIds.current[item.id] ?? (depositRefundIds.current[item.id] = crypto.randomUUID())
+    setDepositBusyId(item.id)
+    try {
+      const { data } = await returnApi.refundCoreDeposit(item.id, refundId)
+      toast.success(`Заставу ${formatMoney(data.amount)} повернуто готівкою з каси`)
+      setSaleItems((rows) => rows.map((row) => row.id === item.id ? { ...row, core_return_status: 'refunded' } : row))
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося повернути заставу')
+    } finally {
+      setDepositBusyId(null)
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (submitBusy.current || done || pendingReturn || startupRecoveryLoading || startupRecoveryError || fiscalRecovery || unresolvedReturns.length || !found || !hasSelection) return
@@ -361,6 +407,8 @@ export default function ReturnForm() {
       toast.error('Уточніть причину')
       return
     }
+    if (saleAgeDays !== null && returnDays > 0 && saleAgeDays > returnDays
+      && !window.confirm(`Чек #${found.sale_number} оформлено ${saleAgeDays} дн. тому — строк повернення з налаштувань (${returnDays} дн.) минув.\n\nОформити повернення?`)) return
 
     const returnBody = {
       sale_id: found.id,
@@ -761,6 +809,25 @@ export default function ReturnForm() {
               {found.status === 'returned'
                 ? '⛔ Цей чек вже повернуто'
                 : 'Чек #' + found.sale_number + ' — сума: ' + formatMoney(found.total) + ' (' + saleItems.length + ' поз.)'}
+            </div>
+          )}
+          {found && found.status !== 'returned' && saleAgeDays !== null && returnDays > 0 && saleAgeDays > returnDays && (
+            <div className="mt-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
+              Чек оформлено {saleAgeDays} дн. тому — строк повернення ({returnDays} дн.) минув
+            </div>
+          )}
+          {found && depositItems.length > 0 && (
+            <div className="mt-2 space-y-2 rounded-xl border border-yellow-300 bg-yellow-50 px-4 py-3">
+              <p className="text-sm font-semibold text-yellow-900">Застава за стару деталь</p>
+              {depositItems.map((item) => (
+                <div key={item.id} className="flex flex-wrap items-center justify-between gap-2 text-sm text-yellow-900">
+                  <span>{item.product_name} — {formatMoney(item.core_deposit_total ?? 0)}</span>
+                  <Button type="button" size="sm" variant="outline" loading={depositBusyId === item.id}
+                    disabled={depositBusyId !== null || submitting} onClick={() => void refundDeposit(item)}>
+                    Повернути заставу
+                  </Button>
+                </div>
+              ))}
             </div>
           )}
         </Card>

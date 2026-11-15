@@ -32,8 +32,12 @@ scenario('draft', async () => {
   await page.waitForFunction(() => document.querySelectorAll('input[data-invoice-quantity]').length === 4)
   assert.equal(await page.locator('input[data-invoice-quantity]:visible').first().inputValue(), '2')
   assert.equal(await page.locator('input[data-invoice-quantity]:visible').last().inputValue(), '3')
+  // Імпортований рядок не має ціни продажу: проведення питає підтвердження (правило 11.11.2026).
+  let markupWarning = ''
+  page.once('dialog', dialog => { markupWarning = dialog.message(); void dialog.accept() })
   await page.getByRole('button', { name: 'Провести', exact: true }).click()
   await page.waitForFunction(() => fixture.writes.length === 1)
+  assert.match(markupWarning, /націнку не зроблено/, 'Posting without markup asks for confirmation')
   const body = await page.evaluate(() => fixture.writes[0])
   assert.equal(body.invoice_id, 'existing')
   assert.equal(body.expected_revision, 'r3')

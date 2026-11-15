@@ -40,7 +40,7 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   ['desktop:pos:delete-customer', OWNER_ROLES],
   ['desktop:orders:add-payment', CASHIER_ROLES],
   ['desktop:orders:complete', CASHIER_ROLES],
-  ...['checkout', 'create-return', 'open-shift', 'close-shift', 'create-cash-operation',
+  ...['checkout', 'create-return', 'refund-core-deposit', 'open-shift', 'close-shift', 'create-cash-operation',
     'pay-debt', 'add-customer-deposit', 'payout-customer-deposit'].map((name): [string, readonly DesktopRole[]] => [`desktop:pos:${name}`, CASHIER_ROLES]),
 
   ['desktop:backup-now', OWNER_ROLES],

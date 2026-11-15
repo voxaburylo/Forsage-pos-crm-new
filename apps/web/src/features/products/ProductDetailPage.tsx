@@ -17,6 +17,7 @@ import { toast } from '@/components/ui/Toast'
 import {
   printLabels,
   loadProductLabelSettings,
+  confirmLabelPrices,
   DEFAULT_BIN_LABEL,
 } from '@/features/labels/LabelDesigner'
 import { warehouseApi } from '@/features/inventory/warehouseApi'
@@ -714,6 +715,7 @@ function ProductDetail() {
                 try {
                   const settings = await loadProductLabelSettings()
                   const items = Array(printCopies).fill(product)
+                  if (!confirmLabelPrices(settings, [product])) return
                   await printLabels(settings as any, items, false)
                   setPrintModalOpen(false)
                 } catch (error) {

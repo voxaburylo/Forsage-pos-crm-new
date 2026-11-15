@@ -11,7 +11,7 @@ import { Trash2, Barcode } from 'lucide-react'
 import { read, utils } from 'xlsx'
 import { supplierApi } from './supplierApi'
 import { sourceForPaymentMethod, methodForPaymentSource } from './supplierPaymentSelection'
-import { invoiceProductBase } from './invoiceFormModel'
+import { invoiceProductBase, invoiceLineRetailProblem } from './invoiceFormModel'
 import { isMissingInvoiceError } from './invoiceDraftStore'
 import { cancelStoredInvoiceDraft } from './invoiceDraftCancellation'
 import { InvoiceSupplierPicker } from './InvoiceSupplierPicker'
@@ -103,7 +103,6 @@ export default function InvoiceFormPage() {
   const [invoiceImportHeaderRow, setInvoiceImportHeaderRow] = useState<number | null>(null)
   const [resolvingImportedProducts, setResolvingImportedProducts] = useState(false)
   const invoiceImportBusyRef = useRef(false)
-  const [bulkMarkupSelection, setBulkMarkupSelection] = useState('')
   const [customPctOpen, setCustomPctOpen] = useState(false)
   const [customPctValue, setCustomPctValue] = useState('')
   const [selectedLineKeys, setSelectedLineKeys] = useState<string[]>([])
@@ -1272,6 +1271,14 @@ export default function InvoiceFormPage() {
     if (submittedItems.length === 0) { toast.error('Додайте хоча б один товар'); return }
     if (!supplierId) { toast.error('Оберіть постачальника'); return }
     if (invoiceSubmitRef.current) return
+    // Проведення без націнки ставить у картку нуль або ціну закупки: каса й
+    // цінники потім беруть саме її. Питаємо до запису, а не після.
+    const withoutMarkup = submittedItems.filter(item => invoiceLineRetailProblem(item) !== null)
+    if (withoutMarkup.length > 0) {
+      const names = withoutMarkup.slice(0, 5).map(item => '• ' + (item.product_name || item.sku || 'Без назви')).join('\n')
+      const more = withoutMarkup.length > 5 ? `\n… і ще ${withoutMarkup.length - 5}` : ''
+      if (!confirm(`Увага: у ${withoutMarkup.length} поз. ціна продажу нульова або не вища за закупівельну — схоже, націнку не зроблено.\n\n${names}${more}\n\nПровести накладну з такими цінами?`)) return
+    }
 
     invoiceSubmitRef.current = true
     setSaving(true)
@@ -1518,10 +1525,12 @@ export default function InvoiceFormPage() {
                   <div className="flex items-center gap-2 mr-auto flex-wrap bg-gray-50 border border-gray-200 rounded-xl px-2.5 py-1.5">
                     <span className="text-xs text-gray-500 font-medium">Групова націнка:</span>
                     <select
-                      value={bulkMarkupSelection}
+                      value=""
                       onChange={(e) => {
                         const val = e.target.value
-                        setBulkMarkupSelection(val)
+                        // Список — це дія, а не стан: після вибору повертаємо його
+                        // в «Націнка…», щоб той самий пункт спрацьовував і вдруге.
+                        e.target.value = ''
                         if (val === 'grid') {
                           const idxs = selectedLineKeys.length ? selectedIndices() : undefined
                           recalcRetail(idxs, true)
@@ -1628,6 +1637,7 @@ export default function InvoiceFormPage() {
                 const best = prices[0]
                 const cheaperElsewhere = best && supplierId && best.supplier_id !== supplierId && best.price < item.purchase_price
                 const hasProblem = invoiceMatchProblems(item).length > 0 || problemLineKey === item.client_key
+                const noMarkup = item.purchase_price > 0 && invoiceLineRetailProblem(item) !== null
                 return (
                 <tr key={item.client_key} data-invoice-row={item.client_key} className={hasProblem ? 'border-b border-red-200 bg-red-50/80 ring-2 ring-red-200' : 'border-b border-gray-50 hover:bg-gray-50/50'}>
                   <td className="px-2 py-2 text-center">
@@ -1780,8 +1790,8 @@ export default function InvoiceFormPage() {
                         onChange={(e) => changeMoney(i, 'retail_price', e.target.value)}
                         onKeyDown={(e) => handleRowFieldKeyDown(e, i, 'retail')}
                         onBlur={() => finishMoneyEdit(i, 'retail_price')}
-
-                        className="w-full min-w-[80px] text-right border border-gray-200 rounded px-2 py-1 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 bg-white" />
+                        title={noMarkup ? 'Ціна продажу не вища за закупівельну — зробіть націнку' : undefined}
+                        className={`w-full min-w-[80px] text-right border rounded px-2 py-1 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400 ${noMarkup ? 'border-amber-400 bg-amber-50 text-amber-900' : 'border-gray-200 bg-white'}`} />
                       {canEditDraft && (
                         <select
                           value=""
@@ -1831,6 +1841,7 @@ export default function InvoiceFormPage() {
           <div className="md:hidden divide-y divide-gray-100">
             {items.map((item, i) => {
               const hasProblem = invoiceMatchProblems(item).length > 0 || problemLineKey === item.client_key
+              const noMarkup = item.purchase_price > 0 && invoiceLineRetailProblem(item) !== null
               return (
               <div key={item.client_key} data-invoice-row={item.client_key} className={hasProblem ? 'p-3 space-y-3 bg-red-50 ring-2 ring-red-200' : 'p-3 space-y-3'}>
                 <div className="flex items-start gap-2">
@@ -1978,8 +1989,8 @@ export default function InvoiceFormPage() {
                       onPaste={(e) => { e.preventDefault(); pasteMoney(i, 'retail_price', e.clipboardData.getData('text')) }}
                       onChange={(e) => changeMoney(i, 'retail_price', e.target.value)}
                       onBlur={() => finishMoneyEdit(i, 'retail_price')}
-
-                      className="w-full text-right border border-gray-200 rounded-lg px-2 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50" />
+                      title={noMarkup ? 'Ціна продажу не вища за закупівельну — зробіть націнку' : undefined}
+                      className={`w-full text-right border rounded-lg px-2 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 ${noMarkup ? 'border-amber-400 bg-amber-50 text-amber-900' : 'border-gray-200'}`} />
                   </div>
                 </div>
 

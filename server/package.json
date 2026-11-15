@@ -12,6 +12,7 @@
     "upgrade:pins": "tsx src/scripts/upgradePinHashes.ts",
     "verify:security": "tsx src/scripts/verifySecurityState.ts",
     "test": "vitest run",
+    "test:postgres": "vitest run --config vitest.postgres.config.ts",
     "test:watch": "vitest",
     "test:core-returns": "node tests/core_returns.test.mjs",
     "test:commission": "node --env-file=.env tests/commission.test.mjs"

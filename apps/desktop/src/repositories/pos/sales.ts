@@ -113,6 +113,19 @@ export class LocalPosSales extends LocalPosCustomers {
       const product = this.getProductForUpdate(item.product_id, tenantId)
       if (!product) throw new Error('Товар не знайдено')
       const qty = Number(item.qty ?? 0)
+      // FIX: раніше in_stock порівнював qty_on_hand без урахування резервів.
+      // Каса показувала «є на складі», але при оформленні каса викидала
+      // «Недостатньо товару», бо валідатор (sales.ts ~657) вираховує резерви.
+      // Тепер обидва місця використовують ту саму логіку: qty_on_hand − резерви.
+      const reserve = this.db.prepare(`
+        SELECT COALESCE(SUM(qty), 0) AS qty
+        FROM stock_reserves
+        WHERE tenant_id = ? AND product_id = ?
+          AND released_at IS NULL AND deleted_at IS NULL
+          AND (expires_at IS NULL OR unixepoch(expires_at) > unixepoch('now'))
+      `).get(tenantId, product.id) as { qty: number } | undefined
+      const qtyOnHand = Number(product.qty_on_hand ?? 0)
+      const available = subtractStockQuantity(qtyOnHand, Number(reserve?.qty ?? 0))
       return {
         product_id: product.id,
         sku: product.sku,
@@ -121,8 +134,9 @@ export class LocalPosSales extends LocalPosCustomers {
         unit_price: Number(product.retail_price ?? 0),
         qty,
         total: Number(product.retail_price ?? 0) * qty,
-        in_stock: Number(product.qty_on_hand ?? 0) >= qty,
-        qty_on_hand: Number(product.qty_on_hand ?? 0),
+        in_stock: available >= qty,
+        qty_on_hand: qtyOnHand,
+        qty_available: available,
       }
     })
   }
@@ -659,6 +673,19 @@ export class LocalPosSales extends LocalPosCustomers {
     }
   }
 
+  /**
+   * Продаж нижче закупівельної вартості заборонено. Параметрів, якими касу чи
+   * IPC можна попросити пропустити перевірку, немає. Метод окремий лише для
+   * того, щоб тести звітів і комісій могли відтворити збиткові чеки, створені
+   * до появи правила: вони лишаються в базі, і рахувати їх треба як раніше.
+   */
+  protected assertSaleNotBelowCost(net: number, cost: number, productName?: string): void {
+    if (cost <= 0 || net >= cost) return
+    throw new Error(productName
+      ? `Товар «${productName}» не можна продати нижче закупівельної ціни. Зменшіть знижку або оновіть ціну товару.`
+      : 'Знижка або бонуси опускають чек нижче закупівельної вартості товарів. Зменшіть знижку чи списання бонусів.')
+  }
+
   protected assertCheckoutReady(input: LocalSaleCheckoutInput): {
     shift_id: string
     subtotal: number
@@ -680,6 +707,8 @@ export class LocalPosSales extends LocalPosCustomers {
     let subtotal = 0
     let itemDiscountTotal = 0
     let coreDepositTotal = 0
+    let goodsNet = 0
+    let goodsCost = 0
     for (const item of input.items) {
       if (!Number.isFinite(Number(item.qty)) || Number(item.qty) <= 0) {
         throw new Error('LOCAL_SALE_INVALID_QTY')
@@ -692,6 +721,12 @@ export class LocalPosSales extends LocalPosCustomers {
       assertSaleMoney(gross)
       if (money(item.discount ?? 0) > gross) throw new Error('LOCAL_SALE_INVALID_DISCOUNT')
       const itemDiscount = Math.min(gross, money(item.discount ?? 0))
+      // Правило магазину: товар не відпускається нижче закупівельної ціни.
+      // Перевірка стоїть до фіскалізації й до запису, тому нічого не змінює.
+      const lineCost = money(Number(item.qty) * money(Number(product?.purchase_price ?? 0)))
+      this.assertSaleNotBelowCost(gross - itemDiscount, lineCost, product?.name)
+      goodsNet += gross - itemDiscount
+      goodsCost += lineCost
       const coreDepositAmount = product?.requires_core_return === 1
         ? money(product.core_deposit_amount ?? 0)
         : 0
@@ -700,6 +735,7 @@ export class LocalPosSales extends LocalPosCustomers {
       coreDepositTotal += lineCoreDeposit
       itemDiscountTotal += itemDiscount
     }
+    this.assertSaleNotBelowCost(goodsNet - money(input.discount ?? 0), goodsCost)
 
     this.assertSaleStockAvailable(input.items, tenantId)
     const bonusesSpent = money(input.bonuses_spent ?? 0)

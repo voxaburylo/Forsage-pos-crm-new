@@ -1892,6 +1892,12 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:pos:create-return', (_event, input) =>
     requireLocalPos().createReturn({ ...input, cashier_id: requireDesktopSession().id, approved_by: requireDesktopSession().id }),
   )
+  handleDesktopIpc('desktop:pos:refund-core-deposit', (_event, input: any) =>
+    requireLocalPos().refundCoreDeposit({
+      sale_item_id: String(input?.sale_item_id ?? ''), refund_id: String(input?.refund_id ?? ''),
+      user_id: requireDesktopSession().id, tenant_id: requireDesktopSession().tenant_id,
+    }),
+  )
   handleDesktopIpc('desktop:pos:get-sale', (_event, id: string, tenantId?: string) =>
     requireLocalPos().getSale(id, tenantId),
   )

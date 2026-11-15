@@ -5,6 +5,8 @@ import type { Product } from '@/types/product'
 import { kopecksToHryvnia } from '@/types/product'
 import { usePOSStore } from '@/stores/posStore'
 import { playSuccessBeep, initAudio } from '@/lib/audioService'
+import { toast } from '@/components/ui/Toast'
+import { posSaleBlockReason } from './posMoney'
 
 export function CrossSellPanel() {
   const items = usePOSStore((state) => state.items)
@@ -48,12 +50,14 @@ export function CrossSellPanel() {
 
   function addToReceipt(p: Product) {
     initAudio()
+    const blocked = posSaleBlockReason({ name: p.name, unitPrice: p.retail_price, purchasePrice: p.purchase_price })
+    if (blocked) { toast.error(blocked); return }
     const store = usePOSStore.getState()
     const tierPct = store.customer?.tierDiscountPct ?? 0
     const discount = tierPct > 0 ? Math.round(p.retail_price * tierPct / 100) : 0
     store.addItem({
       productId: p.id, sku: p.sku, name: p.name, unit: p.unit,
-      qty: 1, unitPrice: p.retail_price, discount, discountPct: tierPct > 0 ? tierPct : undefined, qtyOnHand: p.qty_on_hand,
+      qty: 1, unitPrice: p.retail_price, purchasePrice: p.purchase_price, discount, discountPct: tierPct > 0 ? tierPct : undefined, qtyOnHand: p.qty_on_hand,
       requiresCoreReturn: p.requires_core_return,
       coreDepositAmount: p.core_deposit_amount,
       photoUrl: p.photo_url ?? null,

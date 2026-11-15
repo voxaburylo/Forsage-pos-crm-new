@@ -41,6 +41,16 @@ export const returnApi = {
     return api.get<{ data: CustomerReturn }>('/api/v1/returns/' + id)
   },
 
+  /** Повернення застави за стару деталь є лише в локальній касі. */
+  canRefundCoreDeposit: () => Boolean(desktopBridge()?.pos.refundCoreDeposit),
+  refundCoreDeposit: async (saleItemId: string, refundId: string) => {
+    const local = desktopBridge()?.pos.refundCoreDeposit
+    if (!local) throw new Error('Повернення застави доступне лише в локальній касі')
+    const result = await local({ sale_item_id: saleItemId, refund_id: refundId })
+    requestSync()
+    return result
+  },
+
   getSaleItems: async (saleId: string) => {
     const local = desktopBridge()?.pos.getSaleForReturn
     if (local) return { data: await local(saleId) as SaleForReturn }

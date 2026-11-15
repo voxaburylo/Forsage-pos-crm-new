@@ -624,6 +624,7 @@ function CustomerPanel({ chat, messages, onCustomerLinked }: {
                   </div>
                   <button onClick={async () => {
                     if (!customer?.id) return
+                    if (!window.confirm(`Видалити авто ${[v.brand, v.model].filter(Boolean).join(' ') || 'клієнта'}?`)) return
                     try { await customerVehiclesApi.delete(customer.id, v.id); setVehicles((p) => p.filter((x) => x.id !== v.id)) }
                     catch { toast.error('Помилка') }
                   }} className="text-gray-300 hover:text-red-400 ml-2 p-1 rounded transition-colors">

@@ -3,13 +3,38 @@ export function posLineGross(unitPrice: number, qty: number): number {
   return Math.max(0, Math.round(unitPrice * qty))
 }
 
-export function posLineAmounts(item: { unitPrice: number; qty: number; discount: number; discountPct?: number }) {
+/** Закупівельна вартість рядка в копійках; 0 — закупівельна ціна невідома, обмеження немає. */
+export function posLineCost(item: { qty: number; purchasePrice?: number }): number {
+  const purchase = Number(item.purchasePrice)
+  return Number.isFinite(purchase) && purchase > 0 ? posLineGross(Math.round(purchase), item.qty) : 0
+}
+
+export function posLineAmounts(item: { unitPrice: number; qty: number; discount: number; discountPct?: number; purchasePrice?: number }) {
   const gross = posLineGross(item.unitPrice, item.qty)
   const requested = item.discountPct !== undefined && Number.isFinite(item.discountPct)
     ? Math.round(gross * Math.max(0, Math.min(100, item.discountPct)) / 100)
     : Math.round(Number.isFinite(item.discount) ? item.discount : 0)
-  const discount = Math.max(0, Math.min(gross, requested))
+  // Правило магазину: товар не відпускається нижче закупівельної ціни, тому
+  // будь-яка знижка (клієнта, працівника, ручна) зупиняється на собівартості.
+  const roomAboveCost = Math.max(0, gross - posLineCost(item))
+  const discount = Math.max(0, Math.min(gross, roomAboveCost, requested))
   return { discount, total: gross - discount }
+}
+
+/** Чому касі не можна додати цей товар у чек; null — можна. */
+export function posSaleBlockReason(item: { name: string; unitPrice: number; purchasePrice?: number }): string | null {
+  if (!(Number(item.unitPrice) > 0)) return `У товару «${item.name}» немає ціни продажу. Вкажіть ціну в картці товару.`
+  const purchase = Number(item.purchasePrice)
+  if (Number.isFinite(purchase) && purchase > 0 && item.unitPrice < Math.round(purchase)) {
+    return `«${item.name}»: ціна продажу нижча за закупівельну. Продаж заборонено — оновіть ціну товару.`
+  }
+  return null
+}
+
+/** Останні 9 цифр телефону: 0671112233 і +380671112233 — той самий номер. */
+export function posPhoneKey(phone: string | null | undefined): string {
+  const digits = String(phone ?? '').replace(/\D/g, '')
+  return digits.length >= 9 ? digits.slice(-9) : ''
 }
 
 export function posCoreTotal(item: { qty: number; requiresCoreReturn?: boolean; coreDepositAmount?: number }) {

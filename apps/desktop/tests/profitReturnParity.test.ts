@@ -9,13 +9,18 @@ import { LocalCatalogRepository } from '../src/repositories/catalogRepository'
 import { LocalPosRepository } from '../src/repositories/posRepository'
 import { localAnalytics } from '../src/repositories/localAnalytics'
 
+// Збиткові чеки в цьому файлі — історичні, створені до правила «не нижче
+// закупівельної ціни». Каса таких більше не проводить (tests/posCostFloor.test.ts),
+// але старі лишаються в базі, тож комісії та звіти мають рахувати їх як раніше.
+class PreRulePos extends LocalPosRepository { protected override assertSaleNotBelowCost(): void {} }
+
 describe('profit reports reconcile refunds, captured cost and integer receipt allocation', () => {
   let root: string, db: LocalDatabase, pos: LocalPosRepository, catalog: LocalCatalogRepository, shift: string
   const day = '2026-10-01'
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date(day + 'T10:00:00Z'))
     root = mkdtempSync(path.join(tmpdir(), 'forsage-profit-refunds-'))
-    db = new LocalDatabase(root); pos = new LocalPosRepository(db); catalog = new LocalCatalogRepository(db)
+    db = new LocalDatabase(root); pos = new PreRulePos(db); catalog = new LocalCatalogRepository(db)
     db.prepare('INSERT INTO staff_users(id,tenant_id,full_name,role,created_at,updated_at) VALUES (?,?,?,?,?,?)')
       .run('seller', tenant, 'Контрольний касир', 'cashier', new Date().toISOString(), new Date().toISOString())
     shift = pos.openShift({ cashier_id: 'seller', opening_cash: 100000 })

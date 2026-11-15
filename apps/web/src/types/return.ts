@@ -91,6 +91,9 @@ export interface SaleItemForReturn {
   refundable_total: number
   already_refunded_kopecks: number
   available_refund: number
+  /** Застава за стару деталь: 'pending' — ще не повернуто (лише локальна каса). */
+  core_return_status?: string
+  core_deposit_total?: number
 }
 
 /** Дані з GET /api/v1/returns/sale/:id/items */

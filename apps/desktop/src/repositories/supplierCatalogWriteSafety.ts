@@ -19,6 +19,7 @@ export class SupplierCatalogWriteGuard {
   private readonly items = new Map<string, Row>()
   private readonly imports = new Map<string, Row>()
   private readonly events = new Map<string, Row>()
+  private readonly meta = new Map<string, Row>()
 
   constructor(private readonly db: LocalDatabase) { this.before = this.totalChanges() }
 
@@ -43,6 +44,7 @@ export class SupplierCatalogWriteGuard {
   expectItem(row: Row): void { this.items.set(row.id, { ...row }) }
   expectImport(row: Row): void { this.imports.set(row.id, { ...row }) }
   expectEvent(row: Row): void { this.events.set(row.operation_id, { ...row }) }
+  expectMeta(row: Row): void { this.meta.set(row.key, { ...row }) }
 
   written(result: WriteResult, expected = 1): void {
     if (!Number.isSafeInteger(expected) || expected < 0 || Number(result.changes) !== expected)
@@ -65,6 +67,7 @@ export class SupplierCatalogWriteGuard {
     this.verifyRows('supplier_price_items', 'id', this.items)
     this.verifyRows('supplier_price_imports', 'id', this.imports)
     this.verifyRows('sync_outbox', 'operation_id', this.events)
+    this.verifyRows('app_meta', 'key', this.meta)
   }
 
   private verifyRows(table: string, key: string, expected: Map<string, Row>): void {

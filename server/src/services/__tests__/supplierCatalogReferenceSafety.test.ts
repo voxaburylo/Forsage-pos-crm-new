@@ -11,7 +11,7 @@ vi.mock('../../db/pg.js', () => ({ runTransaction: (fn: any) => state.db.transac
   },
 })) }))
 import { applySupplierCatalogImported, applySupplierCatalogItemUpsert, applySupplierCatalogItemDeleted } from '../supplierCatalogSyncService.js'
-import { lockCatalogCopy, saveCatalogReceipt } from '../supplierCatalogReceipt.js'
+import { assertCatalogOwnershipSchema, lockCatalogCopy, saveCatalogReceipt } from '../supplierCatalogReceipt.js'
 import { MVP_TENANT_ID } from '../../config/constants.js'
 
 it.each(['item','delete','add','replace'])('copies the original shop %s and keeps retries idempotent', async kind => {
@@ -252,7 +252,7 @@ it.each(['item', 'import'])('does not poison the %s receipt after invalid number
   expect(await snap()).toEqual(after)
 })
 const tenant=randomUUID(), supplier=randomUUID(), itemId=randomUUID(), importId=randomUUID(), at='2026-10-07T06:00:00Z'
-const row = () => ({ id:itemId, supplier_id:supplier, sku:'TEST', name:'Test product', price_kopecks:12000, qty:'2' })
+const row = () => ({ id:itemId as string, supplier_id:supplier, sku:'TEST', name:'Test product', price_kopecks:12000, qty:'2' })
 let sequence = 0
 const metadata = (type: string) => ({ operation_id:randomUUID(),tenant_id:tenant,device_id:'catalog-main',sequence:++sequence,operation_type:type,created_at:at })
 const operation = ():any => ({ ...metadata('supplier_catalog.imported'), aggregate_id:importId, payload:{ import:{id:importId,supplier_id:supplier,filename:'test.csv'}, mode:'replace',items:[row()] } })
@@ -264,8 +264,10 @@ beforeAll(async()=>{
   state.db=new PGlite()
   await state.db.exec('CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role BYPASSRLS;')
   await state.db.exec(readFileSync(new URL('../../../../supabase/migrations/20261007163229_supplier_catalog_copy_receipts.sql',import.meta.url),'utf8'))
+  await state.db.exec(readFileSync(new URL('../../../../supabase/migrations/20261010185339_supplier_catalog_ownership_proof.sql',import.meta.url),'utf8'))
   await state.db.exec(`
     CREATE TABLE suppliers(id uuid PRIMARY KEY,tenant_id uuid,name text,is_active boolean DEFAULT true,deleted_at timestamptz);
+    CREATE TABLE supplier_merge_receipts(tenant_id uuid,duplicate_id uuid,primary_id uuid,device_id text,source_sequence bigint,history_payload jsonb);
     CREATE TABLE supplier_price_items(id uuid PRIMARY KEY,tenant_id uuid,supplier_id uuid REFERENCES suppliers,sku text,barcode text,brand text,name text,price_kopecks int,qty text,warehouse_name text,created_at timestamptz,updated_at timestamptz,deleted_at timestamptz);
     CREATE TABLE supplier_price_imports(id uuid PRIMARY KEY,tenant_id uuid,supplier_id uuid REFERENCES suppliers,filename text,status text,total_rows int,processed_rows int,errors_log jsonb,created_at timestamptz,updated_at timestamptz);
   `)
@@ -275,7 +277,7 @@ beforeAll(async()=>{
 })
 afterAll(async()=>state.db.close())
 beforeEach(async()=>{
-  await state.db.exec('TRUNCATE supplier_catalog_copy_receipts,supplier_price_imports,supplier_price_items,suppliers CASCADE')
+  await state.db.exec('TRUNCATE supplier_merge_receipts,supplier_catalog_copy_receipts,supplier_price_imports,supplier_price_items,suppliers CASCADE')
   await state.db.query('INSERT INTO suppliers(id,tenant_id,name) VALUES($1,$2,$3)',[supplier,tenant,'Supplier'])
   await state.db.query('INSERT INTO supplier_price_items(id,tenant_id,sku,name) VALUES($1,$2,$3,$4)',[randomUUID(),tenant,'UNASSIGNED','Unassigned product'])
   state.queries=[]
@@ -517,6 +519,96 @@ it('keeps tenant-scoped receipt cleanup before catalog data in the explicit full
   expect(receipt).toBeGreaterThan(0)
   expect(receipt).toBeLessThan(code.indexOf('DELETE FROM supplier_price_items WHERE tenant_id = $1'))
 })
+it.each([
+  { changed:true, from:null, to:null, type:'supplier_catalog.item_upserted' },
+  { changed:true, from:supplier, to:supplier, type:'supplier_catalog.item_upserted' },
+  { changed:false, from:supplier, to:null, type:'supplier_catalog.item_upserted' },
+  { changed:false, from:null, to:supplier, type:'supplier_catalog.item_upserted' },
+  { changed:true, from:supplier, to:null, type:'supplier_catalog.item_deleted' },
+  { changed:true, from:supplier, to:null, type:'supplier_catalog.imported' },
+])('database rejects inconsistent directional proof $type / $changed / $from / $to',async proof=>{
+  const before=await snap()
+  await expect(state.db.query(`INSERT INTO supplier_catalog_copy_receipts
+    (tenant_id,operation_id,aggregate_id,operation_type,device_id,source_sequence,payload_hash,scope_keys,
+     ownership_changed,previous_supplier_id,next_supplier_id)
+    VALUES($1,$2,$3,$4,'proof-test',1,$5,'{}',$6,$7,$8)`,
+    [tenant,randomUUID(),itemId,proof.type,'a'.repeat(64),proof.changed,proof.from,proof.to]))
+    .rejects.toMatchObject({code:'23514'})
+  expect(await snap()).toEqual(before)
+})
+it('keeps pre-migration receipts exact and does not infer direction from legacy scope order',async()=>{
+  const isolated=new PGlite()
+  try {
+    await isolated.exec('CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role BYPASSRLS;')
+    await isolated.exec(readFileSync(new URL('../../../../supabase/migrations/20261007163229_supplier_catalog_copy_receipts.sql',import.meta.url),'utf8'))
+    await isolated.query(`INSERT INTO supplier_catalog_copy_receipts
+      (tenant_id,operation_id,aggregate_id,operation_type,device_id,source_sequence,payload_hash,scope_keys)
+      VALUES($1,$2,$3,'supplier_catalog.item_upserted','old-desktop',1,$4,$5)`,
+      [tenant,randomUUID(),itemId,'b'.repeat(64),[JSON.stringify([supplier,null]),JSON.stringify([null,null])]])
+    const before=(await isolated.query<Record<string,unknown>>('SELECT * FROM supplier_catalog_copy_receipts')).rows
+    await isolated.exec(readFileSync(new URL('../../../../supabase/migrations/20261010185339_supplier_catalog_ownership_proof.sql',import.meta.url),'utf8'))
+    const after=(await isolated.query('SELECT * FROM supplier_catalog_copy_receipts')).rows
+    expect(after).toEqual(before.map(row=>({...row,ownership_changed:false,previous_supplier_id:null,next_supplier_id:null})))
+  }finally{await isolated.close()}
+})
+it.each(['item','delete','import'])('rolls back %s if the acknowledgement contents are corrupted',async kind=>{
+  await applySupplierCatalogItemUpsert(tenant,itemOperation())
+  await state.db.exec(`CREATE FUNCTION alter_catalog_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.payload_hash:=repeat('a',64); RETURN NEW; END $$;
+    CREATE TRIGGER alter_catalog_receipt BEFORE INSERT ON supplier_catalog_copy_receipts FOR EACH ROW EXECUTE FUNCTION alter_catalog_receipt()`)
+  try {
+    const before=await snap(),op=kind==='item'?itemOperation({...row(),price_kopecks:1}):kind==='delete'?deleteOperation():operation()
+    await expect((kind==='item'?applySupplierCatalogItemUpsert:kind==='delete'?applySupplierCatalogItemDeleted:applySupplierCatalogImported)(tenant,op)).rejects.toMatchObject({status:409})
+    expect(await snap()).toEqual(before)
+  }finally{await state.db.exec('DROP TRIGGER alter_catalog_receipt ON supplier_catalog_copy_receipts; DROP FUNCTION alter_catalog_receipt()')}
+})
+
+
+it.each(['create','edit','delete','add','replace'])('requires the ownership schema before any %s write and resumes the same request after migration',async kind=>{
+  await applySupplierCatalogItemUpsert(tenant,itemOperation())
+  const op=kind==='create'?itemOperation({...row(),id:randomUUID(),sku:'NEW',name:'New row'}):
+    kind==='edit'?itemOperation({...row(),price_kopecks:15000}):
+    kind==='delete'?deleteOperation():operation()
+  if(kind==='add')op.payload.mode='add'
+  const apply=kind==='create'||kind==='edit'?applySupplierCatalogItemUpsert:
+    kind==='delete'?applySupplierCatalogItemDeleted:applySupplierCatalogImported
+  await state.db.exec('ALTER TABLE supplier_catalog_copy_receipts DROP COLUMN ownership_changed, DROP COLUMN previous_supplier_id, DROP COLUMN next_supplier_id')
+  try {
+    const before=await snap();state.queries=[]
+    await expect(apply(tenant,op)).rejects.toMatchObject({code:'SYNC_SCHEMA_UPGRADE_REQUIRED',status:503})
+    expect(state.queries.some(sql=>/^\s*(INSERT|UPDATE|DELETE)\b/i.test(sql))).toBe(false)
+    expect(await snap()).toEqual(before)
+  }finally{
+    await state.db.exec(readFileSync(new URL('../../../../supabase/migrations/20261010185339_supplier_catalog_ownership_proof.sql',import.meta.url),'utf8'))
+  }
+  await apply(tenant,op)
+  const after=await snap()
+  await apply(tenant,op)
+  expect(await snap()).toEqual(after)
+})
+
+it('accepts a legacy receipt insert after the additive migration without inventing ownership proof',async()=>{
+  const id=randomUUID()
+  await state.db.query(`INSERT INTO supplier_catalog_copy_receipts
+    (tenant_id,operation_id,aggregate_id,operation_type,device_id,source_sequence,payload_hash,scope_keys)
+    VALUES($1,$2,$3,'supplier_catalog.item_upserted','previous-server',1,$4,$5)`,
+    [tenant,id,itemId,'c'.repeat(64),[JSON.stringify([supplier,null]),JSON.stringify([null,null])]])
+  expect(await rows('SELECT ownership_changed,previous_supplier_id,next_supplier_id FROM supplier_catalog_copy_receipts WHERE operation_id=$1',[id]))
+    .toEqual([{ownership_changed:false,previous_supplier_id:null,next_supplier_id:null}])
+})
+
+it.each(['42703','42P01'])('turns missing schema %s into a retryable update prerequisite',async code=>{
+  const query=vi.fn().mockRejectedValue({code})
+  await expect(assertCatalogOwnershipSchema({query} as any))
+    .rejects.toMatchObject({code:'SYNC_SCHEMA_UPGRADE_REQUIRED',status:503})
+  expect(query).toHaveBeenCalledTimes(1)
+})
+it('does not disguise a connection or permissions failure as missing schema',async()=>{
+  for(const code of ['42501','53300','08006']){
+    const error={code}
+    await expect(assertCatalogOwnershipSchema({query:vi.fn().mockRejectedValue(error)} as any)).rejects.toBe(error)
+  }
+})
+
 it('enforces immutable operation and source sequence identities in the database',async()=>{
   await applySupplierCatalogImported(tenant,operation())
   await expect(state.db.query(`INSERT INTO supplier_catalog_copy_receipts
