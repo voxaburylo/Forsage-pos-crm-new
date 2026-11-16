@@ -50,3 +50,8 @@ export function TillOnly({ children, what }: { children: React.ReactNode; what: 
     </Layout>
   )
 }
+
+/** На касі — повний робочий екран; у вебі — окремий екран лише для перегляду копії. */
+export function TillOrView({ till, view }: { till: React.ReactNode; view: React.ReactNode }) {
+  return <>{isDesktopRuntime() ? till : view}</>
+}

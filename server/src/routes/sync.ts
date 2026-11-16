@@ -4,6 +4,7 @@ import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { getBootstrapSnapshot, getSyncChanges, pushLocalOperations } from '../services/syncService.js'
 import { streamSyncJson } from '../lib/streamSyncJson.js'
+import { lastLocalDataAt } from '../services/sync/dataFreshness.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -13,6 +14,16 @@ router.use(requireAuth)
 router.get('/capabilities', (_req, res) => {
   res.setHeader('Cache-Control', 'private, no-store')
   res.json({ data: { catalog_cleanup: 1 } })
+})
+
+// «Дані станом на»: веб показує, коли сервер востаннє отримав зміни від каси.
+router.get('/freshness', async (req, res, next) => {
+  try {
+    res.setHeader('Cache-Control', 'private, no-store')
+    res.json({ data: { last_local_data_at: await lastLocalDataAt(req.user!.tenant_id) } })
+  } catch (error) {
+    next(error)
+  }
 })
 
 const querySchema = z.object({

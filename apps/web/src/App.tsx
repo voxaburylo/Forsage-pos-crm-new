@@ -1,7 +1,7 @@
 import { Component, lazy, Suspense, useEffect, useState, type ErrorInfo, type ReactNode } from 'react'
 import { createBrowserRouter, createHashRouter, RouterProvider, Routes, Route, Navigate, useLocation, useParams } from 'react-router-dom'
 import ProtectedRoute from '@/components/ProtectedRoute'
-import { TillOnly } from '@/components/TillOnly'
+import { TillOnly, TillOrView } from '@/components/TillOnly'
 import { DesktopAccessGate } from '@/components/DesktopAccessGate'
 import { ToastContainer } from '@/components/ui'
 import { CommandPalette } from '@/components/CommandPalette'
@@ -52,6 +52,7 @@ const InventoryPage        = lazyPage(() => import('@/features/inventory/Invento
 const ActiveSession        = lazyPage(() => import('@/features/inventory/ActiveSession'))
 const LabelDesigner        = lazyPage(() => import('@/features/labels/LabelDesigner'))
 const OrdersPage           = lazyPage(() => import('@/features/orders/OrdersPage'))
+const OrdersViewPage       = lazyPage(() => import('@/features/orders/OrdersViewPage'))
 const NeedsActionPage      = lazyPage(() => import('@/features/orders/NeedsActionPage'))
 const OrderFormPage        = lazyPage(() => import('@/features/orders/OrderFormPage'))
 const OrderDetailPage      = lazyPage(() => import('@/features/orders/OrderDetailPage'))
@@ -264,9 +265,9 @@ function Workspace() {
 
           {/* Чат-боти — окремий розділ (той самий компонент у режимі chatMode) */}
           <Route path="/chats" element={<TillOnly what="Замовлення"><ProtectedRoute roles={OFFICE_ROLES}><OrdersPage /></ProtectedRoute></TillOnly>} />
-          <Route path="/orders"          element={<TillOnly what="Замовлення"><ProtectedRoute roles={OFFICE_ROLES}><OrdersPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/orders"          element={<ProtectedRoute roles={OFFICE_ROLES}><TillOrView till={<OrdersPage />} view={<OrdersViewPage />} /></ProtectedRoute>} />
           <Route path="/orders/new"      element={<TillOnly what="Створення замовлення"><ProtectedRoute roles={OFFICE_ROLES}><OrderFormPage /></ProtectedRoute></TillOnly>} />
-          <Route path="/orders/:id"      element={<TillOnly what="Замовлення"><ProtectedRoute roles={OFFICE_ROLES}><OrderDetailPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/orders/:id"      element={<ProtectedRoute roles={OFFICE_ROLES}><TillOrView till={<OrderDetailPage />} view={<OrdersViewPage />} /></ProtectedRoute>} />
           <Route path="/orders/:id/edit" element={<TillOnly what="Редагування замовлення"><ProtectedRoute roles={OFFICE_ROLES}><OrderFormPage /></ProtectedRoute></TillOnly>} />
 
           <Route path="/quotes"          element={<Navigate to="/orders" replace />} />
