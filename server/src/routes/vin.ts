@@ -1,10 +1,11 @@
 import { Router } from 'express'
-import { GoogleGenerativeAI, type GenerativeModel } from '@google/generative-ai'
 import { requireAuth } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { getSettings } from '../services/adminService.js'
 import { withAiDataBoundary } from '../services/aiPromptSafety.js'
-import { aiResponseCompletionError, safeAiErrorInfo } from '../services/aiResponseSafety.js'
+import { safeAiErrorInfo } from '../services/aiResponseSafety.js'
+import { ClaudeClient } from '../services/aiClaude.js'
+import { getAiConfig, recordAiUsage } from '../services/aiService.js'
 import { withAiExecutionBudget } from '../services/aiExecutionBudget.js'
 import { VEHICLE_OCR_INSTRUCTION, vehicleOcrInput, inlineVehiclePhoto, parseVehicleOcr } from '../services/vehicleOcr.js'
 import { logger } from '../lib/logger.js'
@@ -13,18 +14,6 @@ import { downloadProcessingUpload, removeProcessingUploads } from '../services/p
 const router = Router()
 router.use(requireAuth)
 
-// Gemini для розпізнавання VIN з фото (ліниво ініціалізуємо)
-let geminiModel: GenerativeModel | null = null
-function gemini() {
-  const key = process.env.GEMINI_API_KEY
-  if (!geminiModel && key) {
-    geminiModel = new GoogleGenerativeAI(key).getGenerativeModel({
-      model: 'gemini-2.5-flash', systemInstruction: withAiDataBoundary(VEHICLE_OCR_INSTRUCTION),
-      generationConfig: { temperature: 0, maxOutputTokens: 2048, responseMimeType: 'application/json' },
-    })
-  }
-  return geminiModel
-}
 
 // Best-effort витяг марки/моделі/року з різних форматів відповіді декодера
 function findKey(obj: any, key: string): any {
@@ -88,8 +77,9 @@ router.post('/ocr', async (req, res, next) => {
     const inline = 'image' in input ? inlineVehiclePhoto(input.image, input.mimeType) : null
     if ('storage_path' in input) storagePath = input.storage_path
     const vehicle = await withAiExecutionBudget(90_000, async budget => {
-      const model = gemini()
-      if (!model) throw new AppError('OCR_NOT_AVAILABLE', 'Розпізнавання недоступне (не налаштовано GEMINI_API_KEY)', 503)
+      // Той самий ключ Anthropic, що й у помічника магазину.
+      const cfg = await budget.run(signal => getAiConfig(req.user!.tenant_id, signal))
+      if (!cfg.apiKey) throw new AppError('OCR_NOT_AVAILABLE', 'Розпізнавання недоступне: додайте ключ Anthropic у Налаштування → ШІ.', 503)
       let photo = inline!
       if (storagePath) {
         const uploaded = await budget.run(() => downloadProcessingUpload({
@@ -99,12 +89,15 @@ router.post('/ocr', async (req, res, next) => {
         }))
         photo = { data: uploaded.buffer.toString('base64'), mimeType: uploaded.mimeType }
       }
-      const result = await budget.run(signal => model.generateContent([
-        { inlineData: photo }, { text: 'Розпізнай лише дані автомобіля з цього фото.' },
-      ], { timeout: 90_000, signal }))
-      const incomplete = aiResponseCompletionError(result.response)
-      if (incomplete) throw incomplete
-      return parseVehicleOcr(result.response.text())
+      const result = await new ClaudeClient(cfg.apiKey, cfg.model as any).complete(budget, {
+        system: withAiDataBoundary(VEHICLE_OCR_INSTRUCTION + '\nПоверни ЛИШЕ JSON-обʼєкт без Markdown.'),
+        text: 'Розпізнай лише дані автомобіля з цього фото.',
+        images: [{ mime_type: photo.mimeType, data_base64: photo.data }],
+        maxTokens: 4000, effort: 'low',
+      })
+      await budget.run(signal => recordAiUsage(req.user!.tenant_id, req.user!.id, cfg.model, result.promptTokens, result.completionTokens, signal))
+      if (result.truncated) throw new AppError('AI_RESPONSE_TOO_LARGE', 'Відповідь розпізнавання обірвалась. Спробуйте ще раз.', 422)
+      return parseVehicleOcr(result.text)
     })
     if (!vehicle.vin && !vehicle.make && !vehicle.model && !vehicle.year) {
       throw new AppError('VEHICLE_NOT_FOUND', 'Не вдалося розпізнати VIN або дані автомобіля. Спробуйте чіткіше фото.', 422)

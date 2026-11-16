@@ -40,12 +40,12 @@ describe('actual application logger privacy boundary', () => {
   })
   it('keeps only bounded safe metrics, statuses and correlation fingerprints', () => {
     logger.info({ count: 2, responseChars: 42, isFatal: false, status: 'pending',
-      model: 'gemini-2.5-flash', finishReason: 'MAX_TOKENS',
+      model: 'claude-sonnet-5-5', finishReason: 'MAX_TOKENS',
       jobId: 'PRIVATE_JOB', userId: 'PRIVATE_USER', jobType: 'PRIVATE_JOB_TYPE',
       duration_ms: Infinity, amount: NaN, arbitrary: { secret: 'PRIVATE_OTHER' } }, 'Finished')
     const result = last()
     expect(result).toMatchObject({ count: 2, responseChars: 42, isFatal: false, status: 'pending',
-      model: 'gemini-2.5-flash', finishReason: 'MAX_TOKENS', jobId_fingerprint: expect.any(String) })
+      model: 'claude-sonnet-5-5', finishReason: 'MAX_TOKENS', jobId_fingerprint: expect.any(String) })
     expect(result.duration_ms).toBeUndefined()
     expect(result.amount).toBeUndefined()
     expect(capture.lines.join('')).not.toContain('PRIVATE_')

@@ -6,7 +6,7 @@ export function aiRequestHistory(entries: readonly AiChatMessage[]): AiChatMessa
   const recent = entries.filter(entry => ['user', 'model'].includes(entry.role) && typeof entry.text === 'string' && entry.text.trim())
     .slice(-MAX_AI_REQUEST_HISTORY)
     .map(({ role, text }) => ({ role, text }))
-  // Gemini history must begin with a user turn, not an orphaned answer after trimming.
+  // Model history must begin with a user turn, not an orphaned answer after trimming.
   const firstUser = recent.findIndex(entry => entry.role === 'user')
   return firstUser < 0 ? [] : recent.slice(firstUser)
 }

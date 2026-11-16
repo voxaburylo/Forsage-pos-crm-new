@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { GoogleGenAI } from '@google/genai'
+import { ClaudeClient } from './aiClaude.js'
+import { withAiExecutionBudget } from './aiExecutionBudget.js'
+import { parseAiJsonObject } from './aiInvoiceResponse.js'
 import { z } from 'zod'
 import { db } from '../db/supabase.js'
 import { logger } from '../lib/logger.js'
@@ -176,42 +178,13 @@ async function skipLocalPrimaryCatalog(product: ClaimedProduct): Promise<boolean
   return true
 }
 
-export async function callGemini(products: ClaimedProduct[], apiKey: string, model: string) {
-  const ai = new GoogleGenAI({ apiKey })
-  const searchInteraction = await ai.interactions.create({
-    model,
-    input: buildPrompt(products),
-    tools: [{ type: 'google_search' }],
-  })
-
-  const sourceByUri = new Map<string, { title: string; uri: string }>()
-  const reportParts: string[] = []
-  for (const step of searchInteraction.steps ?? []) {
-    if (step.type !== 'model_output') continue
-    for (const content of step.content ?? []) {
-      if (content.type !== 'text') continue
-      reportParts.push(content.text)
-      for (const annotation of content.annotations ?? []) {
-        if (annotation.type !== 'url_citation' || !annotation.url) continue
-        if (!sourceByUri.has(annotation.url)) {
-          sourceByUri.set(annotation.url, {
-            title: annotation.title ?? '',
-            uri: annotation.url,
-          })
-        }
-      }
-    }
-  }
-  const searchReport = reportParts.join('\n')
-  const sources = [...sourceByUri.values()]
+export async function findCrossNumbers(products: ClaimedProduct[], apiKey: string, model: string) {
+  // Пошук і витяг — два кроки: другий бачить лише звіт і джерела першого, нічого не шукає сам.
+  const claude = new ClaudeClient(apiKey, model as any)
+  const search = await withAiExecutionBudget(240_000, budget => claude.research(budget, buildPrompt(products)))
+  const sources = search.sources
   if (sources.length === 0) {
-    await recordAiUsage(
-      products[0].tenant_id,
-      null,
-      model,
-      searchInteraction.usage?.total_input_tokens ?? 0,
-      searchInteraction.usage?.total_output_tokens ?? 0,
-    )
+    await recordAiUsage(products[0].tenant_id, null, model, search.promptTokens, search.completionTokens)
     return { products: [], sources: [] }
   }
 
@@ -225,41 +198,33 @@ Original product input:
 ${buildPrompt(products)}
 
 Grounded report:
-${searchReport}
+${search.text}
 
 Sources (zero-based evidence_index):
 ${JSON.stringify(sources.map((source, evidence_index) => ({ evidence_index, ...source })))}`
 
-  const extractionResponse = await ai.models.generateContent({
+  const extraction = await withAiExecutionBudget(120_000, budget => claude.complete(budget, {
+    system: 'Return ONLY one JSON object, no Markdown, matching this JSON Schema: ' + JSON.stringify(RESPONSE_JSON_SCHEMA),
+    text: extractionPrompt, maxTokens: 16000, effort: 'low',
+  }))
+  await recordAiUsage(
+    products[0].tenant_id,
+    null,
     model,
-    contents: extractionPrompt,
-    config: {
-      responseMimeType: 'application/json',
-      responseJsonSchema: RESPONSE_JSON_SCHEMA,
-      temperature: 0,
-    },
-  })
+    search.promptTokens + extraction.promptTokens,
+    search.completionTokens + extraction.completionTokens,
+  )
 
-  const parsed = enrichmentResponseSchema.safeParse(JSON.parse(extractionResponse.text ?? '{}'))
+  const parsed = enrichmentResponseSchema.safeParse(parseAiJsonObject(extraction.text) ?? {})
   if (!parsed.success) {
     const issues = parsed.error.issues.map((issue) => issue.path.join('.') + ': ' + issue.code).join(', ')
-    throw new Error('Gemini повернув некоректну структуру крос-номерів: ' + issues)
+    throw new Error('ШІ повернув некоректну структуру крос-номерів: ' + issues)
   }
   logger.info({
     sources: sources.length,
     products: parsed.data.products.length,
     candidates: parsed.data.products.reduce((sum, item) => sum + item.cross_numbers.length, 0),
   }, '[ai-cross] grounded response parsed')
-
-  await recordAiUsage(
-    products[0].tenant_id,
-    null,
-    model,
-    (searchInteraction.usage?.total_input_tokens ?? 0)
-      + (extractionResponse.usageMetadata?.promptTokenCount ?? 0),
-    (searchInteraction.usage?.total_output_tokens ?? 0)
-      + (extractionResponse.usageMetadata?.candidatesTokenCount ?? 0),
-  )
 
   const normalizedProducts = parsed.data.products.slice(0, products.length).map((item, index) => ({
     ...item,
@@ -305,7 +270,7 @@ async function saveProductResult(
       normalized_number: normalized,
       number_type: candidate.number_type,
       brand: candidate.brand.trim(),
-      source: `AI Gemini · ${sourceLabel}`.slice(0, 200),
+      source: `AI Claude · ${sourceLabel}`.slice(0, 200),
       is_verified: false,
       created_by: null,
       updated_at: new Date().toISOString(),
@@ -410,7 +375,7 @@ export async function runAiCrossNumberEnrichment(): Promise<AiCrossEnrichmentSum
     let cfg: Awaited<ReturnType<typeof getAiConfig>> | null = null
     if (searchableProducts.length > 0) {
       cfg = await getAiConfig(eligible[0].tenant_id)
-      if (!cfg.enabled || !cfg.apiKey) throw new Error('Gemini вимкнено або API-ключ не налаштовано')
+      if (!cfg.enabled || !cfg.apiKey) throw new Error('ШІ вимкнено або ключ Anthropic не налаштовано')
     }
 
     let processed = 0
@@ -423,7 +388,7 @@ export async function runAiCrossNumberEnrichment(): Promise<AiCrossEnrichmentSum
         let result: z.infer<typeof enrichmentProductSchema> | undefined
         let sources: Array<{ title: string; uri: string }> = []
         if (inputCatalogNumbers(product).length > 0 && cfg?.apiKey) {
-          const response = await callGemini([product], cfg.apiKey, cfg.model)
+          const response = await findCrossNumbers([product], cfg.apiKey, cfg.model)
           result = response.products.find((item) => item.product_id === product.product_id)
           sources = response.sources
         }

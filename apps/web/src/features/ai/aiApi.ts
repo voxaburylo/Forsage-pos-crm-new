@@ -3,13 +3,11 @@ import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { applyLocalAiAction } from './localAiAction'
 import { aiRequestHistory } from './aiRequestHistory'
 
-export const AI_MODELS = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'] as const
+export const AI_MODELS = ['claude-sonnet-5-5'] as const
 export type AiModel = (typeof AI_MODELS)[number]
 
 export const AI_MODEL_LABELS: Record<AiModel, string> = {
-  'gemini-2.5-flash': 'Gemini 2.5 Flash (швидка, дешева)',
-  'gemini-2.5-pro':   'Gemini 2.5 Pro (розумніша, дорожча)',
-  'gemini-2.0-flash': 'Gemini 2.0 Flash (найдешевша)',
+  'claude-sonnet-5-5': 'Claude Sonnet 5.5',
 }
 
 export interface AiUsage {

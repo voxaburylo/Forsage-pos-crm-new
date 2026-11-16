@@ -9,10 +9,19 @@ vi.mock('../sync/balanceMirror.js', () => ({ requiresSignedBalances: mock.author
 vi.mock('../aiService.js', () => ({ getAiConfig: mock.config, recordAiUsage: mock.usage }))
 vi.mock('../productService.js', () => ({ clearProductSearchCache: mock.cache, catalogCodesFromName: () => ['WA6333'] }))
 vi.mock('../../lib/logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
-vi.mock('@google/genai', () => ({ GoogleGenAI: class {
-  interactions = { create: mock.search }
-  models = { generateContent: mock.extract }
-} }))
+vi.mock('@anthropic-ai/sdk', () => {
+  class APIError extends Error {}
+  class Anthropic {
+    static APIError = APIError
+    static AuthenticationError = class extends APIError {}
+    static PermissionDeniedError = class extends APIError {}
+    static RateLimitError = class extends APIError {}
+    static BadRequestError = class extends APIError {}
+    // Пошук — запит із веб-пошуком; витяг JSON — окремий запит без інструментів.
+    beta = { messages: { stream: (body: any) => ({ finalMessage: () => body.tools ? mock.search(body) : mock.extract(body) }) } }
+  }
+  return { default: Anthropic }
+})
 import { runAiCrossNumberEnrichment } from '../aiCrossNumberEnrichmentService.js'
 
 const product = { tenant_id: 'test-tenant', product_id: 'test-product', source_fingerprint: 'saved-fingerprint',
@@ -22,7 +31,7 @@ const businessWrites = () => mock.writes.filter(row => row.table !== 'product_cr
 beforeEach(() => {
   vi.clearAllMocks(); mock.writes = []
   mock.authority.mockReset().mockResolvedValue(false)
-  mock.config.mockResolvedValue({ enabled: true, apiKey: 'synthetic-key', model: 'synthetic-model' })
+  mock.config.mockResolvedValue({ enabled: true, apiKey: 'synthetic-key', model: 'claude-sonnet-5-5' })
   mock.rpc.mockImplementation(async name => ({ data: name === 'claim_product_cross_enrichment' ? [product] : true, error: null }))
   mock.from.mockImplementation(table => {
     let write: any
@@ -35,11 +44,11 @@ beforeEach(() => {
     }
     return chain
   })
-  mock.search.mockResolvedValue({ steps: [{ type: 'model_output', content: [{ type: 'text', text: 'Synthetic evidence',
-    annotations: [{ type: 'url_citation', url: 'https://manufacturer.example/catalog', title: 'Manufacturer' }] }] }] })
-  mock.extract.mockResolvedValue({ text: JSON.stringify({ products: [{ product_id: product.product_id,
+  mock.search.mockResolvedValue({ stop_reason: 'end_turn', usage: { input_tokens: 5, output_tokens: 5 }, content: [{ type: 'text', text: 'Synthetic evidence',
+    citations: [{ type: 'web_search_result_location', url: 'https://manufacturer.example/catalog', title: 'Manufacturer' }] }] })
+  mock.extract.mockResolvedValue({ stop_reason: 'end_turn', usage: { input_tokens: 5, output_tokens: 5 }, content: [{ type: 'text', text: JSON.stringify({ products: [{ product_id: product.product_id,
     primary_catalog_number: 'WA6333', primary_confidence: 1, primary_evidence_index: 0,
-    cross_numbers: [{ number: 'C1212', brand: 'Synthetic', number_type: 'cross', evidence_index: 0, confidence: 1 }] }] }) })
+    cross_numbers: [{ number: 'C1212', brand: 'Synthetic', number_type: 'cross', evidence_index: 0, confidence: 1 }] }] }) }] })
 })
 
 describe('background AI respects local catalog authority', () => {

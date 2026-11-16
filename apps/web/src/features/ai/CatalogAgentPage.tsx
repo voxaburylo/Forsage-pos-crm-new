@@ -133,7 +133,7 @@ function CatalogAgentContent({userId}:{userId:string}) {
         <Button variant="secondary" onClick={reviewAi} disabled={!scan || busy || aiBusy || checked >= (scan?.total ?? 0)}>AI: перевірити назви й категорії</Button>
         {aiBusy && <Button variant="secondary" onClick={() => { stop.current = true }}>Зупинити після запиту</Button>}
       </div>
-      <p className="mt-2 text-xs text-gray-500">AI надсилає Gemini тільки назви, артикули, бренди та список категорій — по 25 товарів. Потрібен інтернет і налаштований ключ; діють ліміти вашого AI-акаунта. Залишки й ціни не передаються. Наступний запуск продовжує перевірку. При переході між вкладками завершені пропозиції зберігаються до закриття програми.</p>
+      <p className="mt-2 text-xs text-gray-500">ШІ (Claude) отримує тільки назви, артикули, бренди та список категорій — по 25 товарів. Потрібен інтернет і налаштований ключ; оплачується з балансу вашого ключа Anthropic. Залишки й ціни не передаються. Наступний запуск продовжує перевірку. При переході між вкладками завершені пропозиції зберігаються до закриття програми.</p>
       {scan && <p className="mt-3 text-sm">У каталозі: {scan.total}. Зауважень: {issues.length}. Перевірено AI: {checked} / {scan.total}{aiBusy ? ' — працює…' : ''}</p>}
     </Card>
     {error && <p role="alert" className="mb-4 rounded bg-red-50 p-3 text-sm text-red-800 [overflow-wrap:anywhere]">{error}</p>}

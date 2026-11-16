@@ -1,7 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-const mocks = vi.hoisted(() => ({ model: vi.fn(), generate: vi.fn(), download: vi.fn(), remove: vi.fn(), warn: vi.fn() }))
-vi.mock('@google/generative-ai', () => ({
-  GoogleGenerativeAI: class { getGenerativeModel(options: unknown) { mocks.model(options); return { generateContent: mocks.generate } } },
+const mocks = vi.hoisted(() => ({ generate: vi.fn(), download: vi.fn(), remove: vi.fn(), warn: vi.fn(), usage: vi.fn() }))
+vi.mock('@anthropic-ai/sdk', () => {
+  class APIError extends Error {}
+  class Anthropic {
+    static APIError = APIError
+    static AuthenticationError = class extends APIError {}
+    static PermissionDeniedError = class extends APIError {}
+    static RateLimitError = class extends APIError {}
+    static BadRequestError = class extends APIError {}
+    beta = { messages: { stream: (body: any, options: any) => ({ finalMessage: () => mocks.generate(body, options) }) } }
+  }
+  return { default: Anthropic }
+})
+vi.mock('../services/aiService.js', () => ({
+  getAiConfig: async () => ({ enabled: true, apiKey: 'fixture-key', model: 'claude-sonnet-5-5', hasKey: true }),
+  recordAiUsage: mocks.usage,
 }))
 vi.mock('../middleware/auth.js', () => ({ requireAuth: (_req: unknown, _res: unknown, next: () => void) => next() }))
 vi.mock('../services/adminService.js', () => ({ getSettings: vi.fn() }))
@@ -13,29 +26,30 @@ const handler = (router as any).stack.find((layer: any) => layer.route?.path ===
 const userId = '00000000-0000-4000-8000-000000000001'
 const owned = userId + '/vin/00000000-0000-4000-8000-000000000002.png'
 const vin = 'WVWZZZ1JZXW000001'
-const response = (text = JSON.stringify({ vin }), finishReason = 'STOP') => ({ response: { text: () => text, candidates: [{ finishReason }] } })
+const response = (text = JSON.stringify({ vin }), stop = 'end_turn') => ({ content: [{ type: 'text', text }], stop_reason: stop, usage: { input_tokens: 2, output_tokens: 3 } })
 const call = async (body: unknown) => {
   const res = { json: vi.fn() }, next = vi.fn()
   await handler({ body, user: { id: userId, tenant_id: 'shop' } }, res, next)
   return { data: res.json.mock.calls[0]?.[0]?.data, error: next.mock.calls[0]?.[0] }
 }
 beforeEach(() => {
-  vi.useFakeTimers(); vi.clearAllMocks(); vi.stubEnv('GEMINI_API_KEY', 'fixture-key')
+  vi.useFakeTimers(); vi.clearAllMocks()
   mocks.generate.mockResolvedValue(response())
   mocks.download.mockResolvedValue({ buffer: Buffer.from([0]), mimeType: 'image/png' })
   mocks.remove.mockResolvedValue(undefined)
 })
-afterEach(() => { expect(vi.getTimerCount()).toBe(0); vi.useRealTimers(); vi.unstubAllEnvs() })
+afterEach(() => { expect(vi.getTimerCount()).toBe(0); vi.useRealTimers() })
 describe('VIN route never trusts photo instructions or raw provider errors', () => {
   it('uses the shared boundary and reads/cleans only the explicit owned path', async () => {
     expect((await call({ storage_path: owned })).data).toMatchObject({ vin })
-    expect(mocks.model.mock.calls[0][0].systemInstruction).toContain(AI_UNTRUSTED_DATA_RULES)
-    expect(mocks.model.mock.calls[0][0].tools).toBeUndefined()
+    expect(mocks.generate.mock.calls[0][0].system).toContain(AI_UNTRUSTED_DATA_RULES)
+    expect(mocks.generate.mock.calls[0][0].tools).toBeUndefined()
+    expect(mocks.usage).toHaveBeenCalledOnce()
     expect(mocks.download).toHaveBeenCalledWith(expect.objectContaining({ path: owned, userId, purpose: 'vin', maxBytes: 6 * 1024 * 1024 }))
     expect(mocks.remove).toHaveBeenCalledWith([owned], userId)
     expect(mocks.generate.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal)
   })
-  it.each(['MAX_TOKENS', 'SAFETY', 'OTHER', 'MALFORMED_FUNCTION_CALL'])('does not accept a VIN from %s output', async reason => {
+  it.each(['max_tokens', 'refusal'])('does not accept a VIN from %s output', async reason => {
     mocks.generate.mockResolvedValue(response(JSON.stringify({ vin }), reason))
     const result = await call({ storage_path: owned })
     expect(result.data).toBeUndefined()
@@ -58,7 +72,7 @@ describe('VIN route never trusts photo instructions or raw provider errors', () 
   it('replaces provider exceptions with a fixed message and private diagnostic', async () => {
     mocks.generate.mockRejectedValue(new Error('SECRET invoice phone Bearer secret-value'))
     const result = await call({ storage_path: owned })
-    expect(result.error).toMatchObject({ code: 'OCR_FAILED', status: 502 })
+    expect(result.error).toMatchObject({ code: 'AI_UPSTREAM_UNAVAILABLE', status: 503 })
     expect(result.error.message).not.toContain('SECRET')
     expect(JSON.stringify(mocks.warn.mock.calls)).not.toMatch(/SECRET|Bearer|secret-value/)
   })

@@ -24,11 +24,10 @@ describe('AI untrusted input boundary', () => {
     expect(prompt).toContain(AI_UNTRUSTED_DATA_RULES)
     expect(prompt).toContain('реальною дією користувача')
   })
-  it('wires the boundary into chat, invoice OCR and fallback OCR', () => {
+  it('wires the boundary into chat and invoice OCR', () => {
     const source = readFileSync(new URL('./aiService.ts',import.meta.url),'utf8')
-    for(const name of ['SYSTEM_PROMPT','SALVAGE_PROMPT','instruction']) {
-      expect(source).toContain('systemInstruction: withAiDataBoundary('+name+')')
-    }
+    expect(source).toContain('system: withAiDataBoundary(SYSTEM_PROMPT)')
+    expect(source).toContain("withAiDataBoundary(instruction + '\\n' + jsonOnlyInstruction(SUPPLY_INVOICE_PHOTO_SCHEMA))")
     expect(source).toContain('aiUserMessage(params.message, params.fileText)')
     expect(source).not.toContain('params.fileText.slice(0, 900_000)')
   })

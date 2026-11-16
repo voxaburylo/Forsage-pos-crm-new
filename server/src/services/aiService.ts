@@ -1,5 +1,4 @@
-import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai'
-import type { FunctionDeclaration, Content, Part } from '@google/generative-ai'
+import { ClaudeClient, CLAUDE_MODELS, claudeTools, jsonOnlyInstruction, SchemaType, type FunctionDeclaration } from './aiClaude.js'
 import { db } from '../db/supabase.js'
 import { logger } from '../lib/logger.js'
 import { AppError } from '../middleware/errorHandler.js'
@@ -14,19 +13,17 @@ import { boundedAiReadResult, readAiDuplicates, readAiLookup } from './aiCatalog
 import { parseAiJsonObject, mergeAiInvoicePages, hasAiInvoicePhotoContent } from './aiInvoiceResponse.js'
 import { aiUserMessage, withAiDataBoundary } from './aiPromptSafety.js'
 import { createAiToolBudget, parseAiReadArguments } from './aiToolSafety.js'
-import { aiResponseCompletionError, isAiIncompleteResponseError, safeAiErrorInfo, safeAiFinishReason } from './aiResponseSafety.js'
+import { safeAiErrorInfo } from './aiResponseSafety.js'
 
 // ─── Моделі та приблизна вартість ($ за 1M токенів) ──────────────────────────
-// Значення орієнтовні (тарифи Google можуть змінюватись) — лічильник показуємо
+// Значення орієнтовні (тарифи Anthropic можуть змінюватись) — лічильник показуємо
 // як приблизний («≈»). Оновити просто тут за потреби.
-export const AI_MODELS = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'] as const
+export const AI_MODELS = CLAUDE_MODELS
 export type AiModel = (typeof AI_MODELS)[number]
-export const DEFAULT_MODEL: AiModel = 'gemini-2.5-flash'
+export const DEFAULT_MODEL: AiModel = 'claude-sonnet-5-5'
 
 const MODEL_PRICING: Record<string, { input: number; output: number }> = {
-  'gemini-2.5-flash': { input: 0.30, output: 2.50 },
-  'gemini-2.5-pro':   { input: 1.25, output: 10.0 },
-  'gemini-2.0-flash': { input: 0.10, output: 0.40 },
+  'claude-sonnet-5-5': { input: 2.00, output: 10.00 },
 }
 
 function computeCostUsd(model: string, promptTokens: number, completionTokens: number): number {
@@ -60,7 +57,8 @@ export async function getAiConfig(tenantId: string, signal?: AbortSignal): Promi
 
   return {
     enabled: data.ai_enabled ?? false,
-    model: data.ai_model ?? DEFAULT_MODEL,
+    // Старі записи могли зберегти модель Gemini: помічник працює лише на Claude.
+    model: AI_MODELS.includes(data.ai_model as AiModel) ? data.ai_model : DEFAULT_MODEL,
     hasKey: !!apiKey,
     apiKey,
   }
@@ -113,18 +111,16 @@ export async function saveAiConfig(
 export async function testKey(apiKey: string, model: string): Promise<{ ok: boolean }> {
   try {
     return await withAiExecutionBudget(AI_TIME_LIMITS.keyTest, async budget => {
-      const genAI = new GoogleGenerativeAI(apiKey)
-      const m = genAI.getGenerativeModel({ model })
-      const res = await budget.run(signal => m.generateContent('Відповідай одним словом: ОК', { signal }))
-      const incomplete = aiResponseCompletionError(res.response)
-      if (incomplete) throw incomplete
+      await new ClaudeClient(apiKey, AI_MODELS.includes(model as AiModel) ? model as AiModel : DEFAULT_MODEL).ping(budget)
       logger.info({ model: AI_MODELS.includes(model as AiModel) ? model : 'other' }, '[ai] test key ok')
       return { ok: true }
     })
   } catch (e: any) {
     if (isAiBudgetError(e)) throw e
     logger.warn(safeAiErrorInfo(e), '[ai] test key failed')
-    throw new AppError('AI_KEY_INVALID', 'Не вдалося перевірити ключ або модель ШІ. Перевірте ключ, доступ до моделі та ліміт сервісу.', 400)
+    // Закінчений баланс — не «поганий ключ»: власнику треба поповнити рахунок, а не міняти ключ.
+    if (e instanceof AppError && e.code === 'AI_QUOTA_EXCEEDED') throw e
+    throw new AppError('AI_KEY_INVALID', 'Не вдалося перевірити ключ Anthropic. Перевірте ключ (починається з sk-ant-), доступ до моделі та баланс.', 400)
   }
 }
 
@@ -493,8 +489,19 @@ const toolDeclarations: FunctionDeclaration[] = [
   },
 ]
 
+// Інструменти Claude — ті самі оголошення, що й раніше.
+const CLAUDE_TOOLS = claudeTools(toolDeclarations)
+
 const SYSTEM_PROMPT = `Ти — AI-помічник «Директор» для CRM автозапчастин «Форсаж». Спілкуйся українською, коротко й по суті.
 Ти допомагаєш власнику як досвідчений кладівник і директор: розбираєш товар, перекладаєш і чистиш назви, пишеш описи, підбираєш категорію та бренд, створюєш і сортуєш категорії («папки»), заводиш клієнтів з їхніми авто, аналізуєш прайси й таблиці (Excel/CSV/текст).
+
+ЯК СПІЛКУВАТИСЯ. Ти напарник, а не автомат: власник пише просто, з помилками, російською чи українською — відповідай українською, людяно й конкретно.
+- Перед пропозицією по накладній чи прайсу дай коротку зведену: скільки рядків, скільки знайдено в базі, скільки нових, чи сходиться сума з накладною.
+- Сумнівні рядки не вгадуй і не мовчи про них: перелічи їх і спитай прямо («Рядок 73: сума не сходиться з ціна × кількість — перевірте» або «ПК-003 — це ваша картка 87775 "Пістолет продувний"? Беру її?»).
+- Якщо власник питає, чому ціна така — поясни розрахунок (закупка, націнка, округлення).
+- Якщо власник надсилає помилку програми (напр. «рядок не проводиться») — поясни простими словами, що вона означає і що натиснути, нічого не змінюючи сам.
+- Не вигадуй даних, яких немає в базі чи документі. Чого не знаєш — так і скажи і запропонуй, як перевірити.
+- Жорсткі правила власника: товар ніколи не продається нижче закупівельної ціни; ціни автоматично не знижуються; будь-яка зміна — лише пропозицією, яку власник застосовує кнопкою.
 
 Що ти вмієш (через інструменти):
 - Товари: пошук, картка, створення (по одному або МАСОВО create_products_bulk), масовий порядок: list_products_page + update_products_bulk (переклад назв, категорії), find_duplicate_products + merge_products_bulk (дублі).
@@ -848,175 +855,6 @@ async function buildPendingAction(name: string, args: any, tenantId: string, bud
   }
 }
 
-// ─── Рятувальний прохід для фото (JSON-режим) ───────────────────────────────
-// gemini-2.5-flash іноді стабільно генерує НЕКОРЕКТНІ виклики інструментів на
-// табличних фото (finishReason=MALFORMED_FUNCTION_CALL, відповідь порожня).
-// Тоді робимо прохід БЕЗ інструментів зі строгою JSON-схемою відповіді —
-// текстова JSON-генерація цим багом не страждає — і збираємо пропозиції самі.
-const SALVAGE_ITEM_SCHEMA = {
-  type: SchemaType.OBJECT,
-  properties: {
-    name: { type: SchemaType.STRING },
-    part_number: { type: SchemaType.STRING },
-    qty: { type: SchemaType.NUMBER },
-    sell_price_uah: { type: SchemaType.NUMBER },
-    buy_price_uah: { type: SchemaType.NUMBER },
-    arrived: { type: SchemaType.BOOLEAN },
-    note: { type: SchemaType.STRING },
-  },
-  required: ['name'],
-} as const
-
-const SALVAGE_SCHEMA = {
-  type: SchemaType.OBJECT,
-  properties: {
-    invoice_total: { type: SchemaType.NUMBER },
-    orders: {
-      type: SchemaType.ARRAY,
-      items: {
-        type: SchemaType.OBJECT,
-        properties: {
-          customer_name: { type: SchemaType.STRING },
-          customer_phone: { type: SchemaType.STRING },
-          car_make: { type: SchemaType.STRING },
-          car_model: { type: SchemaType.STRING },
-          car_year: { type: SchemaType.NUMBER },
-          vin: { type: SchemaType.STRING },
-          plate: { type: SchemaType.STRING },
-          comment: { type: SchemaType.STRING },
-          is_done: { type: SchemaType.BOOLEAN },
-          items: { type: SchemaType.ARRAY, items: SALVAGE_ITEM_SCHEMA as any },
-          uncertain: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
-        },
-        required: ['items'],
-      },
-    },
-    products: {
-      type: SchemaType.ARRAY,
-      items: {
-        type: SchemaType.OBJECT,
-        properties: {
-          sku: { type: SchemaType.STRING },
-          name: { type: SchemaType.STRING },
-          brand_name: { type: SchemaType.STRING },
-          category_name: { type: SchemaType.STRING },
-          retail_price_uah: { type: SchemaType.NUMBER },
-          purchase_price_uah: { type: SchemaType.NUMBER },
-          oem_number: { type: SchemaType.STRING },
-          barcode: { type: SchemaType.STRING },
-          qty_on_hand: { type: SchemaType.NUMBER },
-          source_name: { type: SchemaType.STRING },
-          unit: { type: SchemaType.STRING },
-          line_total: { type: SchemaType.NUMBER },
-        },
-        required: ['name'],
-      },
-    },
-    customers: {
-      type: SchemaType.ARRAY,
-      items: {
-        type: SchemaType.OBJECT,
-        properties: {
-          full_name: { type: SchemaType.STRING },
-          phone: { type: SchemaType.STRING },
-          vin: { type: SchemaType.STRING },
-          car_make: { type: SchemaType.STRING },
-          car_model: { type: SchemaType.STRING },
-          car_year: { type: SchemaType.NUMBER },
-        },
-      },
-    },
-  },
-} as const
-
-const SALVAGE_PROMPT = `Розпізнай дані з фото і поверни СТРОГО JSON за схемою (без коментарів).
-- Рукописні замовлення з зошита → orders[] (кожне замовлення окремо: клієнт, телефон +380…, авто, VIN, держномер, позиції; ПЕРЕКРЕСЛЕНЕ замовлення → is_done=true; ГАЛОЧКА біля позиції → arrived=true; невпевнено розпізнані поля перелічи в uncertain: customer_name/customer_phone/car/vin/plate/items/prices/status).
-- Прайс-лист або накладна з товарами → products[], усі товарні рядки без пропусків і без підсумків. «Родитель» → category_name; «Кількість/Количество» → qty_on_hand як прийнята кількість; складський залишок її не замінює. Порожні кількість/ціни лишай відсутніми, не підставляй 0 або 1. Ціна постачальника → purchase_price_uah у валюті джерела, без конвертації. Явна сума рядка → line_total, підсумок усієї накладної → invoice_total; їх не обчислюй. «№» — не sku; «Штрихкод» → barcode точним рядком. Повну назву збережи в source_name. Назви не перекладай без окремого прямого прохання користувача.
-- Список клієнтів → customers[].
-Ціни «1 890,00» передавай числом 1890.00. Не вигадуй даних, яких нема на фото. Порожні масиви не включай.`
-
-async function salvageFromImages(
-  genAI: GoogleGenerativeAI,
-  modelName: string,
-  userText: string,
-  imageParts: Part[],
-  tenantId: string,
-  budget: AiExecutionBudget,
-): Promise<{ actions: PendingAction[]; promptTokens: number; completionTokens: number; error?: AppError }> {
-  const model = genAI.getGenerativeModel({
-    model: modelName,
-    systemInstruction: withAiDataBoundary(SALVAGE_PROMPT),
-    generationConfig: {
-      responseMimeType: 'application/json',
-      responseSchema: SALVAGE_SCHEMA as any,
-    },
-  })
-  const res = await budget.run(signal => model.generateContent([{ text: userText } as Part, ...imageParts], { signal }))
-  const um = res.response.usageMetadata
-  const promptTokens = um?.promptTokenCount ?? 0
-  const completionTokens = um?.totalTokenCount != null
-    ? Math.max(um.totalTokenCount - promptTokens, 0)
-    : (um?.candidatesTokenCount ?? 0)
-
-  const incomplete = aiResponseCompletionError(res.response)
-  if (incomplete) return { actions: [], promptTokens, completionTokens, error: incomplete }
-
-  let parsed: any = {}
-  try { parsed = JSON.parse(res.response.text()) } catch { /* нижче повернемо порожньо */ }
-
-  const actions: PendingAction[] = []
-  if (Array.isArray(parsed.orders)) {
-    for (const order of parsed.orders) {
-      if (Array.isArray(order?.items) && order.items.length > 0) {
-        actions.push(await buildPendingAction('create_order', order, tenantId, budget))
-      }
-    }
-  }
-  if (Array.isArray(parsed.products) && parsed.products.length > 0) {
-    actions.push(await buildPendingAction('create_products_bulk', { products: parsed.products, invoice_total: parsed.invoice_total }, tenantId, budget))
-  }
-  if (Array.isArray(parsed.customers) && parsed.customers.length > 0) {
-    actions.push(await buildPendingAction('create_customers_bulk', { customers: parsed.customers }, tenantId, budget))
-  }
-  return { actions, promptTokens, completionTokens }
-}
-
-// Транзієнтні помилки Gemini (перевантаження/мережа) — має сенс повторити.
-// Помилки ключа/квоти/валідації (400/401/403) не ретраїмо.
-function isQuotaError(e: any): boolean {
-  const msg = String(e?.message ?? '')
-  return /\b429\b|quota|rate limit|resource_exhausted|exceeded your current/i.test(msg)
-}
-
-function isTransientGeminiError(e: any): boolean {
-  const msg = String(e?.message ?? '')
-  // Квота/ключ/валідація — не ретраїмо (короткий бекоф не поверне денний ліміт).
-  if (isQuotaError(e)) return false
-  if (/\b(400|401|403|API key|API_KEY|invalid|permission)\b/i.test(msg)) return false
-  return /\b(50[0-9])\b|overload|unavailable|deadline|timeout|timed out|fetch failed|network|ECONNRESET|ETIMEDOUT|socket hang|EAI_AGAIN/i.test(msg)
-}
-
-// Виклик Gemini з експоненційним бекофом на транзієнтних помилках.
-async function sendWithRetry(chat: any, parts: string | Part[], iter: number, budget: AiExecutionBudget) {
-  const delays = [600, 1500, 3000] // мс: до 3 повторів
-  let lastErr: any
-  for (let attempt = 0; attempt <= delays.length; attempt++) {
-    try {
-      return await budget.run(signal => chat.sendMessage(parts, { signal }))
-    } catch (e: any) {
-      if (isAiBudgetError(e)) throw e
-      lastErr = e
-      if (attempt < delays.length && isTransientGeminiError(e)) {
-        logger.warn({ ...safeAiErrorInfo(e), iter, attempt }, '[ai] transient Gemini error, retrying')
-        await budget.delay(delays[attempt])
-        continue
-      }
-      break
-    }
-  }
-  throw lastErr
-}
-
 // ─── Головний чат ────────────────────────────────────────────────────────────
 export interface ChatImage { mime_type: string; data_base64: string }
 const SUPPLY_INVOICE_PHOTO_SCHEMA = {
@@ -1069,7 +907,7 @@ async function recognizeSupplyInvoicePhotoWithinBudget(
   budget: AiExecutionBudget,
 ): Promise<{ reply: string; actions: PendingAction[]; usage: { prompt_tokens: number; completion_tokens: number; cost_usd: number } }> {
   const cfg = await budget.run(signal => getAiConfig(tenantId, signal))
-  if (!cfg.apiKey) throw new AppError('AI_NOT_CONFIGURED', 'Ключ Gemini не налаштовано. Додайте його в Налаштуваннях.', 400)
+  if (!cfg.apiKey) throw new AppError('AI_NOT_CONFIGURED', 'Ключ Anthropic не налаштовано. Додайте його в Налаштування → ШІ.', 400)
   if (!cfg.enabled) throw new AppError('AI_DISABLED', 'Помічник АІ вимкнено в Налаштуваннях.', 400)
   if (!params.images.length || params.images.length > 4) throw new AppError('VALIDATION_ERROR', 'Додайте від 1 до 4 фото накладної. Зайві фото не відкидаються автоматично.', 422)
 
@@ -1088,22 +926,11 @@ async function recognizeSupplyInvoicePhotoWithinBudget(
 Якщо фото містить лише підсумок продовження, поверни products: [] та прочитані підсумки. Не створюй товар із рядка «Разом», ПДВ або підпису.
 Фото може бути повернутим: читай таблицю за напрямком тексту, зберігаючи кожний товарний рядок.`
 
-  const genAI = new GoogleGenerativeAI(cfg.apiKey)
-  const model = genAI.getGenerativeModel({
-    model: cfg.model,
-    systemInstruction: withAiDataBoundary(instruction),
-    generationConfig: {
-      responseMimeType: 'application/json',
-      responseSchema: SUPPLY_INVOICE_PHOTO_SCHEMA as any,
-      // Gemini 2.5 may spend part of the response budget on internal reasoning.
-      // 8192 tokens truncated larger invoices and left invalid JSON.
-      maxOutputTokens: cfg.model.startsWith('gemini-2.0') ? 8192 : 32768,
-      temperature: 0,
-    },
-  })
-
+  const system = withAiDataBoundary(instruction + '\n' + jsonOnlyInstruction(SUPPLY_INVOICE_PHOTO_SCHEMA))
+  const claude = new ClaudeClient(cfg.apiKey, cfg.model as AiModel)
   let promptTokens = 0
   let completionTokens = 0
+  const record = () => budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, promptTokens, completionTokens, signal))
   const parsedPages: any[] = []
 
   for (const [imageIndex, image] of params.images.entries()) {
@@ -1111,83 +938,41 @@ async function recognizeSupplyInvoicePhotoWithinBudget(
     let lastFailure: 'invalid_json' | 'no_rows' | 'max_tokens' = 'invalid_json'
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      let response: any
+      const requestText = attempt === 0
+        ? (params.message?.trim() || 'Розпізнай усі товарні рядки цієї накладної.')
+        : 'Повтори OCR цього фото. Поверни тільки компактний JSON без Markdown. Не пропусти жодного товарного рядка.'
+      let result: Awaited<ReturnType<ClaudeClient['complete']>>
       try {
-        const requestText = attempt === 0
-          ? (params.message?.trim() || 'Розпізнай усі товарні рядки цієї накладної.')
-          : 'Повтори OCR цього фото. Поверни тільки компактний JSON без Markdown. Не пропусти жодного товарного рядка.'
-        const parts: Part[] = [
-          { text: requestText },
-          { inlineData: { mimeType: image.mime_type, data: image.data_base64 } },
-        ]
-        response = (await budget.run(signal => model.generateContent(parts, { signal }))).response
-      } catch (error: any) {
-        if (isAiBudgetError(error)) throw error
-        if (isQuotaError(error)) throw new AppError('AI_QUOTA_EXCEEDED', 'Вичерпано ліміт Gemini. Спробуйте пізніше.', 429)
-        if (attempt === 0 && isTransientGeminiError(error)) {
-          logger.warn({ ...safeAiErrorInfo(error), imageIndex, attempt }, '[ai] transient invoice OCR error, retrying')
-          continue
-        }
-        logger.warn({ ...safeAiErrorInfo(error), imageIndex, attempt }, '[ai] supply invoice photo recognition failed')
-        throw new AppError('AI_UPSTREAM_UNAVAILABLE', 'Не вдалося розпізнати фото накладної. Спробуйте ще раз.', 503)
+        result = await claude.complete(budget, { system, text: requestText, images: [image] })
+      } catch (error) {
+        if (!isAiBudgetError(error)) await record()
+        throw error
       }
-
-      const usage = response.usageMetadata
-      const currentPromptTokens = usage?.promptTokenCount ?? 0
-      promptTokens += currentPromptTokens
-      completionTokens += usage?.totalTokenCount != null
-        ? Math.max(usage.totalTokenCount - currentPromptTokens, 0)
-        : (usage?.candidatesTokenCount ?? 0)
-
-      const candidate = response?.candidates?.[0]
-      const incomplete = aiResponseCompletionError(response)
-      if (incomplete && incomplete.code !== 'AI_RESPONSE_TOO_LARGE') {
-        await budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, promptTokens, completionTokens, signal))
-        throw incomplete
-      }
-      const finishReason = incomplete?.code === 'AI_RESPONSE_TOO_LARGE' ? 'MAX_TOKENS' : safeAiFinishReason(candidate?.finishReason)
-      const candidateText = (candidate?.content?.parts ?? [])
-        .map((part: any) => typeof part?.text === 'string' ? part.text : '')
-        .filter(Boolean)
-        .join('\n')
-      let responseText = candidateText
-      if (!responseText) {
-        try { responseText = response.text() }
-        catch { responseText = '' }
-      }
-
-      const candidatePayload = parseAiJsonObject(responseText)
-      if (finishReason !== 'MAX_TOKENS' && hasAiInvoicePhotoContent(candidatePayload)) {
+      promptTokens += result.promptTokens
+      completionTokens += result.completionTokens
+      const candidatePayload = parseAiJsonObject(result.text)
+      if (!result.truncated && hasAiInvoicePhotoContent(candidatePayload)) {
         parsedPage = candidatePayload
         break
       }
-
-      lastFailure = finishReason === 'MAX_TOKENS'
-        ? 'max_tokens'
-        : candidatePayload ? 'no_rows' : 'invalid_json'
-      logger.warn({
-        imageIndex,
-        attempt,
-        finishReason,
-        responseChars: responseText.length,
-        hasJsonObject: Boolean(candidatePayload),
-      }, '[ai] invoice OCR returned no usable table, retrying')
+      lastFailure = result.truncated ? 'max_tokens' : candidatePayload ? 'no_rows' : 'invalid_json'
+      logger.warn({ imageIndex, attempt, lastFailure, responseChars: result.text.length }, '[ai] invoice OCR returned no usable table, retrying')
     }
 
     if (!parsedPage) {
-      await budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, promptTokens, completionTokens, signal))
+      await record()
       if (lastFailure === 'max_tokens') {
         throw new AppError('AI_RESPONSE_TOO_LARGE', 'На фото забагато рядків для однієї відповіді. Сфотографуйте накладну двома частинами.', 422)
       }
       if (lastFailure === 'no_rows') {
         throw new AppError('AI_NO_ROWS', `На фото ${imageIndex + 1} не знайдено товарних рядків. Перевірте фото і повторіть.`, 422)
       }
-      throw new AppError('AI_INVALID_RESPONSE', 'Gemini двічі повернув пошкоджену таблицю. Повторіть фото без нахилу або розділіть його на дві частини.', 502)
+      throw new AppError('AI_INVALID_RESPONSE', 'ШІ двічі повернув пошкоджену таблицю. Повторіть фото без нахилу або розділіть його на дві частини.', 502)
     }
     parsedPages.push(parsedPage)
   }
 
-  await budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, promptTokens, completionTokens, signal))
+  await record()
   const parsed = mergeAiInvoicePages(parsedPages)
   const products = parsed.products
 
@@ -1224,169 +1009,92 @@ async function runChatWithinBudget(
   budget: AiExecutionBudget,
 ): Promise<{ reply: string; actions: PendingAction[]; usage: { prompt_tokens: number; completion_tokens: number; cost_usd: number } }> {
   const cfg = await budget.run(signal => getAiConfig(tenantId, signal))
-  if (!cfg.apiKey) throw new AppError('AI_NOT_CONFIGURED', 'Ключ Gemini не налаштовано. Додайте його в Налаштуваннях.', 400)
+  if (!cfg.apiKey) throw new AppError('AI_NOT_CONFIGURED', 'Ключ Anthropic не налаштовано. Додайте його в Налаштування → ШІ.', 400)
   if (!cfg.enabled) throw new AppError('AI_DISABLED', 'Помічник АІ вимкнено в Налаштуваннях.', 400)
 
-  const genAI = new GoogleGenerativeAI(cfg.apiKey)
-  const model = genAI.getGenerativeModel({
-    model: cfg.model,
-    systemInstruction: withAiDataBoundary(SYSTEM_PROMPT),
-    tools: [{ functionDeclarations: toolDeclarations }],
-  })
-
-  const history: Content[] = (params.history ?? [])
-    .filter((m) => m.text?.trim())
-    .map((m) => ({ role: m.role, parts: [{ text: m.text }] }))
-
-  const chat = model.startChat({ history })
-
+  const claude = new ClaudeClient(cfg.apiKey, cfg.model as AiModel)
   const userText = aiUserMessage(params.message, params.fileText)
-
-  const actions: PendingAction[] = []
-  let promptTokens = 0
-  let completionTokens = 0
-  let reply = ''
-
-  // Надсилаємо або текст користувача (+ фото, якщо є), або відповіді інструментів.
   const images = (params.images ?? []).slice(0, 4)
-  const imageParts: Part[] = images.map((img): Part => ({
-    inlineData: { mimeType: img.mime_type, data: img.data_base64 },
-  }))
-  let nextParts: string | Part[] = imageParts.length > 0
-    ? [{ text: userText } as Part, ...imageParts]
-    : userText
+  const actions: PendingAction[] = []
+  const usage = { promptTokens: 0, completionTokens: 0 }
+  const record = () => budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, usage.promptTokens, usage.completionTokens, signal))
   const reserveToolCalls = createAiToolBudget()
-  let sawMalformedCall = false
   let corrections = 0
-  let chatFinished = false
 
-  for (let iter = 0; iter < 10; iter++) {
-    let result
-    try {
-      result = await sendWithRetry(chat, nextParts, iter, budget)
-    } catch (err: any) {
-      if (isAiBudgetError(err)) throw err
-      if (isQuotaError(err)) {
-        logger.warn({ ...safeAiErrorInfo(err), iter }, '[ai] Gemini quota exceeded')
-        throw new AppError(
-          'AI_QUOTA_EXCEEDED',
-          'Досягнуто ліміту сервісу Gemini. Повторіть пізніше або перевірте ліміти свого проєкту в Google AI Studio. Дані не збережено.',
-          429,
-        )
+  const handleCall = async (name: string, args: Record<string, unknown>): Promise<unknown> => {
+    if (READ_TOOLS.has(name)) {
+      try {
+        return boundedAiReadResult(await withAiExecutionBudget(AI_TIME_LIMITS.read,
+          readBudget => readBudget.run(() => executeReadTool(name, args, tenantId, readBudget)), budget.signal))
+      } catch (e: any) {
+        if (isAiBudgetError(e)) throw e
+        return { error: 'Не вдалося отримати дані інструмента', ...safeAiErrorInfo(e) }
       }
-      logger.warn({ ...safeAiErrorInfo(err), iter }, '[ai] Gemini request failed after retries')
-      throw new AppError(
-        'AI_UPSTREAM_UNAVAILABLE',
-        'Gemini тимчасово перевантажений. Зачекайте кілька секунд і повторіть запит.',
-        503,
-      )
     }
-    const resp = result.response
-
-    const um = resp.usageMetadata
-    if (um) {
-      const pin = um.promptTokenCount ?? 0
-      promptTokens += pin
-      // total - prompt враховує і "thinking"-токени (thoughtsTokenCount), які
-      // тарифікуються як output. Фолбек на candidatesTokenCount, якщо total немає.
-      const out = um.totalTokenCount != null
-        ? Math.max(um.totalTokenCount - pin, 0)
-        : (um.candidatesTokenCount ?? 0)
-      completionTokens += out
-    }
-
-    const incomplete = aiResponseCompletionError(resp, true)
-    if (incomplete) {
-      await budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, promptTokens, completionTokens, signal))
-      throw incomplete
-    }
-    const calls = resp.functionCalls() ?? []
-    if (calls.length === 0) {
-      reply = resp.text()
-
-      // Порожня відповідь (буває, коли модель згенерувала некоректний виклик
-      // інструмента і SDK його відкинув — finishReason=MALFORMED_FUNCTION_CALL,
-      // або спрацював safety-фільтр). Один раз повторюємо із підказкою —
-      // фото/дані лишаються в історії чату.
-      const finishReason = safeAiFinishReason((resp as any).candidates?.[0]?.finishReason)
-      if (finishReason === 'MALFORMED_FUNCTION_CALL') sawMalformedCall = true
-      if (!reply.trim() && corrections < 2) {
-        corrections++
-        logger.warn({ finishReason, iter }, '[ai] empty model response, re-prompting')
-        const nudge = finishReason === 'MALFORMED_FUNCTION_CALL'
-          ? 'СИСТЕМА: Твій виклик інструмента був синтаксично НЕКОРЕКТНИЙ, тому його відкинуто. НЕ відповідай текстом і НЕ вибачайся — ЗАРАЗ повтори виклик потрібного інструмента з коректними аргументами: усі числа — БЕЗ пробілів-роздільників, дробова частина через крапку (напр. «1 890,00» → 1890.00), рядки без зайвих лапок усередині. Прайс/накладна → create_products_bulk; рукописне замовлення → create_order; список клієнтів → create_customers_bulk.'
-          : 'СИСТЕМА: Твоя попередня відповідь була порожньою'
-            + (finishReason ? ` (finishReason=${finishReason})` : '')
-            + '. Спробуй ще раз: якщо в повідомленні чи на фото є дані для заведення (замовлення → create_order, товари/прайс → create_products_bulk, клієнти → create_customers_bulk) — виклич відповідний інструмент. Якщо даних нема — відповідай текстом українською.'
-        // Після відкинутої відповіді SDK не зберігає фото в історії чату —
-        // надсилаємо його ще раз разом із підказкою, інакше модель "сліпне".
-        nextParts = imageParts.length > 0 ? [{ text: nudge } as Part, ...imageParts] : nudge
-        continue
-      }
-
-      // Запобіжник галюцинації: модель написала, ніби виконала дію («готово»,
-      // «створив/создал», «додав/добавил»…), але НЕ підготувала ЖОДНОЇ write-пропозиції
-      // (actions порожні) — отже фактично нічого не зроблено. Це стосується і випадку,
-      // коли модель лише щось шукала (search_*), а тоді відрапортувала «готово».
-      // Змушуємо її таки викликати потрібний інструмент (до 2 спроб).
-      const claimsDone = /(готов|створ|створи|заве|заві|додав|додано|додай|оновив|оновлено|видал|внесено|занесено|создал|создан|добав|завел|завёл|занес|занёс|внес|внёс|обновил|удалил|added|created|done|saved)/i.test(reply)
-      if (corrections < 2 && actions.length === 0 && claimsDone) {
-        corrections++
-        nextParts = 'СИСТЕМА: Ти відрапортував, ніби виконав дію, але НЕ підготував жодної пропозиції (не викликав інструмент створення/зміни) — у базі НІЧОГО не змінилося, і користувач нічого не побачить. Якщо у повідомленні/файлі є дані для заведення (клієнти, товари, категорії) — ОБОВʼЯЗКОВО виклич відповідний інструмент ЗАРАЗ: для 2+ записів — масовий (create_customers_bulk / create_products_bulk / create_categories_bulk), для одного — одиничний. НЕ пиши «готово», доки не викликав інструмент. Якщо ж це було лише запитання — дай відповідь без слів «готово/створив/додав».'
-        continue
-      }
-      if (actions.length > 0 && (!reply.trim() || finishReason === 'MALFORMED_FUNCTION_CALL')) {
-        await budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, promptTokens, completionTokens, signal))
-        throw new AppError('AI_INVALID_RESPONSE', 'ШІ не завершив таблицю. Неповну пропозицію не прийнято; повторіть розбір.', 422)
-      }
-      chatFinished = true
-      break
-    }
-
-    try { reserveToolCalls(calls.length) }
-    catch { throw new AppError('AI_TOOL_LIMIT', 'Забагато дій в одному запиті ШІ. Звузьте запит і повторіть. Зміни не застосовано.', 422) }
-    const responseParts: Part[] = []
-    for (const call of calls) {
-      if (READ_TOOLS.has(call.name)) {
-        let data: any
-        try {
-          data = boundedAiReadResult(await withAiExecutionBudget(AI_TIME_LIMITS.read,
-            readBudget => readBudget.run(() => executeReadTool(call.name, call.args, tenantId, readBudget)), budget.signal))
-        } catch (e: any) {
-          if (isAiBudgetError(e)) throw e
-          data = { error: 'Не вдалося отримати дані інструмента', ...safeAiErrorInfo(e) }
-        }
-        responseParts.push({ functionResponse: { name: call.name, response: data } })
-      } else if (WRITE_TOOLS.has(call.name) || BULK_TOOLS.has(call.name)) {
-        try {
-          if (call.name === 'create_products_bulk') {
-            const products = (call.args as { products?: unknown })?.products
-            if (!Array.isArray(products) || !products.length
-              || products.some(row => !row || typeof row !== 'object' || Array.isArray(row))) {
-              throw new AppError('AI_INVALID_RESPONSE', 'Порожня або пошкоджена таблиця товарів', 422)
-            }
+    if (WRITE_TOOLS.has(name) || BULK_TOOLS.has(name)) {
+      try {
+        if (name === 'create_products_bulk') {
+          const products = (args as { products?: unknown })?.products
+          if (!Array.isArray(products) || !products.length
+            || products.some(row => !row || typeof row !== 'object' || Array.isArray(row))) {
+            throw new AppError('AI_INVALID_RESPONSE', 'Порожня або пошкоджена таблиця товарів', 422)
           }
-          const action = await budget.run(() => buildPendingAction(call.name, call.args, tenantId, budget))
-          actions.push(action)
-          responseParts.push({ functionResponse: { name: call.name, response: {
-            status: 'pending_user_confirmation',
-            message: 'Пропозицію показано користувачу. Він підтвердить її вручну кнопкою «Застосувати».',
-          } } })
-        } catch (e: any) {
-          if (isAiBudgetError(e)) throw e
-          logger.warn(safeAiErrorInfo(e), '[ai] proposal preparation failed')
-          await budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, promptTokens, completionTokens, signal))
-          throw new AppError('AI_INVALID_RESPONSE', 'ШІ повернув неповну або пошкоджену пропозицію. Зміни не збережено; повторіть розбір.', 422)
         }
-      } else {
-        responseParts.push({ functionResponse: { name: call.name, response: { error: 'Невідомий інструмент' } } })
+        actions.push(await budget.run(() => buildPendingAction(name, args, tenantId, budget)))
+        return {
+          status: 'pending_user_confirmation',
+          message: 'Пропозицію показано користувачу. Він підтвердить її вручну кнопкою «Застосувати».',
+        }
+      } catch (e: any) {
+        if (isAiBudgetError(e)) throw e
+        logger.warn(safeAiErrorInfo(e), '[ai] proposal preparation failed')
+        throw new AppError('AI_INVALID_RESPONSE', 'ШІ повернув неповну або пошкоджену пропозицію. Зміни не збережено; повторіть розбір.', 422)
       }
     }
-    nextParts = responseParts
+    return { error: 'Невідомий інструмент' }
   }
 
-  if (!chatFinished) {
-    await budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, promptTokens, completionTokens, signal))
+  // Запобіжник: модель пише «готово/створив», але не підготувала жодної пропозиції — у базі нічого не змінилось.
+  const review = (reply: string): string | null => {
+    if (corrections >= 2) return null
+    if (!reply.trim()) {
+      corrections++
+      return 'СИСТЕМА: Твоя відповідь була порожньою. Відповідай текстом українською або виклич потрібний інструмент.'
+    }
+    const claimsDone = /(готов|створ|створи|заве|заві|додав|додано|додай|оновив|оновлено|видал|внесено|занесено|создал|создан|добав|завел|завёл|занес|занёс|внес|внёс|обновил|удалил|added|created|done|saved)/i.test(reply)
+    if (actions.length === 0 && claimsDone) {
+      corrections++
+      return 'СИСТЕМА: Ти відрапортував, ніби виконав дію, але НЕ підготував жодної пропозиції (не викликав інструмент створення/зміни) — у базі НІЧОГО не змінилося, і користувач нічого не побачить. Якщо у повідомленні/файлі є дані для заведення (клієнти, товари, категорії) — виклич відповідний інструмент ЗАРАЗ: для 2+ записів — масовий (create_customers_bulk / create_products_bulk / create_categories_bulk), для одного — одиничний. Якщо ж це було лише запитання — дай відповідь без слів «готово/створив/додав».'
+    }
+    return null
+  }
+
+  let result: { reply: string; finished: boolean }
+  try {
+    result = await claude.chat(budget, {
+      system: withAiDataBoundary(SYSTEM_PROMPT),
+      tools: CLAUDE_TOOLS,
+      history: (params.history ?? []).filter(m => m.text?.trim()),
+      userText,
+      images,
+      maxSteps: 10,
+      usage,
+      review,
+      handleCalls: async calls => {
+        try { reserveToolCalls(calls.length) }
+        catch { throw new AppError('AI_TOOL_LIMIT', 'Забагато дій в одному запиті ШІ. Звузьте запит і повторіть. Зміни не застосовано.', 422) }
+        const results: unknown[] = []
+        for (const call of calls) results.push(await handleCall(call.name, call.args))
+        return results
+      },
+    })
+  } catch (error) {
+    if (!isAiBudgetError(error)) await record()
+    throw error
+  }
+
+  if (!result.finished) {
+    await record()
     throw new AppError('AI_TOOL_LIMIT', 'ШІ не завершив обробку за допустиму кількість кроків. Неповну пропозицію не прийнято; звузьте запит.', 422)
   }
 
@@ -1395,31 +1103,9 @@ async function runChatWithinBudget(
     if (actions[i].count === 0) actions.splice(i, 1)
   }
 
-  // Якщо function-calling зламався на фото (MALFORMED_FUNCTION_CALL) і пропозицій
-  // немає — рятувальний прохід у JSON-режимі: розпізнаємо самі, без інструментів.
-  if (actions.length === 0 && sawMalformedCall && imageParts.length > 0) {
-    try {
-      const s = await budget.run(() => salvageFromImages(genAI, cfg.model, userText, imageParts, tenantId, budget))
-      promptTokens += s.promptTokens
-      completionTokens += s.completionTokens
-      if (s.error) throw s.error
-      if (s.actions.length > 0) {
-        actions.push(...s.actions)
-        reply = 'Розпізнав дані з фото — перевірте пропозиції нижче.'
-        logger.info({ actions: s.actions.length }, '[ai] salvage pass recovered actions')
-      }
-    } catch (e: any) {
-      if (isAiBudgetError(e)) throw e
-      if (isAiIncompleteResponseError(e)) {
-        await budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, promptTokens, completionTokens, signal))
-        throw e
-      }
-      logger.warn(safeAiErrorInfo(e), '[ai] salvage pass failed')
-    }
-  }
+  await record()
 
-  await budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, promptTokens, completionTokens, signal))
-
+  let reply = result.reply
   if (!reply) {
     reply = actions.length > 0 ? 'Підготував пропозицію нижче.' : 'Не вдалося отримати відповідь ШІ. Жодних змін не збережено; повторіть запит.'
   }
@@ -1434,9 +1120,9 @@ async function runChatWithinBudget(
     reply,
     actions,
     usage: {
-      prompt_tokens: promptTokens,
-      completion_tokens: completionTokens,
-      cost_usd: Number(computeCostUsd(cfg.model, promptTokens, completionTokens).toFixed(6)),
+      prompt_tokens: usage.promptTokens,
+      completion_tokens: usage.completionTokens,
+      cost_usd: Number(computeCostUsd(cfg.model, usage.promptTokens, usage.completionTokens).toFixed(6)),
     },
   }
 }
