@@ -250,6 +250,33 @@ export async function signIn(phone: string, password: string) {
   return data.session
 }
 
+/** Чи можна на цьому ПК увійти касиром лише паролем: локальна програма, не ПК менеджера. */
+export async function canSignInByPassword(): Promise<boolean> {
+  if (!isDesktopRuntime() || !desktopBridge()?.auth?.loginByPassword) return false
+  const status = await readLanFirstRunStatus().catch(() => null)
+  return !lanNeedsSetup(status) && status?.mode !== 'client'
+}
+
+/**
+ * Вхід касира лише паролем — і на екрані входу, і для швидкої зміни касира в касі.
+ * Пароль перевіряє головний ПК; серверна сесія піднімається у фоні, як і при звичайному вході.
+ */
+export async function signInByPassword(password: string) {
+  const generation = nextDesktopLoginGeneration()
+  const login = desktopBridge()?.auth?.loginByPassword
+  if (!isDesktopRuntime() || !login) throw new Error('Вхід лише паролем працює в програмі каси')
+  const status = await readLanFirstRunStatus()
+  if (generation !== desktopServerLoginGeneration) throw new Error('Спробу входу скасовано')
+  if (lanNeedsSetup(status)) throw new Error('Спочатку завершіть підключення цього ПК до головного ПК')
+  if (status?.mode === 'client') throw new Error('На ПК менеджера вхід — з номером телефону')
+  const user = await login(password)
+  if (generation !== desktopServerLoginGeneration) throw new Error('Спробу входу скасовано')
+  const session = createDesktopSession(user)
+  useAuthStore.getState().setOfflineSession(session)
+  if (user.phone) startDesktopServerConnection(phoneToEmail(normalizePhone(user.phone)), password, generation)
+  return session
+}
+
 let restoreFlight: Promise<Session | null> | null = null
 export function restoreDesktopSession(): Promise<Session | null> {
   if (restoreFlight) return restoreFlight

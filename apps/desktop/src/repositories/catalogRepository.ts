@@ -61,6 +61,8 @@ export interface LocalProductListOptions {
   brandId?: string
   lowStock?: boolean
   stockFilter?: 'negative' | 'no_price' | ''
+  /** Лише «⭐ Швидкі товари» — галерея на касі. */
+  favorites?: boolean
   limit?: number
   offset?: number
   sortField?: LocalProductSortField
@@ -995,6 +997,9 @@ export class LocalCatalogRepository {
     }
     if (options.stockFilter === 'no_price') {
       where.push('p.retail_price = 0')
+    }
+    if (options.favorites === true) {
+      where.push('p.is_favorite = 1')
     }
     if (raw) {
       const indexedClauses = needles.map(() => 'p.search_text LIKE ?')

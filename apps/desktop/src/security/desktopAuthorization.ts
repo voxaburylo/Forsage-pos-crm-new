@@ -11,6 +11,7 @@ const CASHIER_ROLES: readonly DesktopRole[] = ['owner', 'admin', 'cashier']
 
 export const PUBLIC_DESKTOP_CHANNELS = new Set([
   'desktop:auth:login',
+  'desktop:auth:login-password',
   'desktop:auth:login-online',
   'desktop:auth:logout',
   'desktop:auth:remembered-status',

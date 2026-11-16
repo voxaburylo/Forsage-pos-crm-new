@@ -9,6 +9,9 @@ import { LocalProblemRepository } from './problemRepository'
 import { legacyCommissionDecisionKey, legacyCommissionReviewKey, planLegacyCommissionReturn } from './legacyCommissionReturn'
 import { commissionBasisKey, parseCommissionBasis, returnedCommission, type CommissionBasis, type CommissionLineBasis } from './commissionBasis'
 
+/** Хто може входити лише паролем. Власник і адміністратор — тільки з номером телефону. */
+export const PASSWORD_ONLY_ROLES = ['cashier', 'manager'] as const
+
 type SalaryType = 'salary' | 'bonus' | 'advance' | 'penalty'
 type SalaryMethod = 'cash' | 'card' | 'transfer'
 type SalaryFundSource = 'cashbox' | 'owner_funds'
@@ -438,6 +441,51 @@ export class LocalStaffRepository {
       created_at: row.created_at,
     }
   }
+  /**
+   * Вхід касира лише паролем (без номера телефону) — для швидкої зміни касира на головному ПК.
+   * Пароль звіряється з усіма активними касирами й менеджерами цього ПК. Власник і адміністратор
+   * так не входять: їхні права ширші, для них лишається вхід з номером телефону.
+   * Якщо той самий пароль мають двоє працівників, вхід не вгадує — просить номер телефону.
+   */
+  loginWithPasswordOnly(password: string, tenantId = DEFAULT_TENANT_ID): any {
+    const attemptKey = `${tenantId}:password-only`
+    const attempt = this.passwordAttempts.get(attemptKey)
+    if (attempt && attempt.blockedUntil > Date.now()) throw new Error('Забагато спроб входу. Спробуйте через 15 хвилин')
+    if (typeof password !== 'string' || !password || password.length > 1024) throw new Error('Введіть пароль')
+
+    const candidates = this.db.prepare(`
+      SELECT id, tenant_id, full_name, role, phone, password_hash, created_at
+      FROM staff_users
+      WHERE tenant_id = ? AND deleted_at IS NULL AND is_active = 1
+        AND role IN (${PASSWORD_ONLY_ROLES.map(() => '?').join(', ')})
+        AND password_hash IS NOT NULL AND password_hash <> ''
+        AND phone IS NOT NULL AND phone <> ''
+      ORDER BY id
+    `).all(tenantId, ...PASSWORD_ONLY_ROLES) as Array<{ id: string; tenant_id: string; full_name: string; role: string; phone: string; password_hash: string; created_at: string }>
+    const matches = candidates.filter(row => verifySecret(row.password_hash, password, row.id))
+
+    if (matches.length > 1) {
+      this.diagnose('password-only-ambiguous')
+      throw new Error('Цей пароль мають кілька працівників. Увійдіть з номером телефону й змініть пароль одному з них.')
+    }
+    const row = matches[0]
+    if (!row) {
+      this.diagnose('password-only-mismatch')
+      const failures = (attempt?.failures ?? 0) + 1
+      this.passwordAttempts.set(attemptKey, {
+        failures: failures >= 10 ? 0 : failures,
+        blockedUntil: failures >= 10 ? Date.now() + 15 * 60_000 : 0,
+      })
+      throw new Error(failures >= 10
+        ? 'Забагато спроб входу. Спробуйте через 15 хвилин'
+        : 'Невірний пароль. Власник і адміністратор входять з номером телефону.')
+    }
+
+    this.passwordAttempts.delete(attemptKey)
+    // Далі — той самий шлях, що й звичайний вхід: оновлення хешу, перевірки й відповідь.
+    return this.loginWithPassword(row.phone, password, tenantId)
+  }
+
   setPin(userId: string, pin: string, tenantId = DEFAULT_TENANT_ID): { success: true } {
     const user = this.requireUser(userId, tenantId)
     if (user.role === 'tire_worker') throw new Error('Шиномонтажник не має доступу до програми')

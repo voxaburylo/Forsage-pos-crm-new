@@ -91,6 +91,12 @@ describe('PostgreSQL catalog pagination', () => {
     expect(product.qty_available).toBe(17)
   })
 
+  it('lists only quick goods for the till gallery', async () => {
+    // У фікстурі «⭐ Швидкий товар» позначено кожен парний товар: 0, 2, … 2104.
+    expect((await list({ favorites: 'true' })).total).toBe(1053)
+    expect((await list({ favorites: 'false' })).total).toBe(2105)
+  })
+
   it('treats SQL and LIKE metacharacters as literal search text', async () => {
     expect((await list({ search: "%' OR 1=1 --" })).data).toEqual([])
     expect((await list({ search: '%' })).data).toEqual([])

@@ -37,6 +37,8 @@ export interface ProductFilters {
   is_active?: string
   low_stock?: string
   stock_filter?: 'negative' | 'no_price'
+  /** 'true' — лише товари з позначкою «⭐ Швидкий товар». */
+  favorites?: 'true'
   page?: number
   per_page?: number
   sort_field?: 'sku' | 'name' | 'retail_price' | 'qty_on_hand' | 'created_at' | 'brand'
@@ -201,6 +203,7 @@ export const productApi = {
         brandId: filters.brand_id,
         lowStock: filters.low_stock === 'true',
         stockFilter: filters.stock_filter ?? '',
+        favorites: filters.favorites === 'true',
         limit: perPage,
         offset: (page - 1) * perPage,
         sortField: filters.sort_field === 'created_at' ? undefined : filters.sort_field,

@@ -46,6 +46,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
   },
   auth: {
     login: (phone: string, password: string) => ipcRenderer.invoke('desktop:auth:login', phone, password),
+    loginByPassword: (password: string) => ipcRenderer.invoke('desktop:auth:login-password', password),
     loginOnline: (phone: string, password: string) => ipcRenderer.invoke('desktop:auth:login-online', phone, password),
     logout: () => ipcRenderer.invoke('desktop:auth:logout'),
     rememberedStatus: () => ipcRenderer.invoke('desktop:auth:remembered-status'),

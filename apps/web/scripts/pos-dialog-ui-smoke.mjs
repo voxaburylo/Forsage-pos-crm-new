@@ -33,6 +33,7 @@ const mocks = {
   '@/components/ui/Toast': 'export const toast={error:m=>fixture.errors.push(m),warning:m=>fixture.errors.push(m),success:m=>fixture.messages.push(m)};export function ToastContainer(){return null}',
 }
 for (const name of ['ShiftCloseModal','CashOperationModal','DebtPaymentModal','CashReconciliationModal','FavoritesPanel','CrossSellPanel','ReadyOrdersPanel','QuickChargeModal','HelpModal','SuspendModal','SuspendedListModal','OfflineSalesModal']) mocks['@/features/pos/' + name] = 'export function ' + name + '(){return null}'
+mocks['@/features/pos/CashierSwitchModal'] = 'export function CashierSwitchModal(){return null};export function useCashierSwitchAvailable(){return false}'
 const entry = `
 import React from'react';import{createRoot}from'react-dom/client';import{createMemoryRouter,RouterProvider,useLocation}from'react-router-dom';import POSPage from'/src/features/pos/POSPage.tsx';import{usePOSStore}from'/src/stores/posStore.ts';import{NavigationGuard}from'/src/hooks/useUnsavedChanges.ts';import'/src/index.css';
 const s=usePOSStore.getState();s.replaceOpenReceipts([]);s.setCurrentShift({id:'shift',cashier_id:'synthetic-user',opened_at:'2026-10-13T08:00:00Z',opening_cash:0});s.setPriceRounding({enabled:false});

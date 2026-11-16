@@ -34,6 +34,12 @@ export class CatalogBatchRepository {
         if (!product) throw new Error('Товар не знайдено: ' + id)
         const purchase = price(product.purchase_price, u.purchase_price, u.purchase_price_action, product.purchase_price)
         const retail = price(product.retail_price, u.retail_price, u.retail_price_action, purchase)
+        // Правило власника: ціна продажу не нижча за закупівельну. Перевіряємо лише картки,
+        // у яких масова зміна торкається цін, — зміна категорії не блокується старими цінами.
+        const pricesChanged = retail !== product.retail_price || purchase !== product.purchase_price
+        if (pricesChanged && retail > 0 && retail < purchase) {
+          throw new Error('Ціна продажу стане нижчою за закупівельну: ' + product.name + '. Нічого не змінено.')
+        }
         this.catalog.saveProduct(existingPayload(product, {
           purchase_price: purchase, retail_price: retail,
           ...(u.category_id !== undefined ? { category_id: u.category_id } : {}),

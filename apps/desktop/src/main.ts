@@ -799,6 +799,24 @@ async function createWindow(): Promise<void> {
     }
   })
 
+  // Стандартне меню Electron (File/Edit/View) прибрано: Alt із перемикання мови Alt+Shift
+  // переводив фокус у меню, і курсор зникав з поля пароля чи пошуку. Корисні клавіші меню
+  // лишаються: масштаб Ctrl +/−/0 і F11 — на весь екран. Копіювання/вставка працюють і без меню.
+  window.removeMenu()
+  window.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return
+    if (input.key === 'F11' && !input.control && !input.alt) {
+      event.preventDefault()
+      window.setFullScreen(!window.isFullScreen())
+      return
+    }
+    if (!input.control || input.alt || input.meta) return
+    const zoom = window.webContents.getZoomLevel()
+    if (input.key === '=' || input.key === '+') { event.preventDefault(); window.webContents.setZoomLevel(Math.min(zoom + 0.5, 3)) }
+    else if (input.key === '-' || input.key === '_') { event.preventDefault(); window.webContents.setZoomLevel(Math.max(zoom - 0.5, -3)) }
+    else if (input.key === '0' && !input.shift) { event.preventDefault(); window.webContents.setZoomLevel(0) }
+  })
+
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
     return { action: 'deny' }
@@ -1512,6 +1530,19 @@ app.whenReady().then(async () => {
           cacheLanIdentity(requireLocalDatabase(), profile, phone, password, network.getStatus().accessKey)
         }, local: localLogin,
       }) : localLogin()
+    if (generation !== desktopLoginGeneration) throw new Error('Спробу входу скасовано')
+    completeDesktopLogin(user)
+    return user
+  })
+  // Вхід касира лише паролем — тільки на головному чи окремому ПК, де лежить база працівників.
+  // ПК менеджера перевіряє вхід через головний ПК і далі входить з номером телефону.
+  handleDesktopIpc('desktop:auth:login-password', async (_event, password: string) => {
+    if (lanPairInProgress) throw new Error('Дочекайтеся завершення підключення до головного ПК')
+    if (localNetwork?.getStatus().mode === 'client' || hasLanIdentity(requireLocalDatabase())) {
+      throw new Error('На ПК менеджера вхід — з номером телефону')
+    }
+    const generation = ++desktopLoginGeneration
+    const user = requireLocalStaff().loginWithPasswordOnly(password)
     if (generation !== desktopLoginGeneration) throw new Error('Спробу входу скасовано')
     completeDesktopLogin(user)
     return user
