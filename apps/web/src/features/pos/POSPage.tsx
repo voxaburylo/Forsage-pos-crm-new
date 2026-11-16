@@ -3,7 +3,8 @@ import { customerDiscountPct } from '@/features/customers/customerDiscount'
 import { canEditCustomerCard } from '@/features/customers/customerEditPermissions'
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Zap, LogOut, ArrowLeftRight, RotateCcw, Home, LayoutGrid, CircleDollarSign, Wrench, ReceiptText } from 'lucide-react'
+import { Zap, LogOut, ArrowLeftRight, RotateCcw, Home, LayoutGrid, CircleDollarSign, Wrench, ReceiptText, UserRound } from 'lucide-react'
+import { CashierSwitchModal, useCashierSwitchAvailable } from './CashierSwitchModal'
 import { usePOS } from './usePOS'
 import { SearchPanel, type SearchPanelHandle } from './SearchPanel'
 import { ReceiptPanel } from './ReceiptPanel'
@@ -289,6 +290,17 @@ export default function POSPage() {
   const [mobileTab, setMobileTab] = useState<'search' | 'cart' | 'ready_orders'>('search')
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [quickOpen, setQuickOpen] = useState(false)
+  const [cashierSwitchOpen, setCashierSwitchOpen] = useState(false)
+  const cashierSwitchAvailable = useCashierSwitchAvailable()
+  const cashierName = String(session?.user?.user_metadata?.full_name ?? '').trim()
+  function openCashierSwitch() {
+    // Незавершений чек належить поточному касиру: спершу оплата або «Відкласти».
+    if (usePOSStore.getState().items.length > 0) {
+      toast.warning('Спершу завершіть або відкладіть поточний чек, потім змінюйте касира')
+      return
+    }
+    setCashierSwitchOpen(true)
+  }
   const [quickCharge, setQuickCharge] = useState<'tire_service' | 'free_sale' | null>(null)
   const [readyOrdersCount, setReadyOrdersCount] = useState(0)
 
@@ -413,7 +425,7 @@ export default function POSPage() {
     function handleGlobalKeyDown(e: KeyboardEvent) {
       // Dialogs own Escape (including dirty/busy guards). Never edit the basket
       // behind them, even when focus is on a button instead of an input.
-      const anyModalOpen = payOpen || customerOpen || customerEditOpen || closeOpen || cashOpen || reconcileOpen || debtPayOpen || suspendOpen || suspendedOpen || helpOpen || findReceiptOpen || quickOpen || quickCharge !== null || offlineSalesOpen || mobileMenuOpen || Boolean(fiscalRecovery)
+      const anyModalOpen = payOpen || customerOpen || customerEditOpen || closeOpen || cashOpen || reconcileOpen || debtPayOpen || suspendOpen || suspendedOpen || helpOpen || findReceiptOpen || quickOpen || cashierSwitchOpen || quickCharge !== null || offlineSalesOpen || mobileMenuOpen || Boolean(fiscalRecovery)
       if (e.defaultPrevented || e.isComposing || anyModalOpen || document.querySelector('[role="dialog"][aria-modal="true"]')) return
       const active = document.activeElement
       const isInput = active instanceof HTMLElement && (active.matches('input, textarea, select') || active.isContentEditable)
@@ -449,7 +461,7 @@ export default function POSPage() {
     }
     window.addEventListener('keydown', handleGlobalKeyDown)
     return () => window.removeEventListener('keydown', handleGlobalKeyDown)
-  }, [store.items, store.selectedProductId, store.removeItem, store.updateQty, payOpen, customerOpen, customerEditOpen, closeOpen, cashOpen, reconcileOpen, debtPayOpen, suspendOpen, suspendedOpen, helpOpen, findReceiptOpen, quickOpen, quickCharge, offlineSalesOpen, mobileMenuOpen, fiscalRecovery])
+  }, [store.items, store.selectedProductId, store.removeItem, store.updateQty, payOpen, customerOpen, customerEditOpen, closeOpen, cashOpen, reconcileOpen, debtPayOpen, suspendOpen, suspendedOpen, helpOpen, findReceiptOpen, quickOpen, cashierSwitchOpen, quickCharge, offlineSalesOpen, mobileMenuOpen, fiscalRecovery])
 
   if (store.isInitializing) {
     return (
@@ -738,6 +750,13 @@ export default function POSPage() {
             title="Останні чеки за 14 днів, пошук і повторний друк">
             <ReceiptText size={15} /><span className="hidden xl:inline">Чеки</span>
           </button>
+          {cashierSwitchAvailable && (
+            <button onClick={openCashierSwitch} data-cashier-switch-button
+              className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-gray-300 hover:text-white hover:bg-gray-800 transition-colors text-xs font-medium"
+              title="Змінити касира — лише пароль нового касира">
+              <UserRound size={15} /><span className="max-w-[9rem] truncate">{cashierName || 'Касир'}</span>
+            </button>
+          )}
           <div className="w-px h-7 bg-gray-800 mx-1" />
           <div className="flex items-center gap-2 mr-1">
             <span className="text-yellow-400 font-bold text-lg tabular-nums tracking-tight">{formatMoney(store.total)}</span>
@@ -775,6 +794,7 @@ export default function POSPage() {
                 { icon: '↔️', label: 'Каса', action: () => { setCashOpen(true); setMobileMenuOpen(false) } },
                 { icon: '↩️', label: 'Повернення', action: () => { setMobileMenuOpen(false); navigate('/returns') } },
                 { icon: '🧾', label: 'Чеки', action: () => { setFindReceiptOpen(true); setMobileMenuOpen(false) } },
+                ...(cashierSwitchAvailable ? [{ icon: '👤', label: 'Змінити касира', action: () => { setMobileMenuOpen(false); openCashierSwitch() } }] : []),
               ].map(({ icon, label, action }) => (
                 <button key={label} onClick={action}
                   className="relative flex flex-col items-center gap-1.5 p-3 bg-[#2C2C2C] rounded-xl active:bg-gray-600 disabled:opacity-30 transition-colors">
@@ -887,6 +907,7 @@ export default function POSPage() {
       </div>
 
       <FavoritesPanel open={quickOpen} onClose={() => setQuickOpen(false)} />
+      {cashierSwitchOpen && <CashierSwitchModal currentName={cashierName} onClose={() => setCashierSwitchOpen(false)} />}
       <QuickChargeModal
         open={quickCharge !== null}
         kind={quickCharge ?? 'free_sale'}

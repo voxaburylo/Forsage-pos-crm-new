@@ -1,349 +1,160 @@
-import { useState, useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useDialogEscape } from '@/hooks/useDialogEscape'
 import { productApi } from '@/features/products/productApi'
 import { adminApi } from '@/features/admin/adminApi'
-import type { QuickItemConfig, QuickChildItem } from '@/features/admin/adminApi'
-import { kopecksToHryvnia } from '@/types/product'
+import type { Product } from '@/types/product'
 import { usePOSStore } from '@/stores/posStore'
 import { playSuccessBeep, initAudio } from '@/lib/audioService'
 import { toast } from '@/components/ui/Toast'
-import { posSaleBlockReason } from './posMoney'
 import { formatMoney } from '@/lib/utils'
-import { useNavigate } from 'react-router-dom'
+import { posSaleBlockReason } from './posMoney'
+import { DEFAULT_QUICK_ITEMS, filterQuickGallery, matchCategoryIds, mergeQuickGallery, quickGallerySources } from './quickGalleryModel'
 
-interface FoodItem {
-  id: string
-  sku: string
-  name: string
-  retail_price: number
-  purchase_price?: number
-  unit: string
-  category?: { name: string } | null
+export { DEFAULT_QUICK_ITEMS }
+
+/** Тривалість виїзду. Коротко, щоб касир не чекав, але плавно. */
+const SHEET_MS = 220
+
+async function loadQuickGallery(): Promise<Product[]> {
+  const [settings, categories] = await Promise.all([
+    adminApi.getSettings().then(r => r.data.pos_quick_items).catch(() => undefined),
+    adminApi.listCategories().then(r => r.data).catch(() => [] as Array<{ id: string; name: string }>),
+  ])
+  const sources = quickGallerySources(settings && settings.length > 0 ? settings : DEFAULT_QUICK_ITEMS)
+  const categoryIds = matchCategoryIds(categories, sources.categoryNames)
+  const lists = await Promise.all([
+    productApi.list({ favorites: 'true', per_page: 500 }).then(r => r.data),
+    ...categoryIds.map(id => productApi.list({ category_id: id, per_page: 500 }).then(r => r.data)),
+    ...sources.skus.map(sku => productApi.search(sku, 10)
+      .then(r => (r.data ?? []).filter(p => p.sku.toLowerCase() === sku.toLowerCase()) as Product[])
+      .catch(() => [] as Product[])),
+  ])
+  return mergeQuickGallery(lists)
 }
-
-export const DEFAULT_QUICK_ITEMS: QuickItemConfig[] = [
-  {
-    sku: 'FOOD', label: 'ЇЖА', emoji: '🍕', price: 0, color: '#7C2D12',
-    type: 'food_popup', category_filter: ['Кава та напої', 'Снеки та хотдоги'],
-    children: [],
-  },
-  { sku: 'CAM13',  label: 'КАМЕРА', emoji: '🛞', price: 0,   color: '#065F46', type: 'static', children: [
-    { label: 'Р13', sku: 'CAM-R13', price: 0 },
-    { label: 'Р14', sku: 'CAM-R14', price: 0 },
-  ]},
-  { sku: 'PACKET', label: 'ПАКЕТ',     emoji: '🛍', price: 500, color: '#075985', type: 'static', children: [] },
-]
 
 export function FavoritesPanel({ open, onClose }: { open?: boolean; onClose?: () => void }) {
   const navigate = useNavigate()
-  const [items, setItems]             = useState<QuickItemConfig[]>([])
-  const [cam13BasePrice, setCam13]    = useState<number>(0)
-  const [popupItem, setPopupItem]     = useState<QuickItemConfig | null>(null)
-  const [foodItem, setFoodItem]       = useState<QuickItemConfig | null>(null)
-  const [foodProducts, setFoodProds]  = useState<FoodItem[]>([])
-  const [foodLoading, setFoodLoading] = useState(false)
-  const popupRef = useRef<HTMLDivElement>(null)
-  const foodRef  = useRef<HTMLDivElement>(null)
-  useDialogEscape(Boolean(open || popupItem || foodItem), () => {
-    if (foodItem) setFoodItem(null)
-    else if (popupItem) setPopupItem(null)
-    else onClose?.()
-  })
+  const [mounted, setMounted] = useState(false)
+  const [shown, setShown] = useState(false)
+  const [products, setProducts] = useState<Product[]>([])
+  const [loading, setLoading] = useState(false)
+  const [query, setQuery] = useState('')
+  const [added, setAdded] = useState<Record<string, number>>({})
+  const searchRef = useRef<HTMLInputElement>(null)
+  useDialogEscape(Boolean(open), () => onClose?.())
 
+  // Монтуємо, потім у наступному кадрі вмикаємо зсув — так браузер анімує виїзд, а не «стрибок».
   useEffect(() => {
-    const load = async () => {
-      try {
-        const [settingsRes] = await Promise.all([
-          adminApi.getSettings(),
-          productApi.search('CAM13', 1).then((r) => {
-            if (r.data?.[0]?.retail_price > 0) setCam13(r.data[0].retail_price)
-          }).catch(() => {}),
-        ])
-        const cfg = settingsRes.data.pos_quick_items
-        setItems(cfg && cfg.length > 0 ? cfg : DEFAULT_QUICK_ITEMS)
-      } catch {
-        setItems(DEFAULT_QUICK_ITEMS)
-      }
+    if (open) {
+      setMounted(true)
+      const frame = requestAnimationFrame(() => requestAnimationFrame(() => setShown(true)))
+      return () => cancelAnimationFrame(frame)
     }
-    load()
-  }, [])
+    setShown(false)
+    const timer = window.setTimeout(() => setMounted(false), SHEET_MS)
+    return () => window.clearTimeout(timer)
+  }, [open])
 
-  // Listen to custom trigger event for mobile menu support
+  // Щоразу свіжий список: товар, щойно позначений «⭐ Швидкий», одразу з'являється.
   useEffect(() => {
-    function handleTrigger(e: any) {
-      const detail = e.detail;
-      if (!detail || !detail.sku) return;
-      const item = items.find(i => i.sku === detail.sku);
-      if (!item) return;
+    if (!open) return
+    let cancelled = false
+    setQuery('')
+    setAdded({})
+    setLoading(true)
+    loadQuickGallery()
+      .then(list => { if (!cancelled) setProducts(list) })
+      .catch(() => { if (!cancelled) toast.error('Не вдалося завантажити товари швидкого доступу') })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [open])
 
-      const price = getPrice(item);
-      const isFood = item.type === 'food_popup';
-      const hasChildren = !isFood && (item.children?.length ?? 0) > 0;
+  const visible = useMemo(() => filterQuickGallery(products, query), [products, query])
 
-      if (isFood) {
-        setFoodProds([]);
-        setFoodItem(item);
-      } else if (hasChildren) {
-        setPopupItem(item);
-      } else {
-        addToReceipt(item.sku, item.label, price);
-      }
-    }
-    window.addEventListener('trigger-quick-item', handleTrigger);
-    return () => window.removeEventListener('trigger-quick-item', handleTrigger);
-  }, [items, cam13BasePrice]);
-
-  // Завантаження товарів для food_popup
-  useEffect(() => {
-    if (!foodItem) return
-    setFoodLoading(true)
-    const cats = foodItem.category_filter ?? []
-    productApi.list({ per_page: 200, is_active: 'true' })
-      .then((r) => {
-        const filtered = (r.data ?? []).filter((p) =>
-          cats.length === 0 || cats.includes(p.category?.name ?? '')
-        )
-        setFoodProds(filtered)
-      })
-      .catch(() => toast.error('Помилка завантаження'))
-      .finally(() => setFoodLoading(false))
-  }, [foodItem])
-
-  // Закриття варіант-попапу кліком поза
-  useEffect(() => {
-    function onOutside(e: MouseEvent) {
-      if (popupRef.current && !popupRef.current.contains(e.target as Node)) setPopupItem(null)
-    }
-    if (popupItem) {
-      document.addEventListener('mousedown', onOutside)
-      return () => document.removeEventListener('mousedown', onOutside)
-    }
-  }, [popupItem])
-
-  function getPrice(item: QuickItemConfig): number {
-    if (item.sku === 'CAM13' && cam13BasePrice > 0) return cam13BasePrice
-    return item.price ?? 0
-  }
-
-  async function addToReceipt(sku: string, label: string, price: number) {
+  function addProduct(product: Product) {
     initAudio()
-    try {
-      const result = await productApi.search(sku, 10)
-      const product = result.data?.find((item) => item.sku.toLowerCase() === sku.toLowerCase())
-        ?? result.data?.[0]
-      if (!product) {
-        toast.warning(`❌ ${label} відсутній в каталозі. Додайте товар із SKU ${sku}.`)
-        return
-      }
-      const qtyAvailable = product.qty_available ?? product.qty_on_hand
-      const unitPrice = price > 0 ? price : product.retail_price
-      const blocked = posSaleBlockReason({ name: product.name, unitPrice, purchasePrice: product.purchase_price })
-      if (blocked) { toast.error(blocked); return }
-      usePOSStore.getState().addItem({
-        productId: product.id,
-        sku: product.sku,
-        name: product.name,
-        unit: product.unit,
-        qty: 1,
-        unitPrice,
-        purchasePrice: product.purchase_price,
-        discount: 0,
-        qtyOnHand: qtyAvailable,
-        requiresCoreReturn: product.requires_core_return,
-        coreDepositAmount: product.core_deposit_amount,
-      })
-      playSuccessBeep()
-      setPopupItem(null)
-    } catch {
-      toast.error(`Не вдалося завантажити ${label} з каталогу`)
-    }
-  }
-
-  function addFoodProduct(p: FoodItem) {
-    initAudio()
-    const blocked = posSaleBlockReason({ name: p.name, unitPrice: p.retail_price, purchasePrice: p.purchase_price })
+    const unitPrice = product.retail_price
+    const blocked = posSaleBlockReason({ name: product.name, unitPrice, purchasePrice: product.purchase_price })
     if (blocked) { toast.error(blocked); return }
     usePOSStore.getState().addItem({
-      productId: p.id,
-      sku: p.sku,
-      name: p.name,
-      unit: p.unit,
+      productId: product.id,
+      sku: product.sku,
+      name: product.name,
+      unit: product.unit,
       qty: 1,
-      unitPrice: p.retail_price,
-      purchasePrice: p.purchase_price,
+      unitPrice,
+      purchasePrice: product.purchase_price,
       discount: 0,
-      qtyOnHand: 999,
-      requiresCoreReturn: false,
-      coreDepositAmount: 0,
+      qtyOnHand: product.qty_available ?? product.qty_on_hand,
+      requiresCoreReturn: product.requires_core_return,
+      coreDepositAmount: product.core_deposit_amount,
+      photoUrl: product.photo_url ?? null,
     })
     playSuccessBeep()
-    setFoodItem(null)
+    setAdded(current => ({ ...current, [product.id]: (current[product.id] ?? 0) + 1 }))
   }
 
-  async function addChildItem(parentSku: string, child: QuickChildItem) {
-    let price = child.price ?? 0
-    if (price <= 0 && child.sku) {
-      try {
-        const r = await productApi.search(child.sku, 1)
-        if (r.data?.[0]?.retail_price > 0) price = r.data[0].retail_price
-      } catch {
-        /* ignore */
-      }
-    }
-    addToReceipt(child.sku || `${parentSku}_${child.label}`, child.label, price)
-  }
-
-  if (items.length === 0) return null
-
-  // Групуємо товари їжі по категоріях для відображення в попапі
-  const cats = foodItem?.category_filter ?? []
-  const grouped = cats.length > 0
-    ? cats.map((cat) => ({ cat, products: foodProducts.filter((p) => p.category?.name === cat) }))
-        .filter((g) => g.products.length > 0)
-    : [{ cat: 'Товари', products: foodProducts }]
+  if (!mounted) return null
 
   return (
-    <>
-      {/* ─── Burger Menu Quick Access Modal ─────── */}
-      {open && (
-        <div role="dialog" aria-modal="true" aria-label="Швидкий доступ" className="fixed inset-0 z-40 flex flex-col justify-end" style={{ background: 'rgba(0,0,0,0.5)' }} onClick={onClose}>
-          <div className="bg-[#1A1A1A] rounded-t-2xl border-t border-gray-700 w-full shadow-2xl animate-slide-up pb-safe" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-gray-800">
-              <span className="text-white font-bold text-lg">🍔 Швидкий доступ</span>
-              <div className="flex items-center gap-2">
-                <button onClick={() => { onClose?.(); navigate('/settings#pos-quick-settings') }}
-                  className="rounded-lg bg-gray-800 px-3 py-2 text-xs font-semibold text-gray-300 hover:text-white">
-                  Налаштувати
+    <div role="dialog" aria-modal="true" aria-label="Швидкий доступ" data-quick-gallery
+      className="fixed inset-0 z-40 flex flex-col justify-end"
+      style={{ background: shown ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0)', transition: `background ${SHEET_MS}ms ease-out` }}
+      onClick={onClose}>
+      <div
+        className="bg-[#1A1A1A] rounded-t-2xl border-t border-gray-700 w-full shadow-2xl pb-safe flex flex-col"
+        style={{
+          height: '50vh',
+          transform: shown ? 'translateY(0)' : 'translateY(100%)',
+          transition: `transform ${SHEET_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`,
+          willChange: 'transform',
+        }}
+        onClick={(e) => e.stopPropagation()}
+        onTransitionEnd={() => { if (shown) searchRef.current?.focus({ preventScroll: true }) }}>
+        <div className="flex items-center gap-3 px-4 pt-3 pb-2 border-b border-gray-800">
+          <span className="text-white font-bold text-base shrink-0">⭐ Швидкий доступ</span>
+          <input ref={searchRef} value={query} onChange={(e) => setQuery(e.target.value)}
+            placeholder="Пошук у швидких товарах" aria-label="Пошук у швидких товарах"
+            className="min-w-0 flex-1 rounded-lg bg-gray-900 border border-gray-700 px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:border-yellow-400 focus:outline-none" />
+          <button onClick={() => { onClose?.(); navigate('/products') }}
+            title="Позначте товар «⭐ Швидкий товар» у картці товару"
+            className="rounded-lg bg-gray-800 px-3 py-1.5 text-xs font-semibold text-gray-300 hover:text-white shrink-0">
+            Додати товари
+          </button>
+          <button onClick={onClose} aria-label="Закрити"
+            className="text-gray-500 text-2xl hover:text-white w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-800 shrink-0">&times;</button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-3">
+          {loading && products.length === 0 ? (
+            <p className="text-gray-500 text-sm text-center py-8">Завантаження…</p>
+          ) : visible.length === 0 ? (
+            <p className="text-gray-500 text-sm text-center py-8">
+              {query ? 'Нічого не знайдено' : 'Немає швидких товарів. Відкрийте картку товару й позначте «⭐ Швидкий товар (показувати на касі)».'}
+            </p>
+          ) : (
+            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 xl:grid-cols-8 gap-2">
+              {visible.map(product => (
+                <button key={product.id} data-quick-product={product.sku} onClick={() => addProduct(product)}
+                  className="relative flex flex-col overflow-hidden rounded-xl border border-gray-700 bg-[#242424] text-left transition-transform duration-100 active:scale-[0.96] hover:border-yellow-400">
+                  <div className="aspect-square w-full bg-gray-900 flex items-center justify-center overflow-hidden">
+                    {product.photo_url
+                      ? <img src={product.photo_url} alt="" loading="lazy" draggable={false} className="h-full w-full object-cover" />
+                      : <span className="text-3xl text-gray-600" aria-hidden>📦</span>}
+                  </div>
+                  <div className="px-2 py-1.5">
+                    <span className="block text-[11px] font-semibold leading-tight text-white line-clamp-2 min-h-[2.2em]">{product.name}</span>
+                    <span className="block text-sm font-bold font-mono text-yellow-300 mt-0.5">{formatMoney(product.retail_price)}</span>
+                  </div>
+                  {added[product.id] ? (
+                    <span className="absolute top-1 right-1 rounded-full bg-yellow-400 px-2 py-0.5 text-xs font-bold text-black">×{added[product.id]}</span>
+                  ) : null}
                 </button>
-                <button onClick={onClose} className="text-gray-500 text-2xl hover:text-white w-10 h-10 flex items-center justify-center rounded-lg hover:bg-gray-800">&times;</button>
-              </div>
+              ))}
             </div>
-            <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-3 max-h-[60vh] overflow-y-auto">
-              {items.map((item) => {
-                const price       = getPrice(item)
-                const isFood      = item.type === 'food_popup'
-                const hasChildren = !isFood && (item.children?.length ?? 0) > 0
-
-                return (
-                  <button key={item.sku}
-                    onClick={() => {
-                      if (isFood) {
-                        setFoodProds([])
-                        setFoodItem(item)
-                      } else if (hasChildren) {
-                        setPopupItem(popupItem?.sku === item.sku ? null : item)
-                      } else {
-                        addToReceipt(item.sku, item.label, price)
-                        onClose?.()
-                      }
-                    }}
-                    className="flex flex-col items-center justify-center text-white font-bold transition-all active:scale-[0.95] hover:brightness-125 border border-black/30 rounded-2xl relative gap-1 p-2"
-                    style={{ background: item.color ?? '#2C2C2C', minHeight: 80, minWidth: 0 }}
-                  >
-                    <span className="text-2xl leading-none drop-shadow">{item.emoji ?? '📦'}</span>
-                    <span className="text-xs font-bold leading-tight text-center px-1 tracking-wide uppercase">{item.label}</span>
-                    {!isFood && (
-                      hasChildren ? (
-                        <span className="text-[10px] font-semibold text-white/70 flex items-center gap-0.5">Варіанти ▾</span>
-                      ) : price > 0 ? (
-                        <span className="text-xs font-mono text-white/80 font-semibold">
-                          {kopecksToHryvnia(price).replace('.00', '')} ₴
-                        </span>
-                      ) : null
-                    )}
-                  </button>
-                )
-              })}
-            </div>
-          </div>
+          )}
         </div>
-      )}
-
-      {/* ─── Попап варіантів (static з children) ──────────────────── */}
-      {popupItem && (popupItem.children?.length ?? 0) > 0 && (
-        <div role="dialog" aria-modal="true" aria-label="Варіанти швидкого товару" className="fixed inset-0 z-50 flex flex-col justify-end" style={{ background: 'rgba(0,0,0,0.5)' }}
-          onClick={() => setPopupItem(null)}>
-          <div ref={popupRef}
-            className="bg-[#1A1A1A] rounded-t-2xl border-t border-gray-700 w-full max-w-lg mx-auto shadow-2xl animate-slide-up"
-            onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-gray-800">
-              <span className="text-white font-bold text-lg">{popupItem.emoji} {popupItem.label}</span>
-              <button onClick={() => setPopupItem(null)}
-                className="text-gray-500 text-2xl hover:text-white w-10 h-10 flex items-center justify-center rounded-lg hover:bg-gray-800">&times;</button>
-            </div>
-            <div className="p-4 max-h-[60vh] overflow-y-auto">
-              <div className="grid grid-cols-2 gap-3">
-                <button onClick={() => addToReceipt(popupItem.sku, popupItem.label, getPrice(popupItem))}
-                  className="flex flex-col items-center justify-center p-5 rounded-2xl text-white font-bold transition-all active:scale-[0.96] hover:brightness-110"
-                  style={{ background: popupItem.color ?? '#2C2C2C', minHeight: 100 }}>
-                  <span className="text-3xl">{popupItem.emoji}</span>
-                  <span className="text-sm font-bold mt-2">Базовий</span>
-                  <span className="text-base font-bold font-mono mt-1 text-yellow-300">
-                    {getPrice(popupItem) > 0 ? `${kopecksToHryvnia(getPrice(popupItem)).replace('.00', '')} ₴` : '—'}
-                  </span>
-                </button>
-                {popupItem.children!.map((child) => (
-                  <button key={child.sku || child.label}
-                    onClick={async () => { await addChildItem(popupItem.sku, child) }}
-                    className="flex flex-col items-center justify-center p-5 rounded-2xl bg-[#2C2C2C] hover:bg-gray-700 text-white font-bold transition-all active:scale-[0.96] border-2 border-gray-600"
-                    style={{ minHeight: 100 }}>
-                    <span className="text-base font-bold">{child.label}</span>
-                    <span className="text-xs font-mono mt-1 text-gray-400">{child.sku}</span>
-                    <span className="text-base font-bold font-mono mt-1 text-yellow-300">
-                      {(child.price ?? 0) > 0 ? `${kopecksToHryvnia(child.price!).replace('.00', '')} ₴` : '—'}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ─── Попап ЇЖА / food_popup ───────────────────────────────── */}
-      {foodItem && (
-        <div role="dialog" aria-modal="true" aria-label="Швидкий вибір товарів" className="fixed inset-0 z-50 flex flex-col justify-end" style={{ background: 'rgba(0,0,0,0.6)' }}
-          onClick={() => setFoodItem(null)}>
-          <div ref={foodRef}
-            className="bg-[#1A1A1A] rounded-t-2xl border-t border-gray-700 w-full shadow-2xl animate-slide-up"
-            onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-gray-800">
-              <span className="text-white font-bold text-lg">{foodItem.emoji} {foodItem.label}</span>
-              <button onClick={() => setFoodItem(null)}
-                className="text-gray-500 text-2xl hover:text-white w-10 h-10 flex items-center justify-center rounded-lg hover:bg-gray-800">&times;</button>
-            </div>
-            <div className="p-4 max-h-[60vh] overflow-y-auto">
-              {foodLoading ? (
-                <p className="text-gray-500 text-sm text-center py-8">Завантаження...</p>
-              ) : foodProducts.length === 0 ? (
-                <p className="text-gray-500 text-sm text-center py-8">
-                  Немає товарів у вказаних категоріях
-                </p>
-              ) : (
-                <div className="space-y-5">
-                  {grouped.map(({ cat, products }) => (
-                    <div key={cat}>
-                      {grouped.length > 1 && (
-                        <p className="text-[11px] text-gray-500 uppercase font-semibold mb-2 px-1">{cat}</p>
-                      )}
-                      <div className="grid grid-cols-3 gap-2">
-                        {products.map((p) => (
-                          <button key={p.id} onClick={() => addFoodProduct(p)}
-                            className="flex flex-col items-center justify-center p-3 rounded-2xl text-white font-bold transition-all active:scale-[0.96] border border-white/10 hover:brightness-110"
-                            style={{ background: foodItem.color ? foodItem.color + '99' : '#2C2C2C', minHeight: 80 }}>
-                            <span className="text-xs font-bold text-center leading-tight line-clamp-2">{p.name}</span>
-                            <span className="text-sm font-bold font-mono mt-1.5 text-yellow-300">{formatMoney(p.retail_price)}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-    </>
+      </div>
+    </div>
   )
 }

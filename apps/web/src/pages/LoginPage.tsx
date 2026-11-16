@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Eye, EyeOff } from 'lucide-react'
-import { signIn, restoreDesktopSession, signOut } from '@/lib/auth'
+import { signIn, signInByPassword, canSignInByPassword, restoreDesktopSession, signOut } from '@/lib/auth'
 import { useAuthStore } from '@/stores/authStore'
 import { homePathForRole } from '@/components/ProtectedRoute'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
@@ -29,7 +29,28 @@ function LoginForm({ onUnlocked }: { onUnlocked?: () => void }) {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [restoring, setRestoring] = useState(isDesktopRuntime() && !onUnlocked)
+  // Касир входить лише паролем; номер телефону — для власника, адміністратора й ПК менеджера.
+  const [passwordOnlyAvailable, setPasswordOnlyAvailable] = useState(false)
+  const [withPhone, setWithPhone] = useState(() => {
+    try { return localStorage.getItem('forsage:login-with-phone') === '1' } catch { return false }
+  })
+  const passwordOnly = passwordOnlyAvailable && !withPhone && !onUnlocked
   const submitting = useRef(false)
+  const passwordRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (onUnlocked) return
+    let active = true
+    void canSignInByPassword().then(available => { if (active) setPasswordOnlyAvailable(available) }).catch(() => {})
+    return () => { active = false }
+  }, [onUnlocked])
+  useEffect(() => {
+    if (passwordOnly && !restoring) passwordRef.current?.focus()
+  }, [passwordOnly, restoring])
+  function chooseLoginKind(phoneLogin: boolean) {
+    setWithPhone(phoneLogin)
+    setError('')
+    try { localStorage.setItem('forsage:login-with-phone', phoneLogin ? '1' : '0') } catch { /* optional hint */ }
+  }
   useEffect(() => {
     if (!isDesktopRuntime()) {
       fetch(`${API_BASE_URL}/api/v1/health`, { signal: AbortSignal.timeout(30000) }).catch(() => {})
@@ -66,14 +87,14 @@ function LoginForm({ onUnlocked }: { onUnlocked?: () => void }) {
     e.preventDefault()
     if (submitting.current || restoring) return
     setError('')
-    if (!validatePhone(phone)) return
+    if (!passwordOnly && !validatePhone(phone)) return
     submitting.current = true
     setLoading(true)
     try {
       const normalized = normalizePhone(phone)
-      const session = await signIn(normalized, password)
+      const session = passwordOnly ? await signInByPassword(password) : await signIn(normalized, password)
       if (isDesktopRuntime()) {
-        try { localStorage.setItem('forsage:last-login-phone', normalized) } catch { /* optional hint */ }
+        if (!passwordOnly) try { localStorage.setItem('forsage:last-login-phone', normalized) } catch { /* optional hint */ }
         confirmDesktopUnlocked()
       }
       setPassword('')
@@ -81,6 +102,7 @@ function LoginForm({ onUnlocked }: { onUnlocked?: () => void }) {
       else navigate(homePathForRole(session.user.app_metadata?.role as string | undefined), { replace: true })
     } catch (err) {
       setError(err instanceof Error ? err.message.replace(/^.*?\[LOCAL_AUTH_[A-Z_]+\]\s*/, '') : 'Помилка входу')
+      if (passwordOnly) { setPassword(''); passwordRef.current?.focus() }
     } finally {
       submitting.current = false
       setLoading(false)
@@ -102,19 +124,19 @@ function LoginForm({ onUnlocked }: { onUnlocked?: () => void }) {
           <p className="text-gray-400 text-sm mt-1">Вхід до системи</p>
         </div>
         {restoring ? <p className="text-center text-sm text-gray-500" role="status">Відновлюємо вхід…</p> :
-        <form onSubmit={handleSubmit} className="space-y-5">
-          <div>
+        <form onSubmit={handleSubmit} className="space-y-5" data-login-kind={passwordOnly ? 'password' : 'phone'}>
+          {!passwordOnly && <div>
             <label htmlFor="login-phone" className="block text-sm font-medium text-gray-700 mb-1">Логін (номер телефону)</label>
             <input id="login-phone" type="tel" autoComplete="username" readOnly={Boolean(onUnlocked)} disabled={loading}
               value={phone} onChange={e=>{setPhone(e.target.value);if(phoneError)validatePhone(e.target.value)}}
               onBlur={()=>validatePhone(phone)} placeholder="+380671234567" required autoFocus
               className="w-full border border-gray-300 rounded-lg px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
             {phoneError && <p className="text-red-500 text-xs mt-1">{phoneError}</p>}
-          </div>
+          </div>}
           <div>
-            <label htmlFor="login-password" className="block text-sm font-medium text-gray-700 mb-1">Пароль</label>
+            <label htmlFor="login-password" className="block text-sm font-medium text-gray-700 mb-1">{passwordOnly ? 'Пароль касира' : 'Пароль'}</label>
             <div className="relative">
-              <input id="login-password" type={showPassword?'text':'password'} autoComplete="current-password"
+              <input id="login-password" ref={passwordRef} type={showPassword?'text':'password'} autoComplete="current-password"
                 disabled={loading} value={password} onChange={e=>setPassword(e.target.value)} placeholder="••••••••" required
                 className="w-full border border-gray-300 rounded-lg pl-4 pr-12 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
               <button type="button" disabled={loading} onClick={()=>setShowPassword(!showPassword)} tabIndex={-1}
@@ -127,6 +149,12 @@ function LoginForm({ onUnlocked }: { onUnlocked?: () => void }) {
           <button type="submit" disabled={loading} className="w-full bg-accent hover:bg-accent-dark text-black font-semibold py-3 rounded-lg disabled:opacity-50">
             {loading?'Входимо…':'Увійти'}
           </button>
+          {passwordOnlyAvailable && !onUnlocked && (
+            <button type="button" disabled={loading} onClick={() => chooseLoginKind(passwordOnly)}
+              className="w-full text-sm text-gray-500 hover:text-gray-800">
+              {passwordOnly ? 'Увійти з номером телефону (власник, адміністратор)' : 'Вхід касира лише паролем'}
+            </button>
+          )}
           {onUnlocked && <button type="button" disabled={loading} onClick={()=>{void leave()}} className="w-full text-sm text-gray-500">Вийти</button>}
         </form>}
       </div>

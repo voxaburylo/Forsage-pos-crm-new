@@ -14,6 +14,7 @@ import {
   type CleanupFilter, type CleanupGroup, type CleanupMergeInput, type CleanupOperation, type CleanupPreview,
   type CleanupProduct, type CleanupScan, type CleanupSkuSuggestion,
 } from './catalogCleanupModel'
+import { CatalogTidyPanel } from './CatalogTidyPanel'
 
 type AiReview = { group_id: string; verdict: 'same' | 'different' | 'uncertain'; reason: string }
 type SkuInput = ReturnType<typeof cleanupSkuInput>
@@ -190,6 +191,7 @@ function CleanupContent({ scope }: { scope: string }) {
     {capabilityReason && <p role="alert" className="mb-3 rounded bg-amber-50 p-3 text-sm text-amber-900">{capabilityReason} Перегляд результатів і перевірка артикулів доступні; об’єднання заблоковано.</p>}
     {scan?.warnings?.map((warning, index) => <p key={index} className="mb-2 text-sm text-amber-800">{warning}</p>)}
     {aiError && <p role="alert" className="mb-3 text-sm text-red-700">{aiError}</p>}
+    {runtimeGuard === 'ready' && bridge && <CatalogTidyPanel api={bridge} disabled={disabled} onChanged={() => { generation.current++; setScan(null); closeSelection(); setManualIds([]); setExcluded({}) }} />}
     {scan && <>
       <div data-cleanup-manual><Card className="mb-4">
         <h2 className="font-semibold">Об’єднати вручну</h2>

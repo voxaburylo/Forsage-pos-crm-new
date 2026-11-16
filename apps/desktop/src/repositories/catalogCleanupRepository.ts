@@ -271,7 +271,10 @@ export class CatalogCleanupRepository {
       const newMovements: { id: string; product_id: string; qty_delta: number; qty_after: number }[] = []
       for (const source of sources) {
         const qty = stockQuantity(Number(source.qty_on_hand)); runningQty = addStockQuantity(runningQty, qty)
-        for (const [id, delta, after] of [[source.id, -qty, 0], [target.id, qty, runningQty]] as const) {
+        // «0 - qty», а не «-qty»: для картки з нульовим залишком «-qty» дає мінус нуль, у базі він
+        // зберігається як нуль, і перевірка запису вважала це розбіжністю. Через це не об'єднувався
+        // жоден дубль, у якого одна з карток без залишку, — тобто більшість справжніх дублів.
+        for (const [id, delta, after] of [[source.id, 0 - qty, 0], [target.id, qty, runningQty]] as const) {
           const movementId = randomUUID()
           this.db.prepare(`INSERT INTO inventory_movements(id,tenant_id,product_id,source_type,source_id,qty_delta,qty_after,unit_cost,notes,dirty_at,created_at,updated_at)
             VALUES(?,?,?,'product_merge',?,?,?,?,?,?,?,?)`).run(movementId, input.tenant_id, id, input.operation_id + ':' + source.id, delta, after, source.purchase_price,
@@ -298,27 +301,28 @@ export class CatalogCleanupRepository {
       this.db.prepare(`INSERT INTO audit_log(event_id,tenant_id,device_id,user_id,action,entity_type,entity_id,before_json,after_json,created_at)
         VALUES(?,?,?,?,'product.catalog_cleanup','product',?,?,?,?)`).run(auditId, input.tenant_id, this.db.deviceId, userId, target.id, beforeJson, afterJson, timestamp)
       verifyWrite = () => {
-        const fail = () => { throw new Error('Не вдалося безпечно зберегти злиття каталогу. Усі зміни цієї спроби скасовано.') }
+        // Назва перевірки в повідомленні: без неї відмову на реальних даних неможливо було пояснити.
+        const fail = (check: string) => { throw new Error('Не вдалося безпечно зберегти злиття каталогу. Усі зміни цієї спроби скасовано. Перевірка: ' + check + '.') }
         for (const expected of expectedProducts) {
           const current = this.db.prepare('SELECT * FROM products WHERE tenant_id=? AND id=?').get(input.tenant_id, expected.id) as Row | undefined
-          if (!current || !isDeepStrictEqual({ ...current }, expected)) fail()
+          if (!current || !isDeepStrictEqual({ ...current }, expected)) fail('картки товарів')
         }
         for (const [table, oldRows] of Object.entries(oldHistory)) {
           const after = this.db.prepare('SELECT * FROM ' + quote(table) + ' WHERE ' + quote(references[table]) + ' IN (' + placeholders + ') ORDER BY rowid').all(...allIds) as Row[]
           const historical = table === 'inventory_movements' ? after.filter(row => !newMovements.some(m => m.id === row.id)) : after
-          if (hash(historical) !== hash(oldRows)) fail()
+          if (hash(historical) !== hash(oldRows)) fail('історія документів, ' + table)
         }
         for (const expected of newMovements) {
           const current = this.db.prepare('SELECT id,product_id,qty_delta,qty_after FROM inventory_movements WHERE id=? AND tenant_id=?').get(expected.id, input.tenant_id) as Row | undefined
-          if (!current || !isDeepStrictEqual({ ...current }, expected)) fail()
+          if (!current || !isDeepStrictEqual({ ...current }, expected)) fail('рух залишку')
         }
         for (const code of preview.barcodes) {
           const current = this.db.prepare('SELECT product_id,deleted_at FROM product_barcodes WHERE tenant_id=? AND barcode=?').get(input.tenant_id, code) as Row | undefined
-          if (current?.product_id !== target.id || current.deleted_at) fail()
+          if (current?.product_id !== target.id || current.deleted_at) fail('штрихкод ' + code)
         }
         const outbox = this.db.prepare('SELECT payload_json,status FROM sync_outbox WHERE operation_id=? AND tenant_id=?').get(outboxId, input.tenant_id) as Row | undefined
         const audit = this.db.prepare('SELECT before_json,after_json FROM audit_log WHERE event_id=? AND tenant_id=?').get(auditId, input.tenant_id) as Row | undefined
-        if (outbox?.payload_json !== payloadJson || outbox.status !== 'pending' || audit?.before_json !== beforeJson || audit.after_json !== afterJson) fail()
+        if (outbox?.payload_json !== payloadJson || outbox.status !== 'pending' || audit?.before_json !== beforeJson || audit.after_json !== afterJson) fail('черга відправлення або журнал')
       }
       return result
     }, () => { verifyWrite!(); return verifyWrite! })

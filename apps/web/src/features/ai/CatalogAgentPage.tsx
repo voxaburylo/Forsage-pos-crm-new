@@ -8,7 +8,8 @@ import { desktopBridge } from '@/lib/desktopBridge'
 import { formatMoney } from '@/lib/utils'
 import { aiApi } from './aiApi'
 import { catalogReviewIssues } from './catalogReviewValidation'
-import { catalogAgentPayload, selectableAgentIssue, retainAgentReview, type CatalogIssue } from './catalogAgentModel'
+import { agentPayloadChunks, agentSelection, retainAgentReview, type CatalogIssue } from './catalogAgentModel'
+import { BulkEditModal } from '@/features/products/BulkEditModal'
 
 type AgentProduct = { id: string; name: string; sku: string; brand: string; category_id: string | null; fingerprint: string }
 type Scan = { products: AgentProduct[]; categories: Array<{ id: string; name: string }>; issues: CatalogIssue[]; total: number }
@@ -37,6 +38,7 @@ function CatalogAgentContent({userId}:{userId:string}) {
   const [error, setError] = useState('')
   const [lastResult, setLastResult] = useState('')
   const [confirm, setConfirm] = useState(false)
+  const [bulkOpen, setBulkOpen] = useState(false)
   const stop = useRef(false)
   const running = useRef(false)
   const mounted = useRef(false)
@@ -87,20 +89,33 @@ function CatalogAgentContent({userId}:{userId:string}) {
     if (!bridge?.agentApply || running.current || !isCurrentContext()) return
     running.current = true
     setBusy(true); setError('')
+    let updated = 0
+    let backupPath = ''
     try {
-      const items = catalogAgentPayload(issues.filter(row => selected.has(row.id)))
-      const key = JSON.stringify(items)
-      if (pending.current?.key !== key) pending.current = { key, input: { operation_id: crypto.randomUUID(), items } }
-      const result = await bridge.agentApply(pending.current.input)
-      pending.current = null
-      if (!isCurrentContext()) return
-      setLastResult('Змінено товарів: ' + result.updated + '. Резервна копія: ' + result.backupPath)
+      // Лише рядки з готовою пропозицією; решта позначених — для масового редагування.
+      const chunks = agentPayloadChunks(agentSelection(issues, selected).proposals)
+      for (const items of chunks) {
+        const key = JSON.stringify(items)
+        if (pending.current?.key !== key) pending.current = { key, input: { operation_id: crypto.randomUUID(), items } }
+        const result = await bridge.agentApply(pending.current.input)
+        pending.current = null
+        updated += Number(result.updated) || 0
+        backupPath = result.backupPath ?? backupPath
+        if (!isCurrentContext()) return
+      }
+      setLastResult('Змінено товарів: ' + updated + '. Резервна копія: ' + backupPath)
       toast.success('Підтверджені зміни збережено локально')
       running.current = false
       await load()
-    } catch (err) { if (isCurrentContext()) setError(err instanceof Error ? err.message : 'Запис не завершено. Повторіть ту саму операцію.') }
+    } catch (err) {
+      if (!isCurrentContext()) return
+      const message = err instanceof Error ? err.message : 'Запис не завершено. Повторіть ту саму операцію.'
+      setError(updated ? `Збережено ${updated} товарів, далі зупинено: ${message}` : message)
+      if (updated) { running.current = false; await load() }
+    }
     finally { running.current = false; if (isCurrentContext()) setBusy(false) }
   }
+  const selection = agentSelection(issues, selected)
   const visible = issues.filter(row => filter === 'all' || row.kind === filter)
   const pages = Math.max(1, Math.ceil(visible.length / 50))
   const rows = visible.slice(page * 50, page * 50 + 50)
@@ -124,11 +139,22 @@ function CatalogAgentContent({userId}:{userId:string}) {
     {error && <p role="alert" className="mb-4 rounded bg-red-50 p-3 text-sm text-red-800 [overflow-wrap:anywhere]">{error}</p>}
     {lastResult && <p className="mb-4 rounded bg-green-50 p-3 text-sm text-green-800 [overflow-wrap:anywhere]">{lastResult}</p>}
     <div className="mb-3 flex flex-wrap gap-2">{Object.entries(labels).map(([key, label]) => <button key={key} onClick={() => { setFilter(key); setPage(0) }} className={'rounded-lg border px-3 py-2 text-sm ' + (filter === key ? 'border-yellow-400 bg-yellow-50' : 'bg-white')}>{label} {key === 'all' ? issues.length : issues.filter(row => row.kind === key).length}</button>)}</div>
-    <div className="mb-3 flex flex-wrap items-center gap-3"><Button disabled={!selected.size || busy || aiBusy} onClick={() => setConfirm(true)}>Переглянуто — застосувати ({selected.size})</Button>
-      <button className="text-sm text-gray-500" onClick={() => setSelected(new Set())} disabled={busy}>Зняти вибір</button></div>
+    <div className="sticky top-0 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg bg-white/95 py-2 backdrop-blur" data-agent-actions>
+      <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+        <input type="checkbox" aria-label="Вибрати всі зауваження в групі" className="h-5 w-5" disabled={busy || aiBusy || !visible.length}
+          checked={visible.length > 0 && visible.every(row => selected.has(row.id))}
+          ref={el => { if (el) el.indeterminate = visible.some(row => selected.has(row.id)) && !visible.every(row => selected.has(row.id)) }}
+          onChange={e => setSelected(previous => { const next = new Set(previous); for (const row of visible) { if (e.target.checked) next.add(row.id); else next.delete(row.id) } return next })} />
+        Вибрати все в групі ({visible.length})
+      </label>
+      <Button disabled={!selection.proposals.length || busy || aiBusy} onClick={() => setConfirm(true)}>Застосувати пропозиції ({selection.proposals.length})</Button>
+      <Button variant="secondary" disabled={!selection.productIds.length || busy || aiBusy} onClick={() => setBulkOpen(true)}>Масове редагування ({selection.productIds.length})</Button>
+      <button className="text-sm text-gray-500" onClick={() => setSelected(new Set())} disabled={busy || !selected.size}>Зняти вибір</button>
+      {selected.size > 0 && selection.proposals.length < selection.rows.length && <span className="text-xs text-gray-500">Без готової пропозиції: {selection.rows.length - selection.proposals.length} — змініть їх масовим редагуванням або в картці.</span>}
+    </div>
     <Card padding="none">
-      {!scan ? <p className="p-6 text-sm text-gray-500">Натисніть «Перевірити каталог», щоб побачити зауваження.</p> : !rows.length ? <p className="p-6 text-sm text-gray-500">У цій групі зауважень немає. Це не гарантія відсутності всіх помилок.</p> : rows.map(row => <article key={row.id} className="border-b p-4 last:border-0">
-        <div className="flex items-start gap-3"><input aria-label={'Підтвердити ' + row.name} type="checkbox" className="mt-1 h-5 w-5 shrink-0" disabled={busy || aiBusy || !selectableAgentIssue(row)} checked={selected.has(row.id)} onChange={e => setSelected(previous => { const next = new Set(previous); if (e.target.checked) next.add(row.id); else next.delete(row.id); return next })} />
+      {!scan ? <p className="p-6 text-sm text-gray-500">Натисніть «Перевірити каталог», щоб побачити зауваження.</p> : !rows.length ? <p className="p-6 text-sm text-gray-500">У цій групі зауважень немає. Це не гарантія відсутності всіх помилок.</p> : rows.map(row => <article key={row.id} className={'border-b p-4 last:border-0 ' + (selected.has(row.id) ? 'bg-yellow-50/60' : '')}>
+        <div className="flex items-start gap-3"><input aria-label={'Вибрати ' + row.name} type="checkbox" className="mt-1 h-5 w-5 shrink-0 cursor-pointer" disabled={busy || aiBusy} checked={selected.has(row.id)} onChange={e => setSelected(previous => { const next = new Set(previous); if (e.target.checked) next.add(row.id); else next.delete(row.id); return next })} />
           <div className="min-w-0 flex-1"><Link to={'/products/' + row.product_id + '/edit'} className="font-semibold text-gray-900 [overflow-wrap:anywhere]">{row.name}</Link><p className="text-xs text-gray-500 [overflow-wrap:anywhere]">{row.sku} · {labels[row.kind]}</p><p className="mt-2 text-sm text-gray-600">{row.reason}</p>
             {row.primary_id && <p className="mt-2 text-sm">Залишити: <Link className="underline" to={'/products/' + row.primary_id + '/edit'}>{row.primary_name} ({row.primary_sku})</Link>. {row.blocked ? 'Автоматичне вилучення заблоковане.' : 'Вилучити цю порожню картку з активного каталогу. Історія аудиту залишиться.'}</p>}
             {Object.entries(row.changes).map(([key, next]) => <div key={key} className="mt-2 grid gap-1 rounded bg-gray-50 p-2 text-sm sm:grid-cols-2"><span className="text-gray-500 [overflow-wrap:anywhere]">{fields[key]} було: {value(key, row.before?.[key])}</span><span className="font-medium [overflow-wrap:anywhere]">Стане: {value(key, next)}</span></div>)}
@@ -136,7 +162,9 @@ function CatalogAgentContent({userId}:{userId:string}) {
       </article>)}
     </Card>
     <div className="mt-4 flex items-center justify-between gap-3"><Button variant="secondary" disabled={!page} onClick={() => setPage(p => p - 1)}>Назад</Button><span className="text-sm">{page + 1} / {pages}</span><Button variant="secondary" disabled={page + 1 >= pages} onClick={() => setPage(p => p + 1)}>Далі</Button></div>
-    <ConfirmDialog open={confirm} onClose={() => setConfirm(false)} title="Застосувати перевірені зміни?" confirmLabel="Зберегти локально" onConfirm={apply}
-      danger={issues.some(row => selected.has(row.id) && row.primary_id !== undefined)} message="Зміняться лише позначені поля. Ціни вплинуть на нові продажі; старі чеки не зміняться. Порожні підтверджені дублі будуть вилучені з активного каталогу. Перед записом буде резервна копія. Залишки не змінюються." />
+    <ConfirmDialog open={confirm} onClose={() => setConfirm(false)} title={`Застосувати ${selection.proposals.length} пропозицій?`} confirmLabel="Зберегти локально" onConfirm={apply}
+      danger={selection.proposals.some(row => row.primary_id !== undefined)} message="Зміняться лише запропоновані поля позначених рядків. Ціни вплинуть на нові продажі; старі чеки не зміняться. Порожні підтверджені дублі будуть вилучені з активного каталогу. Перед записом буде резервна копія. Залишки не змінюються." />
+    <BulkEditModal open={bulkOpen} productIds={selection.productIds} onClose={() => setBulkOpen(false)}
+      onUpdated={() => { setSelected(new Set()); void load() }} />
   </Layout>
 }

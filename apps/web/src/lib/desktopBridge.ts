@@ -126,6 +126,7 @@ export interface DesktopCatalogListOptions {
   brandId?: string
   lowStock?: boolean
   stockFilter?: 'negative' | 'no_price' | ''
+  favorites?: boolean
   sortField?: 'sku' | 'name' | 'retail_price' | 'qty_on_hand' | 'brand'
   sortDir?: 'asc' | 'desc'
 }
@@ -495,6 +496,8 @@ interface ForsageDesktopBridge {
   }
   auth?: {
     login: (phone: string, password: string) => Promise<{ id: string; tenant_id: string; full_name: string; role: string; phone: string; email: string; is_active: boolean; created_at?: string }>
+    /** Вхід касира лише паролем (головний ПК). Старі збірки цього не мають. */
+    loginByPassword?: (password: string) => Promise<{ id: string; tenant_id: string; full_name: string; role: string; phone: string; email: string; is_active: boolean; created_at?: string }>
     loginOnline: (phone: string, password: string) => Promise<{ user: { id: string; tenant_id: string; full_name: string; role: string; phone: string; email: string; is_active: boolean; created_at?: string }; access_token: string; refresh_token: string; expires_in: number }>
     logout: () => Promise<{ success: true }>
     rememberedStatus?: () => Promise<{ phone?: string; name?: string; expiresAt?: number; locked: boolean; available: boolean }>
@@ -537,6 +540,8 @@ interface ForsageDesktopBridge {
     cleanupPreview?: (input: { target_id: string; source_ids: string[]; stock_review: 'pending' | 'checked' }) => Promise<import('../features/admin/catalogCleanupModel').CleanupPreview>
     cleanupApply?: (input: import('../features/admin/catalogCleanupModel').CleanupMergeInput & { operation_id: string }) => Promise<{ operation_id: string; target_id: string; source_ids: string[]; quantity_after: number; backupPath: string }>
     cleanupApplySku?: (input: { operation_id: string; product_id: string; sku: string; preview_fingerprint: string; reason: string }) => Promise<{ updated: number; backupPath: string }>
+    cleanupTidyPlan?: () => Promise<import('@/features/admin/catalogTidyModel').TidyPlan>
+    cleanupTidyApply?: (input: import('@/features/admin/catalogTidyModel').TidyApplyInput) => Promise<import('@/features/admin/catalogTidyModel').TidyResult>
     agentApply?: (input: { operation_id: string; items: any[] }) => Promise<{ updated: number; backupPath: string }>
     findByBarcode: (barcode: string) => Promise<DesktopProduct | null>
     findById?: (id: string) => Promise<DesktopProduct | null>

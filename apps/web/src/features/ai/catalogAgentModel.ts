@@ -23,6 +23,38 @@ export function catalogAgentPayload(rows: CatalogIssue[]) {
   return result
 }
 
+/**
+ * Позначені зауваження → що з ними можна зробити.
+ * Галочку можна поставити на будь-якому рядку: рядки з готовою пропозицією агента
+ * застосовуються кнопкою «Застосувати пропозиції», а всі позначені товари можна
+ * змінити масово (категорія, ціни, активність).
+ */
+export function agentSelection(issues: readonly CatalogIssue[], selected: ReadonlySet<string>) {
+  const rows = issues.filter(row => selected.has(row.id))
+  return {
+    rows,
+    proposals: rows.filter(selectableAgentIssue),
+    productIds: [...new Set(rows.map(row => row.product_id))],
+  }
+}
+
+/** Пропозиції по 100 товарів — стільки приймає один запис агента. Дубль і правка однієї картки не потрапляють в одну частину. */
+export function agentPayloadChunks(rows: CatalogIssue[], size = 100) {
+  const chunks: CatalogIssue[][] = []
+  let current: CatalogIssue[] = []
+  let products = new Set<string>()
+  for (const row of rows) {
+    const touches = [row.product_id, ...(row.primary_id ? [row.primary_id] : [])]
+    const conflicts = current.some(other => other.product_id === row.product_id ? (other.primary_id || row.primary_id) : touches.includes(other.product_id) || (other.primary_id !== undefined && other.primary_id === row.product_id))
+    if (current.length && (conflicts || (!products.has(row.product_id) && products.size >= size))) {
+      chunks.push(current); current = []; products = new Set()
+    }
+    current.push(row); products.add(row.product_id)
+  }
+  if (current.length) chunks.push(current)
+  return chunks.map(catalogAgentPayload)
+}
+
 export function retainAgentReview(products: Array<{id: string; fingerprint: string}>, issues: CatalogIssue[], reviewed: Record<string, string>) {
   const fresh = new Map(products.map(p => [p.id, p.fingerprint]))
   return {

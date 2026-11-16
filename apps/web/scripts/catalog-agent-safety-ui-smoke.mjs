@@ -14,6 +14,7 @@ const mocks={
  '@/features/ai/aiApi':'export const aiApi={reviewCatalog:async body=>{fixture.requests++;if(fixture.defer)await new Promise(r=>fixture.release=r);return {data:{proposals:fixture.proposals.filter(row=>body.products.some(product=>product.id===row.id))}}}}',
  '@/components/Layout':'export const Layout=({children})=><main>{children}</main>',
  '@/components/ui/Toast':'export const toast={success:m=>fixture.messages.push(m)}',
+ '@/features/products/BulkEditModal':'export const BulkEditModal=({open,productIds})=>open?<div data-bulk-ids={productIds.join(",")}>Bulk fixture</div>:null',
  '@/components/ui':'export const Button=({children,onClick,disabled})=><button disabled={disabled} onClick={onClick}>{children}</button>;export const Card=({children})=><section>{children}</section>;export const ConfirmDialog=({open,onConfirm})=>open?<button onClick={onConfirm}>Confirm fixture</button>:null',
 }
 const bootstrap=`window.fixture={state:{session:{user:{id:'owner',app_metadata:{tenant_id:'shop',role:'owner'}}}},scans:0,requests:0,writes:[],messages:[],proposals:[],scan:{products:[{id:'a',name:'Фильтр W67/1',sku:'A',brand:'',category_id:null,fingerprint:'fa'},{id:'b',name:'Олива 4 л',sku:'B',brand:'',category_id:null,fingerprint:'fb'}],categories:[],issues:[],total:2}};`
@@ -38,11 +39,20 @@ try{
  await page.evaluate(()=>{fixture.proposals=fixture.scan.products.map(({id,name,sku,category_id})=>({id,name:id==='a'?'Фільтр W67/1':name,sku,category_id,reason:'Переклад'}))})
  await review.click()
  await page.getByText(/Перевірено AI: 2 \/ 2/).waitFor()
- await page.getByRole('checkbox',{name:'Підтвердити Фильтр W67/1'}).check()
- await page.getByRole('button',{name:'Переглянуто — застосувати (1)',exact:true}).click()
+ await page.getByRole('checkbox',{name:'Вибрати Фильтр W67/1'}).check()
+ await page.getByRole('button',{name:'Застосувати пропозиції (1)',exact:true}).click()
  await page.getByRole('button',{name:'Confirm fixture'}).evaluate(b=>{b.click();b.click()})
  await page.waitForFunction(()=>fixture.messages.length===1&&fixture.scans===2)
  assert.equal(await page.evaluate(()=>fixture.writes.length),1)
+ // Any finding can be ticked; select-all feeds bulk edit with every product, apply only with proposals.
+ await page.waitForFunction(()=>[...document.querySelectorAll('button')].some(b=>b.textContent==='Перевірити каталог'&&!b.disabled))
+ await page.getByRole('checkbox',{name:'Вибрати всі зауваження в групі'}).check()
+ const rows=await page.getByRole('checkbox',{name:/^Вибрати (?!всі)/}).count()
+ assert.ok(rows>0)
+ assert.equal(await page.getByRole('checkbox',{name:/^Вибрати (?!всі)/,checked:true}).count(),rows)
+ await page.getByRole('button',{name:/^Масове редагування \(\d+\)$/}).click()
+ assert.ok((await page.locator('[data-bulk-ids]').getAttribute('data-bulk-ids')).split(',').includes('a'))
+ await page.getByRole('button',{name:'Зняти вибір',exact:true}).click()
  // Same user, different shop: no inherited review state or pending proposals.
  await page.evaluate(()=>{fixture.state.session.user.app_metadata.tenant_id='other-shop';fixture.refresh()})
  await page.getByText('Натисніть «Перевірити каталог», щоб побачити зауваження.',{exact:true}).waitFor()
@@ -53,7 +63,7 @@ try{
  await page.getByText('Натисніть «Перевірити каталог», щоб побачити зауваження.',{exact:true}).waitFor()
  await page.evaluate(()=>fixture.release())
  await page.waitForTimeout(100)
- assert.equal(await page.getByRole('checkbox').count(),0)
+ assert.equal(await page.getByRole('checkbox',{name:/^Вибрати (?!всі)/}).count(),0)
  // Read auth synchronously: React has not yet unmounted the previous view.
  for(const change of ['account','tenant','role']){
   await page.goto(base+'test');await scan.waitFor()
@@ -73,12 +83,12 @@ try{
   },change)
   await page.waitForTimeout(100)
   assert.equal(await page.evaluate(()=>fixture.requests),1,change+' must not send the next batch')
-  assert.equal(await page.getByRole('checkbox').count(),0,change+' must not display stale proposals')
+  assert.equal(await page.getByRole('checkbox',{name:/^Вибрати (?!всі)/}).count(),0,change+' must not display stale proposals')
   await page.goto(base+'test');await scan.waitFor()
   await page.evaluate(()=>{fixture.proposals=fixture.scan.products.map(p=>({id:p.id,name:p.name.replace('Фильтр','Фільтр'),sku:p.sku,category_id:null,reason:'Переклад'}))})
   await scan.click();await page.getByText(/Перевірено AI: 0 \/ 2/).waitFor()
-  await review.click();await page.getByRole('checkbox',{name:'Підтвердити Фильтр W67/1'}).check()
-  await page.getByRole('button',{name:'Переглянуто — застосувати (1)',exact:true}).click()
+  await review.click();await page.getByRole('checkbox',{name:'Вибрати Фильтр W67/1'}).check()
+  await page.getByRole('button',{name:'Застосувати пропозиції (1)',exact:true}).click()
   await page.evaluate(change=>{
    if(change==='account')fixture.state.session.user.id='another'
    if(change==='tenant')fixture.state.session.user.app_metadata.tenant_id='another'
