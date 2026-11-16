@@ -11,7 +11,7 @@ import { Trash2, Barcode } from 'lucide-react'
 import { read, utils } from 'xlsx'
 import { supplierApi } from './supplierApi'
 import { sourceForPaymentMethod, methodForPaymentSource } from './supplierPaymentSelection'
-import { invoiceProductBase, invoiceLineRetailProblem } from './invoiceFormModel'
+import { invoiceProductBase, invoiceLineRetailProblem, invoiceProblemQuestion } from './invoiceFormModel'
 import { isMissingInvoiceError } from './invoiceDraftStore'
 import { cancelStoredInvoiceDraft } from './invoiceDraftCancellation'
 import { InvoiceSupplierPicker } from './InvoiceSupplierPicker'
@@ -560,6 +560,14 @@ export default function InvoiceFormPage() {
       const el = refsForField(field).current[index]
       if (el) { el.focus(); el.select() }
     }, 0)
+  }
+
+  /** Відкрити ШІ-помічника з готовим питанням про рядок; чернетку спершу зберігаємо, щоб повернутись до неї. */
+  function askAssistantAboutLine(item: LineItem) {
+    if (invoiceDraftReadyRef.current && !invoiceDraftPersistenceDisabledRef.current) {
+      persistSupplyInvoiceDraft(invoiceDraftKey, invoiceDraftSnapshotRef.current)
+    }
+    navigate('/ai-assistant', { state: { ask: invoiceProblemQuestion(item, problemLineMessage) } })
   }
 
   function raiseInvoiceLineProblem(rowKey: string, message: string, _fallbackItem?: LineItem, field: RowField = 'sku') {
@@ -1672,6 +1680,10 @@ export default function InvoiceFormPage() {
                     {problemLineKey === item.client_key && (
                       <div className="mt-1 rounded-lg border border-red-200 bg-red-100 px-2 py-1 text-[11px] font-semibold text-red-700">
                         {problemLineMessage || 'Проблемний рядок.'} Виправте рядок або виберіть товар через пошук.
+                        <button type="button" onClick={() => askAssistantAboutLine(item)}
+                          className="ml-2 rounded-md bg-white px-2 py-0.5 text-[11px] font-semibold text-purple-700 ring-1 ring-purple-200 hover:bg-purple-50">
+                          Спитати помічника
+                        </button>
                       </div>
                     )}
                     <div className="flex items-center gap-1.5 mt-1 px-2 text-xs">
@@ -1873,6 +1885,10 @@ export default function InvoiceFormPage() {
                     {problemLineKey === item.client_key && (
                       <div className="mt-1 rounded-lg border border-red-200 bg-red-100 px-2 py-1 text-[11px] font-semibold text-red-700">
                         {problemLineMessage || 'Проблемний рядок.'} Виправте рядок або виберіть товар через пошук.
+                        <button type="button" onClick={() => askAssistantAboutLine(item)}
+                          className="ml-2 rounded-md bg-white px-2 py-0.5 text-[11px] font-semibold text-purple-700 ring-1 ring-purple-200 hover:bg-purple-50">
+                          Спитати помічника
+                        </button>
                       </div>
                     )}
                   </div>

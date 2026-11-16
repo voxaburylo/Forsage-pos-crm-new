@@ -4,7 +4,7 @@ import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
 import { Save, Store, MapPin, Percent, RotateCcw, CreditCard, Ban, Plus, Trash2, ArrowUp, ArrowDown, Pencil, X, Zap, Users, Printer, Sparkles, Database } from 'lucide-react'
 import { adminApi } from '@/features/admin/adminApi'
 import type { ShopSettings, QuickItemConfig, QuickChildItem } from '@/features/admin/adminApi'
-import { aiApi, AI_MODELS, AI_MODEL_LABELS } from '@/features/ai/aiApi'
+import { aiApi, AI_MODEL_LABELS } from '@/features/ai/aiApi'
 import type { AiStatus, AiModel } from '@/features/ai/aiApi'
 import { DEFAULT_QUICK_ITEMS } from '@/features/pos/FavoritesPanel'
 import { Layout } from '@/components/Layout'
@@ -102,10 +102,10 @@ export default function SettingsPage() {
     }
   }
 
-  // ─── Помічник АІ (Gemini) ──────────────────────────────────────
+  // ─── Помічник АІ (Claude) ──────────────────────────────────────
   const [aiStatus, setAiStatus] = useState<AiStatus | null>(null)
   const [aiKey, setAiKey]       = useState('')          // порожньо = не змінювати
-  const [aiModel, setAiModel]   = useState<AiModel>('gemini-2.5-flash')
+  const [aiModel, setAiModel]   = useState<AiModel>('claude-sonnet-5-5')
   const [aiEnabled, setAiEnabled] = useState(false)
   const [aiSaving, setAiSaving]   = useState(false)
   const [aiTesting, setAiTesting] = useState(false)
@@ -146,7 +146,7 @@ export default function SettingsPage() {
     try {
       // якщо ключ ще не збережено, але введено — перевіримо введений
       await aiApi.test(aiKey.trim() ? { api_key: aiKey.trim(), model: aiModel } : { model: aiModel })
-      toast.success('Звʼязок з Gemini працює ✓')
+      toast.success('Звʼязок з Claude працює ✓')
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Ключ не працює')
     } finally {
@@ -161,7 +161,7 @@ export default function SettingsPage() {
   const [childSku, setChildSku]           = useState('')
   const [childPrice, setChildPrice]       = useState('')
   useUnsavedChanges(Boolean((settingsSnapshot !== null && JSON.stringify(form) !== settingsSnapshot)
-    || JSON.stringify(seller) !== sellerSnapshot || aiKey || aiModel !== (aiStatus?.model ?? 'gemini-2.5-flash')
+    || JSON.stringify(seller) !== sellerSnapshot || aiKey || aiModel !== (aiStatus?.model ?? 'claude-sonnet-5-5')
     || aiEnabled !== (aiStatus?.enabled ?? false) || newMin || newMax || newPct
     || childLabel || childSku || childPrice
     || (editItem && JSON.stringify(editItem) !== JSON.stringify((form.pos_quick_items?.length ? form.pos_quick_items : DEFAULT_QUICK_ITEMS)[editIdx ?? -1]))),
@@ -922,14 +922,14 @@ export default function SettingsPage() {
           </div>
         </Card>
 
-        {/* ========== Помічник АІ (Gemini) ========== */}
+        {/* ========== Помічник АІ (Claude) ========== */}
         {/* Окремо від форми магазину: ключ шифрується й зберігається через власний ендпойнт. */}
         {!offlineMode && (
         <Card className="mt-6 space-y-4">
           <div className="flex items-center justify-between pb-3 border-b border-gray-100">
             <div className="flex items-center gap-2">
               <Sparkles size={18} className="text-purple-500" />
-              <h3 className="text-sm font-semibold text-gray-800">ШІ-помічник (Gemini)</h3>
+              <h3 className="text-sm font-semibold text-gray-800">ШІ-помічник (Claude Sonnet)</h3>
             </div>
             {aiStatus?.has_key && (
               <span className="text-[11px] px-2 py-0.5 rounded-full bg-green-50 text-green-600 font-semibold">
@@ -940,36 +940,26 @@ export default function SettingsPage() {
 
           <p className="text-xs text-gray-400">
             ШІ-помічник розбирає накладні, Excel і текст; «Перевірка каталогу» пропонує виправлення наявних товарів. Ці налаштування зберігаються окремо кнопкою «Зберегти налаштування ШІ».
-            Ключ Gemini зберігається зашифрованим на сервері й не показується назад. Отримати ключ:{' '}
-            <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" className="text-blue-500 underline">
-              aistudio.google.com/apikey
-            </a>.
+            Ключ Anthropic зберігається зашифрованим на сервері й не показується назад. Створити ключ і поповнити баланс:{' '}
+            <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer" className="text-blue-500 underline">
+              console.anthropic.com
+            </a>. Оплата — за фактичне використання, витрати видно нижче.
           </p>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">API-ключ Gemini</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">API-ключ Anthropic</label>
             <input
               type="password"
               value={aiKey}
               onChange={(e) => setAiKey(e.target.value)}
-              aria-label="API-ключ Gemini"
-              placeholder={aiStatus?.has_key ? '•••••••••• (лишіть порожнім, щоб не змінювати)' : 'AIza...'}
+              aria-label="API-ключ Anthropic"
+              placeholder={aiStatus?.has_key ? '•••••••••• (лишіть порожнім, щоб не змінювати)' : 'sk-ant-...'}
               className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent font-mono"
             />
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Модель</label>
-            <select
-              value={aiModel}
-              onChange={(e) => setAiModel(e.target.value as AiModel)}
-              aria-label="Модель Gemini"
-              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent bg-white"
-            >
-              {AI_MODELS.map((m) => (
-                <option key={m} value={m}>{AI_MODEL_LABELS[m]}</option>
-              ))}
-            </select>
+          <div className="text-sm text-gray-700">
+            <span className="font-medium">Модель:</span> {AI_MODEL_LABELS[aiModel] ?? AI_MODEL_LABELS['claude-sonnet-5-5']}
           </div>
 
           <div className="flex items-center justify-between py-1">

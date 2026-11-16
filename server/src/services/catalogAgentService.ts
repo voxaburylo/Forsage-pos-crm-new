@@ -1,9 +1,10 @@
-import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai'
+import { ClaudeClient, jsonOnlyInstruction, SchemaType } from './aiClaude.js'
+import { parseAiJsonObject } from './aiInvoiceResponse.js'
 import { z } from 'zod'
 import { AppError } from '../middleware/errorHandler.js'
 import { getAiConfig, recordAiUsage } from './aiService.js'
 import { withAiDataBoundary } from './aiPromptSafety.js'
-import { aiResponseCompletionError, isAiIncompleteResponseError } from './aiResponseSafety.js'
+import { isAiIncompleteResponseError } from './aiResponseSafety.js'
 import { isAiBudgetError, withAiExecutionBudget } from './aiExecutionBudget.js'
 
 class CatalogProposalError extends Error {}
@@ -50,22 +51,21 @@ export function validateCatalogProposals(raw: unknown, input: z.infer<typeof cat
 export async function reviewCatalog(tenantId: string, userId: string, input: z.infer<typeof catalogReviewSchema>) {
   return withAiExecutionBudget(90_000, async budget => {
     const cfg = await budget.run(signal => getAiConfig(tenantId, signal))
-    if (!cfg.enabled || !cfg.apiKey) throw new AppError('AI_NOT_CONFIGURED', 'Увімкніть AI та додайте ключ Gemini в налаштуваннях', 400)
-    const model = new GoogleGenerativeAI(cfg.apiKey).getGenerativeModel({ model: cfg.model, systemInstruction: withAiDataBoundary(CATALOG_AGENT_INSTRUCTION),
-      generationConfig: { temperature: 0, maxOutputTokens: 16384, responseMimeType: 'application/json', responseSchema: {
+    if (!cfg.enabled || !cfg.apiKey) throw new AppError('AI_NOT_CONFIGURED', 'Увімкніть ШІ та додайте ключ Anthropic у Налаштування → ШІ', 400)
+    const system = withAiDataBoundary(CATALOG_AGENT_INSTRUCTION + '\n' + jsonOnlyInstruction({
         type: SchemaType.OBJECT, properties: { proposals: { type: SchemaType.ARRAY, items: { type: SchemaType.OBJECT,
           properties: { id: { type: SchemaType.STRING }, name: { type: SchemaType.STRING }, sku: { type: SchemaType.STRING }, category_id: { type: SchemaType.STRING, nullable: true }, reason: { type: SchemaType.STRING } },
-          required: ['id', 'name', 'sku', 'category_id', 'reason'] } } }, required: ['proposals'] } } })
+          required: ['id', 'name', 'sku', 'category_id', 'reason'] } } }, required: ['proposals'] }))
     try {
-      const { response } = await budget.run(signal => model.generateContent(JSON.stringify(input), { timeout: 90_000, signal }))
-      const usage = response.usageMetadata
-      await budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, usage?.promptTokenCount ?? 0, Math.max(0, (usage?.totalTokenCount ?? 0) - (usage?.promptTokenCount ?? 0)), signal))
-      const incomplete = aiResponseCompletionError(response)
-      if (incomplete) throw incomplete
-      const proposals = validateCatalogProposals(JSON.parse(response.text()), input)
+      const result = await new ClaudeClient(cfg.apiKey, cfg.model as any).complete(budget, { system, text: JSON.stringify(input), maxTokens: 16384 })
+      await budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, result.promptTokens, result.completionTokens, signal))
+      if (result.truncated) throw new AppError('AI_RESPONSE_TOO_LARGE', 'Відповідь ШІ завелика. Перевірте менший пакет товарів.', 422)
+      const raw = parseAiJsonObject(result.text)
+      if (!raw) throw new SyntaxError('invalid json')
+      const proposals = validateCatalogProposals(raw, input)
       return { proposals }
     } catch (error) {
-      if (isAiBudgetError(error) || isAiIncompleteResponseError(error)) throw error
+      if (isAiBudgetError(error) || isAiIncompleteResponseError(error) || error instanceof AppError) throw error
       if (error instanceof CatalogProposalError) throw new AppError('AI_REVIEW_INVALID', error.message, 422)
       if (error instanceof SyntaxError || error instanceof z.ZodError) throw new AppError('AI_REVIEW_INVALID', 'ШІ повернув некоректний формат перевірки. Пропозиції не застосовано; повторіть перевірку.', 422)
       // Provider messages and JSON/Zod excerpts can contain private document data.

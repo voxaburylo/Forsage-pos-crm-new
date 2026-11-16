@@ -1,9 +1,10 @@
-import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai'
+import { ClaudeClient, jsonOnlyInstruction, SchemaType } from './aiClaude.js'
+import { parseAiJsonObject } from './aiInvoiceResponse.js'
 import { z } from 'zod'
 import { AppError } from '../middleware/errorHandler.js'
 import { getAiConfig, recordAiUsage } from './aiService.js'
 import { withAiDataBoundary } from './aiPromptSafety.js'
-import { aiResponseCompletionError, isAiIncompleteResponseError } from './aiResponseSafety.js'
+import { isAiIncompleteResponseError } from './aiResponseSafety.js'
 import { isAiBudgetError, withAiExecutionBudget } from './aiExecutionBudget.js'
 
 const product = z.object({
@@ -43,22 +44,17 @@ export async function reviewCatalogDuplicates(tenantId: string, userId: string, 
   return withAiExecutionBudget(90_000, async budget => {
     const cfg = await budget.run(signal => getAiConfig(tenantId, signal))
     if (!cfg.enabled || !cfg.apiKey) throw new AppError('AI_NOT_CONFIGURED', 'ШІ не налаштовано. Локальне сканування доступне без нього.', 400)
-    const model = new GoogleGenerativeAI(cfg.apiKey).getGenerativeModel({ model: cfg.model,
-      systemInstruction: withAiDataBoundary(DUPLICATE_REVIEW_INSTRUCTION),
-      generationConfig: { temperature: 0, maxOutputTokens: 4096, responseMimeType: 'application/json', responseSchema: {
+    const system = withAiDataBoundary(DUPLICATE_REVIEW_INSTRUCTION + '\n' + jsonOnlyInstruction({
         type: SchemaType.OBJECT, properties: { reviews: { type: SchemaType.ARRAY, items: { type: SchemaType.OBJECT,
           properties: { group_id: { type: SchemaType.STRING }, verdict: { type: SchemaType.STRING, format: 'enum', enum: ['same', 'different', 'uncertain'] }, reason: { type: SchemaType.STRING } },
           required: ['group_id', 'verdict', 'reason'] } } }, required: ['reviews'],
-      } } })
+      }))
     try {
-      const { response } = await budget.run(signal => model.generateContent(JSON.stringify(input), { timeout: 90_000, signal }))
-      const usage = response.usageMetadata
-      await budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, usage?.promptTokenCount ?? 0,
-        Math.max(0, (usage?.totalTokenCount ?? 0) - (usage?.promptTokenCount ?? 0)), signal))
-      const incomplete = aiResponseCompletionError(response)
-      if (incomplete) throw incomplete
+      const answer = await new ClaudeClient(cfg.apiKey, cfg.model as any).complete(budget, { system, text: JSON.stringify(input), maxTokens: 8000 })
+      await budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, answer.promptTokens, answer.completionTokens, signal))
+      if (answer.truncated) throw new AppError('AI_RESPONSE_TOO_LARGE', 'Відповідь ШІ завелика. Перевірте менше груп за раз.', 422)
       let result: ReturnType<typeof validateDuplicateReviews>
-      try { result = validateDuplicateReviews(JSON.parse(response.text()), input) }
+      try { result = validateDuplicateReviews(parseAiJsonObject(answer.text), input) }
       catch { throw new AppError('AI_REVIEW_INVALID', 'ШІ повернув неповну або некоректну перевірку. Нічого не змінено.', 422) }
       return result
     } catch (error) {

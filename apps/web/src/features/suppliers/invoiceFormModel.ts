@@ -503,3 +503,19 @@ export function duplicateProductMessage(err: unknown, itemName?: string): string
   return `${prefix}такий товар вже існує. Перевірте артикул або штрихкод.`
 }
 
+
+/**
+ * Питання помічнику про рядок, що не проводиться: усе потрібне для пояснення в одному тексті.
+ * Власник бачить і може змінити його перед відправкою; нічого не записується.
+ */
+export function invoiceProblemQuestion(item: Pick<LineItem, 'product_name' | 'sku' | 'barcode' | 'qty' | 'purchase_price' | 'product_id'>, reason: string): string {
+  const details = [
+    item.sku?.trim() ? `артикул ${item.sku.trim()}` : 'без артикула',
+    item.barcode?.trim() ? `штрихкод ${item.barcode.trim()}` : 'без штрихкоду',
+    `кількість ${item.qty}`,
+    `закупка ${(item.purchase_price / 100).toFixed(2)} грн`,
+    item.product_id ? 'привʼязаний до наявної картки' : 'нова картка',
+  ].join(', ')
+  const why = reason.trim() || 'причину не показано'
+  return `Не проводиться рядок накладної «${item.product_name.trim() || 'без назви'}» (${details}). Програма пише: «${why}». Що це означає і що мені зробити? Нічого не змінюй сам — підкажи, що натиснути.`.slice(0, 3000)
+}

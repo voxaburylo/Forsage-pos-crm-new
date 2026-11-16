@@ -8,7 +8,7 @@ import { aiAvailabilityProblem, type AiAvailabilityProblem } from './aiAvailabil
 import { reportLocalError } from '@/lib/localDiagnostics'
 import { reportAiFailure } from './aiDiagnostics'
 import { assertAiWriteAllowed, canApplyAiWrite } from './aiWritePolicy'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Sparkles, Send, Paperclip, ClipboardPaste, X, Check, Loader2, AlertTriangle, Settings as SettingsIcon, Eye, Trash2,
 } from 'lucide-react'
@@ -215,7 +215,12 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
 
   const [savedChat] = useState(() => readAiChat(storageKey, localStorage))
   const [entries, setEntries] = useState<ChatEntry[]>(savedChat.entries ?? [])
-  const [input, setInput] = useState('')
+  const location = useLocation()
+  // Питання, з яким сюди перейшли з іншого екрана (напр. «рядок не проводиться»): лише підставляємо в поле.
+  const [input, setInput] = useState(() => {
+    const ask = (location.state as { ask?: unknown } | null)?.ask
+    return typeof ask === 'string' ? ask.slice(0, 3000) : ''
+  })
   const [sending, setSending] = useState(false)
   const sendBusy = useRef(false)
   const attachmentBusy = useRef(0)
@@ -755,8 +760,8 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
               <Sparkles size={18} className="text-white" />
             </div>
             <div>
-              <p className="text-sm font-bold text-gray-800">Помічник (Gemini)</p>
-              <p className="text-[11px] text-gray-400">{status?.model ?? 'gemini-2.5-flash'}</p>
+              <p className="text-sm font-bold text-gray-800">Помічник (Claude Sonnet)</p>
+              <p className="text-[11px] text-gray-400">Claude Sonnet 5.5</p>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -790,10 +795,10 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
               <AlertTriangle size={18} className="text-amber-500 mt-0.5 shrink-0" />
               <div className="flex-1">
                 <p className="text-sm font-semibold text-amber-800">
-                  {!status?.has_key ? 'Ключ Gemini не додано' : 'Помічник вимкнено'}
+                  {!status?.has_key ? 'Ключ Anthropic не додано' : 'Помічник вимкнено'}
                 </p>
                 <p className="text-xs text-amber-700 mt-0.5">
-                  Додайте API-ключ Gemini та увімкніть помічника в Налаштуваннях, щоб почати діалог.
+                  Додайте ключ Anthropic та увімкніть помічника в Налаштуваннях → ШІ, щоб почати діалог.
                 </p>
               </div>
               {canConfigure ? (
