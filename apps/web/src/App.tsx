@@ -26,6 +26,7 @@ const POSPage              = lazyPage(() => import('@/features/pos/POSPage'))
 const SalesPage            = lazyPage(() => import('@/features/sales/SalesPage'))
 const ReturnForm           = lazyPage(() => import('@/features/pos/ReturnForm'))
 const DailyReport          = lazyPage(() => import('@/features/reports/DailyReport'))
+const PublicPriceListPage = lazyPage(() => import('@/features/priceLinks/PublicPriceListPage'))
 const ControlReportPage = lazyPage(() => import('@/features/analytics/ControlReportPage'))
 const PayrollPage          = lazyPage(() => import('@/features/analytics/PayrollPage'))
 const AdminPage            = lazyPage(() => import('@/features/admin/AdminPage'))
@@ -163,6 +164,8 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBounda
 function App() {
   const desktop = isDesktopRuntime()
   const [router] = useState(() => (desktop ? createHashRouter : createBrowserRouter)([
+    // Прайс для клієнта: публічна сторінка без входу й без робочого простору програми.
+    { path: '/p/:token', element: <Suspense fallback={<Loader />}><PublicPriceListPage /></Suspense> },
     { path: '*', element: <Workspace /> },
   ]))
 

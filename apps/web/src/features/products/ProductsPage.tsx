@@ -7,6 +7,7 @@ import {
   Trash2, GitMerge, Copy, FileText, Camera,
 } from 'lucide-react'
 import { CameraScanner } from '@/features/pos/CameraScanner'
+import { PriceLinkModal } from '@/features/priceLinks/PriceLinkModal'
 import { MergeModal } from './MergeModal'
 import { CrossNumberBadge } from './CrossNumberBadge'
 import { CatalogChunk, catalogChunks, useDesktopCatalogLayout } from './CatalogChunk'
@@ -154,6 +155,7 @@ export default function ProductsPage() {
   }
   usePOSBarcodeScanner({ onScan: applyScannedCode })
   const [cameraOpen, setCameraOpen] = useState(false)
+  const [priceLinkOpen, setPriceLinkOpen] = useState(false)
 
   function startEditPrice(p: Product) {
     if (!canEditCatalog) return
@@ -631,6 +633,7 @@ export default function ProductsPage() {
                 <Camera size={18} />
               </button>
             </div>
+            <PriceLinkModal open={priceLinkOpen} productIds={Array.from(selectedIds)} onClose={() => setPriceLinkOpen(false)} />
             <CameraScanner open={cameraOpen} onClose={() => setCameraOpen(false)} onScan={(code) => { setCameraOpen(false); applyScannedCode(code) }} />
             <select
               value={brandFilter}
@@ -696,6 +699,9 @@ export default function ProductsPage() {
                 </div>
                 <Button size="sm" disabled={!canEditCatalog} onClick={() => setBulkOpen(true)}>✏️ Редагувати</Button>
                 <Button size="sm" variant="secondary" className="hidden sm:inline-flex" onClick={() => setBulkPrintOpen(true)}>🏷️ Друк етикеток</Button>
+                {isDesktopRuntime() && ['owner', 'admin', 'manager'].includes(role) && (
+                  <Button size="sm" variant="secondary" onClick={() => setPriceLinkOpen(true)}>🔗 Прайс для клієнта</Button>
+                )}
                 {isAdmin && (
                   <Button size="sm" variant="secondary"
                     onClick={askBulkDelete}

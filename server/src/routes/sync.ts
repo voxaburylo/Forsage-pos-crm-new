@@ -4,7 +4,6 @@ import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { getBootstrapSnapshot, getSyncChanges, pushLocalOperations } from '../services/syncService.js'
 import { streamSyncJson } from '../lib/streamSyncJson.js'
-import { lastLocalDataAt } from '../services/sync/dataFreshness.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -20,6 +19,8 @@ router.get('/capabilities', (_req, res) => {
 router.get('/freshness', async (req, res, next) => {
   try {
     res.setHeader('Cache-Control', 'private, no-store')
+    // Ліниво: модуль бази підключаємо лише тут, як і в інших звітах.
+    const { lastLocalDataAt } = await import('../services/sync/dataFreshness.js')
     res.json({ data: { last_local_data_at: await lastLocalDataAt(req.user!.tenant_id) } })
   } catch (error) {
     next(error)
