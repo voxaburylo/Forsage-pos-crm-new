@@ -147,8 +147,18 @@ describe('atomic receiving on isolated SQLite', () => {
   it('rejects archived Cyrillic SKU aliases instead of resurrecting the deleted card', () => {
     const product = catalog.saveProduct({ id: randomUUID(), name: 'Архів', sku: 'КРУГ', qty_on_hand: 0 })
     catalog.deleteProduct(product.id); const before = snapshot()
-    expect(() => commitReceiving(db, body([line({ sku: 'круг', product_name: 'Інший круг' })]))).toThrow('архівною')
+    expect(() => commitReceiving(db, body([line({ sku: 'круг', product_name: 'Інший круг' })]))).toThrow('має видалена картка «Архів»')
     expect(snapshot()).toEqual(before)
+  })
+  it('posts a supplier code left on a cleaned-up duplicate to its single live replacement', () => {
+    // Після очищення дублів: стара картка з кодом постачальника видалена, той самий товар живе під іншим артикулом.
+    const old = catalog.saveProduct({ id: randomUUID(), name: 'Alloid. Пiстолет продувочный. 2 сменные насадки', sku: 'ПК-003', qty_on_hand: 0 })
+    catalog.deleteProduct(old.id)
+    const live = catalog.saveProduct({ id: randomUUID(), name: 'Alloid. Пiстолет продувочный. 2 сменные насадки', sku: '87775', retail_price: 19500, qty_on_hand: 2 })
+    const saved = commitReceiving(db, body([line({ sku: 'ПК-003', product_name: 'Alloid. Пістолет продувний. ПК-003', qty: 1, purchase_price: 13920, retail_price: 19500 })]))
+    expect(saved.items[0].product_id).toBe(live.id)
+    expect(catalog.findById(live.id)?.qty_on_hand).toBe(3)
+    expect(db.prepare('SELECT deleted_at FROM products WHERE id = ?').get(old.id)).toMatchObject({ deleted_at: expect.any(String) })
   })
   it('rejects missing category before creating any cards', () => {
     const before = snapshot(); expect(() => commitReceiving(db, body([line({ category_id: randomUUID() })]))).toThrow('Категорію видалено'); expect(snapshot()).toEqual(before)
