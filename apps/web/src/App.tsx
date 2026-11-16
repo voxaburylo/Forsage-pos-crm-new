@@ -26,6 +26,7 @@ const POSPage              = lazyPage(() => import('@/features/pos/POSPage'))
 const SalesPage            = lazyPage(() => import('@/features/sales/SalesPage'))
 const ReturnForm           = lazyPage(() => import('@/features/pos/ReturnForm'))
 const DailyReport          = lazyPage(() => import('@/features/reports/DailyReport'))
+const ControlReportPage = lazyPage(() => import('@/features/analytics/ControlReportPage'))
 const PayrollPage          = lazyPage(() => import('@/features/analytics/PayrollPage'))
 const AdminPage            = lazyPage(() => import('@/features/admin/AdminPage'))
 const SettingsPage         = lazyPage(() => import('@/features/settings/SettingsPage'))
@@ -203,6 +204,7 @@ function Workspace() {
           <Route path="/analytics"            element={<AnalyticsHome />} />
           <Route path="/analytics/statistics" element={<ProtectedRoute roles={OFFICE_ROLES}><DashboardPage /></ProtectedRoute>} />
           <Route path="/analytics/sales"      element={<ProtectedRoute roles={REPORT_ROLES}><DailyReport /></ProtectedRoute>} />
+          <Route path="/analytics/control"    element={<ProtectedRoute roles={OFFICE_ROLES}><ControlReportPage /></ProtectedRoute>} />
           <Route path="/analytics/payroll"    element={<ProtectedRoute roles={ADMIN_ROLES}><PayrollPage /></ProtectedRoute>} />
           <Route path="/dashboard"             element={<Navigate to="/analytics/statistics" replace />} />
           <Route path="/products"           element={<ProtectedRoute><ProductsPage /></ProtectedRoute>} />

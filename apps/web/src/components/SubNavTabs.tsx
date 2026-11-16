@@ -119,6 +119,7 @@ export const INVENTORY_TABS = [
 export const ANALYTICS_TABS = [
   { to: '/analytics/statistics', label: 'Статистика', roles: ['owner', 'admin', 'manager'] },
   { to: '/analytics/sales', label: 'Звіти про продажі', roles: ['owner', 'admin', 'manager', 'cashier'] },
+  { to: '/analytics/control', label: 'Контроль', roles: ['owner', 'admin', 'manager'] },
   { to: '/analytics/payroll', label: 'Зарплата та виплати', roles: ['owner', 'admin'] },
 ]
 
