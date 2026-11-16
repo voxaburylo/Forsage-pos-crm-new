@@ -110,7 +110,7 @@ export function commitReceiving(db: LocalDatabase, input: ReceivingCommitInput):
     const catalog = new LocalCatalogRepository(db)
     // Exact indexes: no fuzzy search, deleted-card bridges or result limits.
     const products = db.prepare('SELECT * FROM products WHERE tenant_id = ? AND deleted_at IS NULL').all(tenant) as any[]
-    const archivedSkus = new Set((db.prepare('SELECT sku FROM products WHERE tenant_id = ? AND deleted_at IS NOT NULL').all(tenant) as Array<{ sku: string }>).map(row => skuKey(row.sku)))
+    const archivedSkus = new Map((db.prepare('SELECT sku, name FROM products WHERE tenant_id = ? AND deleted_at IS NOT NULL').all(tenant) as Array<{ sku: string; name: string }>).map(row => [skuKey(row.sku), clean(row.name)]))
     const byId = new Map(products.map(row => [row.id as string, row]))
     const bySku = new Map<string, Set<string>>(), byBarcode = new Map<string, Set<string>>(), byName = new Map<string, Set<string>>()
     const index = (map: Map<string, Set<string>>, key: string, id: string) => { if (key) { const ids = map.get(key) ?? new Set(); ids.add(id); map.set(key, ids) } }
@@ -131,6 +131,15 @@ export function commitReceiving(db: LocalDatabase, input: ReceivingCommitInput):
           const names = byName.get(nameKey(line.product_name))
           if (names && names.size > 1) lineFailure(i, 'Є кілька товарів із точною назвою. Виберіть картку вручну.')
           if (names?.size === 1) product = byId.get([...names][0])
+        }
+        if (!product && clean(line.sku) && archivedSkus.has(skuKey(line.sku))) {
+          // Очищення дублів лишило видалену картку з кодом постачальника, а товар живе в іншій картці.
+          // Пошук накладної вже веде такий код до неї; проведення бере ту саму єдину живу заміну,
+          // а не відмовляє і не воскрешає видалену картку.
+          const replacement = catalog.findBySku(clean(line.sku), tenant)
+          product = replacement ? byId.get(replacement.id) : undefined
+          if (!product) lineFailure(i, `Артикул «${clean(line.sku)}» має видалена картка «${archivedSkus.get(skuKey(line.sku)) || 'без назви'}». `
+            + 'Виберіть живу картку через пошук у рядку, відновіть видалену в товарах або змініть артикул.')
         }
         let saved: any
         if (product) {
@@ -153,8 +162,6 @@ export function commitReceiving(db: LocalDatabase, input: ReceivingCommitInput):
           saved = Object.keys(patch).length ? catalog.saveProduct({ ...productInput(product), ...patch }) : product
         } else {
           const sku = clean(line.sku) || 'AUTO-' + randomUUID().replace(/-/g, '').toUpperCase()
-          // An archived SKU is history, not permission to revive an unrelated card.
-          if (archivedSkus.has(skuKey(sku))) lineFailure(i, 'Артикул зайнятий архівною карткою. Відновіть її або змініть артикул.')
           let categoryId = nullable(line.category_id), brandId: string | null = null
           if (line.ai_review) {
             const brand = invoiceBrand(line.ai_review.source)

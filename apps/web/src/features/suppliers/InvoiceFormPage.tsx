@@ -79,6 +79,8 @@ export default function InvoiceFormPage() {
   const [productSearch, setProductSearch] = useState('')
   const [productResults, setProductResults] = useState<Product[]>([])
   const [problemLineKey, setProblemLineKey] = useState<string | null>(null)
+  // Причина лишається під рядком: спливаюче повідомлення зникає, а без причини рядок не виправити.
+  const [problemLineMessage, setProblemLineMessage] = useState('')
 
   // Порівняння закупівельних цін постачальників по доданих товарах
   const [supplierPrices, setSupplierPrices] = useState<Record<string, Array<{ supplier_id: string; supplier_name: string; price: number; date: string }>>>({})
@@ -562,6 +564,7 @@ export default function InvoiceFormPage() {
 
   function raiseInvoiceLineProblem(rowKey: string, message: string, _fallbackItem?: LineItem, field: RowField = 'sku') {
     setProblemLineKey(rowKey)
+    setProblemLineMessage(message)
     toast.error(message)
     window.setTimeout(() => {
       if (focusInvoiceLine(invoiceFormRef.current, rowKey, field)) return
@@ -1668,7 +1671,7 @@ export default function InvoiceFormPage() {
                       className="w-full rounded-lg border border-transparent bg-transparent px-2 py-1 text-sm font-medium outline-none hover:border-gray-200 focus:border-yellow-400 focus:bg-white focus:ring-2 focus:ring-yellow-100 disabled:bg-gray-50 disabled:text-gray-400" />
                     {problemLineKey === item.client_key && (
                       <div className="mt-1 rounded-lg border border-red-200 bg-red-100 px-2 py-1 text-[11px] font-semibold text-red-700">
-                        Проблемний рядок: змініть артикул, або видаліть рядок і додайте товар через пошук.
+                        {problemLineMessage || 'Проблемний рядок.'} Виправте рядок або виберіть товар через пошук.
                       </div>
                     )}
                     <div className="flex items-center gap-1.5 mt-1 px-2 text-xs">
@@ -1869,7 +1872,7 @@ export default function InvoiceFormPage() {
                       className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-sm font-medium outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
                     {problemLineKey === item.client_key && (
                       <div className="mt-1 rounded-lg border border-red-200 bg-red-100 px-2 py-1 text-[11px] font-semibold text-red-700">
-                        Проблемний рядок: змініть артикул, або видаліть рядок і додайте товар через пошук.
+                        {problemLineMessage || 'Проблемний рядок.'} Виправте рядок або виберіть товар через пошук.
                       </div>
                     )}
                   </div>
