@@ -1,4 +1,5 @@
 import { safeDiagnosticDetails } from './blackBoxData'
+import { isStoredReceivingDetail, receivingProblemDetail } from './receivingReasons'
 
 const explanations: Record<string, string> = {
   unknown: 'Технічна помилка; причину можна зіставити за відбитком',
@@ -35,6 +36,17 @@ export function safeProblemDetail(value: unknown, problemCode: string): string |
   const text = value.slice(0, 8192)
   const prior = /^(.*) \[([a-z-]+)\]\. Відбиток: ([a-f0-9]{20})\.$/.exec(text)
   if (prior && prior[1] === explanations[prior[2]]) return text
+  const storedReceiving = /^(.*) \[(receiving-[a-z-]+)(?::([a-z-]+))?\]\.(?: Відбиток: [a-f0-9]{20}\.)?$/.exec(text)
+  if (storedReceiving && isStoredReceivingDetail(storedReceiving[1], storedReceiving[2])
+    && (!storedReceiving[3] || Object.hasOwn(explanations, storedReceiving[3]))) return text
+  const receiving = receivingProblemDetail(text)
+  if (receiving && receiving.code.startsWith('receiving-step-')) {
+    // Крок відомий, а сама помилка лишається відбитком: її текст може містити назви й артикули.
+    const inner = safeDiagnosticDetails(text.replace(/^[\s\S]*RECEIVING_STEP:[a-z-]+:\s*/, ''))
+    const innerCode = Object.hasOwn(explanations, String(inner.error_code)) ? String(inner.error_code) : 'unknown'
+    return `${receiving.explanation}; ${explanations[innerCode]} [${receiving.code}:${innerCode}]. Відбиток: ${inner.fingerprint}.`
+  }
+  if (receiving) return `${receiving.explanation} [${receiving.code}].`
   const diagnostic = safeDiagnosticDetails(text)
   const candidate = text.includes('products_brand_id_fkey') ? 'foreign-brand-key' : String(diagnostic.error_code ?? 'unknown')
   const code = Object.hasOwn(explanations, candidate) ? candidate : 'unknown'

@@ -587,6 +587,8 @@ const EXPECTED_COMMAND_FAILURES = [
 ]
 
 function isExpectedCommandFailure(message: string): boolean {
+  // «Не пускає провести накладну» повторювалося без сліду: причину рядка пишемо завжди (лише код).
+  if (message.includes('RECEIVING_LINE:') || message.includes('RECEIVING_STEP:')) return false
   return EXPECTED_COMMAND_FAILURES.some((marker) => message.includes(marker))
 }
 
