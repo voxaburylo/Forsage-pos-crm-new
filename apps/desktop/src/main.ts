@@ -25,6 +25,7 @@ import { ShiftBackupService } from './backup/shiftBackupService'
 import { customerHistory } from './repositories/customerHistory'
 import { runCatalogAgent } from './repositories/catalogAgentWorker'
 import { assertLocalDataAuthority } from './security/localDataAuthority'
+import { fetchCloudBackup, type CloudBackupRequest } from './backup/cloudRestore'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { DEFAULT_TENANT_ID } from './db/localTypes'
 import type {
@@ -1273,6 +1274,21 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:backup:failed', (_event, id: string, message: string) =>
     shiftBackups!.cloudFailed(requireDesktopSession().tenant_id, id, String(message)))
   handleDesktopIpc('desktop:backup:list', () => requireLocalDatabase().listBackups())
+  handleDesktopIpc('desktop:backup:fetch-cloud', async (_event, request: CloudBackupRequest) => {
+    const session = requireDesktopSession()
+    const dataRoot = desktopDataRoot
+    if (!dataRoot) throw new Error('LOCAL_DATA_ROOT_NOT_READY')
+    // Копія має належати магазину, в який увійшов власник.
+    if (!request || request.tenant_id !== session.tenant_id) throw new Error('Копія належить іншому магазину')
+    const result = await fetchCloudBackup(request, {
+      backupsDir: path.join(dataRoot, 'backups'),
+      trustedOrigin: requireTrustedAuthConfig().supabaseUrl,
+      fetchImpl: net.fetch.bind(net) as unknown as typeof fetch,
+      assertUsable: file => LocalDatabase.assertBackupIsUsable(file),
+    })
+    writeDesktopDiagnostic('cloud-backup-fetched', { fileName: result.fileName, sizeBytes: result.sizeBytes })
+    return { fileName: result.fileName, sizeBytes: result.sizeBytes }
+  })
   handleDesktopIpc('desktop:backup:restore', async (_event, fileName: string) => {
     if (lanOrderQueue?.hasPending()) throw new Error('Не можна відновити стару базу, поки є непередані офлайн-замовлення. Спочатку збережіть і звірте їх із головним ПК.')
     if (activeDesktopCommands.size > 1) {

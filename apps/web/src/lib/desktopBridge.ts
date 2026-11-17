@@ -534,6 +534,8 @@ interface ForsageDesktopBridge {
   listBackups?: () => Promise<DesktopDatabaseBackup[]>
   /** Ставить копію на місце й перезапускає програму — відповіді можна не чекати. */
   restoreBackup?: (fileName: string) => Promise<DesktopDatabaseBackup>
+  /** Аварійне відновлення: скачати перевірену хмарну копію у папку копій цього ПК (заміна бази — restoreBackup). */
+  fetchCloudBackup?: (request: { url: string; tenant_id: string; device_id: string; id: string; sha256: string; size_bytes: number }) => Promise<{ fileName: string; sizeBytes: number }>
   catalog: {
     agentScan?: (input: { min_markup: number }) => Promise<any>
     cleanupScan?: () => Promise<import('../features/admin/catalogCleanupModel').CleanupScan>

@@ -65,8 +65,11 @@ router.get('/', requireRole('owner','admin'), async(req,res,next)=>{
       if(!/^[a-f0-9-]{36}$/i.test(device.name)) continue
       const files=await db.storage.from(BACKUP_BUCKET).list(req.user!.tenant_id+'/'+device.name,{limit:1000})
       if(files.error) throw files.error
+      const sizes = new Map((files.data ?? []).map(file => [file.name, Number((file as any).metadata?.size) || 0]))
       for(const file of files.data ?? []) if(/^[a-f0-9-]{36}-[a-f0-9]{64}\.db\.gz\.json$/i.test(file.name)) {
-        result.push({device_id:device.name,name:file.name.slice(0,-5),created_at:file.created_at})
+        const name = file.name.slice(0,-5)
+        // Усе, що потрібно для аварійного відновлення: id, контрольна сума й розмір архіву.
+        result.push({device_id:device.name,name,created_at:file.created_at,id:name.slice(0,36),sha256:name.slice(37,101),size_bytes:sizes.get(name) ?? 0})
       }
     }
     res.json({data:result})
@@ -74,7 +77,9 @@ router.get('/', requireRole('owner','admin'), async(req,res,next)=>{
 })
 router.post('/download',requireRole('owner','admin'),async(req,res,next)=>{
   try {
-    const item=backupDescriptor(req.body,req.user!.tenant_id)
+    // Розмір архіву перевіряє сама програма за контрольною сумою; сервер бере його зі сховища, а не з тіла запиту.
+    const requested = { ...req.body, tenant_id: req.user!.tenant_id, size_bytes: Number.isSafeInteger(req.body?.size_bytes) && req.body.size_bytes > 0 ? req.body.size_bytes : 1 }
+    const item=backupDescriptor(requested,req.user!.tenant_id)
     await privateBucket()
     const verified=await db.storage.from(BACKUP_BUCKET).download(item.path+'.json')
     if(verified.error || !verified.data) throw new AppError('BACKUP_NOT_VERIFIED','Перевірену копію не знайдено',404)

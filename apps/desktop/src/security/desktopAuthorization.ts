@@ -49,6 +49,8 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   // Відкат бази затирає роботу, зроблену після копії — тільки власник.
   ['desktop:backup:list', OWNER_ROLES],
   ['desktop:backup:restore', OWNER_ROLES],
+  // Аварійне відновлення: скачати найсвіжішу копію з хмари у папку копій цього ПК (заміна бази — окремий крок).
+  ['desktop:backup:fetch-cloud', OWNER_ROLES],
   // Журнал проблем читає той, хто стоїть за касою: саме він бачить збій першим
   // і має що сказати. Закривати й вивантажувати список — справа власника.
   ['desktop:problems:list', RECEIVING_ROLES],
