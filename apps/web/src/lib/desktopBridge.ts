@@ -8,6 +8,17 @@ export type DesktopServerSessionSaveResult =
 
 export type DesktopLanMode = 'standalone' | 'hub' | 'client'
 
+export interface ExternalBackupStatus {
+  folder: string | null
+  available: boolean
+  same_drive: boolean
+  last_copy_at: string | null
+  last_error: string | null
+  stale: boolean
+  running: boolean
+  copies: Array<{ fileName: string; sizeBytes: number; createdAt: string; sha256: string | null }>
+}
+
 /** Public first-run metadata: never contains the LAN key or staff/store data. */
 export interface DesktopLanFirstRunStatus {
   canPair: boolean
@@ -536,6 +547,14 @@ interface ForsageDesktopBridge {
   restoreBackup?: (fileName: string) => Promise<DesktopDatabaseBackup>
   /** Аварійне відновлення: скачати перевірену хмарну копію у папку копій цього ПК (заміна бази — restoreBackup). */
   fetchCloudBackup?: (request: { url: string; tenant_id: string; device_id: string; id: string; sha256: string; size_bytes: number }) => Promise<{ fileName: string; sizeBytes: number }>
+  /** Друга копія на флешці / зовнішньому диску. */
+  externalBackup?: {
+    status: () => Promise<ExternalBackupStatus>
+    choose: () => Promise<ExternalBackupStatus>
+    clear: () => Promise<ExternalBackupStatus>
+    run: () => Promise<ExternalBackupStatus>
+    importCopy: (fileName: string) => Promise<{ fileName: string; sizeBytes: number }>
+  }
   catalog: {
     agentScan?: (input: { min_markup: number }) => Promise<any>
     cleanupScan?: () => Promise<import('../features/admin/catalogCleanupModel').CleanupScan>

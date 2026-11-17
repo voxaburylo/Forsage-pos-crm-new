@@ -26,6 +26,7 @@ import { customerHistory } from './repositories/customerHistory'
 import { runCatalogAgent } from './repositories/catalogAgentWorker'
 import { assertLocalDataAuthority } from './security/localDataAuthority'
 import { fetchCloudBackup, type CloudBackupRequest } from './backup/cloudRestore'
+import { ExternalBackupService, importExternalCopy, readExternalConfig, setExternalFolder } from './backup/externalBackup'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { DEFAULT_TENANT_ID } from './db/localTypes'
 import type {
@@ -152,6 +153,7 @@ let mainWindow: BrowserWindow | null = null
 let localDatabase: LocalDatabase | null = null
 let stopBackupScheduler: (() => void) | null = null
 let shiftBackups: ShiftBackupService | null = null
+let externalBackups: ExternalBackupService | null = null
 let databaseMaintenance = false
 let quitAfterCleanup = false
 let localCatalog: LocalCatalogRepository | null = null
@@ -1149,7 +1151,14 @@ app.whenReady().then(async () => {
         detail: 'Зміна закрита. Вивантаження повториться. ' + (error instanceof Error ? error.message : String(error)) })
     })
   shiftBackups.start()
-  stopBackupScheduler = startBackupScheduler(localDatabase, (error) => {
+  externalBackups = new ExternalBackupService(dataRoot, localDatabase, error => {
+    writeDesktopDiagnostic('external-backup-failed', error)
+    recordDesktopProblem({ source: 'database', code: 'database.external_backup_failed',
+      title: 'Не вдалося записати копію на флешку',
+      detail: 'Робочі дані не змінено. ' + (error instanceof Error ? error.message : String(error)) })
+  })
+  externalBackups.start()
+  stopBackupScheduler =startBackupScheduler(localDatabase, (error) => {
     writeDesktopDiagnostic('local-backup-failed', error)
     recordDesktopProblem({ source: 'database', code: 'database.backup_failed',
       title: 'Не вдалося створити резервну копію',
@@ -1274,6 +1283,40 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:backup:failed', (_event, id: string, message: string) =>
     shiftBackups!.cloudFailed(requireDesktopSession().tenant_id, id, String(message)))
   handleDesktopIpc('desktop:backup:list', () => requireLocalDatabase().listBackups())
+  // Друга копія на флешці / зовнішньому диску (рішення власника 17.11.2026).
+  handleDesktopIpc('desktop:backup:external-status', () => {
+    if (!externalBackups) throw new Error('LOCAL_DATA_ROOT_NOT_READY')
+    return externalBackups.status()
+  })
+  handleDesktopIpc('desktop:backup:external-choose', async () => {
+    if (!desktopDataRoot || !externalBackups || !mainWindow) throw new Error('LOCAL_DATA_ROOT_NOT_READY')
+    const picked = await dialog.showOpenDialog(mainWindow, { title: 'Оберіть флешку або зовнішній диск для копій',
+      properties: ['openDirectory', 'createDirectory'], defaultPath: readExternalConfig(desktopDataRoot).folder ?? undefined })
+    if (picked.canceled || !picked.filePaths[0]) return externalBackups.status()
+    setExternalFolder(desktopDataRoot, picked.filePaths[0])
+    // Перша копія — одразу, щоб власник побачив результат.
+    await externalBackups.runNow().catch(error => writeDesktopDiagnostic('external-backup-failed', error))
+    return externalBackups.status()
+  })
+  handleDesktopIpc('desktop:backup:external-clear', () => {
+    if (!desktopDataRoot || !externalBackups) throw new Error('LOCAL_DATA_ROOT_NOT_READY')
+    setExternalFolder(desktopDataRoot, null)
+    return externalBackups.status()
+  })
+  handleDesktopIpc('desktop:backup:external-run', async () => {
+    if (!externalBackups) throw new Error('LOCAL_DATA_ROOT_NOT_READY')
+    await externalBackups.runNow()
+    return externalBackups.status()
+  })
+  handleDesktopIpc('desktop:backup:external-import', async (_event, fileName: string) => {
+    const dataRoot = desktopDataRoot
+    const folder = dataRoot ? readExternalConfig(dataRoot).folder : null
+    if (!dataRoot || !folder) throw new Error('Папку з копіями не вибрано')
+    const result = await importExternalCopy(folder, String(fileName), path.join(dataRoot, 'backups'),
+      file => LocalDatabase.assertBackupIsUsable(file))
+    writeDesktopDiagnostic('external-backup-imported', { fileName: result.fileName, sizeBytes: result.sizeBytes })
+    return result
+  })
   handleDesktopIpc('desktop:backup:fetch-cloud', async (_event, request: CloudBackupRequest) => {
     const session = requireDesktopSession()
     const dataRoot = desktopDataRoot
@@ -1311,6 +1354,7 @@ app.whenReady().then(async () => {
     let closed = false
     try {
       await shiftBackups?.stop()
+      await externalBackups?.stop()
       await database.waitForBackup()
       await localNetwork?.stop()
       cashalot?.stopWorker()
@@ -2168,6 +2212,7 @@ app.on('before-quit', (event) => {
       await lanOrderQueue?.settle()
       cashalot?.stopWorker()
       await shiftBackups?.stop()
+      await externalBackups?.stop()
       await localDatabase?.waitForBackup().catch((error) => writeDesktopDiagnostic('backup-on-quit-failed', error))
       await localDatabase?.waitForBackgroundWrite().catch((error) => writeDesktopDiagnostic('copy-on-quit-failed', error))
       localDatabase?.close()
