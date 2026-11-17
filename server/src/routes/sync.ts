@@ -15,6 +15,18 @@ router.get('/capabilities', (_req, res) => {
   res.json({ data: { catalog_cleanup: 1 } })
 })
 
+// «Дані станом на»: веб показує, коли сервер востаннє отримав зміни від каси.
+router.get('/freshness', async (req, res, next) => {
+  try {
+    res.setHeader('Cache-Control', 'private, no-store')
+    // Ліниво: модуль бази підключаємо лише тут, як і в інших звітах.
+    const { lastLocalDataAt } = await import('../services/sync/dataFreshness.js')
+    res.json({ data: { last_local_data_at: await lastLocalDataAt(req.user!.tenant_id) } })
+  } catch (error) {
+    next(error)
+  }
+})
+
 const querySchema = z.object({
   since: z.string().datetime({ offset: true }).optional(),
   include_references: z.enum(['true', 'false']).optional().transform((value) => value === 'true'),

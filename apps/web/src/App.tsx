@@ -1,7 +1,7 @@
 import { Component, lazy, Suspense, useEffect, useState, type ErrorInfo, type ReactNode } from 'react'
 import { createBrowserRouter, createHashRouter, RouterProvider, Routes, Route, Navigate, useLocation, useParams } from 'react-router-dom'
 import ProtectedRoute from '@/components/ProtectedRoute'
-import { TillOnly } from '@/components/TillOnly'
+import { TillOnly, TillOrView } from '@/components/TillOnly'
 import { DesktopAccessGate } from '@/components/DesktopAccessGate'
 import { ToastContainer } from '@/components/ui'
 import { CommandPalette } from '@/components/CommandPalette'
@@ -26,6 +26,8 @@ const POSPage              = lazyPage(() => import('@/features/pos/POSPage'))
 const SalesPage            = lazyPage(() => import('@/features/sales/SalesPage'))
 const ReturnForm           = lazyPage(() => import('@/features/pos/ReturnForm'))
 const DailyReport          = lazyPage(() => import('@/features/reports/DailyReport'))
+const PublicPriceListPage = lazyPage(() => import('@/features/priceLinks/PublicPriceListPage'))
+const ControlReportPage = lazyPage(() => import('@/features/analytics/ControlReportPage'))
 const PayrollPage          = lazyPage(() => import('@/features/analytics/PayrollPage'))
 const AdminPage            = lazyPage(() => import('@/features/admin/AdminPage'))
 const SettingsPage         = lazyPage(() => import('@/features/settings/SettingsPage'))
@@ -52,6 +54,7 @@ const InventoryPage        = lazyPage(() => import('@/features/inventory/Invento
 const ActiveSession        = lazyPage(() => import('@/features/inventory/ActiveSession'))
 const LabelDesigner        = lazyPage(() => import('@/features/labels/LabelDesigner'))
 const OrdersPage           = lazyPage(() => import('@/features/orders/OrdersPage'))
+const OrdersViewPage       = lazyPage(() => import('@/features/orders/OrdersViewPage'))
 const NeedsActionPage      = lazyPage(() => import('@/features/orders/NeedsActionPage'))
 const OrderFormPage        = lazyPage(() => import('@/features/orders/OrderFormPage'))
 const OrderDetailPage      = lazyPage(() => import('@/features/orders/OrderDetailPage'))
@@ -161,6 +164,8 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBounda
 function App() {
   const desktop = isDesktopRuntime()
   const [router] = useState(() => (desktop ? createHashRouter : createBrowserRouter)([
+    // Прайс для клієнта: публічна сторінка без входу й без робочого простору програми.
+    { path: '/p/:token', element: <Suspense fallback={<Loader />}><PublicPriceListPage /></Suspense> },
     { path: '*', element: <Workspace /> },
   ]))
 
@@ -202,6 +207,7 @@ function Workspace() {
           <Route path="/analytics"            element={<AnalyticsHome />} />
           <Route path="/analytics/statistics" element={<ProtectedRoute roles={OFFICE_ROLES}><DashboardPage /></ProtectedRoute>} />
           <Route path="/analytics/sales"      element={<ProtectedRoute roles={REPORT_ROLES}><DailyReport /></ProtectedRoute>} />
+          <Route path="/analytics/control"    element={<ProtectedRoute roles={OFFICE_ROLES}><ControlReportPage /></ProtectedRoute>} />
           <Route path="/analytics/payroll"    element={<ProtectedRoute roles={ADMIN_ROLES}><PayrollPage /></ProtectedRoute>} />
           <Route path="/dashboard"             element={<Navigate to="/analytics/statistics" replace />} />
           <Route path="/products"           element={<ProtectedRoute><ProductsPage /></ProtectedRoute>} />
@@ -264,9 +270,9 @@ function Workspace() {
 
           {/* Чат-боти — окремий розділ (той самий компонент у режимі chatMode) */}
           <Route path="/chats" element={<TillOnly what="Замовлення"><ProtectedRoute roles={OFFICE_ROLES}><OrdersPage /></ProtectedRoute></TillOnly>} />
-          <Route path="/orders"          element={<TillOnly what="Замовлення"><ProtectedRoute roles={OFFICE_ROLES}><OrdersPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/orders"          element={<ProtectedRoute roles={OFFICE_ROLES}><TillOrView till={<OrdersPage />} view={<OrdersViewPage />} /></ProtectedRoute>} />
           <Route path="/orders/new"      element={<TillOnly what="Створення замовлення"><ProtectedRoute roles={OFFICE_ROLES}><OrderFormPage /></ProtectedRoute></TillOnly>} />
-          <Route path="/orders/:id"      element={<TillOnly what="Замовлення"><ProtectedRoute roles={OFFICE_ROLES}><OrderDetailPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/orders/:id"      element={<ProtectedRoute roles={OFFICE_ROLES}><TillOrView till={<OrderDetailPage />} view={<OrdersViewPage />} /></ProtectedRoute>} />
           <Route path="/orders/:id/edit" element={<TillOnly what="Редагування замовлення"><ProtectedRoute roles={OFFICE_ROLES}><OrderFormPage /></ProtectedRoute></TillOnly>} />
 
           <Route path="/quotes"          element={<Navigate to="/orders" replace />} />

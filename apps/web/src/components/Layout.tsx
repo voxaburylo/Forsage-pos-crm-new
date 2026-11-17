@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Menu } from 'lucide-react'
 import { Sidebar } from './Sidebar'
+import { DataFreshness } from './DataFreshness'
 import { useLocation } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
 import { useViewScroll } from '@/hooks/useViewScroll'
@@ -90,6 +91,7 @@ export function Layout({ children, title, actions, onBack, contentClassName = ''
             )}
           </div>
 
+          <DataFreshness />
           {actions && (
             <div className="flex items-center gap-1.5 shrink-0 overflow-visible relative">{actions}</div>
           )}

@@ -3,9 +3,20 @@ import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { periodSchema } from '../validators/reportSchema.js'
 import * as reportService from '../services/reportService.js'
+import { buildControlReport, controlReportQuery } from '../services/controlReportService.js'
 
 const router = Router()
 router.use(requireAuth)
+
+// GET /api/v1/reports/control?from=&to=&margin_pct=&stale_days= — «Контроль»: порівняння періодів,
+// продажі нижче закупки, низька націнка, залежані товари. Лише читання.
+router.get('/control', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
+  try {
+    const parsed = controlReportQuery.safeParse(req.query)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Вкажіть період звіту', 422)
+    res.json({ data: await buildControlReport(req.user!.tenant_id, parsed.data) })
+  } catch (err) { next(err) }
+})
 
 // GET /api/v1/reports/sales/today — продажі за сьогодні
 router.get('/sales/today', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {

@@ -4,8 +4,10 @@ import { useNavigate } from 'react-router-dom'
 import {
   Plus, Package, AlertTriangle, Upload, Download,
   ChevronUp, ChevronDown, ChevronsUpDown, Search,
-  Trash2, GitMerge, Copy, FileText,
+  Trash2, GitMerge, Copy, FileText, Camera,
 } from 'lucide-react'
+import { CameraScanner } from '@/features/pos/CameraScanner'
+import { PriceLinkModal } from '@/features/priceLinks/PriceLinkModal'
 import { MergeModal } from './MergeModal'
 import { CrossNumberBadge } from './CrossNumberBadge'
 import { CatalogChunk, catalogChunks, useDesktopCatalogLayout } from './CatalogChunk'
@@ -143,15 +145,17 @@ export default function ProductsPage() {
     updateSearchScope('text', value)
   }
 
-  usePOSBarcodeScanner({
-    onScan: (code) => {
-      updateSearchScope('scan', code)
-      setSearch(code)
-      setDebouncedSearch(code)
-      setPage(1)
-      setPages({})
-    },
-  })
+  // Однаково для сканера на касі й камери телефона у вебі: штрихкод одразу шукає товар.
+  const applyScannedCode = (code: string) => {
+    updateSearchScope('scan', code)
+    setSearch(code)
+    setDebouncedSearch(code)
+    setPage(1)
+    setPages({})
+  }
+  usePOSBarcodeScanner({ onScan: applyScannedCode })
+  const [cameraOpen, setCameraOpen] = useState(false)
+  const [priceLinkOpen, setPriceLinkOpen] = useState(false)
 
   function startEditPrice(p: Product) {
     if (!canEditCatalog) return
@@ -621,10 +625,16 @@ export default function ProductsPage() {
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
                 value={search} onChange={(e) => handleSearchChange(e.target.value)}
-                placeholder="Пошук за артикулом, назвою, штрихкодом... (oem: для OEM)"
-                className="w-full pl-9 pr-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent bg-white"
+                placeholder="Пошук за артикулом, назвою, штрихкодом, аналогом... (oem: для OEM)"
+                className="w-full pl-9 pr-12 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent bg-white"
               />
+              <button type="button" onClick={() => setCameraOpen(true)} aria-label="Сканувати штрихкод камерою" title="Сканувати штрихкод камерою"
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-800">
+                <Camera size={18} />
+              </button>
             </div>
+            <PriceLinkModal open={priceLinkOpen} productIds={Array.from(selectedIds)} onClose={() => setPriceLinkOpen(false)} />
+            <CameraScanner open={cameraOpen} onClose={() => setCameraOpen(false)} onScan={(code) => { setCameraOpen(false); applyScannedCode(code) }} />
             <select
               value={brandFilter}
               onChange={(e) => { setBrandFilter(e.target.value); setPage(1) }}
@@ -689,6 +699,9 @@ export default function ProductsPage() {
                 </div>
                 <Button size="sm" disabled={!canEditCatalog} onClick={() => setBulkOpen(true)}>✏️ Редагувати</Button>
                 <Button size="sm" variant="secondary" className="hidden sm:inline-flex" onClick={() => setBulkPrintOpen(true)}>🏷️ Друк етикеток</Button>
+                {isDesktopRuntime() && ['owner', 'admin', 'manager'].includes(role) && (
+                  <Button size="sm" variant="secondary" onClick={() => setPriceLinkOpen(true)}>🔗 Прайс для клієнта</Button>
+                )}
                 {isAdmin && (
                   <Button size="sm" variant="secondary"
                     onClick={askBulkDelete}
