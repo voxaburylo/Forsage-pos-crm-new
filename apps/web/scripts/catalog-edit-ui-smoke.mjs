@@ -71,7 +71,7 @@ try {
   await page.getByLabel('Фільтр за брендом').selectOption('elf')
   await page.getByRole('button',{name:'Мало на складі',exact:true}).click()
   await page.getByRole('button',{name:'₴0 Без ціни',exact:true}).click()
-  const search=page.getByPlaceholder('Пошук за артикулом, назвою, штрихкодом... (oem: для OEM)')
+  const search=page.getByPlaceholder('Пошук за артикулом, назвою, штрихкодом, аналогом... (oem: для OEM)')
   await search.fill('олива')
   await page.waitForFunction(()=>fixture.queries.at(-1)?.search==='олива')
   assert.deepEqual(await page.evaluate(()=>{const q=fixture.queries.at(-1);return [q.category_id,q.brand_id,q.low_stock,q.stock_filter]}),['oil','elf','true','no_price'])

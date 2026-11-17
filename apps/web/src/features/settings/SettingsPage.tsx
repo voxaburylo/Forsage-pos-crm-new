@@ -14,6 +14,7 @@ import { formatMoney } from '@/lib/utils'
 import { desktopBridge, isDesktopRuntime, type DesktopRuntimeInfo } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
 import { BackupSettingsCard } from './BackupSettingsCard'
+import { CloudRestoreCard } from './CloudRestoreCard'
 import { BuildInfoSummary } from './BuildInfoSummary'
 import { ProblemLogCard } from './ProblemLogCard'
 import { ServerCopyStatusCard } from './ServerCopyStatusCard'
@@ -424,6 +425,8 @@ export default function SettingsPage() {
           {isDesktopRuntime() && <ProblemLogCard />}
 
           {isDesktopRuntime() && <BackupSettingsCard />}
+
+          {isDesktopRuntime() && <CloudRestoreCard />}
 
           {isDesktopRuntime() && <LanSettingsCard />}
 

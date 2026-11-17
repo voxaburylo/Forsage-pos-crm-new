@@ -83,6 +83,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
   },
   listBackups: () => ipcRenderer.invoke('desktop:backup:list'),
   restoreBackup: (fileName: string) => ipcRenderer.invoke('desktop:backup:restore', fileName),
+  fetchCloudBackup: (request: unknown) => ipcRenderer.invoke('desktop:backup:fetch-cloud', request),
   catalog: {
     findByBarcode: (barcode: string) =>
       ipcRenderer.invoke('desktop:catalog:find-by-barcode', barcode),
