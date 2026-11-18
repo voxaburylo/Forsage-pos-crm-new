@@ -12,6 +12,7 @@ import { read, utils } from 'xlsx'
 import { supplierApi } from './supplierApi'
 import { sourceForPaymentMethod, methodForPaymentSource } from './supplierPaymentSelection'
 import { invoiceProductBase, invoiceLineRetailProblem, invoiceProblemQuestion } from './invoiceFormModel'
+import { findInvoiceIdentifierConflicts, receivingErrorText } from './invoiceIdentifierConflicts'
 import { isMissingInvoiceError } from './invoiceDraftStore'
 import { cancelStoredInvoiceDraft } from './invoiceDraftCancellation'
 import { InvoiceSupplierPicker } from './InvoiceSupplierPicker'
@@ -1282,6 +1283,14 @@ export default function InvoiceFormPage() {
     if (submittedItems.length === 0) { toast.error('Додайте хоча б один товар'); return }
     if (!supplierId) { toast.error('Оберіть постачальника'); return }
     if (invoiceSubmitRef.current) return
+    // Дублі штрихкодів/артикулів між різними товарами — до запису і з точним рядком.
+    const identifierConflicts = findInvoiceIdentifierConflicts(submittedItems)
+    if (identifierConflicts.length > 0) {
+      const first = identifierConflicts[0]
+      const more = identifierConflicts.length > 1 ? ` Ще конфліктних рядків: ${identifierConflicts.length - 1}.` : ''
+      raiseInvoiceLineProblem(submittedItems[first.index].client_key, first.message + more, undefined, first.field)
+      return
+    }
     // Проведення без націнки ставить у картку нуль або ціну закупки: каса й
     // цінники потім беруть саме її. Питаємо до запису, а не після.
     const withoutMarkup = submittedItems.filter(item => invoiceLineRetailProblem(item) !== null)
@@ -1330,15 +1339,15 @@ export default function InvoiceFormPage() {
         const current = await supplierApi.getInvoice(failedId).catch(() => null)
         if (current) setVersionConflict(current.data)
       }
-      const lineMatch = err instanceof Error ? err.message.match(/RECEIVING_LINE:(\d+):\s*(.*)/s) : null
-      if (lineMatch) {
-        const item = submittedItems[Number(lineMatch[1])]
-        if (item) { raiseInvoiceLineProblem(item.client_key, lineMatch[2]); return }
+      const failure = err instanceof Error ? receivingErrorText(err.message) : null
+      if (failure?.line !== null && failure?.line !== undefined) {
+        const item = submittedItems[failure.line]
+        if (item) { raiseInvoiceLineProblem(item.client_key, failure.text); return }
       }
       if (isDuplicateProductError(err)) {
         toast.error(duplicateProductMessage(err))
       } else {
-        toast.error(err instanceof Error ? err.message : 'Помилка збереження накладної')
+        toast.error(failure?.text || 'Помилка збереження накладної')
       }
     } finally {
       invoiceSubmitRef.current = false
