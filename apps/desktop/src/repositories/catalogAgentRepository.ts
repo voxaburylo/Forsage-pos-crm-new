@@ -153,7 +153,10 @@ export class CatalogAgentRepository {
    * зачіпає цифри/бренд тощо), пропускаємо з причиною, решту записуємо. Видалення дублів так не приймаються.
    */
   apply(input: { operation_id: string; items: AgentChange[]; skip_invalid?: boolean }, userId: string) {
-    if (!/^[0-9a-f-]{36}$/i.test(input?.operation_id) || !Array.isArray(input.items) || !input.items.length || input.items.length > 100) throw new Error('Оберіть від 1 до 100 змін для підтвердження')
+    // Пачка з чату — до 500 карток за раз: перед кожним записом робиться повна перевірена копія бази,
+    // тож менше пачок — менше копій і швидше збереження.
+    const maxItems = input?.skip_invalid === true ? 500 : 100
+    if (!/^[0-9a-f-]{36}$/i.test(input?.operation_id) || !Array.isArray(input.items) || !input.items.length || input.items.length > maxItems) throw new Error(`Оберіть від 1 до ${maxItems} змін для підтвердження`)
     const ids = input.items.map(x => x.product_id)
     if (new Set(ids).size !== ids.length || input.items.some(x => x.primary_id && ids.includes(x.primary_id))) throw new Error('Один товар не можна одночасно змінювати та видаляти. Застосуйте дії окремо.')
     const skipInvalid = input.skip_invalid === true
