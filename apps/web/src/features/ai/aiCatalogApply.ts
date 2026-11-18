@@ -121,8 +121,9 @@ export async function applyChatCatalogUpdates(
   let updated = 0
   let backupPath = ''
   const skipped = [...ensured.failed, ...plan.skipped]
-  for (let start = 0, chunk = 0; start < plan.items.length; start += 100, chunk += 1) {
-    const result = await bridge.agentApply({ operation_id: await operationId(chunk), items: plan.items.slice(start, start + 100), skip_invalid: true })
+  // Одна пачка до 500 карток = одна резервна копія бази перед записом.
+  for (let start = 0, chunk = 0; start < plan.items.length; start += 500, chunk += 1) {
+    const result = await bridge.agentApply({ operation_id: await operationId(chunk), items: plan.items.slice(start, start + 500), skip_invalid: true })
     updated += Number(result.updated) || 0
     backupPath = result.backupPath ?? backupPath
     for (const row of result.skipped ?? []) skipped.push({ item: row.name, error: row.error })
