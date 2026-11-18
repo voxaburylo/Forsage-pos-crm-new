@@ -4,7 +4,6 @@ import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
 import { isDesktopAccessLocked } from '@/lib/desktopAccessState'
 import { canUseCloudBackground } from '@/lib/lanFirstRun'
 import { useAuthStore } from '@/stores/authStore'
-import { productApi } from '@/features/products/productApi'
 import { planTillProductUpdate, type TillProductUpdate } from '@/features/tillCommands/tillCommandModel'
 
 interface ClaimedCommand { id: string; operation_id: string; command: string; payload: unknown }
@@ -19,7 +18,7 @@ export function useTillCommands(serverOnline: boolean) {
   const offlineMode = useAuthStore(state => state.offlineMode)
   useEffect(() => {
     const bridge = desktopBridge()
-    if (!isDesktopRuntime() || !bridge?.catalog.findById || !serverOnline || offlineMode || !user) return
+    if (!isDesktopRuntime() || !bridge?.catalog?.findById || !serverOnline || offlineMode || !user) return
     let stopped = false, busy = false, deviceId = ''
     async function execute(command: ClaimedCommand): Promise<{ status: 'done' | 'failed'; result?: Record<string, unknown> | null; error?: string | null }> {
       try {
@@ -27,6 +26,8 @@ export function useTillCommands(serverOnline: boolean) {
         const update = command.payload as TillProductUpdate
         const current = await bridge!.catalog.findById!(String(update?.product_id ?? ''))
         const form = planTillProductUpdate(current, update)
+        // Модуль товарів підвантажуємо лише коли команда справді прийшла: фоновий агент лишається легким.
+        const { productApi } = await import('@/features/products/productApi')
         const saved = await productApi.update(update.product_id, form)
         return { status: 'done', result: { product_id: saved.data.id, name: saved.data.name, sku: saved.data.sku, retail_price: saved.data.retail_price } }
       } catch (error) {
