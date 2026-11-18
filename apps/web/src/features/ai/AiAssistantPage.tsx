@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react
 import { fileToCompressedImage } from './aiImageInput'
 import { aiActionOperationId } from './aiActionOperation'
 import { applyChatCatalogUpdates, ensureChatCategories, renameChatCategories, type ChatCatalogBridge } from './aiCatalogApply'
+import { applyChatMerges, type ChatMergeBridge } from './aiMergeApply'
 import { AiServerConnection } from './AiServerConnection'
 import { aiAvailabilityProblem, type AiAvailabilityProblem } from './aiAvailability'
 import { reportLocalError } from '@/lib/localDiagnostics'
@@ -670,6 +671,26 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
         const msg = `${outcome.verb}: ${outcome.done}` + (outcome.skipped.length ? `, пропущено ${outcome.skipped.length}` : '')
         if (markSaved(msg, outcome.skipped.length || !outcome.done ? 'warn' : 'ok')) {
           if (outcome.done) toast.success(msg); else toast.warning(msg)
+        }
+        return true
+      }
+      if (action.tool === 'merge_products_bulk') {
+        const catalog = desktopBridge()?.catalog
+        if (!catalog?.cleanupPreview || !catalog.cleanupApply) throw new Error('Оновіть програму каси: ця версія ще не об’єднує картки з чату. Дані не змінено.')
+        const payload = payloadOverride ?? action.payload
+        const toUuid = (hex: string) => `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`
+        const result = await applyChatMerges(
+          Array.isArray(payload?.merges) ? payload.merges : [],
+          catalog as unknown as ChatMergeBridge,
+          async index => toUuid(await aiActionOperationId(storageKey, action.id + ':merge:' + index)),
+        )
+        if (!isCurrentContext()) return false
+        requestDesktopSync()
+        setApplyErrors((prev) => ({ ...prev, [action.id]: result.skipped }))
+        const msg = `Об’єднано пар: ${result.merged}` + (result.skipped.length ? `, пропущено ${result.skipped.length}` : '')
+          + '. Облікова кількість — сума карток; фактичний залишок перевірте ревізією.'
+        if (markSaved(msg, result.skipped.length || !result.merged ? 'warn' : 'ok')) {
+          if (result.merged) toast.success(msg); else toast.warning(msg)
         }
         return true
       }
