@@ -118,8 +118,8 @@ export async function testKey(apiKey: string, model: string): Promise<{ ok: bool
   } catch (e: any) {
     if (isAiBudgetError(e)) throw e
     logger.warn(safeAiErrorInfo(e), '[ai] test key failed')
-    // Закінчений баланс — не «поганий ключ»: власнику треба поповнити рахунок, а не міняти ключ.
-    if (e instanceof AppError && e.code === 'AI_QUOTA_EXCEEDED') throw e
+    // Точна причина замість загальної: порожній баланс, неправильний ключ чи збій Anthropic лікуються по-різному.
+    if (e instanceof AppError && ['AI_QUOTA_EXCEEDED', 'AI_KEY_INVALID', 'AI_UPSTREAM_UNAVAILABLE'].includes(e.code)) throw e
     throw new AppError('AI_KEY_INVALID', 'Не вдалося перевірити ключ Anthropic. Перевірте ключ (починається з sk-ant-), доступ до моделі та баланс.', 400)
   }
 }
