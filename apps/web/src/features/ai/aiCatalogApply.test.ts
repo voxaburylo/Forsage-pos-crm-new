@@ -59,8 +59,8 @@ describe('assistant chat catalog updates on the till', () => {
     expect(created.created).toEqual(['Нова'])
   })
 
-  it('writes in parts of 100 with skip_invalid and reports what the till refused', async () => {
-    const updates = Array.from({ length: 150 }, (_, i) => ({ product_id: 'p' + i, new_name: 'Нова ' + i }))
+  it('writes in parts of 500 (one backup each) with skip_invalid and reports what the till refused', async () => {
+    const updates = Array.from({ length: 650 }, (_, i) => ({ product_id: 'p' + i, new_name: 'Нова ' + i }))
     const bridge = {
       agentFingerprints: vi.fn(async (ids: string[]) => ids.map(id => fp(id, 'Стара ' + id))),
       agentApply: vi.fn(async (input: any) => ({
@@ -72,8 +72,8 @@ describe('assistant chat catalog updates on the till', () => {
     const result = await applyChatCatalogUpdates(updates, bridge, categories, async chunk => 'op-' + chunk)
     expect(bridge.agentApply).toHaveBeenCalledTimes(2)
     expect(bridge.agentApply.mock.calls[0][0]).toMatchObject({ skip_invalid: true, operation_id: 'op-0' })
-    expect(bridge.agentApply.mock.calls[0][0].items).toHaveLength(100)
-    expect(result).toMatchObject({ updated: 148, unchanged: 0, backupPath: 'b.db' })
+    expect(bridge.agentApply.mock.calls[0][0].items).toHaveLength(500)
+    expect(result).toMatchObject({ updated: 648, unchanged: 0, backupPath: 'b.db' })
     expect(result.skipped).toHaveLength(2)
   })
 })
