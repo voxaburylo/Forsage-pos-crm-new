@@ -38,12 +38,16 @@ describe('cashier login, quick goods and bulk price guard (16.11.2026)', () => {
     expect(() => staff.loginWithPasswordOnly('nobody')).toThrow('Невірний пароль')
   })
 
-  it('never lets owner or admin in by password alone, and refuses an ambiguous password', () => {
+  it('lets owner and admin in by password alone, and refuses an ambiguous password', () => {
     user('owner', '+380671110009', 'owner', 'owner-secret')
+    user('admin', '+380671110008', 'admin', 'admin-secret')
+    user('tire', '+380671110007', 'tire_worker', 'tire-secret')
     user('cashier-a', '+380671110001', 'cashier', 'same-pass')
     user('manager-b', '+380671110002', 'manager', 'same-pass')
     user('cashier-off', '+380671110003', 'cashier', 'off-pass', false)
-    expect(() => staff.loginWithPasswordOnly('owner-secret')).toThrow('Власник і адміністратор входять з номером телефону')
+    expect(staff.loginWithPasswordOnly('owner-secret')).toMatchObject({ id: 'owner', role: 'owner' })
+    expect(staff.loginWithPasswordOnly('admin-secret')).toMatchObject({ id: 'admin', role: 'admin' })
+    expect(() => staff.loginWithPasswordOnly('tire-secret')).toThrow('Невірний пароль')
     expect(() => staff.loginWithPasswordOnly('same-pass')).toThrow('кілька працівників')
     expect(() => staff.loginWithPasswordOnly('off-pass')).toThrow('Невірний пароль')
     // Звичайний вхід з телефоном власника працює як раніше.
