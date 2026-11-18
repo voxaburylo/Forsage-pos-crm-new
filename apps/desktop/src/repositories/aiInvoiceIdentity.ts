@@ -63,7 +63,27 @@ export interface AiInvoiceReview {
   validation_errors?: string[]; already_saved?: boolean; invoice_id?: string
 }
 
+/**
+ * Catalog numbers written with spaces between digit groups: "EL 101 514", "EL 100 553" — the same
+ * number as "EL101514" / "101514" on the card. Only 3-digit tail groups are joined (thousand-style
+ * grouping), and the joined number must have at least 6 digits, so sizes and pack counts stay apart.
+ */
+function spacedPartNumbers(value: string): string[] {
+  const result: string[] = []
+  for (const match of text(value).matchAll(/(?:^|[^\p{L}\p{N}])(?:(\p{L}{1,4})\s+)?(\d{1,4}(?:\s\d{3})+)(?=$|[^\p{L}\p{N}])/gu)) {
+    const digits = match[2].replace(/\s/g, '')
+    if (digits.length < 6) continue
+    result.push(digits)
+    if (match[1] && /^[a-z]+$/i.test(match[1])) result.push(code(match[1] + digits))
+  }
+  return result
+}
+
 function partNumbers(value: string): string[] {
+  return [...new Set([...partNumberTokens(value), ...spacedPartNumbers(value)])]
+}
+
+function partNumberTokens(value: string): string[] {
   return (text(value).match(/[\p{L}\p{N}]+(?:[-/][\p{L}\p{N}]+)*/gu) ?? [])
     .filter(token => (/^[0-9]{6,}$/.test(token) || (/[\p{L}]/u.test(token) && (token.match(/\d/g)?.length ?? 0) >= 3 && code(token).length >= 5))
       && !/^\d{1,2}w-?\d{2}$/i.test(token) && !/^\d+(?:mm|ml|мм|мл)$/i.test(token)

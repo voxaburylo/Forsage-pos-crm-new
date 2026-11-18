@@ -20,6 +20,18 @@ describe('AI invoice identity and label names', () => {
   const row = (data: Record<string, unknown>) => ({ qty: 4, purchase_price_uah: 120, ...data })
   const add = (id: string, name: string, extra = {}) => catalog.upsertProduct({ id, sku: id, name, qty_on_hand: 3, ...extra })
 
+  it('finds the card when the supplier spaces the catalog number (EL 101 514 = EL 101514)', () => {
+    add('EL 101514', 'Центральный замок (5-ти пров) Elegant EL 101514 Цена за 2шт', { barcode: '6931015143656' })
+    add('EL 101516', 'Центральный замок (5-ти пров) посилений Elegant EL 101516 Цена за 2шт')
+    add('82851', 'Клеммы аккумуляторные Elegant EL 100 553 луженая латунь (изоляция из резины)')
+    const lock = supply.previewInvoiceFromAiRows({ rows: [row({ name: 'Центральный замок 5-ти проводной Elegant EL 101 514 2шт.', sku: 'У000042136' })] })[0]
+    expect(lock).toMatchObject({ status: 'matched', product_id: 'EL 101514' })
+    const strong = supply.previewInvoiceFromAiRows({ rows: [row({ name: 'Центральный замок 5-ти проводной Elegant EL 101 516 2шт. (усиленный)', sku: 'У000042137' })] })[0]
+    expect(strong).toMatchObject({ status: 'matched', product_id: 'EL 101516' })
+    // Sizes and pack counts are never glued into a number.
+    const jack = supply.previewInvoiceFromAiRows({ rows: [row({ name: 'Домкрат гидравлический подкатной 2т 8.5 кг подъем 135 335 мм', sku: 'М0000044414' })] })[0]
+    expect(jack.status).toBe('new')
+  })
   it('matches a separate Polo brand to the complete old name without making another card', () => {
     add('polo', 'Polo Expert (metal) 10W40 API SL/CF 1л (12)', { barcode: '4260636978889' })
     const data = row({ name: '(метал) 10W40 API SL/CF 1л (12)', brand: 'Polo Expert', sku: '62966' })
