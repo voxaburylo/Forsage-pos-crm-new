@@ -23,6 +23,7 @@ import {
 import { warehouseApi } from '@/features/inventory/warehouseApi'
 import { useWarehouseRecovery, WarehouseRecoveryNotice } from '@/features/inventory/WarehouseRecovery'
 import { canDeleteCatalog } from './catalogDeletePermissions'
+import { TillEditModal, useTillOnline } from '@/features/tillCommands/TillEditModal'
 
 import { useAuthStore } from '@/stores/authStore'
 
@@ -80,6 +81,10 @@ function ProductDetail() {
   const reserveRefresh = useLatestRequest([id, role, offlineMode])
   const canSeeMargin = ['owner', 'admin', 'storekeeper'].includes(role)
   const canDeleteProduct = canWrite && canDeleteCatalog(role)
+  // Веб лише переглядає; правку картки виконує каса в мережі (рішення власника 17.11.2026).
+  const canEditViaTill = !isDesktopRuntime() && !offlineMode && ['owner', 'admin', 'manager'].includes(role)
+  const tillStatus = useTillOnline(canEditViaTill)
+  const [tillEditOpen, setTillEditOpen] = useState(false)
   const [product, setProduct] = useState<Product | null>(null)
   const [history, setHistory] = useState<Array<{
     type: 'price_change' | 'sale' | 'return' | 'writeoff'
@@ -303,6 +308,13 @@ function ProductDetail() {
       actions={
         <div className="flex gap-2 items-center">
           {product.is_active === false && <Badge color="red">🚫 Неактивний</Badge>}
+          {canEditViaTill && (
+            <Button variant="secondary" size="sm" disabled={!tillStatus?.online}
+              title={tillStatus?.online ? 'Зміну виконає програма на касі' : 'Каса не в мережі: змінити можна лише коли програма на касі увімкнена'}
+              onClick={() => setTillEditOpen(true)}>
+              {tillStatus?.online ? 'Змінити через касу' : 'Каса не в мережі'}
+            </Button>
+          )}
           {canReserve && <Button variant="secondary" size="sm" disabled={writes.busy || editorBusy} onClick={() => setReserveOpen(true)}>
             📌 Резерв
           </Button>}
@@ -758,6 +770,9 @@ function ProductDetail() {
           </div>
         </div>
       </Modal>
+      {canEditViaTill && <TillEditModal product={product} open={tillEditOpen} onClose={() => setTillEditOpen(false)}
+        // Сервер побачить зміну після обміну з касою; на екрані показуємо її одразу.
+        onSaved={changes => setProduct(current => current ? { ...current, ...changes } : current)} />}
     </Layout>
   )
 }
