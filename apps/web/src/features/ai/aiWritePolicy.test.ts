@@ -12,6 +12,8 @@ describe('AI write boundary', () => {
   })
   it('lets only owner/admin write chat catalog edits, and only in the till', () => {
     for (const role of ['owner','admin']) expect(canApplyAiWrite('update_products_bulk',role,true)).toBe(true)
+    expect(canApplyAiWrite('add_cross_numbers_bulk','owner',true)).toBe(true)
+    expect(canApplyAiWrite('add_cross_numbers_bulk','cashier',true)).toBe(false)
     for (const role of ['manager','cashier','storekeeper',null]) expect(canApplyAiWrite('update_products_bulk',role,true)).toBe(false)
     expect(canApplyAiWrite('update_products_bulk','owner',false)).toBe(false)
   })

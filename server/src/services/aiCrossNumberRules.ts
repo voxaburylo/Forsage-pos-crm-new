@@ -59,3 +59,24 @@ export function groundedSourceLabel(
 export function normalizedNameContains(name: string, catalogNumber: string): boolean {
   return normalizeAiCatalogCode(name).includes(catalogNumber)
 }
+
+/** Пропозиція крос-номерів: лише справжні каталожні номери з нормальним джерелом (не пошуковик/маркетплейс). */
+export function cleanCrossProposal(raw: unknown): Array<{ product_id: string; numbers: Array<{ number: string; brand: string | null; source: string }> }> {
+  const result: Array<{ product_id: string; numbers: Array<{ number: string; brand: string | null; source: string }> }> = []
+  for (const item of Array.isArray(raw) ? raw.slice(0, 200) : []) {
+    const productId = typeof item?.product_id === 'string' ? item.product_id : ''
+    if (!productId) continue
+    const seen = new Set<string>()
+    const numbers: Array<{ number: string; brand: string | null; source: string }> = []
+    for (const entry of Array.isArray(item?.numbers) ? item.numbers.slice(0, 50) : []) {
+      const number = typeof entry?.number === 'string' ? entry.number.trim().slice(0, 100) : ''
+      const key = safeCatalogNumber(number)
+      const source = evidenceDomain(entry?.source_url)
+      if (!key || !source || seen.has(key)) continue
+      seen.add(key)
+      numbers.push({ number, brand: typeof entry?.brand === 'string' && entry.brand.trim() ? entry.brand.trim().slice(0, 100) : null, source })
+    }
+    if (numbers.length) result.push({ product_id: productId, numbers })
+  }
+  return result
+}

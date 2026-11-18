@@ -3,6 +3,7 @@ import { adminApi } from '@/features/admin/adminApi'
 import { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react'
 import { fileToCompressedImage } from './aiImageInput'
 import { aiActionOperationId } from './aiActionOperation'
+import { applyChatCrossNumbers, type ChatCrossBridge } from './aiCrossApply'
 import { applyChatCatalogUpdates, ensureChatCategories, renameChatCategories, type ChatCatalogBridge } from './aiCatalogApply'
 import { AiServerConnection } from './AiServerConnection'
 import { aiAvailabilityProblem, type AiAvailabilityProblem } from './aiAvailability'
@@ -670,6 +671,20 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
         const msg = `${outcome.verb}: ${outcome.done}` + (outcome.skipped.length ? `, пропущено ${outcome.skipped.length}` : '')
         if (markSaved(msg, outcome.skipped.length || !outcome.done ? 'warn' : 'ok')) {
           if (outcome.done) toast.success(msg); else toast.warning(msg)
+        }
+        return true
+      }
+      if (action.tool === 'add_cross_numbers_bulk') {
+        const catalog = desktopBridge()?.catalog
+        if (!catalog?.changeCrossNumbers) throw new Error('Оновіть програму каси: ця версія ще не додає крос-номери з чату. Дані не змінено.')
+        const payload = payloadOverride ?? action.payload
+        const result = await applyChatCrossNumbers(Array.isArray(payload?.items) ? payload.items : [], catalog as unknown as ChatCrossBridge)
+        if (!isCurrentContext()) return false
+        requestDesktopSync()
+        setApplyErrors((prev) => ({ ...prev, [action.id]: result.skipped }))
+        const msg = `Крос-номери додано: ${result.numbers} до ${result.products} товарів` + (result.skipped.length ? `, пропущено ${result.skipped.length}` : '')
+        if (markSaved(msg, result.skipped.length || !result.products ? 'warn' : 'ok')) {
+          if (result.products) toast.success(msg); else toast.warning(msg)
         }
         return true
       }
