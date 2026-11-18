@@ -117,6 +117,15 @@ describe('actual AI service budget wiring, synthetic Claude SDK and database onl
   await expect(testKey('test-key','claude-sonnet-5-5')).rejects.not.toHaveProperty('message',expect.stringContaining(secret))
   expect(JSON.stringify(vi.mocked(logger.warn).mock.calls)).not.toContain(secret)
  })
+ it('names the exact reason when a key test fails',async()=>{
+  const Anthropic=(await import('@anthropic-ai/sdk')).default as any
+  mocks.create.mockRejectedValueOnce(new Anthropic.BadRequestError('400 Your credit balance is too low to access the Anthropic API'))
+  await expect(testKey('k','claude-sonnet-5-5')).rejects.toMatchObject({code:'AI_QUOTA_EXCEEDED',message:expect.stringContaining('закінчилися кошти')})
+  mocks.create.mockRejectedValueOnce(new Anthropic.AuthenticationError('401 invalid x-api-key'))
+  await expect(testKey('k','claude-sonnet-5-5')).rejects.toMatchObject({code:'AI_KEY_INVALID',message:expect.stringContaining('не підходить')})
+  mocks.create.mockRejectedValueOnce(new Error('socket hang up'))
+  await expect(testKey('k','claude-sonnet-5-5')).rejects.toMatchObject({code:'AI_UPSTREAM_UNAVAILABLE'})
+ })
  it('does not log provider details during chat and invoice failures',async()=>{
   const secret='PRIVATE_DOCUMENT_API_KEY'
   mocks.create.mockRejectedValue(Error('401 invalid '+secret))
