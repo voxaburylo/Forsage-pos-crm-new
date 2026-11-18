@@ -41,6 +41,7 @@ import type {
 } from './db/localTypes'
 import { LocalCatalogRepository } from './repositories/catalogRepository'
 import { applyCatalogBatch } from './repositories/catalogBatchWorker'
+import { CatalogAgentRepository } from './repositories/catalogAgentRepository'
 import { createAiInvoiceInWorker, previewAiInvoiceInWorker, commitReceivingInWorker } from './repositories/supplyInvoiceWorker'
 import { LocalInventoryRepository } from './repositories/inventoryRepository'
 import { LocalOrderRepository } from './repositories/orderRepository'
@@ -1480,6 +1481,7 @@ app.whenReady().then(async () => {
       return { ...run.finish(), backupPath }
     } finally { cleanupMutationInProgress = false }
   })
+  handleDesktopIpc('desktop:catalog:agent-fingerprints', (_event, ids) => new CatalogAgentRepository(requireLocalDatabase()).fingerprints(ids))
   handleDesktopIpc('desktop:catalog:agent-apply', async (_event, input) => {
     const userId = requireDesktopSession().id
     const backupPath = await requireLocalDatabase().backupNow()

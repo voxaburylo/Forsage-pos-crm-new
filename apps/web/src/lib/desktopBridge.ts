@@ -545,6 +545,8 @@ interface ForsageDesktopBridge {
     cleanupTidyPlan?: () => Promise<import('@/features/admin/catalogTidyModel').TidyPlan>
     cleanupTidyApply?: (input: import('@/features/admin/catalogTidyModel').TidyApplyInput) => Promise<import('@/features/admin/catalogTidyModel').TidyResult>
     agentApply?: (input: { operation_id: string; items: any[] }) => Promise<{ updated: number; backupPath: string }>
+    /** Відбитки карток для запису змін, запропонованих у чаті помічника. Старі збірки цього не мають. */
+    agentFingerprints?: (ids: string[]) => Promise<Array<{ product_id: string; fingerprint: string | null; name?: string; category_id?: string | null }>>
     findByBarcode: (barcode: string) => Promise<DesktopProduct | null>
     findById?: (id: string) => Promise<DesktopProduct | null>
     findBySku?: (sku: string) => Promise<DesktopProduct | null>

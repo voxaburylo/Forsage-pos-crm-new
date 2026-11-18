@@ -3,6 +3,7 @@ import { adminApi } from '@/features/admin/adminApi'
 import { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react'
 import { fileToCompressedImage } from './aiImageInput'
 import { aiActionOperationId } from './aiActionOperation'
+import { applyChatCatalogUpdates, ensureChatCategories, renameChatCategories, type ChatCatalogBridge } from './aiCatalogApply'
 import { AiServerConnection } from './AiServerConnection'
 import { aiAvailabilityProblem, type AiAvailabilityProblem } from './aiAvailability'
 import { reportLocalError } from '@/lib/localDiagnostics'
@@ -27,7 +28,7 @@ import { readAiSupplyInput } from './readAiSupplyInput'
 import { AiClipboardTimeoutError, readAiClipboard } from './readAiClipboard'
 import { dataUrlToBlob, removeProcessingUploads, uploadProcessingBlob } from '@/lib/processingUploads'
 import { requestDesktopSync } from '@/features/products/productApi'
-import { isDesktopRuntime } from '@/lib/desktopBridge'
+import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
 import { aiChatStorageKey, readAiChat, saveAiChat } from './aiChatStorage'
 import { aiRequestHistory } from './aiRequestHistory'
 import { isOrderPhotoRequest, isSupplyRecognitionRequest, SUPPLY_PHOTO_INSTRUCTION } from './aiPhotoIntent'
@@ -654,6 +655,48 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
         }
       }
       if (action.tool === 'create_supply_invoice_bulk') { await openInvoice(action); return true }
+      if (action.tool === 'create_categories_bulk' || action.tool === 'rename_categories_bulk') {
+        const payload = payloadOverride ?? action.payload
+        const categories = (await adminApi.listCategories()).data
+        if (!isCurrentContext()) return false
+        const outcome = action.tool === 'create_categories_bulk'
+          ? await ensureChatCategories(Array.isArray(payload?.names) ? payload.names : [], categories, async name => ((await adminApi.createCategory(name)) as { data: { id: string; name: string } }).data)
+            .then(r => ({ done: r.created.length, skipped: r.failed, verb: 'Створено категорій' }))
+          : await renameChatCategories(Array.isArray(payload?.renames) ? payload.renames : [], categories, (id, name) => adminApi.updateCategory(id, name))
+            .then(r => ({ done: r.renamed, skipped: r.skipped, verb: 'Перейменовано категорій' }))
+        if (!isCurrentContext()) return false
+        requestDesktopSync()
+        setApplyErrors((prev) => ({ ...prev, [action.id]: outcome.skipped }))
+        const msg = `${outcome.verb}: ${outcome.done}` + (outcome.skipped.length ? `, пропущено ${outcome.skipped.length}` : '')
+        if (markSaved(msg, outcome.skipped.length || !outcome.done ? 'warn' : 'ok')) {
+          if (outcome.done) toast.success(msg); else toast.warning(msg)
+        }
+        return true
+      }
+      if (action.tool === 'update_products_bulk') {
+        const catalog = desktopBridge()?.catalog
+        if (!catalog?.agentFingerprints || !catalog.agentApply) throw new Error('Оновіть програму каси: ця версія ще не записує зміни товарів із чату. Дані не змінено.')
+        const categories = (await adminApi.listCategories()).data
+        if (!isCurrentContext()) return false
+        const toUuid = (hex: string) => `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`
+        const result = await applyChatCatalogUpdates(
+          (payloadOverride ?? action.payload)?.updates ?? [],
+          catalog as unknown as ChatCatalogBridge,
+          categories,
+          async chunk => toUuid(await aiActionOperationId(storageKey, action.id + ':catalog:' + chunk)),
+          async name => ((await adminApi.createCategory(name)) as { data: { id: string; name: string } }).data,
+        )
+        if (!isCurrentContext()) return false
+        requestDesktopSync()
+        setApplyErrors((prev) => ({ ...prev, [action.id]: result.skipped }))
+        const msg = `Змінено товарів: ${result.updated}` + (result.createdCategories.length ? `, нових категорій ${result.createdCategories.length}` : '')
+          + (result.skipped.length ? `, пропущено ${result.skipped.length}` : '')
+          + (result.unchanged ? `, без змін ${result.unchanged}` : '') + (result.backupPath ? '. Резервну копію створено.' : '')
+        if (markSaved(msg, result.skipped.length || !result.updated ? 'warn' : 'ok')) {
+          if (result.updated) toast.success(msg); else toast.warning(msg)
+        }
+        return true
+      }
       const operationId = action.tool === 'create_order' ? await aiActionOperationId(storageKey, action.id) : undefined
       if (!isCurrentContext()) return false
       const { data } = await aiApi.applyAction({ tool: action.tool, payload: payloadOverride ?? action.payload, operation_id: operationId })

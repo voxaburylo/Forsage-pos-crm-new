@@ -48,6 +48,20 @@ describe('catalog agent safety',()=>{
     expect(catalog.findById(a.id)?.name).toBe(a.name)
     expect(db.prepare("SELECT count(*) n FROM audit_log WHERE action LIKE 'catalog_agent.%'").get()).toEqual({n:0})
   })
+  it('chat batch (skip_invalid) writes valid cards, skips refused ones with a reason, and gives fingerprints',()=>{
+    const a=product('(метал) 10W40 API SL/CF 1л (12)','62966'),b=product('Фильтр W811/80','AUTO-B'),c=product('Масло','AUTO-C')
+    expect(agent.fingerprints([a.id,'missing'])).toEqual([{product_id:a.id,fingerprint:agentFingerprint(a),name:a.name,category_id:null},{product_id:'missing',fingerprint:null}])
+    db.prepare('UPDATE products SET retail_price=12000 WHERE id=?').run(c.id)
+    const input={operation_id:randomUUID(),skip_invalid:true,items:[patch(a,{name:'Моторна олива 10W40 API SL/CF 1л, метал (12)'}),patch(b,{name:'Фільтр W67/1'}),patch(c,{name:'Олива'})]}
+    const result=agent.apply(input,'owner')
+    expect(result.updated).toBe(1)
+    expect((result.skipped ?? []).map((row:any)=>row.error)).toEqual([expect.stringContaining('технічні'),expect.stringContaining('вже змінено')])
+    expect(catalog.findById(a.id)?.name).toBe('Моторна олива 10W40 API SL/CF 1л, метал (12)')
+    expect(catalog.findById(b.id)?.name).toBe('Фильтр W811/80')
+    expect(()=>agent.apply({operation_id:randomUUID(),skip_invalid:true,items:[{product_id:b.id,fingerprint:agentFingerprint(b),primary_id:a.id,primary_fingerprint:'x'}]},'owner')).toThrow('Помічнику каталогу')
+    expect(isDesktopChannelAllowed('desktop:catalog:agent-fingerprints','owner')).toBe(true)
+    expect(isDesktopChannelAllowed('desktop:catalog:agent-fingerprints','cashier')).toBe(false)
+  })
   it('refuses SKU collision and maps retail proposals to current grid/rounding',()=>{
     const a=product();product('Інший','w811-80')
     expect(()=>agent.apply({operation_id:randomUUID(),items:[patch(a,{sku:'W811/80'})]},'owner')).toThrow('іншому товару')
