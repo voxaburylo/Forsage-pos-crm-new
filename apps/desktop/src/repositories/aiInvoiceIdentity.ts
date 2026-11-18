@@ -87,8 +87,21 @@ function partNumberTokens(value: string): string[] {
   return (text(value).match(/[\p{L}\p{N}]+(?:[-/][\p{L}\p{N}]+)*/gu) ?? [])
     .filter(token => (/^[0-9]{6,}$/.test(token) || (/[\p{L}]/u.test(token) && (token.match(/\d/g)?.length ?? 0) >= 3 && code(token).length >= 5))
       && !/^\d{1,2}w-?\d{2}$/i.test(token) && !/^\d+(?:mm|ml|мм|мл)$/i.test(token)
-      && !/^\d+(?:[xх×]\d+)+/iu.test(token) && !/^(?:API|ACEA|SAE|ISO|DOT|GL)[-\d]/i.test(token))
+      && !/^\d+(?:[xх×]\d+)+/iu.test(token) && !/^(?:API|ACEA|SAE|ISO|DOT|GL)[-\d]/i.test(token)
+      && !measurementRange(token))
     .map(code)
+}
+
+/**
+ * «10-30В», «12V/24V», «6/12B», «140А/45А», «17-19мм» — діапазон вимірювань, не каталожний номер.
+ * 18.11.2026: «Фара LED Winso 10-30В» лягла в «Присадка Bardahl … 1030B», «Тестер … 12V/24V» — у «Двійник … 12V/24V».
+ * Одиночний код на кшталт «1030B» лишається номером: це лише діапазон із двох і більше частин.
+ */
+function measurementRange(token: string): boolean {
+  const parts = token.split(/[-/]/)
+  return parts.length >= 2
+    && parts.every(part => /^\d+(?:[.,]\d+)?(?:в|v|b|вт|w|а|a|ач|ah|мм|mm|см|cm|л|l|мл|ml|т|t|атм|lm|лм|k|к|гр|g|кг|kg)?$/iu.test(part))
+    && parts.some(part => /\d[\p{L}]/u.test(part))
 }
 const brandKey = (value: string) => {
   const key = code(value)
