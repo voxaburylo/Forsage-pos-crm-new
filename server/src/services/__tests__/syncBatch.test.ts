@@ -33,6 +33,20 @@ describe('sync batch isolation', () => {
     const apply=vi.fn(async(item:SyncBatchOperation)=>{if(item.sequence===1)throw new Error('cleanup failed')})
     expect((await processSyncBatch(ops,apply)).map(row=>row.sequence)).toEqual([1,3])
   })
+  it('lets a new product card through after its invoice failed for lack of that card', async () => {
+    const ops=[operation(1,'supply_invoice','inv','supplier_invoice.created',{items:[{product_id:'new-card'},{product_id:'old-card'}]}),
+      operation(2,'supply_invoice','inv','supplier_invoice.posted',{items:[{product_id:'new-card'}]}),
+      operation(3,'product','new-card','product.upsert'),
+      operation(4,'product','new-card','product.upsert',{stock_correction:true})]
+    const apply=vi.fn(async(item:SyncBatchOperation)=>{if(item.sequence===1)throw new Error('Спочатку передайте картки всіх товарів приходу.')})
+    expect((await processSyncBatch(ops,apply)).map(row=>[row.sequence,row.status])).toEqual([[1,'failed'],[3,'synced']])
+  })
+  it('keeps later copies of a card pending when an earlier copy of that card failed', async () => {
+    const ops=[operation(1,'supply_invoice','inv','supplier_invoice.created',{items:[{product_id:'card'}]}),
+      operation(2,'product','card','product.upsert'),operation(3,'product','card','product.upsert')]
+    const apply=vi.fn(async(item:SyncBatchOperation)=>{if(item.sequence<=2)throw new Error('failed')})
+    expect((await processSyncBatch(ops,apply)).map(row=>row.sequence)).toEqual([1,2])
+  })
   it('continues with unrelated operations after one failure', async () => {
     const operations = [
       operation(1, 'product', 'product-a', 'product.upsert'),
