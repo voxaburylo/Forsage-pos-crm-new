@@ -3,6 +3,7 @@ import { adminApi } from '@/features/admin/adminApi'
 import { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react'
 import { fileToCompressedImage } from './aiImageInput'
 import { aiActionOperationId } from './aiActionOperation'
+import { isPastedTable } from './aiPasteKind'
 import { applyChatCatalogUpdates, ensureChatCategories, renameChatCategories, type ChatCatalogBridge } from './aiCatalogApply'
 import { AiServerConnection } from './AiServerConnection'
 import { aiAvailabilityProblem, type AiAvailabilityProblem } from './aiAvailability'
@@ -408,7 +409,11 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
       if (!isCurrentContext()) return
       // The parser claims its own lock synchronously, before the next user event.
       releaseRead()
-      if (content && 'text' in content) { await attachClipboardText(content.text); return }
+      if (content && 'text' in content) {
+        // Звичайний текст (інструкція) — у поле повідомлення, а не як таблицю приходу.
+        if (!isPastedTable(content.text, localInvoiceMode)) { setInput(prev => (prev ? prev + '\n' : '') + content.text.trim()); return }
+        await attachClipboardText(content.text); return
+      }
       if (content && 'files' in content) { await handleFiles(content.files); return }
       toast.warning('У буфері немає тексту чи фото. Скопіюйте таблицю або виберіть Excel-файл.')
     } catch (error) {
@@ -779,7 +784,8 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
     if (sendBusy.current || applyBusy.current || attachmentBusy.current) return
     const text = e.clipboardData.getData('text/plain')
     // Excel places both an image and tabular text in the clipboard. Preserve the exact numbers.
-    if (text.trim() && (text.includes('\t') || text.trim().includes('\n') || localInvoiceMode)) {
+    // Лише схоже на таблицю (табуляції, колонки «;»/«|») або явний режим накладної; звичайний текст — як повідомлення.
+    if (isPastedTable(text, localInvoiceMode)) {
       e.preventDefault(); await attachClipboardText(text); return
     }
     const files = Array.from(e.clipboardData.files)
