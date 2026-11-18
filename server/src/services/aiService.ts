@@ -181,7 +181,7 @@ export async function getUsageSummary(tenantId: string) {
 const READ_TOOLS = new Set(['search_products', 'get_product', 'list_categories', 'list_brands', 'search_customers', 'list_products_page', 'find_duplicate_products'])
 const WRITE_TOOLS = new Set(['update_product', 'create_product', 'create_customer', 'update_customer', 'create_category', 'create_order'])
 // Масові дії: одна картка-пропозиція з багатьма рядками, застосовується пакетом
-const BULK_TOOLS = new Set(['create_customers_bulk', 'create_products_bulk', 'create_categories_bulk', 'update_products_bulk', 'merge_products_bulk'])
+const BULK_TOOLS = new Set(['create_customers_bulk', 'create_products_bulk', 'create_categories_bulk', 'rename_categories_bulk', 'update_products_bulk', 'merge_products_bulk'])
 
 const toolDeclarations: FunctionDeclaration[] = [
   {
@@ -388,7 +388,7 @@ const toolDeclarations: FunctionDeclaration[] = [
             properties: {
               product_id: { type: SchemaType.STRING },
               new_name: { type: SchemaType.STRING, description: 'Нова назва (укр). Бренди, артикули, розміри, латиницю НЕ чіпати' },
-              category_name: { type: SchemaType.STRING, description: 'Назва категорії (знайдемо або створимо)' },
+              category_name: { type: SchemaType.STRING, description: 'Назва категорії з list_categories; якщо підхожої немає — нова коротка назва українською (каса створить її)' },
             },
             required: ['product_id'],
           },
@@ -477,6 +477,27 @@ const toolDeclarations: FunctionDeclaration[] = [
     },
   },
   {
+    name: 'rename_categories_bulk',
+    description: 'МАСОВЕ перейменування наявних категорій («папок»), напр. переклад українською. category_id бери ТІЛЬКИ з list_categories. Одна пропозиція, користувач підтвердить.',
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        renames: {
+          type: SchemaType.ARRAY,
+          items: {
+            type: SchemaType.OBJECT,
+            properties: {
+              category_id: { type: SchemaType.STRING },
+              new_name: { type: SchemaType.STRING, description: 'Нова назва українською' },
+            },
+            required: ['category_id', 'new_name'],
+          },
+        },
+      },
+      required: ['renames'],
+    },
+  },
+  {
     name: 'create_categories_bulk',
     description: 'МАСОВЕ створення категорій («папок») зі списку назв. Одна пропозиція, пакетне застосування.',
     parameters: {
@@ -537,7 +558,10 @@ const SYSTEM_PROMPT = `Ти — AI-помічник «Директор» для 
 
 МАСОВЕ НАВЕДЕННЯ ПОРЯДКУ В КАТАЛОЗІ (переклад, сортування, дублі):
 - Переклад назв українською: виклич list_products_page(page=1, filter='russian_names') → отримаєш до 200 товарів → переклади НАЗВИ (бренди, артикули, коди, розміри, латиницю НЕ чіпай) → виклич update_products_bulk з парами product_id + new_name. ОДНА сторінка = ОДИН виклик update_products_bulk. Далі скажи користувачу, скільки сторінок лишилось, і чекай наступної команди «далі».
-- Розкладання по категоріях: list_products_page(filter='no_category') + list_categories → update_products_bulk з category_name для кожного товару (категорія створиться сама, якщо нової нема).
+- Розкладання по категоріях: list_products_page(filter='no_category') + list_categories → update_products_bulk з category_name: спершу наявна категорія за призначенням; якщо підхожої немає — коротка загальна назва нової українською (каса створить її сама). Не плоди категорії за брендом чи розміром.
+- Назви категорій українською: list_categories → rename_categories_bulk з парами category_id + new_name лише для тих, що російською чи з помилками («Фильтра» → «Фільтри», «Масла-ATF» → «Оливи-ATF»). Якщо українська назва вже є в іншої категорії — не перейменовуй, а скажи про дубль.
+- Зрозуміла назва з частин: назву, що починається з упаковки чи службового слова («(метал) 10W40 API SL/CF 1л (12)»), а тип товару й бренд лежать окремо (поле brand, категорія), збери в людську: спочатку тип товару, потім бренд із поля brand, потім характеристики, обʼєм, упаковка. Приклад: «(метал) 10W40 API SL/CF 1л (12)», brand «Polo Expert», категорія «Масла» → «Моторна олива Polo Expert 10W40 API SL/CF 1л, метал (12)». Тип визначай за категорією й специфікацією (W40/API SL — моторна олива; GL-4/GL-5, 80W90 — трансмісійна олива); якщо не впевнений у типі — не змінюй назву.
+- У новій назві ВСІ числа й коди старої назви мають лишитися в тому самому порядку (10W40, 1л, (12), артикули): програма відхилить картку, у якій зникла чи додалась цифра. Бренд, який уже є в назві, не прибирай.
 - Дублі: find_duplicate_products(by='name' або by='sku') — сервер сам знайде групи по всьому каталогу. Переглянь групи, обери в кожній ОСНОВНИЙ товар (більший залишок / заповненіша картка) і виклич merge_products_bulk. Залишки та історія дубліката перенесуться в основний, дублікат зникне. НЕ зливай товари, якщо не впевнений, що це той самий товар (різні розміри/сторони/обʼєми — це РІЗНІ товари!).
 - НІКОЛИ не проси весь каталог одразу і не обробляй більше 200 товарів за один виклик — працюй сторінками. product_id бери тільки з відповідей інструментів.
 
@@ -601,7 +625,7 @@ async function executeReadTool(name: string, args: any, tenantId: string, budget
       const page = Math.max(Number(args?.page) || 1, 1)
       const filter = String(args?.filter ?? 'all')
       let q = db.from('products')
-        .select('id, sku, name, category:categories(name)', { count: 'exact' })
+        .select('id, sku, name, brand:brands(name), category:categories(name)', { count: 'exact' })
         .eq('tenant_id', tenantId)
         .is('deleted_at', null)
         .order('name')
@@ -619,6 +643,7 @@ async function executeReadTool(name: string, args: any, tenantId: string, budget
         pages: Math.ceil((count ?? 0) / perPage),
         products: (data ?? []).map((p: any) => ({
           product_id: p.id, sku: p.sku, name: p.name,
+          brand: p.brand?.name ?? null,
           category: p.category?.name ?? null,
         })),
       }
@@ -732,6 +757,24 @@ async function buildPendingAction(name: string, args: any, tenantId: string, bud
       changes: [], count: list.length,
       columns: ['Залишається', 'Зливається (зникне)'], items,
       payload: { merges: list },
+    }
+  }
+
+  if (name === 'rename_categories_bulk') {
+    const list: any[] = Array.isArray(args?.renames) ? args.renames : []
+    const ids = list.map((r) => String(r.category_id)).filter(Boolean)
+    const current = new Map<string, string>()
+    if (ids.length) {
+      const { data } = await budget.run(signal => db.from('categories').select('id, name')
+        .eq('tenant_id', tenantId).in('id', ids.slice(0, 500)).abortSignal(signal))
+      for (const c of data ?? []) current.set(c.id, c.name)
+    }
+    return {
+      id, tool: name, title: `Перейменувати категорії: ${list.length}`,
+      changes: [], count: list.length,
+      columns: ['Було', 'Стане'],
+      items: list.map((r) => ({ 'Було': current.get(String(r.category_id)) ?? '(не знайдено)', 'Стане': String(r.new_name ?? '—') })),
+      payload: { renames: list },
     }
   }
 

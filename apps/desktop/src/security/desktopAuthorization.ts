@@ -35,6 +35,7 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   ['desktop:catalog:agent-scan', OWNER_ROLES],
   ...['scan', 'preview', 'apply', 'apply-sku', 'tidy-plan', 'tidy-apply'].map((mode): [string, readonly DesktopRole[]] => [`desktop:catalog:cleanup-${mode}`, OWNER_ROLES]),
   ['desktop:catalog:agent-apply', OWNER_ROLES],
+  ['desktop:catalog:agent-fingerprints', OWNER_ROLES],
   ['desktop:warehouse:list-consumptions', ['owner', 'admin', 'manager']],
   ['desktop:warehouse:create-consumption', ['owner', 'admin', 'manager']],
   ['desktop:warehouse:resolve-consumption', ['owner', 'admin', 'manager']],
