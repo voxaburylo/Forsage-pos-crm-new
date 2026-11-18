@@ -116,6 +116,26 @@ interface TextAttachment {
   sourceChecks?: AiSupplyInput['sourceChecks']
 }
 
+/** PDF накладної: до 3.5 МБ, щоб запит вмістився в ліміт сервера. */
+const MAX_PDF_BYTES = 3.5 * 1024 * 1024
+function isPdfFile(file: File): boolean {
+  return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
+}
+const isPdfDataUrl = (dataUrl: string) => dataUrl.startsWith('data:application/pdf')
+function fileToPdfDataUrl(file: File): Promise<{ name: string; dataUrl: string }> {
+  if (file.size > MAX_PDF_BYTES) return Promise.reject(new Error('PDF завеликий — максимум 3.5 МБ. Розділіть його або зробіть фото сторінок.'))
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const payload = String(reader.result ?? '').split(',', 2)[1]
+      if (!payload) { reject(new Error('Не вдалося прочитати PDF')); return }
+      resolve({ name: file.name, dataUrl: 'data:application/pdf;base64,' + payload })
+    }
+    reader.onerror = () => reject(new Error('Не вдалося прочитати PDF'))
+    reader.readAsDataURL(file)
+  })
+}
+
 function isImageFile(file: File): boolean {
   const name = file.name.toLowerCase()
   return file.type.startsWith('image/') || IMAGE_EXTENSIONS.some((ext) => name.endsWith(ext))
@@ -312,6 +332,13 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
     if (imageAttachments.length + attachmentBusy.current >= MAX_IMAGES) { toast.error(`Максимум ${MAX_IMAGES} фото за раз`); return }
     attachmentBusy.current++; setProcessingAttachments(true)
     try {
+      if (isPdfFile(file)) {
+        const pdf = await fileToPdfDataUrl(file)
+        if (!isCurrentContext()) return
+        setImageAttachments((prev) => [...prev, pdf])
+        toast.success(`PDF «${file.name}» прикріплено`)
+        return
+      }
       if (isImageFile(file)) {
         if (imageAttachments.length >= MAX_IMAGES) {
           toast.error(`Максимум ${MAX_IMAGES} фото за раз`)
@@ -349,7 +376,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
 
   async function handleFiles(files: File[]) {
     if (!isCurrentContext() || !files.length || sendBusy.current || applyBusy.current || attachmentBusy.current) return
-    const tables = files.filter(file => !isImageFile(file))
+    const tables = files.filter(file => !isImageFile(file) && !isPdfFile(file))
     if (tables.length > 1 || (tables.length && (files.length > 1 || imageAttachments.length)) || (!tables.length && attachment)) {
       toast.error('Додавайте одну таблицю або фото однієї накладної. Спочатку приберіть попереднє вкладення.'); return
     }
@@ -450,11 +477,15 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
       if (hasImages) {
         images = []
         for (const image of imageAttachments) {
+          if (isPdfDataUrl(image.dataUrl)) {
+            images.push({ mime_type: 'application/pdf', data_base64: image.dataUrl.split(',', 2)[1] })
+            continue
+          }
           const uploaded = await uploadProcessingBlob(dataUrlToBlob(image.dataUrl), 'ai')
           uploadedPaths.push(uploaded.path)
           if (!isCurrentContext()) return
           images.push({
-            mime_type: uploaded.mimeType as AiChatImage['mime_type'],
+            mime_type: uploaded.mimeType as 'image/jpeg' | 'image/png' | 'image/webp',
             storage_path: uploaded.path,
           })
         }
@@ -971,7 +1002,9 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
             <div className="flex gap-2 mb-2 px-1 flex-wrap">
               {imageAttachments.map((img, i) => (
                 <div key={i} className="relative group">
-                  <img src={img.dataUrl} alt={img.name} className="h-16 w-16 object-cover rounded-lg border border-gray-200" />
+                  {isPdfDataUrl(img.dataUrl)
+                    ? <div title={img.name} className="h-16 w-16 flex items-center justify-center rounded-lg border border-gray-200 bg-red-50 text-xs font-semibold text-red-700">PDF</div>
+                    : <img src={img.dataUrl} alt={img.name} className="h-16 w-16 object-cover rounded-lg border border-gray-200" />}
                   <button
                     type="button"
                     onClick={() => setImageAttachments((prev) => prev.filter((_, x) => x !== i))}
@@ -995,7 +1028,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
             <input
               ref={fileRef}
               type="file"
-              accept=".xlsx,.xls,.csv,.txt,.jpg,.jpeg,.png,.webp,image/*"
+              accept=".xlsx,.xls,.csv,.txt,.pdf,application/pdf,.jpg,.jpeg,.png,.webp,image/*"
               multiple
               className="hidden"
               onChange={(e) => {

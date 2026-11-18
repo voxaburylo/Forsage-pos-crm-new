@@ -44,10 +44,10 @@ export interface AiPendingAction {
   uncertain?: string[]
 }
 
-export interface AiChatImage {
-  mime_type: 'image/jpeg' | 'image/png' | 'image/webp'
-  storage_path: string
-}
+/** Фото йде через тимчасове сховище; PDF накладної — напряму в base64. */
+export type AiChatImage =
+  | { mime_type: 'image/jpeg' | 'image/png' | 'image/webp'; storage_path: string }
+  | { mime_type: 'application/pdf'; data_base64: string }
 
 export interface AiApplyResult {
   result: {
