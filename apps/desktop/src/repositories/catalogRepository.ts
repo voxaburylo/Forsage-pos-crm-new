@@ -181,7 +181,7 @@ export function productSearchText(product: LocalProductUpsert, aliases: string[]
 export function refreshProductSearchText(db: LocalDatabase, productId: string, tenantId: string): string {
   const product = db.prepare('SELECT id,sku,name,barcode,storage_bin FROM products WHERE tenant_id=? AND id=?').get(tenantId, productId) as LocalProductUpsert | undefined
   if (!product) throw new Error('Товар для індексу пошуку не знайдено')
-  const barcodes = db.prepare('SELECT barcode FROM product_barcodes WHERE tenant_id=? AND product_id=? AND deleted_at IS NULL ORDER BY barcode').all(tenantId, productId) as { barcode: string }[]
+  const barcodes = db.prepare('SELECT barcode FROM product_barcodes WHERE +tenant_id=? AND product_id=? AND deleted_at IS NULL ORDER BY barcode').all(tenantId, productId) as { barcode: string }[]
   const aliases = db.prepare('SELECT alias FROM product_aliases WHERE tenant_id=? AND product_id=? AND deleted_at IS NULL ORDER BY alias,id').all(tenantId, productId) as { alias: string }[]
   const next = productSearchText({ ...product, additional_barcodes: barcodes.map(row => row.barcode) }, aliases.map(row => row.alias))
   db.prepare('UPDATE products SET search_text=? WHERE tenant_id=? AND id=?').run(next, tenantId, productId)
@@ -631,7 +631,7 @@ export class LocalCatalogRepository {
         this.db.prepare('UPDATE products SET dirty_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?')
           .run(timestamp, timestamp, productId, tenantId)
         const stored = product as LocalProduct & { specs_json?: string; is_favorite?: number; reorder_point?: number; notes?: string; photo_url?: string }
-        const barcodes = this.db.prepare('SELECT barcode FROM product_barcodes WHERE tenant_id = ? AND product_id = ? AND deleted_at IS NULL AND is_primary = 0')
+        const barcodes = this.db.prepare('SELECT barcode FROM product_barcodes WHERE +tenant_id = ? AND product_id = ? AND deleted_at IS NULL AND is_primary = 0')
           .all(tenantId, productId) as Array<{ barcode: string }>
         this.addProductOutbox('product.upsert', productId, {
           id: productId, tenant_id: tenantId, sku: stored.sku, name: stored.name, barcode: stored.barcode,
@@ -802,9 +802,10 @@ export class LocalCatalogRepository {
              is_service, requires_core_return, core_deposit_amount, storage_bin,
              is_favorite, photo_url, specs_json, created_at, updated_at, deleted_at
       FROM products
-      WHERE tenant_id = ?
+      -- Compare SKUs on the covering UNIQUE(tenant_id, sku) index first; a plain
+      -- "tenant_id = ? AND trim(sku) = ?" walked the listing index row by row (~35 ms).
+      WHERE rowid IN (SELECT rowid FROM products WHERE tenant_id = ? AND trim(sku) = ? COLLATE NOCASE)
         ${deletedClause}
-        AND trim(sku) = ? COLLATE NOCASE
       ORDER BY CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END, updated_at DESC
       LIMIT 1
     `).get(tenantId, raw) as (LocalProduct & { deleted_at: string | null }) | undefined
@@ -816,14 +817,23 @@ export class LocalCatalogRepository {
       const candidate = this.batchSkuIndex.rows.find(row => (includeDeleted || !row.deleted_at) && row.key === lookup)
       return candidate ? this.findStoredProductById(candidate.id, tenantId) : null
     }
-    const candidates = this.db.prepare(`
-      SELECT id, sku, deleted_at
-      FROM products
-      WHERE tenant_id = ?
+    // A plain-ASCII SKU that differs only by case or surrounding spaces was already
+    // matched above, so only SKUs with other characters (Cyrillic, full-width, tabs)
+    // can still match after NFKC + Ukrainian upper-casing. Read just those keys from
+    // the covering index instead of loading and sorting every product.
+    const keys = this.db.prepare(`
+      SELECT rowid AS row_id, sku FROM products
+      WHERE tenant_id = ? AND sku GLOB '*[^ -~]*'
+    `).all(tenantId) as unknown as Array<{ row_id: number; sku: string }>
+    const rowIds = keys.filter(row => normalizedSkuLookup(row.sku) === lookup).map(row => row.row_id)
+    if (!rowIds.length) return null
+    const candidate = this.db.prepare(`
+      SELECT id FROM products
+      WHERE rowid IN (SELECT value FROM json_each(?))
         ${deletedClause}
       ORDER BY CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END, updated_at DESC
-    `).all(tenantId) as unknown as Array<{ id: string; sku: string; deleted_at: string | null }>
-    const candidate = candidates.find((row) => normalizedSkuLookup(row.sku) === lookup)
+      LIMIT 1
+    `).get(JSON.stringify(rowIds)) as { id: string } | undefined
     return candidate ? this.findStoredProductById(candidate.id, tenantId) : null
   }
 
