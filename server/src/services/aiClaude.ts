@@ -51,7 +51,11 @@ export function claudeTools(declarations: readonly FunctionDeclaration[]): Anthr
   }))
 }
 
-function imageBlock(image: ClaudeImage): Anthropic.Beta.BetaImageBlockParam {
+/** Фото — блок зображення; PDF накладної Claude читає як документ (текст і вигляд сторінок). */
+function imageBlock(image: ClaudeImage): Anthropic.Beta.BetaImageBlockParam | Anthropic.Beta.BetaRequestDocumentBlock {
+  if (image.mime_type === 'application/pdf') {
+    return { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: image.data_base64 } }
+  }
   const mediaType = (['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(image.mime_type)
     ? image.mime_type : 'image/jpeg') as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'
   return { type: 'image', source: { type: 'base64', media_type: mediaType, data: image.data_base64 } }

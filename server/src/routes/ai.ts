@@ -92,6 +92,11 @@ const chatSchema = z.object({
       mime_type: z.enum(['image/jpeg', 'image/png', 'image/webp']),
       data_base64: z.string().min(1).max(6_000_000),
     }),
+    // PDF накладної передається напряму (тимчасове сховище приймає лише фото й таблиці).
+    z.object({
+      mime_type: z.literal('application/pdf'),
+      data_base64: z.string().min(1).max(5_500_000),
+    }),
   ])).max(4).optional(),
 })
 const supplyInvoicePhotoSchema = z.object({

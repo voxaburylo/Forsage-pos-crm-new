@@ -162,6 +162,12 @@ describe('actual AI service budget wiring, synthetic Claude SDK and database onl
   expect(body.messages[0].content[0]).toMatchObject({type:'image',source:{type:'base64',media_type:'image/png',data:'fixture'}})
   expect(options.signal).toBeInstanceOf(AbortSignal)
  })
+ it('sends a PDF invoice to Claude as a document, not as an image',async()=>{
+  const invoice=await recognizeSupplyInvoicePhoto('shop','user',{images:[{mime_type:'application/pdf',data_base64:'JVBERi0x'}]})
+  expect(invoice.actions[0].payload.products).toHaveLength(1)
+  const body=mocks.create.mock.calls[0][0]
+  expect(body.messages[0].content[0]).toEqual({type:'document',source:{type:'base64',media_type:'application/pdf',data:'JVBERi0x'}})
+ })
  it('treats a stored Gemini model as Claude Sonnet',async()=>{
   const from=mocks.from.getMockImplementation()!
   mocks.from.mockImplementation((table:string)=>{const q=from(table);q.single=async()=>({data:{ai_enabled:true,ai_model:'gemini-2.5-flash',ai_api_key_encrypted:'fixture-key'},error:null});return q})
