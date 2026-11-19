@@ -1361,7 +1361,10 @@ app.whenReady().then(async () => {
     if (bytes.length === 0 || bytes.length > 10 * 1024 * 1024) throw new Error('Неприпустимий розмір фото')
     const photoDir = path.join(desktopDataRoot, 'photos', safeFolder)
     await mkdir(photoDir, { recursive: true })
-    const photoPath = path.join(photoDir, Date.now() + '-' + crypto.randomUUID() + '.jpg')
+    // Розширення за вмістом: картинки без фону зберігаються як PNG/WebP з прозорістю.
+    const isPng = bytes.length > 8 && bytes.readUInt32BE(0) === 0x89504e47
+    const isWebp = bytes.length > 12 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP'
+    const photoPath = path.join(photoDir, Date.now() + '-' + crypto.randomUUID() + (isPng ? '.png' : isWebp ? '.webp' : '.jpg'))
     await writeFile(photoPath, bytes)
     return pathToFileURL(photoPath).href
   })

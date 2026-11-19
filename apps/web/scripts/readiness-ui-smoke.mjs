@@ -87,7 +87,8 @@ try {
   await page.evaluate(() => fixture.finishCommit())
   await page.getByAltText('Фото товару').waitFor()
   assert.equal(await page.evaluate(() => fixture.submits), 0)
-  assert.deepEqual(await page.evaluate(() => fixture.uploads[0].magic), [255,216])
+  // Прозорий PNG зберігає прозорість (WebP, «RI»), а не стає JPEG на білому тлі.
+  assert.deepEqual(await page.evaluate(() => fixture.uploads[0].magic), [82,73])
   await page.waitForFunction(() => document.querySelector('img')?.naturalWidth === 1200)
   assert.equal(await page.getByAltText('Фото товару').evaluate(img => img.naturalHeight), 600)
   await page.evaluate(() => { fixture.holdUpload=false; fixture.holdCommit=false; fixture.commitError=true })

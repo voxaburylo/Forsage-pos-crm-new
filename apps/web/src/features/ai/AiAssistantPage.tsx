@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react
 import { fileToCompressedImage } from './aiImageInput'
 import { aiActionOperationId } from './aiActionOperation'
 import { isPastedTable } from './aiPasteKind'
+import { applyChatCrossNumbers, type ChatCrossBridge } from './aiCrossApply'
 import { applyChatCatalogUpdates, ensureChatCategories, renameChatCategories, type ChatCatalogBridge } from './aiCatalogApply'
 import { applyChatMerges, type ChatMergeBridge } from './aiMergeApply'
 import { AiServerConnection } from './AiServerConnection'
@@ -250,6 +251,12 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
   const [processingAttachments, setProcessingAttachments] = useState(false)
   const [attachment, setAttachment] = useState<TextAttachment | null>(null)
   const [exchangeRate, setExchangeRate] = useState('')
+  // Валюта цін на фото/PDF накладної (таблиця визначає валюту сама). Курс власника запам'ятовуємо.
+  const [photoCurrency, setPhotoCurrency] = useState<'' | 'USD' | 'EUR'>('')
+  const choosePhotoCurrency = (currency: '' | 'USD' | 'EUR') => {
+    setPhotoCurrency(currency)
+    if (currency) { try { setExchangeRate(localStorage.getItem('forsage:rate:' + currency) ?? '') } catch { /* optional */ } }
+  }
   const [imageAttachments, setImageAttachments] = useState<Array<{ name: string; dataUrl: string }>>([])
   const [orderModalAction, setOrderModalAction] = useState<AiPendingAction | null>(null)
   const [applied, setApplied] = useState<Record<string, 'ok' | 'rejected'>>(savedChat.applied ?? {})
@@ -433,11 +440,13 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
     if (!isCurrentContext() || sendBusy.current || attachmentBusy.current || applyBusy.current) return
     if (!attachment?.products?.length && (loadingStatus || !status || statusError || !status.enabled || !status.has_key)) return
     let importRate = 1
-    try { if (attachment?.sourceCurrency) importRate = readSupplyExchangeRate(exchangeRate) }
+    const sourceCurrency = attachment?.sourceCurrency ?? (imageAttachments.length && photoCurrency ? photoCurrency : undefined)
+    try { if (sourceCurrency) importRate = readSupplyExchangeRate(exchangeRate) }
     catch (error) { toast.error((error as Error).message); return }
-    const currencyNote = attachment?.sourceCurrency ? ` Валюта ${attachment.sourceCurrency}; курс ${importRate} грн за 1 ${attachment.sourceCurrency}.` : ''
+    if (sourceCurrency) { try { localStorage.setItem('forsage:rate:' + sourceCurrency, exchangeRate.trim()) } catch { /* optional */ } }
+    const currencyNote = sourceCurrency ? ` Валюта ${sourceCurrency}; курс ${importRate} грн за 1 ${sourceCurrency}.` : ''
     let directProducts = attachment?.products
-    try { if (directProducts?.length && attachment?.sourceCurrency) directProducts = convertSupplyPrices(directProducts, importRate) }
+    try { if (directProducts?.length && sourceCurrency) directProducts = convertSupplyPrices(directProducts, importRate) }
     catch (error) { toast.error((error as Error).message); return }
     sendBusy.current = true
 
@@ -507,7 +516,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
           '\nНазва name має бути зрозумілою на маленькій етикетці: спочатку тип товару, бренд, модель/артикул та головний розмір або об’єм, потім уточнення. Бренд записуй і в назві, і в brand_name, якщо він явно відомий із джерела. Не починай з упаковки «метал», кількості у коробці чи службового коду постачальника. Не обрізай значущі характеристики: 1л і 4л, 5м і 7.5м — різні товари. Не вигадуй бренд: DEXRON, ATF, API, SAE, ACEA — специфікації, не виробник. Збережи повну вихідну назву в source_name, якщо формат відповіді це дозволяє. Наявність товару перевірятиме локальна програма; не вигадуй product_id або рішення про об’єднання.'
         : ''
       const partsToSend = fileParts.length > 0 ? fileParts : [undefined]
-      const currencyInstruction = attachment?.sourceCurrency ? `Ціни джерела в ${attachment.sourceCurrency}. Поверни числові закупівельні ціни БЕЗ конвертації, точно як у файлі, навіть якщо поле інструмента назване purchase_price_uah. Програма сама застосує курс після розпізнавання.` : ''
+      const currencyInstruction = sourceCurrency ? `Ціни джерела в ${sourceCurrency}. Поверни числові закупівельні ціни БЕЗ конвертації, точно як у файлі, навіть якщо поле інструмента назване purchase_price_uah. Програма сама застосує курс після розпізнавання.` : ''
       const taskPrompt = requestInvoice ? [hasImages ? SUPPLY_PHOTO_INSTRUCTION : fallbackPrompt, currencyInstruction, message ? `Коментар користувача: ${message}` : ''].filter(Boolean).join('\n') : message || fallbackPrompt
       let failedAt = -1
       let failureMessage = ''
@@ -543,7 +552,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
       if (requestInvoice) {
         try {
           const { products, metadata } = collectSupplyResponse(responses, partsToSend.length, attachment?.sourceChecks)
-          const action = supplyImportAction(attachment?.sourceCurrency ? convertSupplyPrices(products, importRate) : products, (attachment?.name ?? 'Фото накладної') + currencyNote)
+          const action = supplyImportAction(sourceCurrency ? convertSupplyPrices(products, importRate) : products, (attachment?.name ?? 'Фото накладної') + currencyNote)
           actions = [{ ...action, payload: { ...metadata, ...action.payload } }]
         } catch (error) {
           reportLocalError(new Error(error instanceof AiSupplyResponseError && error.kind === 'missing-table'
@@ -696,6 +705,20 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
           + '. Облікова кількість — сума карток; фактичний залишок перевірте ревізією.'
         if (markSaved(msg, result.skipped.length || !result.merged ? 'warn' : 'ok')) {
           if (result.merged) toast.success(msg); else toast.warning(msg)
+        }
+        return true
+      }
+      if (action.tool === 'add_cross_numbers_bulk') {
+        const catalog = desktopBridge()?.catalog
+        if (!catalog?.changeCrossNumbers) throw new Error('Оновіть програму каси: ця версія ще не додає крос-номери з чату. Дані не змінено.')
+        const payload = payloadOverride ?? action.payload
+        const result = await applyChatCrossNumbers(Array.isArray(payload?.items) ? payload.items : [], catalog as unknown as ChatCrossBridge)
+        if (!isCurrentContext()) return false
+        requestDesktopSync()
+        setApplyErrors((prev) => ({ ...prev, [action.id]: result.skipped }))
+        const msg = `Крос-номери додано: ${result.numbers} до ${result.products} товарів` + (result.skipped.length ? `, пропущено ${result.skipped.length}` : '')
+        if (markSaved(msg, result.skipped.length || !result.products ? 'warn' : 'ok')) {
+          if (result.products) toast.success(msg); else toast.warning(msg)
         }
         return true
       }
@@ -1042,6 +1065,16 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
 
         {/* Поле вводу */}
         <div className="mt-3 border border-gray-200 rounded-2xl bg-white p-2 shadow-sm">
+          {!attachment && imageAttachments.length > 0 && <div className="mb-2 flex flex-wrap items-center gap-2 px-2 text-sm text-gray-700">
+            Ціни в накладній у:
+            {([['', '₴ грн'], ['USD', '$ долари'], ['EUR', '€ євро']] as const).map(([id, label]) => (
+              <button key={id || 'uah'} type="button" disabled={busy} onClick={() => choosePhotoCurrency(id)}
+                className={`rounded-full px-3 py-1 text-xs font-semibold ${photoCurrency === id ? 'bg-yellow-400 text-gray-900' : 'bg-gray-100 text-gray-600'}`}>{label}</button>
+            ))}
+            {photoCurrency && <label className="flex items-center gap-2 text-amber-900">курс грн за 1 {photoCurrency}:
+              <input aria-label={`Курс ${photoCurrency}`} inputMode="decimal" value={exchangeRate} onChange={event => setExchangeRate(event.target.value)} disabled={busy} placeholder="Введіть курс" className="w-28 rounded-lg border border-amber-300 px-2 py-1" />
+            </label>}
+          </div>}
           {attachment?.sourceCurrency && <label className="mb-2 flex flex-wrap items-center gap-2 px-2 text-sm text-amber-900">
             Ціни у {attachment.sourceCurrency}. Курс грн за 1 {attachment.sourceCurrency}:
             <input aria-label={`Курс ${attachment.sourceCurrency}`} inputMode="decimal" value={exchangeRate} onChange={event => setExchangeRate(event.target.value)} disabled={busy} placeholder="Введіть курс" className="w-32 rounded-lg border border-amber-300 px-2 py-1" />

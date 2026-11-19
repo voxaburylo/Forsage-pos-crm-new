@@ -14,6 +14,7 @@ import { parseAiJsonObject, mergeAiInvoicePages, hasAiInvoicePhotoContent } from
 import { aiUserMessage, withAiDataBoundary } from './aiPromptSafety.js'
 import { createAiToolBudget, parseAiReadArguments } from './aiToolSafety.js'
 import { safeAiErrorInfo } from './aiResponseSafety.js'
+import { cleanCrossProposal } from './aiCrossNumberRules.js'
 
 // ─── Моделі та приблизна вартість ($ за 1M токенів) ──────────────────────────
 // Значення орієнтовні (тарифи Anthropic можуть змінюватись) — лічильник показуємо
@@ -181,9 +182,52 @@ export async function getUsageSummary(tenantId: string) {
 const READ_TOOLS = new Set(['search_products', 'get_product', 'list_categories', 'list_brands', 'search_customers', 'list_products_page', 'find_duplicate_products'])
 const WRITE_TOOLS = new Set(['update_product', 'create_product', 'create_customer', 'update_customer', 'create_category', 'create_order'])
 // Масові дії: одна картка-пропозиція з багатьма рядками, застосовується пакетом
-const BULK_TOOLS = new Set(['create_customers_bulk', 'create_products_bulk', 'create_categories_bulk', 'rename_categories_bulk', 'update_products_bulk', 'merge_products_bulk'])
+const BULK_TOOLS = new Set(['create_customers_bulk', 'create_products_bulk', 'create_categories_bulk', 'rename_categories_bulk', 'update_products_bulk', 'merge_products_bulk', 'add_cross_numbers_bulk'])
+/** Пошук у інтернеті (веб-пошук Anthropic) — окремо від читання бази: довший і платний. */
+const RESEARCH_TOOL = 'search_cross_numbers'
 
 const toolDeclarations: FunctionDeclaration[] = [
+  {
+    name: 'search_cross_numbers',
+    description: 'Пошук крос-номерів і OE-номерів товарів в інтернеті (каталоги виробників, магазини запчастин). До 3 товарів за виклик; product_id бери з search_products. Повертає текст знахідок і список джерел (url). Нічого не записує.',
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: { product_ids: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } } },
+      required: ['product_ids'],
+    },
+  },
+  {
+    name: 'add_cross_numbers_bulk',
+    description: 'Додати товарам крос-номери, у яких ти ТОЧНО впевнений: номер прямо вказаний як аналог/OE саме цього товару (той самий виробник і артикул) у джерелі з search_cross_numbers. Кожен номер — з url джерела. Сумнівні не додавай. Одна пропозиція, користувач підтвердить.',
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        items: {
+          type: SchemaType.ARRAY,
+          items: {
+            type: SchemaType.OBJECT,
+            properties: {
+              product_id: { type: SchemaType.STRING },
+              numbers: {
+                type: SchemaType.ARRAY,
+                items: {
+                  type: SchemaType.OBJECT,
+                  properties: {
+                    number: { type: SchemaType.STRING, description: 'Каталожний номер як у джерелі' },
+                    brand: { type: SchemaType.STRING, description: 'Виробник цього номера' },
+                    source_url: { type: SchemaType.STRING, description: 'Сторінка, де номер указано як аналог цього товару' },
+                  },
+                  required: ['number', 'source_url'],
+                },
+              },
+            },
+            required: ['product_id', 'numbers'],
+          },
+        },
+      },
+      required: ['items'],
+    },
+  },
   {
     name: 'search_products',
     description: 'Знайти товари на складі за артикулом, назвою, штрихкодом або OEM. Повертає ціни в гривнях.',
@@ -568,6 +612,7 @@ const SYSTEM_PROMPT = `Ти — AI-помічник «Директор» для 
   1) знайди кожен названий товар через search_products (за номером без пробілів і з пробілами, за назвою, артикулом, штрихкодом); 2) покажи власнику знайдені картки списком: артикул, назва, залишок; 3) пари, що точно той самий товар (той самий каталожний номер, бренд, упаковка/кількість у комплекті, сторона, обʼєм), запропонуй одним merge_products_bulk з причиною до кожної пари; 4) сумнівні (різна упаковка «1шт»/«2шт», інший обʼєм чи сторона, інший комплект) НЕ обʼєднуй — перелічи окремо й спитай.
   Залишки сам НЕ переносиш і не виправляєш: облікова кількість змінюється лише документами. Якщо товар ліг не в ту картку (наприклад, клеми 135 г на картку 200 г), поясни коротко: «Ревізія → порахуйте обидві картки на полиці й поставте факт», і скажи, яку картку якою кількістю перевірити. Неправильний артикул у старій картці можна виправити через update_products_bulk лише назвою/категорією — артикул власник виправляє в картці сам; назви, яку саме картку і на що змінити.
   Якщо картку з недавньої накладної не знайдено — вона могла ще не дійти з каси на сервер; так і скажи, не вигадуй.
+- КРОС-НОМЕРИ («додай кроси», «знайди аналоги до …»): search_products → search_cross_numbers (до 3 товарів за раз) → add_cross_numbers_bulk лише з номерами, де ти ТОЧНО впевнений: джерело прямо називає номер аналогом/OE саме цього товару (той самий виробник і артикул товару), url зі списку sources. Номери з інших товарів, розміри, обʼєми, штрихкоди й сумнівні — не додавай, перелічи окремо. Скажи, скільки номерів знайдено і скільки відкинуто.
 - НІКОЛИ не проси весь каталог одразу і не обробляй більше 200 товарів за один виклик — працюй сторінками. product_id бери тільки з відповідей інструментів.
 
 Правила:
@@ -762,6 +807,31 @@ async function buildPendingAction(name: string, args: any, tenantId: string, bud
       changes: [], count: list.length,
       columns: ['Залишається', 'Зливається (зникне)'], items,
       payload: { merges: list },
+    }
+  }
+
+  if (name === 'add_cross_numbers_bulk') {
+    const list = cleanCrossProposal(args?.items)
+    const ids = list.map(item => item.product_id)
+    const current = new Map<string, { sku: string; name: string }>()
+    if (ids.length) {
+      const { data } = await budget.run(signal => db.from('products').select('id, sku, name')
+        .eq('tenant_id', tenantId).in('id', ids.slice(0, 200)).abortSignal(signal))
+      for (const p of data ?? []) current.set(p.id, { sku: p.sku, name: p.name })
+    }
+    const items = list.filter(item => current.has(item.product_id))
+    if (!items.length) throw new AppError('AI_INVALID_RESPONSE', 'Немає жодного крос-номера з надійним джерелом', 422)
+    return {
+      id, tool: name, title: `Додати крос-номери: ${items.reduce((sum, item) => sum + item.numbers.length, 0)} до ${items.length} товарів`,
+      changes: [], count: items.length,
+      columns: ['Артикул', 'Товар', 'Крос-номери', 'Джерело'],
+      items: items.map(item => ({
+        'Артикул': current.get(item.product_id)?.sku ?? '?',
+        'Товар': current.get(item.product_id)?.name ?? '?',
+        'Крос-номери': item.numbers.map(n => n.brand ? `${n.number} (${n.brand})` : n.number).join(', '),
+        'Джерело': [...new Set(item.numbers.map(n => n.source))].join(', '),
+      })),
+      payload: { items },
     }
   }
 
@@ -1070,6 +1140,24 @@ async function runChatWithinBudget(
   let corrections = 0
 
   const handleCall = async (name: string, args: Record<string, unknown>): Promise<unknown> => {
+    if (name === RESEARCH_TOOL) {
+      try {
+        const ids = Array.isArray((args as any)?.product_ids) ? (args as any).product_ids.map(String).slice(0, 3) : []
+        if (!ids.length) return { error: 'Вкажіть product_id товарів (до 3)' }
+        const { data } = await budget.run(signal => db.from('products').select('id, sku, name, brand:brands(name)')
+          .eq('tenant_id', tenantId).in('id', ids).abortSignal(signal))
+        if (!data?.length) return { error: 'Товари не знайдено' }
+        const lines = data.map((p: any) => `- product_id ${p.id}: ${p.name}; артикул ${p.sku || '—'}; бренд ${p.brand?.name ?? '—'}`).join('\n')
+        const found = await withAiExecutionBudget(120_000, research => claude.research(research,
+          'Знайди крос-номери (аналоги інших виробників) і OE-номери для цих автотоварів. Для кожного товару: номер, виробник номера, url сторінки, де номер прямо вказано як аналог/OE саме цього товару. Не вгадуй: якщо прямого підтвердження немає — так і напиши.\n' + lines, 5), budget.signal)
+        usage.promptTokens += found.promptTokens
+        usage.completionTokens += found.completionTokens
+        return { text: found.text.slice(0, 20_000), sources: found.sources.slice(0, 30) }
+      } catch (e: any) {
+        if (isAiBudgetError(e)) throw e
+        return { error: 'Пошук в інтернеті не вдався', ...safeAiErrorInfo(e) }
+      }
+    }
     if (READ_TOOLS.has(name)) {
       try {
         return boundedAiReadResult(await withAiExecutionBudget(AI_TIME_LIMITS.read,
@@ -1608,3 +1696,4 @@ async function runBatch<T>(
   }
   return { created, failed: errors.length, errors: errors.slice(0, 50) }
 }
+
