@@ -181,6 +181,14 @@ export class LocalProblemRepository {
     return { ok: true }
   }
 
+  /** Закрити відкриті записи одного коду (наприклад, друк на тому ж принтері знову пройшов). */
+  resolveCode(code: string, tenantId = DEFAULT_TENANT_ID): number {
+    try {
+      return Number(this.db.prepare('UPDATE problem_log SET resolved_at = ? WHERE tenant_id = ? AND code = ? AND resolved_at IS NULL')
+        .run(new Date().toISOString(), tenantId, code).changes ?? 0)
+    } catch { return 0 }
+  }
+
   resolveAll(tenantId = DEFAULT_TENANT_ID): { resolved: number } {
     const open = this.db.prepare(`
       SELECT COUNT(*) AS total FROM problem_log WHERE tenant_id = ? AND resolved_at IS NULL

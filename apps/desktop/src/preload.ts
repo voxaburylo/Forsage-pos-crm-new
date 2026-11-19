@@ -263,6 +263,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     commitReceiving: (input: unknown) => ipcRenderer.invoke('desktop:supply:commit-receiving', input),
     createInvoiceFromAi: (input: unknown) => ipcRenderer.invoke('desktop:supply:create-invoice-from-ai', input),
     previewInvoiceFromAi: (input: unknown) => ipcRenderer.invoke('desktop:supply:preview-invoice-from-ai', input),
+    prewarmInvoiceCheck: () => ipcRenderer.invoke('desktop:supply:prewarm-invoice-check'),
     updateInvoice: (id: string, input: unknown) => ipcRenderer.invoke('desktop:supply:update-invoice', id, input),
     payInvoice: (id: string, input: unknown) => ipcRenderer.invoke('desktop:supply:pay-invoice', id, input),
     postInvoice: (id: string, input?: unknown) => ipcRenderer.invoke('desktop:supply:post-invoice', id, input),

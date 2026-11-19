@@ -99,6 +99,7 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   ['desktop:supply:commit-receiving', RECEIVING_ROLES],
   ['desktop:supply:create-invoice-from-ai', RECEIVING_ROLES],
   ['desktop:supply:preview-invoice-from-ai', RECEIVING_ROLES],
+  ['desktop:supply:prewarm-invoice-check', RECEIVING_ROLES],
   ['desktop:supply:update-invoice', RECEIVING_ROLES],
   ['desktop:supply:post-invoice', RECEIVING_ROLES],
   ['desktop:supply:pay-invoice', RECEIVING_ROLES],
