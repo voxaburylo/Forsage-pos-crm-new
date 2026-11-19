@@ -73,6 +73,8 @@ export const aiApi = {
   reviewCatalog: (body: { products: Array<{ id: string; name: string; sku: string; brand: string; category_id: string | null }>; categories: Array<{ id: string; name: string }> }) =>
     api.post<{ data: { proposals: Array<{ id: string; name: string; sku: string; category_id: string | null; reason: string }> } }>('/api/v1/ai/catalog-review', body, undefined, { timeoutMs: 120000, silent: true }),
   status: () => api.get<{ data: AiStatus }>('/api/v1/ai/status', { silent: true, timeoutMs: 15_000 }),
+  /** Офіційний курс НБУ на сьогодні. */
+  nbuRate: (currency: string) => api.get<{ data: { currency: string; rate: number; date: string } }>('/api/v1/ai/nbu-rate?currency=' + encodeURIComponent(currency), { silent: true, timeoutMs: 15_000 }),
   usage:  () => api.get<{ data: AiUsage }>('/api/v1/ai/usage'),
 
   saveConfig: (body: { api_key?: string | null; model?: AiModel; enabled?: boolean }) =>
