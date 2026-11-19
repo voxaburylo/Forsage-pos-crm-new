@@ -25,6 +25,9 @@ interface Props {
 
 // Одне касове вікно для боргу, поповнення і фактичної видачі коштів.
 // Видавати кошти можуть лише касир або власник; менеджер тільки скасовує замовлення.
+/** Поповнення від 1000 грн підтверджується окремо. */
+export const LARGE_TOP_UP_KOPECKS = 100_000
+
 export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null }: Props) {
   const [mode, setMode] = useState<'debt' | 'deposit' | 'payout'>('debt')
   const [search, setSearch] = useState('')
@@ -116,6 +119,10 @@ export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null
       toast.error('Сума видачі перевищує кошти на рахунку клієнта')
       return
     }
+    // 16.11.2026: на рахунок клієнта помилково «внесли» 2760 грн, яких у касі не було. Велике поповнення —
+    // лише після явного підтвердження, що гроші фактично отримано.
+    if (mode === 'deposit' && kopecks >= LARGE_TOP_UP_KOPECKS
+      && !confirm(`Поповнити рахунок клієнта «${selected.full_name || selected.phone}» на ${formatMoney(kopecks)} (${method === 'cash' ? 'готівкою — гроші мають бути в касі' : 'карткою'})?\n\nЯкщо клієнт грошей не вносив — натисніть «Скасувати».`)) return
 
     busy.current = true
     setSaving(true)
