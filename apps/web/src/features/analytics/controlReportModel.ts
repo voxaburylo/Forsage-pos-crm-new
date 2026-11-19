@@ -5,11 +5,33 @@ export interface ControlLine {
   qty: number; total: number; cost: number; margin: number; margin_pct: number | null; employee: string | null
 }
 export interface StaleProduct { id: string; name: string; sku: string | null; qty_on_hand: number; stock_cost: number; last_sale_at: string | null; storage_bin: string | null }
+export interface StaffTotals {
+  employee_id: string | null; employee: string | null; receipts: number; revenue: number; discounts: number
+  profit: number; profit_known_revenue: number; average_receipt: number; below_cost_lines: number
+}
+export interface RunningOutProduct {
+  id: string; name: string; sku: string | null; storage_bin: string | null; qty_on_hand: number; reorder_point: number
+  sold_30d: number; days_left: number | null; order_qty: number; order_cost: number
+}
 export interface ControlReport {
   period: { from: string; to: string }; previous_period: { from: string; to: string }
   current: PeriodTotals; previous: PeriodTotals
   below_cost: ControlLine[]; low_margin: ControlLine[]; stale: StaleProduct[]
-  margin_pct: number; stale_days: number
+  /** Старий сервер цих полів не має. */
+  staff?: StaffTotals[]; staff_previous?: StaffTotals[]; running_out?: RunningOutProduct[]
+  margin_pct: number; stale_days: number; low_days?: number
+}
+
+/** Рядок працівника + його виручка за попередній період такої ж довжини. */
+export function staffRows(report: ControlReport): Array<StaffTotals & { previous_revenue: number; share_pct: number }> {
+  const staff = report.staff ?? []
+  const before = new Map((report.staff_previous ?? []).map(row => [row.employee_id ?? '', row.revenue]))
+  const total = staff.reduce((sum, row) => sum + row.revenue, 0)
+  return staff.map(row => ({ ...row, previous_revenue: before.get(row.employee_id ?? '') ?? 0, share_pct: total ? Math.round((row.revenue / total) * 1000) / 10 : 0 }))
+}
+
+export function orderCostTotal(rows: readonly RunningOutProduct[]): number {
+  return rows.reduce((sum, row) => sum + row.order_cost, 0)
 }
 
 /** Зміна у відсотках відносно попереднього періоду; null — порівнювати нема з чим. */
