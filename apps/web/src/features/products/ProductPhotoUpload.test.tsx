@@ -126,6 +126,22 @@ describe('image conversion', () => {
     expect(ctx.fillRect).toHaveBeenCalledWith(0, 0, 1200, 600)
     expect(revoke).toHaveBeenCalledOnce()
   })
+  it('keeps a transparent PNG transparent (WebP, no white box) for quick-access tiles', async () => {
+    const { ctx, canvas } = mockImage('load')
+    const webp = new Blob(['webp'], { type: 'image/webp' })
+    Object.assign(ctx, { getImageData: () => ({ data: new Uint8ClampedArray([255, 255, 255, 0, 10, 10, 10, 255]) }) })
+    Object.assign(canvas, { toBlob: (done: (blob: Blob) => void, type: string) => done(type === 'image/webp' ? webp : new Blob(['x'], { type })) })
+    expect(await compressToJpeg(new Blob(['png'], { type: 'image/png' }))).toBe(webp)
+    expect(ctx.fillRect).not.toHaveBeenCalled()
+  })
+  it('falls back to PNG when the browser cannot write WebP', async () => {
+    const { ctx, canvas } = mockImage('load')
+    Object.assign(ctx, { getImageData: () => ({ data: new Uint8ClampedArray([0, 0, 0, 0]) }) })
+    const png = new Blob(['png'], { type: 'image/png' })
+    Object.assign(canvas, { toBlob: (done: (blob: Blob) => void, type: string) => done(type === 'image/png' ? png : new Blob(['x'], { type: 'image/png' })) })
+    const result = await compressToJpeg(new Blob(['png'], { type: 'image/png' }))
+    expect(result.type).toBe('image/png')
+  })
   it('reports unsupported/corrupt image formats and releases the object URL', async () => {
     const { revoke } = mockImage('error')
     await expect(compressToJpeg(new Blob(['bad'], { type: 'image/heic' }))).rejects.toThrow('JPG або PNG')

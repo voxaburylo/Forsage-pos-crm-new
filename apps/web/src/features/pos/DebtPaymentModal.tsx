@@ -36,6 +36,8 @@ export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null
   const [selected, setSelected] = useState<MoneyCustomer | null>(null)
   const [amount, setAmount] = useState('')
   const [method, setMethod] = useState<'cash' | 'card'>('cash')
+  // Зняття з рахунку: видати клієнту або виправити помилкове поповнення (сторно).
+  const [payoutReason, setPayoutReason] = useState<'payout' | 'reversal'>('payout')
   const [saving, setSaving] = useState(false)
   const busy = useRef(false)
   const safeClose = () => { if (!busy.current) onClose() }
@@ -46,7 +48,7 @@ export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null
 
   useEffect(() => {
     if (!open) {
-      setSelected(null); setAmount(''); setMethod('cash'); setSearch(''); setCustomers([]); setMode('debt')
+      setSelected(null); setAmount(''); setMethod('cash'); setSearch(''); setCustomers([]); setMode('debt'); setPayoutReason('payout')
       return
     }
     if (initialCustomer) {
@@ -132,9 +134,13 @@ export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null
       } else if (mode === 'payout') {
         const res = await posCustomerMoneyApi.payOutDeposit(selected.id, {
           amount: kopecks, method, shift_id: shiftId,
-          notes: 'Видача коштів клієнту після скасування замовлення',
+          notes: payoutReason === 'reversal'
+            ? 'Сторно помилкового поповнення рахунку клієнта (кошти клієнт не вносив)'
+            : 'Видача коштів клієнту з його рахунку',
         })
-        toast.success(`Клієнту видано: ${formatMoney(kopecks)}. Залишок: ${formatMoney(res.data.balance)}`)
+        toast.success(payoutReason === 'reversal'
+          ? `Помилкове поповнення скасовано: ${formatMoney(kopecks)}. Залишок: ${formatMoney(res.data.balance)}`
+          : `Клієнту видано: ${formatMoney(kopecks)}. Залишок: ${formatMoney(res.data.balance)}`)
       } else {
         const res = await posCustomerMoneyApi.addDeposit(selected.id, { amount: kopecks, method, shift_id: shiftId })
         toast.success(`Рахунок поповнено: ${formatMoney(kopecks)}. Баланс: ${formatMoney(res.data.balance)}`)
@@ -165,7 +171,7 @@ export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null
           {([
             { id: 'debt', label: 'Закрити борг' },
             { id: 'deposit', label: 'Поповнити' },
-            { id: 'payout', label: 'Видати' },
+            { id: 'payout', label: 'Зняти з рахунку' },
           ] as const).filter((tab) => tab.id !== 'payout' || canPayout).map((tab) => (
             <button
               key={tab.id}
@@ -187,11 +193,24 @@ export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null
 
         <div className="mb-4 rounded-xl border border-yellow-700/40 bg-yellow-950/20 px-3 py-2 text-xs leading-relaxed text-yellow-100">
           {isPayout
-            ? 'Видача зменшує єдиний баланс клієнта. Можна видати всю суму або лише частину.'
+            ? (payoutReason === 'reversal'
+              ? 'Сторно: якщо рахунок поповнили помилково (клієнт грошей не вносив). Баланс зменшиться, а в зміні буде видача тієї ж суми — це зніме зайвий прихід у касі.'
+              : 'Видача зменшує баланс клієнта. Можна видати всю суму або лише частину.')
             : mode === 'deposit'
               ? <>Передоплату приймайте через <b>«Замовлення / передоплата»</b>, щоб гроші були прив’язані до замовлення.</>
               : 'Тут касир приймає повну або часткову оплату боргу клієнта.'}
+          {!canPayout && <p className="mt-1 text-yellow-300">Зняти кошти з рахунку може власник, адміністратор або касир.</p>}
         </div>
+        {isPayout && (
+          <div className="mb-4 grid grid-cols-2 gap-2">
+            {([['payout', 'Видати клієнту'], ['reversal', 'Помилкове поповнення']] as const).map(([id, label]) => (
+              <button key={id} type="button" onClick={() => setPayoutReason(id)}
+                className={`rounded-xl py-2 text-sm font-semibold ${payoutReason === id ? 'bg-yellow-400 text-black' : 'bg-[#2C2C2C] text-gray-300 hover:bg-gray-700'}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
 
         <div className="space-y-4">
           <div>
@@ -275,7 +294,7 @@ export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null
             <>
               <div>
                 <label className="text-gray-400 text-xs mb-1 block">
-                  {isDebt ? 'Сума оплати боргу (₴)' : isPayout ? 'Сума видачі клієнту (₴)' : 'Сума поповнення (₴)'}
+                  {isDebt ? 'Сума оплати боргу (₴)' : isPayout ? (payoutReason === 'reversal' ? 'Сума помилкового поповнення (₴)' : 'Сума видачі клієнту (₴)') : 'Сума поповнення (₴)'}
                 </label>
                 <input type="number" min="0.01" step="0.01" autoFocus value={amount}
                   onChange={(e) => setAmount(e.target.value)}
@@ -312,7 +331,7 @@ export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null
                   className={`flex-1 py-3 rounded-xl text-white font-bold disabled:opacity-40 ${
                     isDebt ? 'bg-red-500 hover:bg-red-400' : isPayout ? 'bg-yellow-500 hover:bg-yellow-400 text-black' : 'bg-emerald-600 hover:bg-emerald-500'
                   }`}>
-                  {saving ? 'Обробка...' : isDebt ? 'ОПЛАТИТИ БОРГ' : isPayout ? 'ВИДАТИ КЛІЄНТУ' : 'ПОПОВНИТИ РАХУНОК'}
+                  {saving ? 'Обробка...' : isDebt ? 'ОПЛАТИТИ БОРГ' : isPayout ? (payoutReason === 'reversal' ? 'СКАСУВАТИ ПОПОВНЕННЯ' : 'ВИДАТИ КЛІЄНТУ') : 'ПОПОВНИТИ РАХУНОК'}
                 </button>
               </div>
             </>
