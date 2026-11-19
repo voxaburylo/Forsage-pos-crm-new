@@ -15,7 +15,7 @@ describe('unified POS customer flow', () => {
     expect(customerSource).toContain('title="Борг, поповнення або видача коштів клієнту"')
     expect(customerSource).toContain('Гроші')
     expect(customerSource).toContain('onPayDebt(c)')
-    expect(debtSource).toContain("{ id: 'payout', label: 'Видати' }")
+    expect(debtSource).toContain("{ id: 'payout', label: 'Зняти з рахунку' }")
     expect(debtSource).toContain('posCustomerMoneyApi.payOutDeposit')
   })
 

@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react
 import { fileToCompressedImage } from './aiImageInput'
 import { aiActionOperationId } from './aiActionOperation'
 import { isPastedTable } from './aiPasteKind'
+import { applyChatCrossNumbers, type ChatCrossBridge } from './aiCrossApply'
 import { applyChatCatalogUpdates, ensureChatCategories, renameChatCategories, type ChatCatalogBridge } from './aiCatalogApply'
 import { applyChatMerges, type ChatMergeBridge } from './aiMergeApply'
 import { AiServerConnection } from './AiServerConnection'
@@ -696,6 +697,20 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
           + '. Облікова кількість — сума карток; фактичний залишок перевірте ревізією.'
         if (markSaved(msg, result.skipped.length || !result.merged ? 'warn' : 'ok')) {
           if (result.merged) toast.success(msg); else toast.warning(msg)
+        }
+        return true
+      }
+      if (action.tool === 'add_cross_numbers_bulk') {
+        const catalog = desktopBridge()?.catalog
+        if (!catalog?.changeCrossNumbers) throw new Error('Оновіть програму каси: ця версія ще не додає крос-номери з чату. Дані не змінено.')
+        const payload = payloadOverride ?? action.payload
+        const result = await applyChatCrossNumbers(Array.isArray(payload?.items) ? payload.items : [], catalog as unknown as ChatCrossBridge)
+        if (!isCurrentContext()) return false
+        requestDesktopSync()
+        setApplyErrors((prev) => ({ ...prev, [action.id]: result.skipped }))
+        const msg = `Крос-номери додано: ${result.numbers} до ${result.products} товарів` + (result.skipped.length ? `, пропущено ${result.skipped.length}` : '')
+        if (markSaved(msg, result.skipped.length || !result.products ? 'warn' : 'ok')) {
+          if (result.products) toast.success(msg); else toast.warning(msg)
         }
         return true
       }
