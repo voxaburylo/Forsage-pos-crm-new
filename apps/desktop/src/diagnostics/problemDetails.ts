@@ -21,7 +21,25 @@ const explanations: Record<string, string> = {
   'print-outcome-unknown': 'Результат друку не підтверджено; перевірте паперовий чек перед повтором',
   'print-timeout': 'Друк не завершився вчасно; перевірте принтер перед повтором',
   'print-driver-error': 'Драйвер принтера повернув помилку',
+  'sync-invoice-products-missing': 'Сервер ще не має карток товарів цієї накладної; накладна піде після карток',
+  'sync-sale-product-missing': 'Сервер ще не має картки товару з цього чека; чек піде після картки',
+  'sync-not-confirmed': 'Сервер не підтвердив документ — чекає попередню операцію; повтор автоматичний',
+  'sync-other-shop': 'Операція належить іншому магазину',
+  'sync-signature-required': 'Сервер вимагає підписану копію — оновіть програму каси',
+  'sync-reset-required': 'Локальна копія застаріла — потрібне повне оновлення з сервера',
 }
+/**
+ * Відомі відповіді сервера на передачу (без назв, артикулів і цін) — замість «Технічна помилка [unknown]».
+ * 19.11.2026: 143 записи журналу показували лише відбиток, і кожен збій доводилося розслідувати.
+ */
+const knownServerReplies: Array<[RegExp, string]> = [
+  [/Спочатку передайте картки всіх товарів приходу/i, 'sync-invoice-products-missing'],
+  [/Не передано картку товару цього чека/i, 'sync-sale-product-missing'],
+  [/Сервер не підтвердив цей документ/i, 'sync-not-confirmed'],
+  [/Операція належить іншому магазину/i, 'sync-other-shop'],
+  [/MIRROR_SIGNATURE_REQUIRED|Основну локальну базу захищено/i, 'sync-signature-required'],
+  [/SYNC_RESET_REQUIRED|іншому поколінню даних/i, 'sync-reset-required'],
+]
 const fixedDetails: Record<string, string> = {
   'salary.legacy_commission_review': 'Повернення клієнту проведено. Зарплату автоматично не змінено: для старого чека немає однозначного розрахунку або вже потрібна ручна перевірка. Звірте початкове нарахування та попередні корекції; закриття цього повідомлення саме по собі зарплату не змінює.',
   'sync.inventory_copy_restored': 'Раніше документ було пропущено. Копія очікує сервера; локальні залишки не змінено.',
@@ -48,6 +66,8 @@ export function safeProblemDetail(value: unknown, problemCode: string): string |
   }
   if (receiving) return `${receiving.explanation} [${receiving.code}].`
   const diagnostic = safeDiagnosticDetails(text)
+  const known = knownServerReplies.find(([pattern]) => pattern.test(text))?.[1]
+  if (known) return explanations[known] + ' [' + known + ']. Відбиток: ' + diagnostic.fingerprint + '.'
   const candidate = text.includes('products_brand_id_fkey') ? 'foreign-brand-key' : String(diagnostic.error_code ?? 'unknown')
   const code = Object.hasOwn(explanations, candidate) ? candidate : 'unknown'
   return explanations[code] + ' [' + code + ']. Відбиток: ' + diagnostic.fingerprint + '.'

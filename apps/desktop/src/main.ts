@@ -1952,6 +1952,7 @@ app.whenReady().then(async () => {
     const session = requireDesktopSession()
     return requireLocalPos().openShift({ ...input, cashier_id: session.id, tenant_id: session.tenant_id })
   })
+  handleDesktopIpc('desktop:pos:list-open-shifts', () => requireLocalPos().listOpenShifts(requireDesktopSession().tenant_id))
   handleDesktopIpc('desktop:pos:get-open-shift', (_event, cashierId: string) => {
     const session = requireDesktopSession()
     return requireLocalPos().getOpenShift(session.id, session.tenant_id)

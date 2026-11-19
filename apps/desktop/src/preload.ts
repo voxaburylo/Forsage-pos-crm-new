@@ -274,6 +274,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:pos:open-shift', input),
     getOpenShift: (cashierId: string) =>
       ipcRenderer.invoke('desktop:pos:get-open-shift', cashierId),
+    listOpenShifts: () => ipcRenderer.invoke('desktop:pos:list-open-shifts'),
     checkout: (input: unknown) => ipcRenderer.invoke('desktop:pos:checkout', input),
     listSales: (input?: unknown) => ipcRenderer.invoke('desktop:pos:list-sales', input),
     dashboardSummary: (input: unknown) => ipcRenderer.invoke('desktop:pos:dashboard-summary', input),

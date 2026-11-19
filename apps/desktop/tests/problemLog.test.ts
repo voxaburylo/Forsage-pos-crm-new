@@ -167,6 +167,13 @@ describe('синхронізація пише свої відмови в жур�
     return operationId
   }
 
+  it('пише зрозумілу причину відомої відповіді сервера замість [unknown]', () => {
+    const operationId = insertOperation(8, 0)
+    sync.applyPushResults([{ sequence: 8, operation_id: operationId, status: 'failed', error: 'Спочатку передайте картки всіх товарів приходу.' }])
+    expect(problems.list()[0].detail).toContain('Сервер ще не має карток товарів цієї накладної')
+    expect(problems.list()[0].detail).toContain('[sync-invoice-products-missing]')
+  })
+
   it('відхилена операція лишає попередження, а вичерпані спроби — помилку', () => {
     const operationId = insertOperation(1, 0)
     sync.applyPushResults([{
