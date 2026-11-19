@@ -26,7 +26,7 @@ export function ShiftReminder() {
     const desktop = desktopBridge()
     void desktop?.pos?.listOpenShifts?.().then(rows => { if (alive) setStale(staleShifts(rows)) }).catch(() => {})
     void desktop?.shiftBackups?.status().then(rows => {
-      const last = rows.map(row => row.captured_at).filter((value): value is string => Boolean(value)).sort().at(-1) ?? null
+      const last = rows.map(row => row.captured_at).filter((value): value is string => Boolean(value)).sort().pop() ?? null
       if (alive) setLastBackup(last)
     }).catch(() => {})
     return () => { alive = false }
