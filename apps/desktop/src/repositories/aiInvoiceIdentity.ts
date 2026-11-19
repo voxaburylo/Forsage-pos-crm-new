@@ -56,7 +56,7 @@ export function aiInvoiceProductName(raw: Record<string, unknown>): string {
   return text(name + (material ? ' (метал)' : ''))
 }
 
-export interface AiInvoiceCandidate { id: string; name: string; sku: string; barcode: string | null; brand: string | null; unit?: string | null; retail_price?: number; category_id?: string | null; storage_bin?: string | null; photo_url?: string | null }
+export interface AiInvoiceCandidate { id: string; name: string; sku: string; barcode: string | null; brand: string | null; unit?: string | null; retail_price?: number; purchase_price?: number; category_id?: string | null; storage_bin?: string | null; photo_url?: string | null }
 export interface AiInvoiceReview {
   name: string; source_name: string; brand: string; product_id: string | null
   status: 'matched' | 'review' | 'new'; reason: string; candidates: AiInvoiceCandidate[]
@@ -193,7 +193,7 @@ export class AiInvoiceMatcher {
   private archivedLinks = new Map<string, Set<string>>()
   private tokens = new Map<string, Set<string>>()
   constructor(db: Pick<LocalDatabase, 'prepare'>, tenant: string) {
-    const products = db.prepare(`SELECT p.id,p.name,p.sku,p.barcode,p.unit,p.retail_price,p.category_id,p.storage_bin,p.photo_url,b.name AS brand FROM products p
+    const products = db.prepare(`SELECT p.id,p.name,p.sku,p.barcode,p.unit,p.retail_price,p.purchase_price,p.category_id,p.storage_bin,p.photo_url,b.name AS brand FROM products p
       LEFT JOIN brands b ON b.id=p.brand_id AND b.tenant_id=p.tenant_id
       WHERE p.tenant_id=? AND p.deleted_at IS NULL AND p.is_active=1 AND p.is_service=0`).all(tenant) as unknown as AiInvoiceCandidate[]
     for (const product of products) this.add(product)

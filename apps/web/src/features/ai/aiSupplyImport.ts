@@ -148,6 +148,11 @@ function parseRows(rows: unknown[][], sheet: string, rawRows = rows, rowOffset =
     }
     const unit = supplyRowUnit(headers[columns.qty!], row[columns.qty!], headers[columns.purchase_price_uah!], product.unit, location)
     if (unit) product.unit = unit
+    // 19.11.2026: «Цена за комплект» без колонки суми — для 2+ шт там була сума рядка, закупка подвоїлась.
+    if (columns.line_total === undefined && product.qty > 1
+      && /комплект|набір|набор|сум|всього|усього|разом|итог|total/i.test(String(headers[columns.purchase_price_uah!] ?? ''))) {
+      product.purchase_price_note = `Колонка «${headers[columns.purchase_price_uah!]}» і кількість ${product.qty}: перевірте, це ціна за одиницю чи за весь рядок.`
+    }
     if (columns.line_total !== undefined && values[columns.line_total]) {
       currencyLines.push('Сума: ' + values[columns.line_total])
       const rawTotal = numericValue(columns.line_total)

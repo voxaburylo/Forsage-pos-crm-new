@@ -1092,7 +1092,8 @@ export class LocalCatalogRepository {
     if (sortField !== 'name') orderParts.push('p.name COLLATE NOCASE ASC')
     orderParts.push('p.id ASC')
 
-    const totalRow = this.db.prepare(`
+    // Окремий підрахунок (≈35 мс на 16 тис. товарів) лише коли сторінка повна: інакше «всього» = offset + рядків.
+    const countTotal = () => this.db.prepare(`
       SELECT COUNT(*) AS total
       FROM products p
       WHERE ${whereSql}
@@ -1107,7 +1108,7 @@ export class LocalCatalogRepository {
         GROUP BY product_id
       ), matching_page AS MATERIALIZED (
         SELECT p.id, COALESCE(r.qty_reserved, 0) AS qty_reserved
-        FROM products p
+        FROM products p${raw ? " INDEXED BY idx_products_active_search" : ""}
         LEFT JOIN active_reserves r ON r.product_id = p.id
         LEFT JOIN brands br ON br.id = p.brand_id AND br.tenant_id = p.tenant_id AND br.deleted_at IS NULL
         WHERE ${whereSql}
@@ -1131,7 +1132,8 @@ export class LocalCatalogRepository {
       ORDER BY ${orderParts.join(', ')}
     `).all(tenantId, ...dataParams, limit, offset, ...(raw ? [raw, compact, raw, compact] : [])) as unknown as LocalProduct[]
 
-    return { data, total: Number(totalRow?.total ?? data.length) }
+    const total = data.length < limit && (data.length > 0 || offset === 0) ? offset + data.length : Number(countTotal()?.total ?? data.length)
+    return { data, total }
   }
 
   listCategories(tenantId = DEFAULT_TENANT_ID): LocalCatalogCategory[] {

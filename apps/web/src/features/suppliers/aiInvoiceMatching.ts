@@ -24,7 +24,7 @@ export function invoiceMatchProblems(item: LineItem): string[] {
   return [...new Set(errors)]
 }
 export function bindInvoiceCandidate(item: LineItem, product: InvoiceCandidate): LineItem {
-  const base = invoiceProductBase({ ...product, retail_price: product.retail_price ?? 0 })
+  const base = invoiceProductBase({ ...product, retail_price: product.retail_price ?? 0, purchase_price: (product as { purchase_price?: number }).purchase_price })
   return { ...item, product_id: product.id, product_base: base, is_new: false,
     product_name: product.name, sku: product.sku, barcode: product.barcode || '',
     category_id: product.category_id ?? null, storage_bin: product.storage_bin ?? null,

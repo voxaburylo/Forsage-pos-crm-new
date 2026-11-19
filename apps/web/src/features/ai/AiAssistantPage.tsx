@@ -25,7 +25,7 @@ import { openAiInvoiceDraft } from './openAiInvoiceDraft'
 import { useAuthStore } from '@/stores/authStore'
 import { api } from '@/lib/api'
 import { convertSupplyPrices, readSupplyExchangeRate, supplyImportAction, type AiSupplyRow, type AiSupplyInput } from './aiSupplyImport'
-import { AiSupplyResponseError, collectSupplyResponse } from './aiSupplyResponse'
+import { AiSupplyResponseError, collectSupplyResponse, flagNamesNotInSource } from './aiSupplyResponse'
 import { readAiSupplyInput } from './readAiSupplyInput'
 import { AiClipboardTimeoutError, readAiClipboard } from './readAiClipboard'
 import { dataUrlToBlob, removeProcessingUploads, uploadProcessingBlob } from '@/lib/processingUploads'
@@ -542,7 +542,10 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
       let actions = requestInvoice ? [] : responses.flatMap((response) => response.actions)
       if (requestInvoice) {
         try {
-          const { products, metadata } = collectSupplyResponse(responses, partsToSend.length, attachment?.sourceChecks)
+          const collected = collectSupplyResponse(responses, partsToSend.length, attachment?.sourceChecks)
+          const metadata = collected.metadata
+          // Текстове джерело: модельні номери в назвах мають бути у файлі (ШІ не «виправляє» LX-303D2 на D4).
+          const products = attachment?.parts?.length ? flagNamesNotInSource(collected.products, attachment.parts.join('\n')) : collected.products
           const action = supplyImportAction(attachment?.sourceCurrency ? convertSupplyPrices(products, importRate) : products, (attachment?.name ?? 'Фото накладної') + currencyNote)
           actions = [{ ...action, payload: { ...metadata, ...action.payload } }]
         } catch (error) {
