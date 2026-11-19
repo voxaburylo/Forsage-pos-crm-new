@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, ClipboardList, Download, RefreshCw } from 'lucide-react'
+import { AlertTriangle, ChevronDown, ClipboardList, Download, RefreshCw } from 'lucide-react'
 import { Button, Card, ConfirmDialog } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { desktopBridge, type DesktopProblem } from '@/lib/desktopBridge'
@@ -31,6 +31,8 @@ export function ProblemLogCard() {
   const [loading, setLoading] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [confirmClear, setConfirmClear] = useState(false)
+  // Згорнутий за замовчуванням: Налаштування не треба гортати через довгий список.
+  const [expanded, setExpanded] = useState(false)
 
   const load = useCallback(async () => {
     const api = desktopBridge()?.problems
@@ -81,15 +83,17 @@ export function ProblemLogCard() {
     <Card className="mt-6 space-y-4 border-slate-200">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <div className="flex items-center gap-2 pb-2">
+          <button type="button" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}
+            className="flex items-center gap-2 pb-2 text-left">
             <ClipboardList size={18} className="text-slate-600" />
             <h3 className="text-sm font-semibold text-slate-900">Журнал проблем</h3>
-            {openCount > 0 && (
+            {openCount > 0 ? (
               <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700">
                 {openCount}
               </span>
-            )}
-          </div>
+            ) : <span className="text-xs text-green-700">проблем немає</span>}
+            <ChevronDown size={16} className={`text-slate-500 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+          </button>
           <p className="text-xs text-slate-600">
             Сюди потрапляє все, що каса не змогла виконати: відхилені сервером
             операції, збої друку, ПРРО та бази. Якщо кількість товару чи картка
@@ -106,6 +110,7 @@ export function ProblemLogCard() {
         </div>
       </div>
 
+      {expanded && <>
       <div className="flex items-center justify-between gap-3">
         <label className="flex items-center gap-2 text-xs text-slate-600">
           <input
@@ -171,6 +176,7 @@ export function ProblemLogCard() {
           ))}
         </div>
       )}
+      </>}
 
       <ConfirmDialog
         open={confirmClear}
