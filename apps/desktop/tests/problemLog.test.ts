@@ -167,6 +167,16 @@ describe('синхронізація пише свої відмови в жур�
     return operationId
   }
 
+  it('закриває запис сам, коли операцію вже доставлено на сервер', () => {
+    const operationId = insertOperation(7, 0)
+    sync.applyPushResults([{ sequence: 7, operation_id: operationId, status: 'failed', error: 'Спочатку передайте картки всіх товарів приходу.' }])
+    expect(problems.list()).toHaveLength(1)
+    sync.applyPushResults([{ sequence: 7, operation_id: operationId, status: 'synced' }])
+    expect(problems.list()).toHaveLength(0)
+    expect(problems.summary().warnings + problems.summary().errors).toBe(0)
+    expect(problems.list({ includeResolved: true })).toHaveLength(1)
+  })
+
   it('відхилена операція лишає попередження, а вичерпані спроби — помилку', () => {
     const operationId = insertOperation(1, 0)
     sync.applyPushResults([{
