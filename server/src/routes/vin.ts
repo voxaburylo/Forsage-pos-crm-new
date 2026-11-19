@@ -80,6 +80,8 @@ router.post('/ocr', async (req, res, next) => {
       // Той самий ключ Anthropic, що й у помічника магазину.
       const cfg = await budget.run(signal => getAiConfig(req.user!.tenant_id, signal))
       if (!cfg.apiKey) throw new AppError('OCR_NOT_AVAILABLE', 'Розпізнавання недоступне: додайте ключ Anthropic у Налаштування → ШІ.', 503)
+      // Вимкнений у Налаштуваннях помічник не розпізнає й VIN (19.11.2026: вимикач цього не зупиняв).
+      if (!cfg.enabled) throw new AppError('OCR_NOT_AVAILABLE', 'Розпізнавання вимкнено: помічник ШІ вимкнений у Налаштуваннях.', 503)
       let photo = inline!
       if (storagePath) {
         const uploaded = await budget.run(() => downloadProcessingUpload({
@@ -95,7 +97,7 @@ router.post('/ocr', async (req, res, next) => {
         images: [{ mime_type: photo.mimeType, data_base64: photo.data }],
         maxTokens: 4000, effort: 'low',
       })
-      await budget.run(signal => recordAiUsage(req.user!.tenant_id, req.user!.id, cfg.model, result.promptTokens, result.completionTokens, signal))
+      await budget.run(signal => recordAiUsage(req.user!.tenant_id, req.user!.id, cfg.model, result.promptTokens, result.completionTokens, signal, result.costAdjustUsd ?? 0))
       if (result.truncated) throw new AppError('AI_RESPONSE_TOO_LARGE', 'Відповідь розпізнавання обірвалась. Спробуйте ще раз.', 422)
       return parseVehicleOcr(result.text)
     })

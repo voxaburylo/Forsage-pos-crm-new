@@ -25,7 +25,22 @@ export function jsonOnlyInstruction(schema: unknown): string {
 const BETAS: Anthropic.Beta.AnthropicBeta[] = ['server-side-fallback-2026-07-01']
 
 export interface ClaudeImage { mime_type: string; data_base64: string }
-export interface ClaudeUsage { promptTokens: number; completionTokens: number }
+/**
+ * costAdjustUsd — поправка до «усі вхідні токени за повною ціною»: читання кешу дешевше (знижка, від'ємна),
+ * запис у кеш дорожчий на 25 %, веб-пошук платний окремо. 19.11.2026: лічильник «Витрати за місяць»
+ * завищував кешовані запити й не рахував веб-пошук.
+ */
+export interface ClaudeUsage { promptTokens: number; completionTokens: number; costAdjustUsd?: number }
+/** Ціни Claude Sonnet 5.5, $ за 1 млн токенів; веб-пошук — $ за один запит ($10 за 1000). */
+export const CLAUDE_PRICES = { input: 2.0, cacheRead: 0.10, cacheWriteMultiplier: 1.25, webSearch: 0.01 } as const
+export function claudeUsageFrom(u: { input_tokens?: number | null; output_tokens?: number | null; cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null; server_tool_use?: { web_search_requests?: number | null } | null }): ClaudeUsage {
+  const cacheRead = u.cache_read_input_tokens ?? 0, cacheWrite = u.cache_creation_input_tokens ?? 0
+  const searches = u.server_tool_use?.web_search_requests ?? 0
+  const adjust = -cacheRead * (CLAUDE_PRICES.input - CLAUDE_PRICES.cacheRead) / 1_000_000
+    + cacheWrite * CLAUDE_PRICES.input * (CLAUDE_PRICES.cacheWriteMultiplier - 1) / 1_000_000
+    + searches * CLAUDE_PRICES.webSearch
+  return { promptTokens: (u.input_tokens ?? 0) + cacheRead + cacheWrite, completionTokens: u.output_tokens ?? 0, costAdjustUsd: adjust }
+}
 
 /** Схема Gemini (SchemaType: 'string' | 'object' …) → JSON Schema для інструментів Claude. */
 export function geminiSchemaToJson(schema: any): Record<string, unknown> {
@@ -96,11 +111,7 @@ export class ClaudeClient {
   }
 
   private static usage(message: Anthropic.Beta.BetaMessage): ClaudeUsage {
-    const u = message.usage
-    return {
-      promptTokens: (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0),
-      completionTokens: u.output_tokens ?? 0,
-    }
+    return claudeUsageFrom(message.usage)
   }
 
   private static text(message: Anthropic.Beta.BetaMessage): string {
@@ -144,6 +155,7 @@ export class ClaudeClient {
       const current = ClaudeClient.usage(message)
       usage.promptTokens += current.promptTokens
       usage.completionTokens += current.completionTokens
+      usage.costAdjustUsd = (usage.costAdjustUsd ?? 0) + (current.costAdjustUsd ?? 0)
       if (message.stop_reason === 'refusal') throw new AppError('AI_INVALID_RESPONSE', 'Claude відмовився виконати пошук.', 422)
       for (const block of message.content) {
         if (block.type !== 'text') continue
@@ -197,6 +209,7 @@ export class ClaudeClient {
       const current = ClaudeClient.usage(message)
       usage.promptTokens += current.promptTokens
       usage.completionTokens += current.completionTokens
+      usage.costAdjustUsd = (usage.costAdjustUsd ?? 0) + (current.costAdjustUsd ?? 0)
       if (message.stop_reason === 'refusal') throw new AppError('AI_INVALID_RESPONSE', 'Claude відмовився виконати цей запит. Переформулюйте його.', 422)
       if (message.stop_reason === 'max_tokens') throw new AppError('AI_RESPONSE_TOO_LARGE', 'Відповідь ШІ завелика. Розділіть запит на частини. Зміни не застосовано.', 422)
       // Повна відповідь (з блоками міркувань) іде назад без змін — так вимагає API.

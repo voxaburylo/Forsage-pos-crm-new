@@ -58,7 +58,7 @@ export async function reviewCatalog(tenantId: string, userId: string, input: z.i
           required: ['id', 'name', 'sku', 'category_id', 'reason'] } } }, required: ['proposals'] }))
     try {
       const result = await new ClaudeClient(cfg.apiKey, cfg.model as any).complete(budget, { system, text: JSON.stringify(input), maxTokens: 16384 })
-      await budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, result.promptTokens, result.completionTokens, signal))
+      await budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, result.promptTokens, result.completionTokens, signal, result.costAdjustUsd ?? 0))
       if (result.truncated) throw new AppError('AI_RESPONSE_TOO_LARGE', 'Відповідь ШІ завелика. Перевірте менший пакет товарів.', 422)
       const raw = parseAiJsonObject(result.text)
       if (!raw) throw new SyntaxError('invalid json')

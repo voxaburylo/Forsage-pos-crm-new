@@ -27,9 +27,9 @@ const MODEL_PRICING: Record<string, { input: number; output: number }> = {
   'claude-sonnet-5-5': { input: 2.00, output: 10.00 },
 }
 
-function computeCostUsd(model: string, promptTokens: number, completionTokens: number): number {
+function computeCostUsd(model: string, promptTokens: number, completionTokens: number, adjustUsd = 0): number {
   const p = MODEL_PRICING[model] ?? MODEL_PRICING[DEFAULT_MODEL]
-  return (promptTokens / 1_000_000) * p.input + (completionTokens / 1_000_000) * p.output
+  return Math.max(0, (promptTokens / 1_000_000) * p.input + (completionTokens / 1_000_000) * p.output + adjustUsd)
 }
 
 // ─── Конфіг AI магазину ──────────────────────────────────────────────────────
@@ -128,7 +128,7 @@ export async function testKey(apiKey: string, model: string): Promise<{ ok: bool
 // ─── Облік використання ──────────────────────────────────────────────────────
 export async function recordAiUsage(
   tenantId: string, userId: string | null, model: string,
-  promptTokens: number, completionTokens: number, signal?: AbortSignal,
+  promptTokens: number, completionTokens: number, signal?: AbortSignal, costAdjustUsd = 0,
 ): Promise<void> {
   try {
     let query = db.from('ai_usage').insert({
@@ -138,7 +138,7 @@ export async function recordAiUsage(
       prompt_tokens: promptTokens,
       completion_tokens: completionTokens,
       total_tokens: promptTokens + completionTokens,
-      cost_usd: computeCostUsd(model, promptTokens, completionTokens),
+      cost_usd: computeCostUsd(model, promptTokens, completionTokens, costAdjustUsd),
     })
     if (signal) query = query.abortSignal(signal)
     const { error } = await query
@@ -1048,7 +1048,8 @@ async function recognizeSupplyInvoicePhotoWithinBudget(
   const claude = new ClaudeClient(cfg.apiKey, cfg.model as AiModel)
   let promptTokens = 0
   let completionTokens = 0
-  const record = () => budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, promptTokens, completionTokens, signal))
+  let costAdjustUsd = 0
+  const record = () => budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, promptTokens, completionTokens, signal, costAdjustUsd))
   const parsedPages: any[] = []
 
   for (const [imageIndex, image] of params.images.entries()) {
@@ -1068,6 +1069,7 @@ async function recognizeSupplyInvoicePhotoWithinBudget(
       }
       promptTokens += result.promptTokens
       completionTokens += result.completionTokens
+      costAdjustUsd += result.costAdjustUsd ?? 0
       const candidatePayload = parseAiJsonObject(result.text)
       if (!result.truncated && hasAiInvoicePhotoContent(candidatePayload)) {
         parsedPage = candidatePayload
@@ -1107,7 +1109,7 @@ async function recognizeSupplyInvoicePhotoWithinBudget(
     usage: {
       prompt_tokens: promptTokens,
       completion_tokens: completionTokens,
-      cost_usd: Number(computeCostUsd(cfg.model, promptTokens, completionTokens).toFixed(6)),
+      cost_usd: Number(computeCostUsd(cfg.model, promptTokens, completionTokens, costAdjustUsd).toFixed(6)),
     },
   }
 }
@@ -1134,8 +1136,8 @@ async function runChatWithinBudget(
   const userText = aiUserMessage(params.message, params.fileText)
   const images = (params.images ?? []).slice(0, 4)
   const actions: PendingAction[] = []
-  const usage = { promptTokens: 0, completionTokens: 0 }
-  const record = () => budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, usage.promptTokens, usage.completionTokens, signal))
+  const usage: { promptTokens: number; completionTokens: number; costAdjustUsd?: number } = { promptTokens: 0, completionTokens: 0 }
+  const record = () => budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, usage.promptTokens, usage.completionTokens, signal, usage.costAdjustUsd ?? 0))
   const reserveToolCalls = createAiToolBudget()
   let corrections = 0
 
@@ -1152,6 +1154,7 @@ async function runChatWithinBudget(
           'Знайди крос-номери (аналоги інших виробників) і OE-номери для цих автотоварів. Для кожного товару: номер, виробник номера, url сторінки, де номер прямо вказано як аналог/OE саме цього товару. Не вгадуй: якщо прямого підтвердження немає — так і напиши.\n' + lines, 5), budget.signal)
         usage.promptTokens += found.promptTokens
         usage.completionTokens += found.completionTokens
+        usage.costAdjustUsd = (usage.costAdjustUsd ?? 0) + (found.costAdjustUsd ?? 0)
         return { text: found.text.slice(0, 20_000), sources: found.sources.slice(0, 30) }
       } catch (e: any) {
         if (isAiBudgetError(e)) throw e
@@ -1258,7 +1261,7 @@ async function runChatWithinBudget(
     usage: {
       prompt_tokens: usage.promptTokens,
       completion_tokens: usage.completionTokens,
-      cost_usd: Number(computeCostUsd(cfg.model, usage.promptTokens, usage.completionTokens).toFixed(6)),
+      cost_usd: Number(computeCostUsd(cfg.model, usage.promptTokens, usage.completionTokens, usage.costAdjustUsd ?? 0).toFixed(6)),
     },
   }
 }
