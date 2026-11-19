@@ -252,9 +252,25 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
   const [exchangeRate, setExchangeRate] = useState('')
   // Валюта цін на фото/PDF накладної (таблиця визначає валюту сама). Курс власника запам'ятовуємо.
   const [photoCurrency, setPhotoCurrency] = useState<'' | 'USD' | 'EUR'>('')
+  // Курс за замовчуванням — НБУ на сьогодні (рішення власника 19.11.2026); поле можна змінити.
+  const [rateNote, setRateNote] = useState('')
+  const fillNbuRate = useCallback(async (currency: string) => {
+    setRateNote('Отримую курс НБУ…')
+    try {
+      const { data } = await aiApi.nbuRate(currency)
+      setExchangeRate(String(data.rate))
+      setRateNote(`Курс НБУ на ${data.date}`)
+    } catch {
+      let saved = ''
+      try { saved = localStorage.getItem('forsage:rate:' + currency) ?? '' } catch { /* optional */ }
+      setExchangeRate(saved)
+      setRateNote(saved ? 'НБУ недоступний — підставлено ваш останній курс' : 'НБУ недоступний — введіть курс')
+    }
+  }, [])
   const choosePhotoCurrency = (currency: '' | 'USD' | 'EUR') => {
     setPhotoCurrency(currency)
-    if (currency) { try { setExchangeRate(localStorage.getItem('forsage:rate:' + currency) ?? '') } catch { /* optional */ } }
+    setRateNote('')
+    if (currency) void fillNbuRate(currency)
   }
   const [imageAttachments, setImageAttachments] = useState<Array<{ name: string; dataUrl: string }>>([])
   const [orderModalAction, setOrderModalAction] = useState<AiPendingAction | null>(null)
@@ -331,6 +347,9 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
     // A clipboard / spreadsheet document always represents received quantities, not catalog stock.
     setLocalInvoiceMode(true)
     setExchangeRate('')
+    setRateNote('')
+    // Таблиця у валюті — одразу курс НБУ на сьогодні (можна змінити).
+    if (parsed.sourceCurrency) void fillNbuRate(parsed.sourceCurrency)
     setAttachment({ name, parts: parsed.products.length ? parts : [parsed.text], rowCount: parsed.products.length || rowCount, products: parsed.products, categoryCount: parsed.categoryCount, reviewReason: parsed.reviewReason, sourceCurrency: parsed.sourceCurrency, sourceChecks: parsed.sourceChecks })
     if (parsed.reviewReason) toast.warning('Файл прикріплено. Для цієї форми накладної потрібен AI-розбір — натисніть «Надіслати».')
     else toast.success(parsed.products.length ? `Розібрано ${parsed.products.length} позицій. Натисніть «Перевірити таблицю».` : 'Текст прикріплено. AI підготує таблицю для перевірки.')
@@ -1057,12 +1076,14 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
                 className={`rounded-full px-3 py-1 text-xs font-semibold ${photoCurrency === id ? 'bg-yellow-400 text-gray-900' : 'bg-gray-100 text-gray-600'}`}>{label}</button>
             ))}
             {photoCurrency && <label className="flex items-center gap-2 text-amber-900">курс грн за 1 {photoCurrency}:
-              <input aria-label={`Курс ${photoCurrency}`} inputMode="decimal" value={exchangeRate} onChange={event => setExchangeRate(event.target.value)} disabled={busy} placeholder="Введіть курс" className="w-28 rounded-lg border border-amber-300 px-2 py-1" />
+              <input aria-label={`Курс ${photoCurrency}`} inputMode="decimal" value={exchangeRate} onChange={event => { setExchangeRate(event.target.value); setRateNote('Ваш курс') }} disabled={busy} placeholder="Введіть курс" className="w-28 rounded-lg border border-amber-300 px-2 py-1" />
+              {rateNote && <span className="text-xs text-gray-500">{rateNote}</span>}
             </label>}
           </div>}
           {attachment?.sourceCurrency && <label className="mb-2 flex flex-wrap items-center gap-2 px-2 text-sm text-amber-900">
             Ціни у {attachment.sourceCurrency}. Курс грн за 1 {attachment.sourceCurrency}:
-            <input aria-label={`Курс ${attachment.sourceCurrency}`} inputMode="decimal" value={exchangeRate} onChange={event => setExchangeRate(event.target.value)} disabled={busy} placeholder="Введіть курс" className="w-32 rounded-lg border border-amber-300 px-2 py-1" />
+            <input aria-label={`Курс ${attachment.sourceCurrency}`} inputMode="decimal" value={exchangeRate} onChange={event => { setExchangeRate(event.target.value); setRateNote('Ваш курс') }} disabled={busy} placeholder="Введіть курс" className="w-32 rounded-lg border border-amber-300 px-2 py-1" />
+            {rateNote && <span className="text-xs text-gray-500">{rateNote}</span>}
           </label>}
           {attachment?.reviewReason && <p className="mb-2 px-2 text-xs text-amber-800">{attachment.reviewReason}</p>}
           {attachment && (
