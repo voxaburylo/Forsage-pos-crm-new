@@ -165,6 +165,9 @@ export default function InvoiceFormPage() {
   }, [supplierId, invoiceNumber, notes, items, paidAmount, cashboxPaidAmount, payFullNow, paymentMethod, fundSource, serverDraftId])
 
   const aiMatching = useAiInvoiceMatching(items, setItems)
+  function setAiRowUnit(rowKey: string, unit: string) {
+    setItems(current => current.map(item => item.client_key === rowKey ? { ...item, unit } : item))
+  }
   function chooseAiProduct(rowKey: string, product: InvoiceCandidate | null) {
     setItems(current => current.map(item => {
       if (item.client_key !== rowKey || !item.ai_review) return item
@@ -1679,7 +1682,7 @@ export default function InvoiceFormPage() {
                     />
                   </td>
                   <td className="px-4 py-2 font-medium min-w-[200px]">
-                    <AiInvoiceLineMatch item={item} disabled={saving} choose={product => chooseAiProduct(item.client_key, product)} />
+                    <AiInvoiceLineMatch item={item} disabled={saving} choose={product => chooseAiProduct(item.client_key, product)} setUnit={unit => setAiRowUnit(item.client_key, unit)} />
                     <input ref={(el) => { rowNameRefs.current[i] = el }} type="text" value={item.product_name}
                       onChange={(e) => updateItem(i, 'product_name', e.target.value)}
                       onKeyDown={(e) => handleRowFieldKeyDown(e, i, 'name')}
@@ -1884,7 +1887,7 @@ export default function InvoiceFormPage() {
                     }}
                   />
                   <div className="min-w-0 flex-1">
-                    <AiInvoiceLineMatch item={item} disabled={saving} choose={product => chooseAiProduct(item.client_key, product)} />
+                    <AiInvoiceLineMatch item={item} disabled={saving} choose={product => chooseAiProduct(item.client_key, product)} setUnit={unit => setAiRowUnit(item.client_key, unit)} />
                     <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Назва</label>
                     <input type="text" value={item.product_name}
                       onChange={(e) => updateItem(i, 'product_name', e.target.value)}
