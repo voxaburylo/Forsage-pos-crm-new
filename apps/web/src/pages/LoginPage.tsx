@@ -31,9 +31,10 @@ function LoginForm({ onUnlocked }: { onUnlocked?: () => void }) {
   const [restoring, setRestoring] = useState(isDesktopRuntime() && !onUnlocked)
   // На головному ПК усі входять лише паролем; номер телефону — за бажанням і на ПК менеджера.
   const [passwordOnlyAvailable, setPasswordOnlyAvailable] = useState(false)
-  const [withPhone, setWithPhone] = useState(() => {
-    try { return localStorage.getItem('forsage:login-with-phone') === '1' } catch { return false }
-  })
+  // Вибір «з телефоном» діє лише до наступного входу: каса завжди відкривається входом за паролем
+  // (19.11.2026: раз натиснута кнопка запам'ятовувалась назавжди, і власник знову бачив телефон).
+  const [withPhone, setWithPhone] = useState(false)
+  useEffect(() => { try { localStorage.removeItem('forsage:login-with-phone') } catch { /* optional */ } }, [])
   const passwordOnly = passwordOnlyAvailable && !withPhone && !onUnlocked
   const submitting = useRef(false)
   const passwordRef = useRef<HTMLInputElement>(null)
@@ -49,7 +50,6 @@ function LoginForm({ onUnlocked }: { onUnlocked?: () => void }) {
   function chooseLoginKind(phoneLogin: boolean) {
     setWithPhone(phoneLogin)
     setError('')
-    try { localStorage.setItem('forsage:login-with-phone', phoneLogin ? '1' : '0') } catch { /* optional hint */ }
   }
   useEffect(() => {
     if (!isDesktopRuntime()) {
@@ -125,7 +125,9 @@ function LoginForm({ onUnlocked }: { onUnlocked?: () => void }) {
         </div>
         {restoring ? <p className="text-center text-sm text-gray-500" role="status">Відновлюємо вхід…</p> :
         <form onSubmit={handleSubmit} className="space-y-5" data-login-kind={passwordOnly ? 'password' : 'phone'}>
-          {!passwordOnly && <div>
+          {/* Розблокування: працівник відомий, номер підставлено — достатньо пароля. */}
+          {onUnlocked && PHONE_REGEX.test(normalizePhone(phone)) && <p className="text-sm text-gray-600">Каса заблокована. Введіть свій пароль.</p>}
+          {!passwordOnly && !(onUnlocked && PHONE_REGEX.test(normalizePhone(phone))) && <div>
             <label htmlFor="login-phone" className="block text-sm font-medium text-gray-700 mb-1">Логін (номер телефону)</label>
             <input id="login-phone" type="tel" autoComplete="username" readOnly={Boolean(onUnlocked)} disabled={loading}
               value={phone} onChange={e=>{setPhone(e.target.value);if(phoneError)validatePhone(e.target.value)}}

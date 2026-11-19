@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 
-const numbers = new Set(['duration_ms', 'lag_ms', 'rss_mb', 'pid', 'exitCode', 'attempt', 'attempts', 'sequence', 'dropped', 'schemaVersion'])
+const numbers = new Set(['duration_ms', 'lag_ms', 'rss_mb', 'pid', 'exitCode', 'attempt', 'attempts', 'sequence', 'dropped', 'schemaVersion', 'labels', 'render_ms', 'spool_ms', 'bytes', 'total_with_queue_ms'])
 const tokens = new Set(['channel', 'role', 'reason', 'type', 'version', 'build', 'release', 'builtAt', 'electron', 'node', 'platform', 'arch', 'status', 'section', 'serviceName'])
 
 const errorTypes = ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError']
