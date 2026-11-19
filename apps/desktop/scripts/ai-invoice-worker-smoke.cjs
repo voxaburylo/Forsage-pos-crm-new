@@ -28,6 +28,13 @@ async function main() {
       const preview = await previewAiInvoiceInWorker(root, { rows: input.rows })
       assert.equal(preview.length, 100); assert(preview.every(row => row.status === 'new'))
       assert.equal(db.prepare('SELECT count(*) n FROM products').get().n, 15000)
+      // The preview server keeps the catalog index between edits and rebuilds it only after a catalog change.
+      const t1 = performance.now(); await previewAiInvoiceInWorker(root, { rows: input.rows }); const repeatMs = performance.now() - t1
+      assert(repeatMs < 1000, 'repeat preview should reuse the catalog index: ' + Math.round(repeatMs) + ' ms')
+      db.prepare('INSERT INTO products(id,tenant_id,sku,name,created_at,updated_at) VALUES (?,?,?,?,?,?)').run('fresh', DEFAULT_TENANT_ID, 'NEW-0', 'Новий товар 0', ts, new Date(Date.now() + 1000).toISOString())
+      const refreshed = await previewAiInvoiceInWorker(root, { rows: input.rows.slice(0, 1) })
+      assert.equal(refreshed[0].product_id, 'fresh')
+      db.prepare('DELETE FROM products WHERE id = ?').run('fresh')
       assert.equal(db.prepare('SELECT count(*) n FROM supply_invoices').get().n, 0)
       first = await createAiInvoiceInWorker(root, input)
     } finally { clearInterval(timer) }

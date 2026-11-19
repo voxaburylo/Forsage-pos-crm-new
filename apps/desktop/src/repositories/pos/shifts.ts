@@ -64,6 +64,17 @@ export class LocalPosShifts extends LocalPosFiscalGuards {
     return shiftId
   }
 
+  /** Усі відкриті зміни каси з іменем касира — для нагадування «зміну не закрито N днів». */
+  listOpenShifts(tenantId = DEFAULT_TENANT_ID): Array<{ id: string; cashier_id: string; cashier_name: string | null; opened_at: string }> {
+    return this.db.prepare(`
+      SELECT s.id, s.cashier_id, u.full_name AS cashier_name, s.opened_at
+      FROM shifts s
+      LEFT JOIN staff_users u ON u.id = s.cashier_id AND u.tenant_id = s.tenant_id
+      WHERE s.tenant_id = ? AND s.status = 'open' AND s.deleted_at IS NULL
+      ORDER BY s.opened_at ASC
+    `).all(tenantId) as unknown as Array<{ id: string; cashier_id: string; cashier_name: string | null; opened_at: string }>
+  }
+
   findOpenShift(cashierId: string, tenantId = DEFAULT_TENANT_ID): string | null {
     return this.getOpenShift(cashierId, tenantId)?.id ?? null
   }

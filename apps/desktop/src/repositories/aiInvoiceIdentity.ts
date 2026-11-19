@@ -179,7 +179,28 @@ export function previewAiInvoiceRows(db: Pick<LocalDatabase, 'prepare'>, tenant:
       })
     }
   }
-  return new AiInvoiceMatcher(db, tenant).previewRows(rows)
+  return matcherFor(db, tenant).previewRows(rows)
+}
+
+/**
+ * Довідник збігів (30 тис. товарів) будується ~2 с. 19.11.2026: перевірка накладної будувала його
+ * заново на кожну правку рядка. Тепер він живе в постійному фоновому процесі й перебудовується лише
+ * тоді, коли змінився каталог (кількість і остання зміна товарів, штрихкодів, псевдонімів, брендів).
+ */
+let cachedMatcher: { key: string; matcher: AiInvoiceMatcher } | null = null
+let matcherCacheEnabled = false
+export function enableAiInvoiceMatcherCache(enabled = true): void { matcherCacheEnabled = enabled; if (!enabled) cachedMatcher = null }
+export function aiInvoiceCatalogSignature(db: Pick<LocalDatabase, 'prepare'>, tenant: string): string {
+  return ['products', 'product_barcodes', 'product_aliases', 'brands'].map(table => {
+    const row = db.prepare(`SELECT count(*) AS n, max(updated_at) AS u FROM ${table} WHERE tenant_id = ?`).get(tenant) as { n: number; u: string | null }
+    return row.n + ':' + (row.u ?? '')
+  }).join('|') + '|' + tenant
+}
+function matcherFor(db: Pick<LocalDatabase, 'prepare'>, tenant: string): AiInvoiceMatcher {
+  if (!matcherCacheEnabled) return new AiInvoiceMatcher(db, tenant)
+  const key = aiInvoiceCatalogSignature(db, tenant)
+  if (cachedMatcher?.key !== key) cachedMatcher = { key, matcher: new AiInvoiceMatcher(db, tenant) }
+  return cachedMatcher.matcher
 }
 
 /** One catalog snapshot per invoice. Similarity suggests; only unique exact identities auto-match. */
