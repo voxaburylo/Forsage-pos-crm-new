@@ -33,6 +33,7 @@ import barcodeSearchRouter from './routes/barcodeSearch.js'
 import hybridSearchRouter from './routes/hybridSearch.js'
 import waitlistRouter from './routes/waitlist.js'
 import { priceLinksRouter, publicPriceRouter } from './routes/priceLinks.js'
+import { tillCommandsRouter } from './routes/tillCommands.js'
 import customerOrdersRouter from './routes/customerOrders.js'
 import customerGroupsRouter from './routes/customerGroups.js'
 import salaryRouter from './routes/salary.js'
@@ -183,6 +184,7 @@ app.use('/api/v1/search', barcodeSearchRouter)
 app.use('/api/v1/search', hybridSearchRouter)
 app.use('/api/v1/waitlist', waitlistRouter)
 app.use('/api/v1/price-links', priceLinksRouter)
+app.use('/api/v1/till-commands', tillCommandsRouter)
 app.use('/api/v1/public', publicPriceRouter)
 app.use('/api/v1/customer-orders', customerOrdersRouter)
 app.use('/api/v1/reserves', reservesRouter)
