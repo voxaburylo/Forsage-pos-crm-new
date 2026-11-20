@@ -9,6 +9,9 @@ import {
   pruneExternalCopies, readExternalConfig, setExternalFolder, writeExternalCopy,
 } from '../src/backup/externalBackup'
 import { LocalDatabase } from '../src/db/localDatabase'
+import { LocalCatalogRepository } from '../src/repositories/catalogRepository'
+import { exportExcelOnly } from '../src/backup/shiftExportWorker'
+import * as XLSX from 'xlsx'
 
 describe('copies on a flash drive', () => {
   let root: string, dataRoot: string, usb: string, source: string
@@ -66,6 +69,30 @@ describe('copies on a flash drive', () => {
     } finally { db.close() }
   })
 
+  it('puts readable Excel «Товари» and «Клієнти» next to the copy and keeps only the newest (20.11.2026)', async () => {
+    const realRoot = path.join(root, 'real')
+    const db = new LocalDatabase(realRoot)
+    try {
+      new LocalCatalogRepository(db).saveProduct({ id: '00000000-0000-4000-8000-000000000001', sku: 'WL7129', name: 'Фільтр масляний WIX WL7129', unit: 'шт', qty_on_hand: 3, purchase_price: 15000, retail_price: 25000 })
+      const backup = await db.backupNow()
+      const errors: unknown[] = []
+      const service = new ExternalBackupService(dataRoot, { listBackups: () => [{ filePath: backup, createdAt: new Date().toISOString() }], backupNow: async () => backup },
+        error => errors.push(error), exportExcelOnly)
+      setExternalFolder(dataRoot, usb)
+      await service.runNow()
+      const dir = path.join(usb, EXTERNAL_FOLDER_NAME)
+      writeFileSync(path.join(dir, 'Товари_2020-01-01-00-00.xlsx'), 'old')
+      await new Promise(resolve => setTimeout(resolve, 1100))
+      await service.runNow()
+      expect(errors).toEqual([])
+      const excel = readdirSync(dir).filter(name => name.endsWith('.xlsx')).sort()
+      expect(excel).toHaveLength(2)
+      const products = XLSX.read(readFileSync(path.join(dir, excel.find(name => name.startsWith('Товари_'))!)))
+      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(products.Sheets['Товари'])
+      expect(rows[0]).toMatchObject({ 'Артикул': 'WL7129', 'Залишок': 3, 'Продаж, грн': 250 })
+    } finally { db.close() }
+  })
+
   it('refuses a folder inside the program data', () => {
     expect(() => setExternalFolder(dataRoot, path.join(dataRoot, 'backups'))).toThrow('флешку')
     expect(() => setExternalFolder(dataRoot, 'relative')).toThrow('повний шлях')
@@ -74,7 +101,7 @@ describe('copies on a flash drive', () => {
   it('treats a missing drive as a reminder, writes once a day and records failures', async () => {
     const db = { listBackups: () => [{ filePath: source, createdAt: new Date().toISOString() }], backupNow: async () => source }
     const errors: unknown[] = []
-    const service = new ExternalBackupService(dataRoot, db, error => errors.push(error))
+    const service = new ExternalBackupService(dataRoot, db, error => errors.push(error), async () => null)
     expect(await service.runIfDue()).toBeNull()
 
     setExternalFolder(dataRoot, path.join(root, 'not-inserted'))

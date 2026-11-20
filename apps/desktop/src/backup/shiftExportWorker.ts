@@ -11,10 +11,25 @@ import { createGzip } from 'node:zlib'
 import path from 'node:path'
 import * as XLSX from 'xlsx'
 
+/**
+ * Копія на флешку (рішення власника 20.11.2026): без шифрування й поряд з копією бази — ті самі
+ * таблиці «Товари» та «Клієнти» в Excel, щоб їх можна було відкрити на будь-якому комп'ютері.
+ */
+export async function exportExcelOnly(input: { snapshot: string; output: string; stamp: string; capturedAt: string }) {
+  const db = new DatabaseSync(input.snapshot, { readOnly: true })
+  let tenantId: string
+  try {
+    const tenants = db.prepare('SELECT DISTINCT tenant_id FROM products').all() as Array<{ tenant_id: string }>
+    if (tenants.length !== 1) throw new Error('У копії немає товарів або кілька магазинів — Excel не створено')
+    tenantId = tenants[0].tenant_id
+  } finally { db.close() }
+  return exportShiftSnapshot({ ...input, tenantId, closedAt: '', excelOnly: true })
+}
+
 export async function exportShiftSnapshot(input: {
-  snapshot: string; dataRoot?: string; output: string; tenantId: string; stamp: string; closedAt: string; capturedAt: string
+  snapshot: string; dataRoot?: string; output: string; tenantId: string; stamp: string; closedAt: string; capturedAt: string; excelOnly?: boolean
 }) {
-  if (input.dataRoot) await embedBackupPhotos(input.snapshot, input.dataRoot)
+  if (input.dataRoot && !input.excelOnly) await embedBackupPhotos(input.snapshot, input.dataRoot)
   await mkdir(input.output, { recursive: true })
   const db = new DatabaseSync(input.snapshot, { readOnly: true })
   try {
@@ -52,7 +67,7 @@ export async function exportShiftSnapshot(input: {
         XLSX.utils.book_append_sheet(book, ws, sheet.name)
       }
       XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([
-        ['Закриття зміни', input.closedAt], ['Час знімка бази', input.capturedAt],
+        [input.excelOnly ? 'Копія на флешку' : 'Закриття зміни', input.excelOnly ? input.stamp : input.closedAt], ['Час знімка бази', input.capturedAt],
         ['Призначення', 'Вивантаження для перегляду. Повна копія бази зберігається окремо.'],
       ]), 'Про вивантаження')
       const target = path.join(input.output, name + '_' + input.stamp + '.xlsx')
@@ -70,6 +85,7 @@ export async function exportShiftSnapshot(input: {
     }, { name: 'Автомобілі', headers: ['ID клієнта', 'Марка', 'Модель', 'Рік', 'VIN', 'Примітки'],
       rows: vehicles.map(v=>[v.customer_id,v.brand,v.model,v.year??'',v.vin??'',v.notes??'']),
     }])
+    if (input.excelOnly) return { productFile, customerFile, compressed: '', sha256: '', size: 0, products: products.length, customers: customers.length }
     const compressed = input.snapshot + '.gz'
     await pipeline(createReadStream(input.snapshot), createGzip(), createWriteStream(compressed + '.partial'))
     await rename(compressed + '.partial', compressed)
@@ -78,7 +94,7 @@ export async function exportShiftSnapshot(input: {
     return { productFile, customerFile, compressed, sha256: hash.digest('hex'), size: (await stat(compressed)).size, products: products.length, customers: customers.length }
   } finally { db.close() }
 }
-if (parentPort && workerData?.snapshot) exportShiftSnapshot(workerData).then(
+if (parentPort && workerData?.snapshot) (workerData.excelOnly ? exportExcelOnly(workerData) : exportShiftSnapshot(workerData)).then(
   result => parentPort!.postMessage({ result }),
   error => parentPort!.postMessage({ error: error instanceof Error ? error.message : String(error) }),
 )
