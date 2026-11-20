@@ -1161,6 +1161,13 @@ app.whenReady().then(async () => {
   // 20.11.2026: однакове написання одиниць у картках (шт/компл/…), один раз після оновлення; спершу копія бази.
   const unitTidyDb = localDatabase
   setTimeout(() => {
+    // Забуті зміни (відкриті понад 2 доби) закриваються самі — рішення власника 20.11.2026.
+    if (localNetwork?.getStatus().mode !== 'client') {
+      try {
+        const closed = localPos?.autoCloseStaleShifts() ?? []
+        if (closed.length) { blackBox?.record('shift-auto-close', { count: closed.length }); setImmediate(() => { void shiftBackups?.tick() }) }
+      } catch (error) { writeDesktopDiagnostic('shift-auto-close-failed', error) }
+    }
     void (async () => {
       if (localNetwork?.getStatus().mode === 'client' || !pendingUnitSpellings(unitTidyDb)) return
       await unitTidyDb.backupNow()
