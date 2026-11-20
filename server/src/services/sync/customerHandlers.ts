@@ -343,8 +343,10 @@ export async function applyCustomerBonusAdjusted(tenantId: string, userId: strin
     await client.query(
       `INSERT INTO bonus_transactions (
         id, tenant_id, customer_id, amount, transaction_type, description, created_by, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, 'manual', $5, $6, $7, $8)`,
-      [transactionId, tenantId, customerId, amount, payload.description ?? (amount > 0 ? 'Ручне нарахування' : 'Ручне списання'), payload.created_by ?? userId, createdAt, appliedAt],
+      ) VALUES ($1, $2, $3, $4, $9, $5, $6, $7, $8)`,
+      [transactionId, tenantId, customerId, amount, payload.description ?? (amount > 0 ? 'Ручне нарахування' : 'Ручне списання'), payload.created_by ?? userId, createdAt, appliedAt,
+        // Нарахування з чека каси (20.11.2026) — 'earn'; решта, як і раніше, — ручна зміна.
+        payload.transaction_type === 'earn' && amount > 0 ? 'earn' : 'manual'],
     )
   })
 }

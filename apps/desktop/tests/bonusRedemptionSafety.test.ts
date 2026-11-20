@@ -28,13 +28,14 @@ describe('desktop redemption cap shown by the payment screen', () => {
     expect(db.prepare('SELECT COUNT(*) AS n FROM sales').get()).toEqual({ n: 0 })
     expect(db.prepare('SELECT COUNT(*) AS n FROM fiscal_sale_intents').get()).toEqual({ n: 0 })
   }
-  it.each([[3001, 0, 10000], [2701, 1000, 10000], [31, 0, 103]])('rejects %i bonuses above discounted goods cap, excluding core deposit', (bonus, discount, price) => {
-    expect(() => pos.checkout(input(bonus, discount, price))).toThrow(/30%/)
+  // Рішення власника 20.11.2026: бонусами можна оплатити весь товар, але не заставу й не більше товару.
+  it.each([[10001, 0, 10000], [9001, 1000, 10000], [104, 0, 103]])('rejects %i bonuses above the discounted goods, excluding core deposit', (bonus, discount, price) => {
+    expect(() => pos.checkout(input(bonus, discount, price))).toThrow(/товарну суму/)
     expectUnchanged()
   })
   it('rejects over-cap redemption before preparing an external fiscal operation', () => {
-    const checkout = input(3001)
-    expect(() => pos.prepareFiscalSaleIntent({ operation_id: checkout.client_operation_id, checkout, items: [{ code: 'X', name: 'X', price: 26999, quantity: 1, amount: 26999 }], pay: { cash: 26999, card: 0, check_total: 26999 } } as any)).toThrow(/30%/)
+    const checkout = input(10001)
+    expect(() => pos.prepareFiscalSaleIntent({ operation_id: checkout.client_operation_id, checkout, items: [{ code: 'X', name: 'X', price: 26999, quantity: 1, amount: 26999 }], pay: { cash: 26999, card: 0, check_total: 26999 } } as any)).toThrow(/товарну суму/)
     expectUnchanged()
   })
   it.each([[3000, 0, 10000], [2700, 1000, 10000], [30, 0, 103]])('accepts exact cap %i once and preserves money-only refund', (bonus, discount, price) => {
@@ -50,18 +51,31 @@ describe('desktop redemption cap shown by the payment screen', () => {
     expect(db.prepare('SELECT bonus_balance AS n FROM customers WHERE id = ?').get(customer)).toEqual({ n: 100000 - bonus })
     expect(db.prepare('SELECT qty_on_hand AS n FROM products WHERE id = ?').get(product)).toEqual({ n: 10 })
   })
-  it.each([null, 'tier'])('characterizes existing personal 5%% account accrual, with tier=%s', tier => {
+  it('lets bonuses pay the whole goods sum (owner, 20.11.2026)', () => {
+    pos.checkout(input(10000))
+    expect(db.prepare('SELECT bonus_balance AS n FROM customers WHERE id = ?').get(customer)).toEqual({ n: 90000 })
+  })
+  it.each([null, 'tier'])('accrues the personal 5%% to BONUSES, not to the customer account, with tier=%s', tier => {
     db.prepare("INSERT OR REPLACE INTO app_meta (key,value_json,updated_at) VALUES ('shop_settings',?,?)").run(JSON.stringify({ price_tiers: [{ id: 'tier', discount_pct: 10 }] }), new Date().toISOString())
     pos.saveCustomer({ discount_pct: 5, loyalty_mode: 'cashback', price_tier_id: tier }, customer)
     const sale = pos.checkout(input(0, 1000))
-    expect(pos.getCustomer(customer)).toMatchObject({ deposit_balance: 450, bonus_balance: 100000 })
-    expect(db.prepare('SELECT COUNT(*) AS n FROM bonus_transactions').get()).toEqual({ n: 0 })
-    expect(db.prepare('SELECT amount, method FROM customer_deposit_transactions WHERE sale_id = ?').get(sale.sale_id)).toEqual({ amount: 450, method: 'cashback' })
+    expect(pos.getCustomer(customer)).toMatchObject({ deposit_balance: 0, bonus_balance: 100450 })
+    expect(db.prepare('SELECT amount, transaction_type FROM bonus_transactions WHERE source_sale_id = ?').get(sale.sale_id)).toEqual({ amount: 450, transaction_type: 'earn' })
+    expect(db.prepare('SELECT COUNT(*) AS n FROM customer_deposit_transactions').get()).toEqual({ n: 0 })
   })
-  it('keeps bonus redemption separate from account accrual and excludes core deposits from both', () => {
+  it('does not accrue on the part paid with bonuses and excludes core deposits', () => {
     pos.saveCustomer({ discount_pct: 5, loyalty_mode: 'cashback' }, customer)
     pos.checkout(input(3000))
-    expect(pos.getCustomer(customer)).toMatchObject({ deposit_balance: 350, bonus_balance: 97000 })
+    expect(pos.getCustomer(customer)).toMatchObject({ deposit_balance: 0, bonus_balance: 97000 + 350 })
+  })
+  it('a return takes back the bonus earned on the returned goods, once', () => {
+    pos.saveCustomer({ discount_pct: 5, loyalty_mode: 'cashback' }, customer)
+    const sale = pos.checkout(input(0))
+    expect(pos.getCustomer(customer)).toMatchObject({ bonus_balance: 100500 })
+    const line = pos.getSaleForReturn(sale.sale_id).items[0]
+    pos.createReturn({ sale_id: sale.sale_id, approved_by: 'cashier', shift_id: shift, client_operation_id: randomUUID(), items: [{ sale_item_id: line.id, product_id: product, quantity: 1 }] })
+    expect(pos.getCustomer(customer)).toMatchObject({ bonus_balance: 100000, deposit_balance: 0 })
+    expect(db.prepare("SELECT amount FROM bonus_transactions WHERE source_sale_id = ? AND transaction_type = 'manual'").get(sale.sale_id)).toEqual({ amount: -500 })
   })
   it('does not accrue account cashback on a debt sale', () => {
     pos.saveCustomer({ discount_pct: 5, loyalty_mode: 'cashback' }, customer)

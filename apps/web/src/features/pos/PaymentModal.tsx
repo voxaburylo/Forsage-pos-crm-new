@@ -166,7 +166,8 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
       customerApi.get(customerId).then((res) => {
         if (cancelled) return
         const balance = validBonusAmount(res.data.bonus_balance ?? 0)
-        const maxRedeem = Math.min(balance, Math.floor(goodsTotal * 0.30))
+        // Рішення власника 20.11.2026: бонусами можна оплатити весь товар.
+        const maxRedeem = Math.min(balance, goodsTotal)
         apply(balance, maxRedeem)
       }).catch(failed)
       return () => { cancelled = true }

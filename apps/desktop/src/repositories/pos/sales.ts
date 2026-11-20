@@ -475,27 +475,25 @@ export class LocalPosSales extends LocalPosCustomers {
         )
         const cashbackBase = Math.max(0, total - coreDepositTotal)
         const cashback = cashbackPct > 0 ? Math.round(cashbackBase * cashbackPct / 100) : 0
+        // Рішення власника 20.11.2026: накопичення — це БОНУСИ, окремо від передоплати (рахунку клієнта).
+        // Відсоток — особистий; база — сума, сплачена не бонусами (total уже без списаних бонусів).
         if (cashback > 0) {
-          const balanceAfter = Number(customer.deposit_balance ?? 0) + cashback
+          const balanceAfter = Number(customer.bonus_balance ?? 0) + cashback
           const transactionId = randomUUID()
-          const notes = 'Накопичення ' + cashbackPct + '% з чека ' + saleNumber
+          const notes = 'Бонуси ' + cashbackPct + '% з чека ' + saleNumber
           this.db.prepare(`
-            UPDATE customers
-            SET deposit_balance = ?, dirty_at = ?, updated_at = ?
+            UPDATE customers SET bonus_balance = ?, dirty_at = ?, updated_at = ?
             WHERE id = ? AND tenant_id = ?
           `).run(balanceAfter, timestamp, timestamp, input.customer_id, tenantId)
           this.db.prepare(`
-            INSERT INTO customer_deposit_transactions (
-              id, tenant_id, customer_id, amount, balance_after, method, sale_id, shift_id,
-              notes, created_by, dirty_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, 'cashback', ?, ?, ?, ?, ?, ?, ?)
-          `).run(
-            transactionId, tenantId, input.customer_id, cashback, balanceAfter, saleId, shiftId,
-            notes, input.cashier_id, timestamp, timestamp, timestamp,
-          )
-          this.addOutbox(tenantId, 'customer', input.customer_id, 'customer.deposit_changed', {
-            customer_id: input.customer_id, transaction_id: transactionId, amount: cashback, method: 'cashback',
-            sale_id: saleId, shift_id: shiftId, notes, created_by: input.cashier_id, created_at: timestamp,
+            INSERT INTO bonus_transactions (
+              id, tenant_id, customer_id, amount, transaction_type, source_sale_id,
+              description, created_by, dirty_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'earn', ?, ?, ?, ?, ?, ?)
+          `).run(transactionId, tenantId, input.customer_id, cashback, saleId, notes, input.cashier_id, timestamp, timestamp, timestamp)
+          this.addOutbox(tenantId, 'customer', input.customer_id, 'customer.bonus_adjusted', {
+            customer_id: input.customer_id, transaction_id: transactionId, amount: cashback, transaction_type: 'earn',
+            sale_id: saleId, description: notes, created_by: input.cashier_id, created_at: timestamp,
           }, timestamp)
         }
       }
@@ -750,13 +748,13 @@ export class LocalPosSales extends LocalPosCustomers {
     }
     assertSaleMoney(subtotal)
     if (money(input.discount ?? 0) > subtotal - itemDiscountTotal) throw new Error('LOCAL_SALE_INVALID_DISCOUNT')
-    // Match the existing desktop payment preview: 30% of discounted goods,
-    // before bonus redemption. A refundable core deposit is not eligible.
+    // Рішення власника 20.11.2026: бонусами можна оплатити весь товар (раніше — до 30%).
+    // Застава за сердечник (core deposit) бонусами не оплачується.
     const bonusEligibleTotal = Math.max(0,
       subtotal - coreDepositTotal - itemDiscountTotal - money(input.discount ?? 0) + bonusesSpent,
     )
-    if (bonusesSpent > Math.floor(bonusEligibleTotal * 0.30)) {
-      throw new Error('Сума бонусів перевищує 30% товарної суми чека')
+    if (bonusesSpent > bonusEligibleTotal) {
+      throw new Error('Сума бонусів перевищує товарну суму чека')
     }
     const total = subtotal - itemDiscountTotal - money(input.discount ?? 0)
     const paidTotal = input.payments.reduce((sum, payment) => sum + money(payment.amount), 0)
