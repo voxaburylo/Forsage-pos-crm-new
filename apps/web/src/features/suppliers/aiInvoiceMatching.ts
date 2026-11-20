@@ -36,7 +36,9 @@ export function bindInvoiceCandidate(item: LineItem, product: InvoiceCandidate):
 export function applyInvoiceMatch(item: LineItem, review: InvoiceMatch): LineItem {
   const choice = item.product_id || (item.ai_review?.choice !== 'new' ? item.ai_review?.choice : '') || review.product_id
   const product = review.candidates.find(candidate => candidate.id === choice)
-  const next = product && product.id !== item.product_id ? bindInvoiceCandidate(item, product) : item
+  const bound = product && product.id !== item.product_id ? bindInvoiceCandidate(item, product) : item
+  // Одиницю накладної для цієї картки власник уже підтверджував («пар» = «шт»): рахуємо в одиницях картки без питання.
+  const next = review.unit_as_card && bound.product_id && bound.unit !== review.unit_as_card ? { ...bound, unit: review.unit_as_card } : bound
   return { ...next, ai_review: { ...next.ai_review!, result: review } }
 }
 export function aiRowsToInvoiceItems(rows: Record<string, unknown>[], reviews: InvoiceMatch[], categories: Array<{id:string;name:string}>, settings: Record<string, any>): LineItem[] {

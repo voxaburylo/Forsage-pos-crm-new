@@ -4,6 +4,12 @@ const candidate = {id:'ours',name:'Наш резонатор Тернопіль'
 const matched: InvoiceMatch = { status:'matched',source_name:'Резонатор 2101 Тернополь',name:candidate.name,brand:'',product_id:'ours',candidates:[candidate],reason:'Точний збіг',validation_errors:[] }
 const raw = {name:'Резонатор 2101 Тернополь',sku:'44',qty:1,purchase_price_uah:605,unit:'шт',match_choice:'new'}
 describe('AI rows inside the ordinary invoice', () => {
+  it('counts a row in card units when the owner already confirmed this unit for the card («пар» = «шт»)', () => {
+    const [item] = aiRowsToInvoiceItems([{...raw,unit:'пар',qty:5}],[{...matched,unit_as_card:'шт'}],[],{})
+    expect(item).toMatchObject({product_id:'ours',unit:'шт',qty:5})
+    const [plain] = aiRowsToInvoiceItems([{...raw,unit:'пар',qty:5}],[matched],[],{})
+    expect(plain.unit).toBe('пар')
+  })
   it('automatically uses a known card despite a stale new choice; preserves invoice money and quantity', () => {
     const [item] = aiRowsToInvoiceItems([raw],[matched],[],{})
     expect(item).toMatchObject({product_id:'ours',sku:'38490',barcode:candidate.barcode,qty:1,purchase_price:60500,total:60500,is_new:false,ai_review:{choice:'ours'}})

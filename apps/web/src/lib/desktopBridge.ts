@@ -738,6 +738,7 @@ interface ForsageDesktopBridge {
     previewInvoiceFromAi?: (input: { rows: Array<Record<string, unknown>>; operation_id?: string }) => Promise<Array<{
       name: string; source_name: string; brand: string; product_id: string | null
       status: 'matched' | 'review' | 'new'; reason: string; validation_errors?: string[]; already_saved?: boolean; invoice_id?: string
+      unit_as_card?: string
       candidates: Array<{ id: string; name: string; sku: string; barcode: string | null; brand: string | null; unit?: string | null; retail_price?: number; category_id?: string | null; storage_bin?: string | null; photo_url?: string | null }>
     }>>
     createInvoiceFromAi?: (input: { operation_id?: string; tenant_id?: string; supplier_id?: string | null; supplier_name?: string | null; invoice_number?: string | null; notes?: string | null; rows: Array<Record<string, unknown>> }) => Promise<{

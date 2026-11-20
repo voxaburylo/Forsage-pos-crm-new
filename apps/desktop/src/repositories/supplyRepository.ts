@@ -478,7 +478,7 @@ export class LocalSupplyRepository {
         const review = matcher.resolve(raw)
         let product = review.product_id ? catalog.findById(review.product_id, tenantId) : null
 
-        const rowUnit = checkedAiSupplyUnit(raw.unit, product ? (product.unit ?? 'шт') : undefined, `«${recognizedName}»`)
+        const rowUnit = checkedAiSupplyUnit(raw.unit, product ? (product.unit ?? 'шт') : undefined, `«${recognizedName}»`, product ? matcher.unitEquivalences.get(product.id) : undefined)
         const wasCreated = !product
         let categoryId = product?.category_id ?? resolveCategoryId(
           raw.category_name ?? raw.category ?? raw.folder_name ?? raw.folder,

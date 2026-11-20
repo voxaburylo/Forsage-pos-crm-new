@@ -11,11 +11,23 @@ export function normalizeAiSupplyUnit(value: string): string {
 }
 
 /** Exact unit compatibility for AI receiving; never infer a pack multiplier. */
-export function checkedAiSupplyUnit(value: unknown, catalogUnit: string | null | undefined, label: string): string | undefined {
+/**
+ * Одиниця накладної, яку власник уже раз підтвердив для картки як «1 до 1» (пара перчаток = 1 шт картки).
+ * Лише прості одиниці: упаковки, числа й дужки ніколи не запам'ятовуються — там кількість може відрізнятися.
+ */
+export function rememberableUnitEquivalence(sourceUnit: unknown, cardUnit: string | null | undefined): string | null {
+  if (typeof sourceUnit !== 'string') return null
+  const source = normalizeAiSupplyUnit(sourceUnit), card = normalizeAiSupplyUnit(cardUnit || 'шт')
+  if (!source || source === card || source.length > 20 || source === 'упак' || /[\d()]/.test(source)) return null
+  return source
+}
+
+export function checkedAiSupplyUnit(value: unknown, catalogUnit: string | null | undefined, label: string, confirmedUnits?: ReadonlySet<string>): string | undefined {
   if (value === undefined || value === null || value === '') return undefined
   if (typeof value !== 'string') throw new Error(label + ': одиниця виміру має бути текстом.')
   const unit = normalizeAiSupplyUnit(value)
   if (!unit) return undefined
+  if (catalogUnit !== undefined && unit !== normalizeAiSupplyUnit(catalogUnit || 'шт') && confirmedUnits?.has(unit)) return normalizeAiSupplyUnit(catalogUnit || 'шт')
   if (catalogUnit !== undefined && unit !== normalizeAiSupplyUnit(catalogUnit || 'шт')) {
     throw new Error(label + ': одиниця виміру накладної «' + value + '», у картці «' + (catalogUnit || 'шт') + '». Перевірте кількість і закупівельну ціну в одиницях обліку; упаковки не перераховано автоматично.')
   }

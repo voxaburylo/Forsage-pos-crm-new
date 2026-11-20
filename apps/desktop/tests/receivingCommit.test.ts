@@ -8,6 +8,7 @@ import { LocalCatalogRepository } from '../src/repositories/catalogRepository'
 import { LocalSupplyRepository } from '../src/repositories/supplyRepository'
 import { LocalPosRepository } from '../src/repositories/posRepository'
 import { commitReceiving, type ReceivingCommitInput, type ReceivingLine } from '../src/repositories/receivingCommit'
+import { AiInvoiceMatcher } from '../src/repositories/aiInvoiceIdentity'
 import { isDesktopChannelAllowed } from '../src/security/desktopAuthorization'
 
 describe('atomic receiving on isolated SQLite', () => {
@@ -46,6 +47,24 @@ describe('atomic receiving on isolated SQLite', () => {
     const saved = commitReceiving(db, body([{ ...item, qty: 98, unit: 'шт' }]))
     expect(saved.items[0].qty).toBe(98)
     expect(catalog.findById(item.product_id!)?.qty_on_hand).toBe(101)
+  })
+  it('remembers a confirmed 1:1 unit per card: «пар» once confirmed as «шт» is not asked again (20.11.2026)', () => {
+    const item = linked(), id = item.product_id!
+    const tenant = (db.prepare('SELECT tenant_id FROM products WHERE id=?').get(id) as { tenant_id: string }).tenant_id
+    const row = (unit: string) => ({ name: item.product_name, unit, qty: 5, purchase_price_uah: 21.06, match_choice: id })
+    expect(new AiInvoiceMatcher(db, tenant).previewRows([row('пар')])[0].validation_errors?.join(' ')).toContain('одиниця')
+    // Упаковку не запам'ятовуємо навіть після підтвердження — там кількість може відрізнятися.
+    commitReceiving(db, body([{ ...item, unit: 'шт', ai_review: { source: { name: item.product_name, unit: 'упак' }, choice: id } }]))
+    expect(new AiInvoiceMatcher(db, tenant).previewRows([row('упак')])[0].validation_errors?.join(' ')).toContain('одиниця')
+    // Власник раз натиснув «Рахувати в одиницях картки»: рядок проведено в «шт».
+    commitReceiving(db, body([{ ...item, unit: 'шт', ai_review: { source: { name: item.product_name, unit: 'пар' }, choice: id } }]))
+    const next = new AiInvoiceMatcher(db, tenant).previewRows([row('пар'), row('пари')])
+    expect(next.map(review => review.validation_errors)).toEqual([[], []])
+    expect(next.map(review => review.unit_as_card)).toEqual(['шт', 'шт'])
+    // Інша картка цього не успадковує.
+    const other = catalog.saveProduct({ id: randomUUID(), sku: 'GLOVE-2', name: 'Рукавички інші', qty_on_hand: 0 })
+    expect(new AiInvoiceMatcher(db, tenant).previewRows([{ ...row('пар'), name: other.name, match_choice: other.id }])[0].validation_errors?.join(' ')).toContain('одиниця')
+    expect(catalog.findById(id)?.qty_on_hand).toBe(3 + 98 + 98)
   })
   it('creates an AI new card, brand and folder only with final posting; a replay is harmless', () => {
     const item = line({ sku: 'NEW-AI', product_name: 'Ключ NewBrand 20 дюймів', qty: 1, unit: 'pcs',
