@@ -57,6 +57,15 @@ export class CatalogAgentRepository {
     return row ? JSON.parse(row.value_json) : {}
   }
   constructor(private db: LocalDatabase) {}
+  /** Відбитки карток для підтвердження змін, запропонованих у чаті помічника (лише читання). */
+  fingerprints(ids: unknown): Array<{ product_id: string; fingerprint: string | null; name?: string; category_id?: string | null }> {
+    if (!Array.isArray(ids) || !ids.length || ids.length > 500 || ids.some(id => typeof id !== 'string' || !id || id.length > 64)) throw new Error('Некоректний список товарів')
+    return [...new Set(ids as string[])].map(id => {
+      const row = this.db.prepare('SELECT * FROM products WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL').get(id, DEFAULT_TENANT_ID) as any
+      return row ? { product_id: id, fingerprint: agentFingerprint(row), name: row.name, category_id: row.category_id ?? null } : { product_id: id, fingerprint: null }
+    })
+  }
+
   private product(id: string) {
     const row = this.db.prepare('SELECT * FROM products WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL').get(id, DEFAULT_TENANT_ID) as any
     if (!row) throw new Error('Товар відсутній або вже видалений. Оновіть перевірку.')
@@ -139,14 +148,36 @@ export class CatalogAgentRepository {
     for (const table of ['product_aliases', 'product_cross_numbers']) if (this.db.prepare('SELECT 1 FROM ' + table + ' WHERE product_id=? AND deleted_at IS NULL LIMIT 1').get(p.id)) return 'У картці є додаткові номери або назви — потрібне злиття'
     return null
   }
-  apply(input: { operation_id: string; items: AgentChange[] }, userId: string) {
-    if (!/^[0-9a-f-]{36}$/i.test(input?.operation_id) || !Array.isArray(input.items) || !input.items.length || input.items.length > 100) throw new Error('Оберіть від 1 до 100 змін для підтвердження')
+  /**
+   * skip_invalid — для пачки з чату помічника: картку, яку не можна змінити (змінена після пропозиції,
+   * зачіпає цифри/бренд тощо), пропускаємо з причиною, решту записуємо. Видалення дублів так не приймаються.
+   */
+  apply(input: { operation_id: string; items: AgentChange[]; skip_invalid?: boolean }, userId: string) {
+    // Пачка з чату — до 500 карток за раз: перед кожним записом робиться повна перевірена копія бази,
+    // тож менше пачок — менше копій і швидше збереження.
+    const maxItems = input?.skip_invalid === true ? 500 : 100
+    if (!/^[0-9a-f-]{36}$/i.test(input?.operation_id) || !Array.isArray(input.items) || !input.items.length || input.items.length > maxItems) throw new Error(`Оберіть від 1 до ${maxItems} змін для підтвердження`)
     const ids = input.items.map(x => x.product_id)
     if (new Set(ids).size !== ids.length || input.items.some(x => x.primary_id && ids.includes(x.primary_id))) throw new Error('Один товар не можна одночасно змінювати та видаляти. Застосуйте дії окремо.')
+    const skipInvalid = input.skip_invalid === true
+    if (skipInvalid && input.items.some(x => x.primary_id)) throw new Error('Видалення дублів підтверджуйте в «Помічнику каталогу»')
     return idempotentMutation(this.db, 'catalog-agent:' + DEFAULT_TENANT_ID, input.operation_id, input, () => {
+      const skipped: Array<{ product_id: string; name: string; error: string }> = []
       for (const action of input.items) {
-        const before = this.product(action.product_id)
-        if (agentFingerprint(before) !== action.fingerprint) throw new Error('Картку вже змінено: ' + before.name + '. Оновіть перевірку.')
+        let before: any
+        if (skipInvalid) {
+          try {
+            before = this.product(action.product_id)
+            if (agentFingerprint(before) !== action.fingerprint) throw new Error('Картку вже змінено після пропозиції')
+            this.validateEdit(before, action.changes ?? {})
+          } catch (error) {
+            skipped.push({ product_id: action.product_id, name: before?.name ?? action.product_id, error: error instanceof Error ? error.message : String(error) })
+            continue
+          }
+        } else {
+          before = this.product(action.product_id)
+          if (agentFingerprint(before) !== action.fingerprint) throw new Error('Картку вже змінено: ' + before.name + '. Оновіть перевірку.')
+        }
         if (action.primary_id) {
           const primary = this.product(action.primary_id)
           if (agentFingerprint(primary) !== action.primary_fingerprint) throw new Error('Основну картку змінено. Оновіть перевірку.')
@@ -155,6 +186,17 @@ export class CatalogAgentRepository {
           this.writer().deleteProduct(before.id)
         } else {
           const changes = action.changes ?? {}
+          const specs = this.validateEdit(before, changes)
+          this.writer().saveProduct({ ...before, ...changes, is_active: Boolean(before.is_active), is_service: Boolean(before.is_service), is_favorite: Boolean(before.is_favorite), requires_core_return: Boolean(before.requires_core_return), specs })
+        }
+        this.db.prepare(`INSERT INTO audit_log (event_id,tenant_id,device_id,user_id,action,entity_type,entity_id,after_json,created_at) VALUES (?,?,?,?,?,'product',?,?,?)`).run(randomUUID(), DEFAULT_TENANT_ID, this.db.deviceId, userId, 'catalog_agent.' + (action.primary_id ? 'archive' : 'update'), before.id, JSON.stringify({ before, changes: action.changes ?? null, primary_id: action.primary_id ?? null }), new Date().toISOString())
+      }
+      return skipInvalid ? { updated: input.items.length - skipped.length, skipped } : { updated: input.items.length }
+    })
+  }
+
+  /** Перевірка правки картки агентом: лише назва/артикул/категорія/ціна за сіткою, без зміни цифр і бренду. Повертає specs. */
+  private validateEdit(before: any, changes: Record<string, unknown>): Record<string, unknown> {
           if (!Object.keys(changes).length || Object.keys(changes).some(k => !['name', 'sku', 'category_id', 'retail_price'].includes(k))) throw new Error('Агенту заборонено змінювати залишки, закупку, штрихкоди та інші поля')
           if (changes.name !== undefined && before.brand_id) {
             const brand = this.db.prepare('SELECT name FROM brands WHERE id=? AND tenant_id=?').get(before.brand_id, DEFAULT_TENANT_ID) as any
@@ -170,11 +212,6 @@ export class CatalogAgentRepository {
           if (changes.category_id !== undefined && !this.db.prepare('SELECT 1 FROM categories WHERE id=? AND tenant_id=? AND deleted_at IS NULL').get(String(changes.category_id), DEFAULT_TENANT_ID)) throw new Error('Категорію не знайдено')
           if (changes.retail_price !== undefined && (typeof changes.retail_price !== 'number' || !Number.isSafeInteger(changes.retail_price) || changes.retail_price <= 0 || changes.retail_price !== gridAgentPrice(before.purchase_price, this.settings()))) throw new Error('Ціна має відповідати поточній таблиці націнки')
           let specs = {}; try { specs = JSON.parse(before.specs_json || '{}') } catch { throw new Error('Специфікація товару пошкоджена. Спочатку перевірте картку.') }
-          this.writer().saveProduct({ ...before, ...changes, is_active: Boolean(before.is_active), is_service: Boolean(before.is_service), is_favorite: Boolean(before.is_favorite), requires_core_return: Boolean(before.requires_core_return), specs })
-        }
-        this.db.prepare(`INSERT INTO audit_log (event_id,tenant_id,device_id,user_id,action,entity_type,entity_id,after_json,created_at) VALUES (?,?,?,?,?,'product',?,?,?)`).run(randomUUID(), DEFAULT_TENANT_ID, this.db.deviceId, userId, 'catalog_agent.' + (action.primary_id ? 'archive' : 'update'), before.id, JSON.stringify({ before, changes: action.changes ?? null, primary_id: action.primary_id ?? null }), new Date().toISOString())
-      }
-      return { updated: input.items.length }
-    })
+          return specs
   }
 }

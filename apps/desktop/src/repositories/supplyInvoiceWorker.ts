@@ -5,7 +5,7 @@ import { Worker, parentPort, workerData } from 'node:worker_threads'
 import { LocalDatabase } from '../db/localDatabase'
 import { LocalSupplyRepository } from './supplyRepository'
 import { commitReceiving, type ReceivingCommitInput } from './receivingCommit'
-import { previewAiInvoiceRows } from './aiInvoiceIdentity'
+import { enableAiInvoiceMatcherCache, prewarmAiInvoiceMatcher, previewAiInvoiceRows } from './aiInvoiceIdentity'
 import { DEFAULT_TENANT_ID } from '../db/localTypes'
 
 type Input = Parameters<LocalSupplyRepository['createInvoiceFromAiRows']>[0]
@@ -36,7 +36,9 @@ function runSupplyWorker(dataRoot: string, input: Input | ReceivingCommitInput |
   // Serialize worker writers. Do not return another input's result for the same operation ID:
   // idempotentMutation validates the complete payload inside the transaction.
   const previous = active.get(dataRoot)
-  const task = (previous ? previous.catch(() => undefined) : Promise.resolve()).then(() => new Promise<Result>((resolve, reject) => {
+  const task = (previous ? previous.catch(() => undefined) : Promise.resolve()).then(() => operation === 'preview'
+    ? previewInServer(dataRoot, input as PreviewInput)
+    : new Promise<Result>((resolve, reject) => {
     const worker = new Worker(path.join(__dirname, 'supplyInvoiceWorker.js'), { workerData: { aiInvoice: true, operation, dataRoot, input } })
     let reply: { result?: Result; error?: string } | undefined
     const timer = setTimeout(() => { void worker.terminate() }, 180_000)
@@ -57,7 +59,75 @@ function runSupplyWorker(dataRoot: string, input: Input | ReceivingCommitInput |
   return task
 }
 
-if (parentPort && workerData?.aiInvoice) {
+/** Постійний процес перевірки накладної: тримає довідник збігів у пам'яті між правками рядків. */
+const previewServers = new Map<string, { worker: Worker; pending: Map<number, { resolve: (value: any) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }> }>()
+let previewRequest = 0
+/** Фоновий «прогрів» довідника при відкритті накладної; помилка не важлива — перевірка просто побудує його сама. */
+export function prewarmAiInvoiceCheck(dataRoot: string, tenantId: string): Promise<unknown> {
+  return previewInServer(dataRoot, { tenant_id: tenantId } as any, true).catch(() => null)
+}
+function previewInServer(dataRoot: string, input: PreviewInput, prewarm = false): Promise<any> {
+  let server = previewServers.get(dataRoot)
+  if (!server) {
+    const worker = new Worker(path.join(__dirname, 'supplyInvoiceWorker.js'), { workerData: { aiInvoice: true, operation: 'previewServer', dataRoot } })
+    const created = { worker, pending: new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>() }
+    const fail = (message: string) => {
+      if (previewServers.get(dataRoot) === created) previewServers.delete(dataRoot)
+      for (const entry of created.pending.values()) { clearTimeout(entry.timer); entry.reject(new Error(message)) }
+      created.pending.clear()
+    }
+    worker.on('message', (reply: { id: number; result?: unknown; error?: string }) => {
+      const entry = created.pending.get(reply.id)
+      if (!entry) return
+      created.pending.delete(reply.id); clearTimeout(entry.timer)
+      if (reply.error) entry.reject(new Error(reply.error)); else entry.resolve(reply.result)
+    })
+    worker.on('error', error => fail(error.message))
+    worker.on('exit', () => fail('Перевірку накладної перервано. Повторіть — накладну не змінено.'))
+    worker.unref()
+    previewServers.set(dataRoot, created)
+    server = created
+  }
+  const id = ++previewRequest
+  const target = server
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      target.pending.delete(id)
+      reject(new Error('Перевірка накладної триває надто довго. Повторіть.'))
+      void target.worker.terminate()
+    }, 180_000)
+    target.pending.set(id, { resolve, reject, timer })
+    target.worker.postMessage({ id, input, prewarm })
+  })
+}
+
+function previewRowsFromDisk(dataRoot: string, input: any) {
+  const rows = input?.rows
+  if (!Array.isArray(rows) || !rows.length || rows.length > 2000) throw new Error('Перевірте таблицю товарів (до 2000 рядків).')
+  if (!existsSync(path.join(dataRoot, 'data', 'forsage.db'))) throw new Error('Робочу базу не знайдено. Порожню базу не створено.')
+  const reader = new DatabaseSync(path.join(dataRoot, 'data', 'forsage.db'), { readOnly: true, timeout: 5000 })
+  try {
+    reader.exec('BEGIN')
+    return previewAiInvoiceRows(reader, input.tenant_id ?? DEFAULT_TENANT_ID, rows, input.operation_id)
+  } finally { reader.close() }
+}
+
+if (parentPort && workerData?.aiInvoice && workerData.operation === 'previewServer') {
+  enableAiInvoiceMatcherCache()
+  const port = parentPort
+  port.on('message', (message: { id: number; input: any; prewarm?: boolean }) => {
+    if (message.prewarm) {
+      try {
+        const reader = new DatabaseSync(path.join(workerData.dataRoot, 'data', 'forsage.db'), { readOnly: true, timeout: 5000 })
+        try { reader.exec('BEGIN'); prewarmAiInvoiceMatcher(reader, message.input?.tenant_id ?? DEFAULT_TENANT_ID) } finally { reader.close() }
+        port.postMessage({ id: message.id, result: { ready: true } })
+      } catch (error) { port.postMessage({ id: message.id, error: error instanceof Error ? error.message : String(error) }) }
+      return
+    }
+    try { port.postMessage({ id: message.id, result: previewRowsFromDisk(workerData.dataRoot, message.input) }) }
+    catch (error) { port.postMessage({ id: message.id, error: error instanceof Error ? error.message : String(error) }) }
+  })
+} else if (parentPort && workerData?.aiInvoice) {
   let db: LocalDatabase | undefined
   try {
     if (!existsSync(path.join(workerData.dataRoot, 'data', 'forsage.db'))) throw new Error('Робочу базу не знайдено. Порожню базу не створено.')

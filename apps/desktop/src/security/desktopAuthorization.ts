@@ -33,8 +33,10 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   ['desktop:orders:discard-offline', ['owner', 'admin', 'manager']],
   ['desktop:orders:retry-offline', ['owner', 'admin', 'manager']],
   ['desktop:catalog:agent-scan', OWNER_ROLES],
+  ['desktop:pos:list-open-shifts', ['owner', 'admin', 'manager']],
   ...['scan', 'preview', 'apply', 'apply-sku', 'tidy-plan', 'tidy-apply'].map((mode): [string, readonly DesktopRole[]] => [`desktop:catalog:cleanup-${mode}`, OWNER_ROLES]),
   ['desktop:catalog:agent-apply', OWNER_ROLES],
+  ['desktop:catalog:agent-fingerprints', OWNER_ROLES],
   ['desktop:warehouse:list-consumptions', ['owner', 'admin', 'manager']],
   ['desktop:warehouse:create-consumption', ['owner', 'admin', 'manager']],
   ['desktop:warehouse:resolve-consumption', ['owner', 'admin', 'manager']],
@@ -51,6 +53,12 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   ['desktop:backup:restore', OWNER_ROLES],
   // Аварійне відновлення: скачати найсвіжішу копію з хмари у папку копій цього ПК (заміна бази — окремий крок).
   ['desktop:backup:fetch-cloud', OWNER_ROLES],
+  // Копії на флешку: вибір носія, запис і повернення копії з носія — тільки власник.
+  ['desktop:backup:external-status', OWNER_ROLES],
+  ['desktop:backup:external-choose', OWNER_ROLES],
+  ['desktop:backup:external-clear', OWNER_ROLES],
+  ['desktop:backup:external-run', OWNER_ROLES],
+  ['desktop:backup:external-import', OWNER_ROLES],
   // Журнал проблем читає той, хто стоїть за касою: саме він бачить збій першим
   // і має що сказати. Закривати й вивантажувати список — справа власника.
   ['desktop:problems:list', RECEIVING_ROLES],
@@ -97,6 +105,7 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   ['desktop:supply:commit-receiving', RECEIVING_ROLES],
   ['desktop:supply:create-invoice-from-ai', RECEIVING_ROLES],
   ['desktop:supply:preview-invoice-from-ai', RECEIVING_ROLES],
+  ['desktop:supply:prewarm-invoice-check', RECEIVING_ROLES],
   ['desktop:supply:update-invoice', RECEIVING_ROLES],
   ['desktop:supply:post-invoice', RECEIVING_ROLES],
   ['desktop:supply:pay-invoice', RECEIVING_ROLES],

@@ -84,6 +84,13 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
   listBackups: () => ipcRenderer.invoke('desktop:backup:list'),
   restoreBackup: (fileName: string) => ipcRenderer.invoke('desktop:backup:restore', fileName),
   fetchCloudBackup: (request: unknown) => ipcRenderer.invoke('desktop:backup:fetch-cloud', request),
+  externalBackup: {
+    status: () => ipcRenderer.invoke('desktop:backup:external-status'),
+    choose: () => ipcRenderer.invoke('desktop:backup:external-choose'),
+    clear: () => ipcRenderer.invoke('desktop:backup:external-clear'),
+    run: () => ipcRenderer.invoke('desktop:backup:external-run'),
+    importCopy: (fileName: string) => ipcRenderer.invoke('desktop:backup:external-import', fileName),
+  },
   catalog: {
     findByBarcode: (barcode: string) =>
       ipcRenderer.invoke('desktop:catalog:find-by-barcode', barcode),
@@ -103,6 +110,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     cleanupTidyPlan: () => ipcRenderer.invoke('desktop:catalog:cleanup-tidy-plan'),
     cleanupTidyApply: (input: unknown) => ipcRenderer.invoke('desktop:catalog:cleanup-tidy-apply', input),
     agentApply: (input: unknown) => ipcRenderer.invoke('desktop:catalog:agent-apply', input),
+    agentFingerprints: (ids: unknown) => ipcRenderer.invoke('desktop:catalog:agent-fingerprints', ids),
     listCategories: () =>
       ipcRenderer.invoke('desktop:catalog:list-categories'),
     listBrands: () =>
@@ -262,6 +270,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     commitReceiving: (input: unknown) => ipcRenderer.invoke('desktop:supply:commit-receiving', input),
     createInvoiceFromAi: (input: unknown) => ipcRenderer.invoke('desktop:supply:create-invoice-from-ai', input),
     previewInvoiceFromAi: (input: unknown) => ipcRenderer.invoke('desktop:supply:preview-invoice-from-ai', input),
+    prewarmInvoiceCheck: () => ipcRenderer.invoke('desktop:supply:prewarm-invoice-check'),
     updateInvoice: (id: string, input: unknown) => ipcRenderer.invoke('desktop:supply:update-invoice', id, input),
     payInvoice: (id: string, input: unknown) => ipcRenderer.invoke('desktop:supply:pay-invoice', id, input),
     postInvoice: (id: string, input?: unknown) => ipcRenderer.invoke('desktop:supply:post-invoice', id, input),
@@ -273,6 +282,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:pos:open-shift', input),
     getOpenShift: (cashierId: string) =>
       ipcRenderer.invoke('desktop:pos:get-open-shift', cashierId),
+    listOpenShifts: () => ipcRenderer.invoke('desktop:pos:list-open-shifts'),
     checkout: (input: unknown) => ipcRenderer.invoke('desktop:pos:checkout', input),
     listSales: (input?: unknown) => ipcRenderer.invoke('desktop:pos:list-sales', input),
     dashboardSummary: (input: unknown) => ipcRenderer.invoke('desktop:pos:dashboard-summary', input),

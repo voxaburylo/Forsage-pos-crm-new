@@ -167,6 +167,30 @@ describe('синхронізація пише свої відмови в жур�
     return operationId
   }
 
+  it('закриває записи одного коду (успішний друк після збою)', () => {
+    problems.record({ source: 'print', code: 'ipc.desktop:print:html', severity: 'error', title: 'Друк завершилась помилкою', detail: 'PRINT_OUTCOME_UNKNOWN' })
+    problems.record({ source: 'print', code: 'ipc.desktop:print:labels-tspl', severity: 'error', title: 'Друк завершилась помилкою', detail: 'x' })
+    expect(problems.resolveCode('ipc.desktop:print:html')).toBe(1)
+    expect(problems.list().map(problem => problem.code)).toEqual(['ipc.desktop:print:labels-tspl'])
+  })
+
+  it('закриває запис сам, коли операцію вже доставлено на сервер', () => {
+    const operationId = insertOperation(7, 0)
+    sync.applyPushResults([{ sequence: 7, operation_id: operationId, status: 'failed', error: 'Спочатку передайте картки всіх товарів приходу.' }])
+    expect(problems.list()).toHaveLength(1)
+    sync.applyPushResults([{ sequence: 7, operation_id: operationId, status: 'synced' }])
+    expect(problems.list()).toHaveLength(0)
+    expect(problems.summary().warnings + problems.summary().errors).toBe(0)
+    expect(problems.list({ includeResolved: true })).toHaveLength(1)
+  })
+
+  it('пише зрозумілу причину відомої відповіді сервера замість [unknown]', () => {
+    const operationId = insertOperation(8, 0)
+    sync.applyPushResults([{ sequence: 8, operation_id: operationId, status: 'failed', error: 'Спочатку передайте картки всіх товарів приходу.' }])
+    expect(problems.list()[0].detail).toContain('Сервер ще не має карток товарів цієї накладної')
+    expect(problems.list()[0].detail).toContain('[sync-invoice-products-missing]')
+  })
+
   it('відхилена операція лишає попередження, а вичерпані спроби — помилку', () => {
     const operationId = insertOperation(1, 0)
     sync.applyPushResults([{

@@ -33,6 +33,14 @@ describe('print subprocess completion', () => {
     await expect(result).rejects.toThrow('TSPL_QUEUE_STUCK: old job')
     expect(child.stdin.end).toHaveBeenCalledTimes(1)
   })
+  it('accepts a submitted job when the helper prints its marker but hangs on exit', async () => {
+    vi.useFakeTimers()
+    const child = fake(); const result = waitForPrintProcess(child, 'test', { ...options, timeoutMs: 30_000 })
+    child.stdout.emit('data', 'FORSAGE_PRINT_STAGE:submission-started\nFORSAGE_PRINT_STAGE:submitted\nPRINT_OK')
+    await expect(result).resolves.toBeUndefined()
+    vi.advanceTimersByTime(5_000)
+    expect(child.kill).toHaveBeenCalled()
+  })
   it('requires the success marker, exit zero, and no input failure', async () => {
     for (const [code, marker, inputError, succeeds] of [[0, true, false, true], [1, true, false, false], [0, false, false, false], [0, true, true, false]] as const) {
       const child = fake(); const result = waitForPrintProcess(child, 'test', options)

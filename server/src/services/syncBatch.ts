@@ -59,10 +59,20 @@ export async function processSyncBatch<T extends SyncBatchOperation>(
 ): Promise<SyncBatchResult[]> {
   const results: SyncBatchResult[] = []
   const blockedKeys = new Set<string>()
+  // Reference keys blocked only by documents (invoice, order…), not by a product operation.
+  const documentOnlyBlocks = new Set<string>()
 
   for (const operation of operations) {
     const keys = dependencyKeys(operation)
-    if (keys.some((key) => blockedKeys.has(key))) continue
+    // A failed invoice may be waiting for this very card ("first send all product cards").
+    // Blocking the card on the invoice's failure deadlocks both forever, so a plain card
+    // copy passes its own reference when only a document blocked it. Older versions of
+    // the same card, catalog cleanup and stock corrections keep their barriers.
+    const ownReference = `${operation.tenant_id}:reference:product:${operation.aggregate_id}`
+    const catalogCopy = operation.aggregate_type === 'product' && operation.operation_type === 'product.upsert'
+      && operation.payload?.stock_correction !== true
+    if (keys.some((key) => blockedKeys.has(key)
+      && !(catalogCopy && key === ownReference && documentOnlyBlocks.has(key)))) continue
 
     try {
       await apply(operation)
@@ -73,7 +83,11 @@ export async function processSyncBatch<T extends SyncBatchOperation>(
         status: 'synced',
       })
     } catch (error: any) {
-      for (const key of keys) blockedKeys.add(key)
+      for (const key of keys) {
+        if (operation.aggregate_type === 'product') documentOnlyBlocks.delete(key)
+        else if (!blockedKeys.has(key)) documentOnlyBlocks.add(key)
+        blockedKeys.add(key)
+      }
       results.push({
         sequence: operation.sequence,
         operation_id: operation.operation_id,

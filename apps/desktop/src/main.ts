@@ -26,6 +26,7 @@ import { customerHistory } from './repositories/customerHistory'
 import { runCatalogAgent } from './repositories/catalogAgentWorker'
 import { assertLocalDataAuthority } from './security/localDataAuthority'
 import { fetchCloudBackup, type CloudBackupRequest } from './backup/cloudRestore'
+import { ExternalBackupService, importExternalCopy, readExternalConfig, setExternalFolder } from './backup/externalBackup'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { DEFAULT_TENANT_ID } from './db/localTypes'
 import type {
@@ -41,7 +42,8 @@ import type {
 } from './db/localTypes'
 import { LocalCatalogRepository } from './repositories/catalogRepository'
 import { applyCatalogBatch } from './repositories/catalogBatchWorker'
-import { createAiInvoiceInWorker, previewAiInvoiceInWorker, commitReceivingInWorker } from './repositories/supplyInvoiceWorker'
+import { CatalogAgentRepository } from './repositories/catalogAgentRepository'
+import { createAiInvoiceInWorker, previewAiInvoiceInWorker, commitReceivingInWorker, prewarmAiInvoiceCheck } from './repositories/supplyInvoiceWorker'
 import { LocalInventoryRepository } from './repositories/inventoryRepository'
 import { LocalOrderRepository } from './repositories/orderRepository'
 import { LocalPosRepository } from './repositories/posRepository'
@@ -152,6 +154,7 @@ let mainWindow: BrowserWindow | null = null
 let localDatabase: LocalDatabase | null = null
 let stopBackupScheduler: (() => void) | null = null
 let shiftBackups: ShiftBackupService | null = null
+let externalBackups: ExternalBackupService | null = null
 let databaseMaintenance = false
 let quitAfterCleanup = false
 let localCatalog: LocalCatalogRepository | null = null
@@ -663,6 +666,9 @@ function handleDesktopIpc(channel: string, listener: DesktopIpcListener): void {
       }
       throw error
     } finally {
+      // 19.11.2026: «Друк завершився помилкою ×202» висіли відкритими, хоча наступні чеки друкувались.
+      // Успішний друк тим самим каналом закриває старі записи цього каналу.
+      if (!failed && channel.startsWith('desktop:print:')) { try { localProblems?.resolveCode(`ipc.${channel}`) } catch { /* optional */ } }
       const durationMs = Date.now() - startedAt
       blackBox?.record('command-end', { channel, sequence, duration_ms: durationMs,
         status: failed ? 'failed' : 'ok', role: desktopAuthSession?.role ?? 'signed-out' })
@@ -1147,11 +1153,18 @@ app.whenReady().then(async () => {
     process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath), error => {
       writeDesktopDiagnostic('shift-backup-failed', error)
       recordDesktopProblem({ source: 'database', code: 'database.shift_backup_failed',
-        title: 'Не вдалося зберегти вивантаження після зміни',
-        detail: 'Зміна закрита. Вивантаження повториться. ' + (error instanceof Error ? error.message : String(error)) })
-    })
+        title: 'Не вдалося зберегти резервну копію бази',
+        detail: 'Копія бази (після зміни або щоденна) повториться сама. ' + (error instanceof Error ? error.message : String(error)) })
+    }, undefined, { dailyCopy: true })
   shiftBackups.start()
-  stopBackupScheduler = startBackupScheduler(localDatabase, (error) => {
+  externalBackups = new ExternalBackupService(dataRoot, localDatabase, error => {
+    writeDesktopDiagnostic('external-backup-failed', error)
+    recordDesktopProblem({ source: 'database', code: 'database.external_backup_failed',
+      title: 'Не вдалося записати копію на флешку',
+      detail: 'Робочі дані не змінено. ' + (error instanceof Error ? error.message : String(error)) })
+  })
+  externalBackups.start()
+  stopBackupScheduler =startBackupScheduler(localDatabase, (error) => {
     writeDesktopDiagnostic('local-backup-failed', error)
     recordDesktopProblem({ source: 'database', code: 'database.backup_failed',
       title: 'Не вдалося створити резервну копію',
@@ -1276,6 +1289,40 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:backup:failed', (_event, id: string, message: string) =>
     shiftBackups!.cloudFailed(requireDesktopSession().tenant_id, id, String(message)))
   handleDesktopIpc('desktop:backup:list', () => requireLocalDatabase().listBackups())
+  // Друга копія на флешці / зовнішньому диску (рішення власника 17.11.2026).
+  handleDesktopIpc('desktop:backup:external-status', () => {
+    if (!externalBackups) throw new Error('LOCAL_DATA_ROOT_NOT_READY')
+    return externalBackups.status()
+  })
+  handleDesktopIpc('desktop:backup:external-choose', async () => {
+    if (!desktopDataRoot || !externalBackups || !mainWindow) throw new Error('LOCAL_DATA_ROOT_NOT_READY')
+    const picked = await dialog.showOpenDialog(mainWindow, { title: 'Оберіть флешку або зовнішній диск для копій',
+      properties: ['openDirectory', 'createDirectory'], defaultPath: readExternalConfig(desktopDataRoot).folder ?? undefined })
+    if (picked.canceled || !picked.filePaths[0]) return externalBackups.status()
+    setExternalFolder(desktopDataRoot, picked.filePaths[0])
+    // Перша копія — одразу, щоб власник побачив результат.
+    await externalBackups.runNow().catch(error => writeDesktopDiagnostic('external-backup-failed', error))
+    return externalBackups.status()
+  })
+  handleDesktopIpc('desktop:backup:external-clear', () => {
+    if (!desktopDataRoot || !externalBackups) throw new Error('LOCAL_DATA_ROOT_NOT_READY')
+    setExternalFolder(desktopDataRoot, null)
+    return externalBackups.status()
+  })
+  handleDesktopIpc('desktop:backup:external-run', async () => {
+    if (!externalBackups) throw new Error('LOCAL_DATA_ROOT_NOT_READY')
+    await externalBackups.runNow()
+    return externalBackups.status()
+  })
+  handleDesktopIpc('desktop:backup:external-import', async (_event, fileName: string) => {
+    const dataRoot = desktopDataRoot
+    const folder = dataRoot ? readExternalConfig(dataRoot).folder : null
+    if (!dataRoot || !folder) throw new Error('Папку з копіями не вибрано')
+    const result = await importExternalCopy(folder, String(fileName), path.join(dataRoot, 'backups'),
+      file => LocalDatabase.assertBackupIsUsable(file))
+    writeDesktopDiagnostic('external-backup-imported', { fileName: result.fileName, sizeBytes: result.sizeBytes })
+    return result
+  })
   handleDesktopIpc('desktop:backup:fetch-cloud', async (_event, request: CloudBackupRequest) => {
     const session = requireDesktopSession()
     const dataRoot = desktopDataRoot
@@ -1313,6 +1360,7 @@ app.whenReady().then(async () => {
     let closed = false
     try {
       await shiftBackups?.stop()
+      await externalBackups?.stop()
       await database.waitForBackup()
       await localNetwork?.stop()
       cashalot?.stopWorker()
@@ -1360,7 +1408,10 @@ app.whenReady().then(async () => {
     if (bytes.length === 0 || bytes.length > 10 * 1024 * 1024) throw new Error('Неприпустимий розмір фото')
     const photoDir = path.join(desktopDataRoot, 'photos', safeFolder)
     await mkdir(photoDir, { recursive: true })
-    const photoPath = path.join(photoDir, Date.now() + '-' + crypto.randomUUID() + '.jpg')
+    // Розширення за вмістом: картинки без фону зберігаються як PNG/WebP з прозорістю.
+    const isPng = bytes.length > 8 && bytes.readUInt32BE(0) === 0x89504e47
+    const isWebp = bytes.length > 12 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP'
+    const photoPath = path.join(photoDir, Date.now() + '-' + crypto.randomUUID() + (isPng ? '.png' : isWebp ? '.webp' : '.jpg'))
     await writeFile(photoPath, bytes)
     return pathToFileURL(photoPath).href
   })
@@ -1480,6 +1531,7 @@ app.whenReady().then(async () => {
       return { ...run.finish(), backupPath }
     } finally { cleanupMutationInProgress = false }
   })
+  handleDesktopIpc('desktop:catalog:agent-fingerprints', (_event, ids) => new CatalogAgentRepository(requireLocalDatabase()).fingerprints(ids))
   handleDesktopIpc('desktop:catalog:agent-apply', async (_event, input) => {
     const userId = requireDesktopSession().id
     const backupPath = await requireLocalDatabase().backupNow()
@@ -1881,6 +1933,10 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:pos:get-customer-sales', (_event, id: string, tenantId?: string) =>
     requireLocalPos().getCustomerSales(id, tenantId),
   )
+  handleDesktopIpc('desktop:supply:prewarm-invoice-check', async () => {
+    await prewarmAiInvoiceCheck(requireLocalDatabase().dataRoot, requireDesktopSession().tenant_id)
+    return { ok: true }
+  })
   handleDesktopIpc('desktop:supply:preview-invoice-from-ai', (_event, input: any) =>
     previewAiInvoiceInWorker(requireLocalDatabase().dataRoot, { ...input, tenant_id: requireDesktopSession().tenant_id }),
   )
@@ -1950,6 +2006,7 @@ app.whenReady().then(async () => {
     const session = requireDesktopSession()
     return requireLocalPos().openShift({ ...input, cashier_id: session.id, tenant_id: session.tenant_id })
   })
+  handleDesktopIpc('desktop:pos:list-open-shifts', () => requireLocalPos().listOpenShifts(requireDesktopSession().tenant_id))
   handleDesktopIpc('desktop:pos:get-open-shift', (_event, cashierId: string) => {
     const session = requireDesktopSession()
     return requireLocalPos().getOpenShift(session.id, session.tenant_id)
@@ -2170,6 +2227,7 @@ app.on('before-quit', (event) => {
       await lanOrderQueue?.settle()
       cashalot?.stopWorker()
       await shiftBackups?.stop()
+      await externalBackups?.stop()
       await localDatabase?.waitForBackup().catch((error) => writeDesktopDiagnostic('backup-on-quit-failed', error))
       await localDatabase?.waitForBackgroundWrite().catch((error) => writeDesktopDiagnostic('copy-on-quit-failed', error))
       localDatabase?.close()

@@ -92,10 +92,10 @@ describe('supply purchase-price catalog copy', () => {
     // Use the real server batch barriers, not a mock that accepts everything.
     sync.applyPushResults(await processSyncBatch(sync.listPending(100), apply))
     expect(queue().some(row => row.operation_type === 'supplier_invoice.created' && row.status === 'failed')).toBe(true)
-    const prerequisite = sync.listPending(1)
-    expect(prerequisite.map(row => row.operation_type)).toEqual(['product.upsert'])
-    expect(prerequisite[0].payload).toMatchObject({ purchase_price: 8000, qty_on_hand: 6 })
-    sync.applyPushResults(await processSyncBatch(prerequisite, apply))
+    // The server accepts the card in the same batch even though the invoice that needs it failed
+    // first (18.11.2026: otherwise invoice and card blocked each other forever).
+    expect(remoteCard).toMatchObject({ purchase_price: 8000, qty_on_hand: 6 })
+    expect(sync.listPending(100).some(row => row.operation_type === 'product.upsert')).toBe(false)
     vi.setSystemTime(new Date('2026-10-13T12:00:00Z'))
     sync.applyPushResults(await processSyncBatch(sync.listPending(100), apply))
     sync.applyPushResults(await processSyncBatch(sync.listPending(100), apply))

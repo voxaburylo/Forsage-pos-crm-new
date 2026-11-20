@@ -180,7 +180,7 @@ describe('AI invoice import into local supply draft', () => {
     expect(result.created).toBe(1)
     expect(result.matched).toBe(19)
     expect(new Set(result.invoice.items.map((item: any) => item.product_id)).size).toBe(1)
-    expect(prepare.mock.calls.filter(([sql]) => /SELECT p.id,p.name,p.sku,p.barcode,p.unit,p.retail_price,p.category_id,p.storage_bin,p.photo_url,b.name AS brand FROM products/.test(sql))).toHaveLength(1)
+    expect(prepare.mock.calls.filter(([sql]) => /SELECT p.id,p.name,p.sku,p.barcode,p.unit,p.retail_price,p.purchase_price,p.category_id,p.storage_bin,p.photo_url,b.name AS brand FROM products/.test(sql))).toHaveLength(1)
     prepare.mockRestore()
   })
 

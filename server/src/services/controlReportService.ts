@@ -13,6 +13,7 @@ export const controlReportQuery = z.object({
   to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   margin_pct: z.coerce.number().min(0).max(100).default(10),
   stale_days: z.coerce.number().int().min(14).max(730).default(90),
+  low_days: z.coerce.number().int().min(3).max(60).default(14),
 })
 export type ControlReportQuery = z.infer<typeof controlReportQuery>
 
@@ -116,13 +117,103 @@ async function staleProducts(tenantId: string, staleDays: number): Promise<Stale
   }))
 }
 
+export interface StaffTotals {
+  employee_id: string | null; employee: string | null; receipts: number; revenue: number; discounts: number
+  profit: number; profit_known_revenue: number; average_receipt: number; below_cost_lines: number
+}
+
+/** Порівняння по працівниках за період: хто оформив чек (менеджер, інакше касир). */
+async function staffTotals(tenantId: string, from: string, to: string): Promise<StaffTotals[]> {
+  const range = kyivDateRange(from, to)
+  const { rows } = await pool.query(
+    `WITH s AS (
+       SELECT id, total, discount, COALESCE(manager_id, cashier_id) emp FROM sales
+        WHERE tenant_id = $1 AND status IN ('completed','returned') AND completed_at >= $2 AND completed_at < $3
+     ), i AS (
+       SELECT s.emp, COALESCE(sum(si.discount),0) item_discount,
+              COALESCE(sum(si.total - si.cost_price * si.qty) FILTER (WHERE si.cost_price > 0),0) profit,
+              COALESCE(sum(si.total) FILTER (WHERE si.cost_price > 0),0) known,
+              count(*) FILTER (WHERE si.cost_price > 0 AND si.qty > 0 AND si.total < si.cost_price * si.qty) below_cost
+         FROM sale_items si JOIN s ON s.id = si.sale_id WHERE si.tenant_id = $1 GROUP BY s.emp
+     )
+     SELECT s.emp, count(*) receipts, COALESCE(sum(s.total),0) revenue, COALESCE(sum(s.discount),0) sale_discount,
+            max(i.item_discount) item_discount, max(i.profit) profit, max(i.known) known, max(i.below_cost) below_cost,
+            (SELECT u.raw_user_meta_data->>'full_name' FROM auth.users u WHERE u.id = s.emp) employee
+       FROM s LEFT JOIN i ON i.emp IS NOT DISTINCT FROM s.emp
+      GROUP BY s.emp
+      ORDER BY revenue DESC`,
+    [tenantId, range.from, range.toExclusive],
+  )
+  const n = (value: unknown) => Math.round(Number(value) || 0)
+  return rows.map((row: any) => {
+    const receipts = n(row.receipts), revenue = n(row.revenue)
+    return {
+      employee_id: row.emp ?? null, employee: row.employee ?? null, receipts, revenue,
+      discounts: n(row.sale_discount) + n(row.item_discount), profit: n(row.profit), profit_known_revenue: n(row.known),
+      average_receipt: receipts ? Math.round(revenue / receipts) : 0, below_cost_lines: n(row.below_cost),
+    }
+  })
+}
+
+export const RUNNING_OUT_WINDOW_DAYS = 30
+export interface RunningOutProduct {
+  id: string; name: string; sku: string | null; storage_bin: string | null; qty_on_hand: number; reorder_point: number
+  sold_30d: number; days_left: number | null; order_qty: number; order_cost: number
+}
+
+/**
+ * «Закінчуються»: продаються, але залишку вистачить менше ніж на lowDays днів за темпом останніх 30 днів,
+ * або залишок не вище точки дозамовлення. order_qty — скільки докупити, щоб вистачило на 30 днів.
+ */
+export function runningOutRows(rows: Array<{ id: string; name: string; sku: string | null; storage_bin: string | null; qty: number; reorder_point: number; sold: number; purchase_price: number }>, lowDays: number): RunningOutProduct[] {
+  const result: RunningOutProduct[] = []
+  for (const row of rows) {
+    const qty = Math.max(0, Number(row.qty) || 0), sold = Math.max(0, Number(row.sold) || 0), reorder = Math.max(0, Number(row.reorder_point) || 0)
+    const perDay = sold / RUNNING_OUT_WINDOW_DAYS
+    const daysLeft = perDay > 0 ? Math.floor(qty / perDay) : null
+    const belowReorder = reorder > 0 && qty <= reorder
+    if (!belowReorder && (daysLeft === null || daysLeft >= lowDays)) continue
+    const orderQty = Math.max(Math.ceil(perDay * RUNNING_OUT_WINDOW_DAYS - qty), reorder > 0 ? Math.ceil(reorder - qty) + 1 : 0, 1)
+    result.push({
+      id: row.id, name: row.name, sku: row.sku ?? null, storage_bin: row.storage_bin ?? null, qty_on_hand: qty, reorder_point: reorder,
+      sold_30d: Math.round(sold * 1000) / 1000, days_left: daysLeft, order_qty: orderQty, order_cost: Math.round(orderQty * (Number(row.purchase_price) || 0)),
+    })
+  }
+  return result.sort((a, b) => (a.days_left ?? -1) - (b.days_left ?? -1) || b.sold_30d - a.sold_30d).slice(0, LINE_LIMIT)
+}
+
+async function runningOut(tenantId: string, lowDays: number): Promise<RunningOutProduct[]> {
+  const { rows } = await pool.query(
+    `WITH sold AS (
+       SELECT si.product_id, sum(si.qty) qty FROM sale_items si
+         JOIN sales s ON s.id = si.sale_id AND s.tenant_id = si.tenant_id
+        WHERE si.tenant_id = $1 AND s.status IN ('completed','returned') AND s.completed_at >= now() - make_interval(days => $2)
+        GROUP BY si.product_id
+     )
+     SELECT p.id, p.name, p.sku, p.storage_bin, p.qty_on_hand::float8 qty, p.reorder_point::float8 reorder_point,
+            COALESCE(sold.qty, 0)::float8 sold, p.purchase_price
+       FROM products p LEFT JOIN sold ON sold.product_id = p.id
+      WHERE p.tenant_id = $1 AND p.deleted_at IS NULL AND p.is_active AND NOT p.is_service
+        AND (sold.qty > 0 OR (p.reorder_point > 0 AND p.qty_on_hand <= p.reorder_point))`,
+    [tenantId, RUNNING_OUT_WINDOW_DAYS],
+  )
+  return runningOutRows(rows as any[], lowDays)
+}
+
 export async function buildControlReport(tenantId: string, query: ControlReportQuery) {
   const previous = previousPeriod(query.from, query.to)
-  const [current, before, margins, stale] = await Promise.all([
+  const [current, before, margins, stale, staff, staffBefore, low] = await Promise.all([
     periodTotals(tenantId, query.from, query.to),
     periodTotals(tenantId, previous.from, previous.to),
     marginLines(tenantId, query.from, query.to, query.margin_pct),
     staleProducts(tenantId, query.stale_days),
+    staffTotals(tenantId, query.from, query.to),
+    staffTotals(tenantId, previous.from, previous.to),
+    runningOut(tenantId, query.low_days),
   ])
-  return { period: { from: query.from, to: query.to }, previous_period: previous, current, previous: before, ...margins, stale, margin_pct: query.margin_pct, stale_days: query.stale_days }
+  return {
+    period: { from: query.from, to: query.to }, previous_period: previous, current, previous: before, ...margins, stale,
+    staff, staff_previous: staffBefore, running_out: low,
+    margin_pct: query.margin_pct, stale_days: query.stale_days, low_days: query.low_days,
+  }
 }

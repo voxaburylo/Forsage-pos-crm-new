@@ -117,8 +117,32 @@ export class LocalProblemRepository {
     }
   }
 
+  /**
+   * Запис «сервер не прийняв операцію» закривається сам, коли цю операцію вже доставлено
+   * (або її більше немає в черзі). 19.11.2026: після розблокування черги в журналі лишалися
+   * 129 відкритих записів про проблему, якої вже не було.
+   */
+  closeDeliveredSyncProblems(tenantId = DEFAULT_TENANT_ID): number {
+    try {
+      return Number(this.db.prepare(`
+        UPDATE problem_log SET resolved_at = ?
+        WHERE tenant_id = ? AND resolved_at IS NULL AND source = 'sync'
+          AND code IN ('sync.operation_rejected', 'sync.operation_stuck')
+          AND json_extract(context_json, '$.sequence') IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM sync_outbox o
+            WHERE o.sequence = CAST(json_extract(problem_log.context_json, '$.sequence') AS INTEGER)
+              AND o.status <> 'synced'
+          )
+      `).run(new Date().toISOString(), tenantId).changes ?? 0)
+    } catch {
+      return 0
+    }
+  }
+
   list(options: { tenantId?: string; includeResolved?: boolean; limit?: number } = {}): LocalProblem[] {
     const tenantId = options.tenantId ?? DEFAULT_TENANT_ID
+    this.closeDeliveredSyncProblems(tenantId)
     const limit = Math.min(Math.max(options.limit ?? 200, 1), 1000)
     const scope = options.includeResolved ? '' : 'AND resolved_at IS NULL'
     const rows = this.db.prepare(`
@@ -133,6 +157,7 @@ export class LocalProblemRepository {
   }
 
   summary(tenantId = DEFAULT_TENANT_ID): LocalProblemSummary {
+    this.closeDeliveredSyncProblems(tenantId)
     const row = this.db.prepare(`
       SELECT
         SUM(CASE WHEN resolved_at IS NULL AND severity = 'error' THEN 1 ELSE 0 END) AS errors,
@@ -154,6 +179,14 @@ export class LocalProblemRepository {
       WHERE id = ? AND tenant_id = ? AND resolved_at IS NULL
     `).run(nowIso(), id, tenantId)
     return { ok: true }
+  }
+
+  /** Закрити відкриті записи одного коду (наприклад, друк на тому ж принтері знову пройшов). */
+  resolveCode(code: string, tenantId = DEFAULT_TENANT_ID): number {
+    try {
+      return Number(this.db.prepare('UPDATE problem_log SET resolved_at = ? WHERE tenant_id = ? AND code = ? AND resolved_at IS NULL')
+        .run(new Date().toISOString(), tenantId, code).changes ?? 0)
+    } catch { return 0 }
   }
 
   resolveAll(tenantId = DEFAULT_TENANT_ID): { resolved: number } {

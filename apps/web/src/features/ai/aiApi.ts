@@ -44,10 +44,10 @@ export interface AiPendingAction {
   uncertain?: string[]
 }
 
-export interface AiChatImage {
-  mime_type: 'image/jpeg' | 'image/png' | 'image/webp'
-  storage_path: string
-}
+/** Фото йде через тимчасове сховище; PDF накладної — напряму в base64. */
+export type AiChatImage =
+  | { mime_type: 'image/jpeg' | 'image/png' | 'image/webp'; storage_path: string }
+  | { mime_type: 'application/pdf'; data_base64: string }
 
 export interface AiApplyResult {
   result: {
@@ -64,6 +64,8 @@ export interface AiChatResponse {
   usage: { prompt_tokens: number; completion_tokens: number; cost_usd: number }
 }
 
+export interface AiRule { id: string; text: string; created_at: string; created_by: string | null }
+
 export interface AiChatMessage {
   role: 'user' | 'model'
   text: string
@@ -73,7 +75,12 @@ export const aiApi = {
   reviewCatalog: (body: { products: Array<{ id: string; name: string; sku: string; brand: string; category_id: string | null }>; categories: Array<{ id: string; name: string }> }) =>
     api.post<{ data: { proposals: Array<{ id: string; name: string; sku: string; category_id: string | null; reason: string }> } }>('/api/v1/ai/catalog-review', body, undefined, { timeoutMs: 120000, silent: true }),
   status: () => api.get<{ data: AiStatus }>('/api/v1/ai/status', { silent: true, timeoutMs: 15_000 }),
+  /** Офіційний курс НБУ на сьогодні. */
+  nbuRate: (currency: string) => api.get<{ data: { currency: string; rate: number; date: string } }>('/api/v1/ai/nbu-rate?currency=' + encodeURIComponent(currency), { silent: true, timeoutMs: 15_000 }),
   usage:  () => api.get<{ data: AiUsage }>('/api/v1/ai/usage'),
+  rules: () => api.get<{ data: AiRule[] }>('/api/v1/ai/memory', { silent: true, timeoutMs: 15_000 }),
+  addRule: (text: string) => api.post<{ data: AiRule[] }>('/api/v1/ai/memory', { text }),
+  deleteRule: (id: string) => api.delete<{ data: AiRule[] }>('/api/v1/ai/memory/' + encodeURIComponent(id)),
 
   saveConfig: (body: { api_key?: string | null; model?: AiModel; enabled?: boolean }) =>
     api.post<{ data: { enabled: boolean; model: AiModel; has_key: boolean } }>('/api/v1/ai/config', body),

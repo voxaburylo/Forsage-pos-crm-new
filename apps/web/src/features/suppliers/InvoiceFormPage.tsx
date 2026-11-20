@@ -11,7 +11,7 @@ import { Trash2, Barcode } from 'lucide-react'
 import { read, utils } from 'xlsx'
 import { supplierApi } from './supplierApi'
 import { sourceForPaymentMethod, methodForPaymentSource } from './supplierPaymentSelection'
-import { invoiceProductBase, invoiceLineRetailProblem, invoiceProblemQuestion } from './invoiceFormModel'
+import { invoiceProductBase, invoiceLineRetailProblem, invoiceProblemQuestion, invoicePurchaseJump } from './invoiceFormModel'
 import { findInvoiceIdentifierConflicts, receivingErrorText } from './invoiceIdentifierConflicts'
 import { isMissingInvoiceError } from './invoiceDraftStore'
 import { cancelStoredInvoiceDraft } from './invoiceDraftCancellation'
@@ -165,6 +165,11 @@ export default function InvoiceFormPage() {
   }, [supplierId, invoiceNumber, notes, items, paidAmount, cashboxPaidAmount, payFullNow, paymentMethod, fundSource, serverDraftId])
 
   const aiMatching = useAiInvoiceMatching(items, setItems)
+  // Довідник перевірки рядків будується у фоні одразу при відкритті накладної — перша перевірка теж миттєва.
+  useEffect(() => { void desktopBridge()?.supply?.prewarmInvoiceCheck?.().catch(() => {}) }, [])
+  function setAiRowUnit(rowKey: string, unit: string) {
+    setItems(current => current.map(item => item.client_key === rowKey ? { ...item, unit } : item))
+  }
   function chooseAiProduct(rowKey: string, product: InvoiceCandidate | null) {
     setItems(current => current.map(item => {
       if (item.client_key !== rowKey || !item.ai_review) return item
@@ -1293,6 +1298,12 @@ export default function InvoiceFormPage() {
     }
     // Проведення без націнки ставить у картку нуль або ціну закупки: каса й
     // цінники потім беруть саме її. Питаємо до запису, а не після.
+    const jumps = submittedItems.map(item => ({ item, jump: invoicePurchaseJump(item) })).filter(row => row.jump)
+    if (jumps.length > 0) {
+      const lines = jumps.slice(0, 6).map(({ item, jump }) => `• ${item.product_name || item.sku}: закупка ${(jump!.before / 100).toFixed(2)} → ${(jump!.after / 100).toFixed(2)} грн`).join('\n')
+      const more = jumps.length > 6 ? `\n… і ще ${jumps.length - 6}` : ''
+      if (!confirm(`Увага: у ${jumps.length} поз. закупка різко змінюється порівняно з карткою — можливо, товар зіставлено не з тією карткою.\n\n${lines}${more}\n\nПровести накладну?`)) return
+    }
     const withoutMarkup = submittedItems.filter(item => invoiceLineRetailProblem(item) !== null)
     if (withoutMarkup.length > 0) {
       const names = withoutMarkup.slice(0, 5).map(item => '• ' + (item.product_name || item.sku || 'Без назви')).join('\n')
@@ -1679,7 +1690,8 @@ export default function InvoiceFormPage() {
                     />
                   </td>
                   <td className="px-4 py-2 font-medium min-w-[200px]">
-                    <AiInvoiceLineMatch item={item} disabled={saving} choose={product => chooseAiProduct(item.client_key, product)} />
+                    <AiInvoiceLineMatch item={item} disabled={saving} choose={product => chooseAiProduct(item.client_key, product)} setUnit={unit => setAiRowUnit(item.client_key, unit)} />
+                    {(() => { const jump = invoicePurchaseJump(item); return jump ? <p role="note" className="mt-1 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-900">Закупка в картці {(jump.before / 100).toFixed(2)} грн, стане {(jump.after / 100).toFixed(2)} грн — перевірте, що це той самий товар.</p> : null })()}
                     <input ref={(el) => { rowNameRefs.current[i] = el }} type="text" value={item.product_name}
                       onChange={(e) => updateItem(i, 'product_name', e.target.value)}
                       onKeyDown={(e) => handleRowFieldKeyDown(e, i, 'name')}
@@ -1884,7 +1896,8 @@ export default function InvoiceFormPage() {
                     }}
                   />
                   <div className="min-w-0 flex-1">
-                    <AiInvoiceLineMatch item={item} disabled={saving} choose={product => chooseAiProduct(item.client_key, product)} />
+                    <AiInvoiceLineMatch item={item} disabled={saving} choose={product => chooseAiProduct(item.client_key, product)} setUnit={unit => setAiRowUnit(item.client_key, unit)} />
+                    {(() => { const jump = invoicePurchaseJump(item); return jump ? <p role="note" className="mt-1 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-900">Закупка в картці {(jump.before / 100).toFixed(2)} грн, стане {(jump.after / 100).toFixed(2)} грн — перевірте, що це той самий товар.</p> : null })()}
                     <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-0.5">Назва</label>
                     <input type="text" value={item.product_name}
                       onChange={(e) => updateItem(i, 'product_name', e.target.value)}

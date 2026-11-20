@@ -6,11 +6,11 @@ import { Card } from '@/components/ui'
 import { api } from '@/lib/api'
 import { formatDate, formatDateTime, formatMoney } from '@/lib/utils'
 import {
-  COMPARE_ROWS, changePct, defaultPeriod, lossTotal, staleStockCost,
+  COMPARE_ROWS, changePct, defaultPeriod, lossTotal, orderCostTotal, staffRows, staleStockCost,
   type ControlLine, type ControlReport,
 } from './controlReportModel'
 
-type Tab = 'compare' | 'below' | 'low' | 'stale'
+type Tab = 'compare' | 'staff' | 'running' | 'below' | 'low' | 'stale'
 
 /** «Контроль» для власника: порівняння періодів, продажі нижче закупки, низька націнка, залежані товари. */
 export default function ControlReportPage() {
@@ -36,6 +36,8 @@ export default function ControlReportPage() {
 
   const tabs: Array<{ id: Tab; label: string; count?: number }> = [
     { id: 'compare', label: 'Порівняння періодів' },
+    { id: 'staff', label: 'По працівниках', count: report?.staff?.length },
+    { id: 'running', label: 'Закінчуються', count: report?.running_out?.length },
     { id: 'below', label: 'Нижче закупки', count: report?.below_cost.length },
     { id: 'low', label: `Націнка до ${marginPct}%`, count: report?.low_margin.length },
     { id: 'stale', label: 'Залежані товари', count: report?.stale.length },
@@ -73,6 +75,8 @@ export default function ControlReportPage() {
       {report && tab === 'low' && <Lines lines={report.low_margin} empty="Продажів з низькою націнкою немає"
         summary={`Рядки з націнкою від 0 до ${report.margin_pct}% від ціни продажу`} />}
       {report && tab === 'stale' && <Stale report={report} />}
+      {report && tab === 'staff' && <Staff report={report} />}
+      {report && tab === 'running' && <RunningOut report={report} />}
       <p className="mt-3 text-xs text-gray-400">
         Закупка рядка — ціна закупки на момент продажу. Рядки, де закупка не була відома, не враховуються. Показано до 300 рядків.
       </p>
@@ -125,6 +129,68 @@ function Lines({ lines, empty, summary }: { lines: ControlLine[]; empty: string;
             <p className={line.margin < 0 ? 'font-semibold text-red-600' : 'text-amber-600'}>
               {line.margin < 0 ? 'збиток ' : 'націнка '}{formatMoney(Math.abs(line.margin))}{line.margin_pct !== null ? ` (${line.margin_pct}%)` : ''}
             </p>
+          </div>
+        </div>
+      ))}
+    </Card>
+  )
+}
+
+function Staff({ report }: { report: ControlReport }) {
+  if (!report.staff) return <Card className="text-sm text-gray-500">Сервер ще не оновлено — розділ з’явиться після оновлення.</Card>
+  const rows = staffRows(report)
+  if (!rows.length) return <Card className="text-sm text-gray-500">За період немає чеків</Card>
+  return (
+    <Card className="p-0">
+      <p className="border-b border-gray-100 px-4 py-2 text-xs text-gray-500">
+        Хто оформив чек (менеджер, інакше касир). Зміна — виручка проти {formatDate(report.previous_period.from)} – {formatDate(report.previous_period.to)}.
+      </p>
+      {rows.map(row => {
+        const change = changePct(row.revenue, row.previous_revenue)
+        return (
+          <div key={row.employee_id ?? 'none'} className="flex items-center justify-between gap-3 border-b border-gray-50 px-4 py-2.5 text-sm last:border-0">
+            <div className="min-w-0">
+              <p className="truncate font-medium text-gray-800">{row.employee ?? 'Не вказано'}</p>
+              <p className="text-xs text-gray-500">
+                {row.receipts} чеків · середній {formatMoney(row.average_receipt)} · знижки {formatMoney(row.discounts)}
+                {row.below_cost_lines ? <span className="text-red-600"> · нижче закупки: {row.below_cost_lines}</span> : null}
+              </p>
+            </div>
+            <div className="shrink-0 text-right text-xs">
+              <p className="text-sm font-semibold">{formatMoney(row.revenue)} <span className="font-normal text-gray-400">({row.share_pct}%)</span></p>
+              <p className="text-gray-500">прибуток {formatMoney(row.profit)}</p>
+              <p className={change === null ? 'text-gray-400' : change >= 0 ? 'text-green-600' : 'text-red-600'}>
+                {change === null ? 'немає з чим порівняти' : `${change > 0 ? '+' : ''}${change}%`}
+              </p>
+            </div>
+          </div>
+        )
+      })}
+    </Card>
+  )
+}
+
+function RunningOut({ report }: { report: ControlReport }) {
+  if (!report.running_out) return <Card className="text-sm text-gray-500">Сервер ще не оновлено — розділ з’явиться після оновлення.</Card>
+  if (!report.running_out.length) return <Card className="text-sm text-gray-500">Нічого не закінчується 👍</Card>
+  return (
+    <Card className="p-0">
+      <p className="border-b border-gray-100 px-4 py-2 text-xs text-gray-500">
+        Продаються, але залишку вистачить менше ніж на {report.low_days ?? 14} днів за темпом останніх 30 днів, або залишок дійшов до мінімуму.
+        Дозамовити на місяць — приблизно {formatMoney(orderCostTotal(report.running_out))} за закупкою.
+      </p>
+      {report.running_out.map(row => (
+        <div key={row.id} className="flex items-center justify-between gap-3 border-b border-gray-50 px-4 py-2 text-sm last:border-0">
+          <div className="min-w-0">
+            <Link to={`/products/${row.id}`} className="block truncate font-medium text-gray-800 hover:underline">{row.name}</Link>
+            <p className="text-xs text-gray-500">{[row.sku, row.storage_bin && `комірка ${row.storage_bin}`, `продано за 30 днів: ${row.sold_30d}`].filter(Boolean).join(' · ')}</p>
+          </div>
+          <div className="shrink-0 text-right text-xs">
+            <p>залишок {row.qty_on_hand} шт</p>
+            <p className={row.days_left === 0 ? 'font-semibold text-red-600' : 'text-amber-600'}>
+              {row.days_left === null ? 'на мінімумі' : row.days_left === 0 ? 'закінчився' : `≈ ${row.days_left} дн.`}
+            </p>
+            <p className="text-gray-500">дозамовити {row.order_qty} шт</p>
           </div>
         </div>
       ))}

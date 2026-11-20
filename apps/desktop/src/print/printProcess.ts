@@ -39,6 +39,13 @@ export function waitForPrintProcess(child: ChildProcessWithoutNullStreams, input
         stages.add(match[1]); submitting = true
         report('print-helper-stage', { printer: options.printer, document: options.documentName, stage: match[1] })
       }
+      // 19.11.2026: the helper printed its success marker, but PowerShell hung while disposing the
+      // driver objects, so 30 s later the job was reported as 'outcome unknown' (×202 in the log).
+      // The marker is written only after the spooler accepted the job: that is the success we wait for.
+      if (!settled && !inputError && stdout.includes(options.successMarker) && stages.has('submitted') && !stderr.trim()) {
+        finish()
+        setTimeout(stop, 5_000).unref?.()
+      }
     })
     child.stderr.on('data', chunk => { stderr = (stderr + String(chunk)).slice(-16384) })
     child.on('error', finish)

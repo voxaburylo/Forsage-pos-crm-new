@@ -20,6 +20,30 @@ describe('AI invoice identity and label names', () => {
   const row = (data: Record<string, unknown>) => ({ qty: 4, purchase_price_uah: 120, ...data })
   const add = (id: string, name: string, extra = {}) => catalog.upsertProduct({ id, sku: id, name, qty_on_hand: 3, ...extra })
 
+  it('finds the card when the supplier spaces the catalog number (EL 101 514 = EL 101514)', () => {
+    add('EL 101514', 'Центральный замок (5-ти пров) Elegant EL 101514 Цена за 2шт', { barcode: '6931015143656' })
+    add('EL 101516', 'Центральный замок (5-ти пров) посилений Elegant EL 101516 Цена за 2шт')
+    add('82851', 'Клеммы аккумуляторные Elegant EL 100 553 луженая латунь (изоляция из резины)')
+    const lock = supply.previewInvoiceFromAiRows({ rows: [row({ name: 'Центральный замок 5-ти проводной Elegant EL 101 514 2шт.', sku: 'У000042136' })] })[0]
+    expect(lock).toMatchObject({ status: 'matched', product_id: 'EL 101514' })
+    const strong = supply.previewInvoiceFromAiRows({ rows: [row({ name: 'Центральный замок 5-ти проводной Elegant EL 101 516 2шт. (усиленный)', sku: 'У000042137' })] })[0]
+    expect(strong).toMatchObject({ status: 'matched', product_id: 'EL 101516' })
+    // Sizes and pack counts are never glued into a number.
+    const jack = supply.previewInvoiceFromAiRows({ rows: [row({ name: 'Домкрат гидравлический подкатной 2т 8.5 кг подъем 135 335 мм', sku: 'М0000044414' })] })[0]
+    expect(jack.status).toBe('new')
+  })
+  it('never takes a voltage range for a catalog number (10-30В ≠ 1030B, 12V/24V)', () => {
+    add('80943', 'Присадка Bardahl Maxi compression Восстанавливает компрессию 473 ml 1030B')
+    add('83705', 'Двойник в прикуриватель 12V/24V, USB 1000mA, 70W AUTO WELLE')
+    const lamp = supply.previewInvoiceFromAiRows({ rows: [row({ name: 'Фара LED Winso Pro 10-30В мощность 30Вт (3x10Вт) световой поток 2700Лм CSP1860DE 1шт.', sku: 'М0000082474' })] })[0]
+    expect(lamp.product_id).toBeNull()
+    expect(lamp.candidates.map(item => item.id)).not.toContain('80943')
+    const tester = supply.previewInvoiceFromAiRows({ rows: [row({ name: 'Тестер аккумуляторных батарей цифровой Elegant EL 100 492 12V/24V', sku: 'М0000083441' })] })[0]
+    expect(tester.product_id).toBeNull()
+    // A real single code still matches.
+    const bardahl = supply.previewInvoiceFromAiRows({ rows: [row({ name: 'Bardahl Maxi compression 473 ml 1030B', sku: '' })] })[0]
+    expect(bardahl.candidates.map(item => item.id)).toContain('80943')
+  })
   it('matches a separate Polo brand to the complete old name without making another card', () => {
     add('polo', 'Polo Expert (metal) 10W40 API SL/CF 1л (12)', { barcode: '4260636978889' })
     const data = row({ name: '(метал) 10W40 API SL/CF 1л (12)', brand: 'Polo Expert', sku: '62966' })

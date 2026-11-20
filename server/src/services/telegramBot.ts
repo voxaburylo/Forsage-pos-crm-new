@@ -573,8 +573,8 @@ async function ocrPhoto(fileId: string): Promise<string | null> {
   try {
     const { tenantId } = await requireMainChannelInfo()
     const cfg = await getAiConfig(tenantId)
-    if (!cfg.apiKey) {
-      logger.warn('telegram VIN OCR: Anthropic key is not configured')
+    if (!cfg.apiKey || !cfg.enabled) {
+      logger.warn('telegram VIN OCR: Anthropic key is not configured or the assistant is off')
       return null
     }
 
@@ -595,7 +595,7 @@ async function ocrPhoto(fileId: string): Promise<string | null> {
     const result = await withAiExecutionBudget(90_000, budget => new ClaudeClient(cfg.apiKey!, cfg.model as any).complete(budget, {
       system: prompt, text: 'Знайди VIN на цьому фото.', images: [{ mime_type: mimeType, data_base64: base64 }], maxTokens: 2000, effort: 'low',
     }))
-    await recordAiUsage(tenantId, null, cfg.model, result.promptTokens, result.completionTokens)
+    await recordAiUsage(tenantId, null, cfg.model, result.promptTokens, result.completionTokens, undefined, result.costAdjustUsd ?? 0)
     const raw = result.text.trim()
     logger.info({ responseChars: raw.length }, 'telegram VIN OCR result')
 
@@ -736,7 +736,7 @@ async function aiSmartReply(text: string): Promise<string | null> {
     const result = await withAiExecutionBudget(30_000, budget => new ClaudeClient(cfg.apiKey!, cfg.model as any).complete(budget, {
       system, text: text.slice(0, 2000), maxTokens: 1500, effort: 'low',
     }))
-    await recordAiUsage(tenantId, null, cfg.model, result.promptTokens, result.completionTokens)
+    await recordAiUsage(tenantId, null, cfg.model, result.promptTokens, result.completionTokens, undefined, result.costAdjustUsd ?? 0)
     const reply = result.text.trim()
     if (reply === 'NONE' || reply.length < 5) return null
     return reply.length > 500 ? reply.slice(0, 500) + '…' : reply

@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { getNbuRate } from '../services/nbuRateService.js'
 import { catalogReviewSchema, reviewCatalog } from '../services/catalogAgentService.js'
 import { duplicateReviewSchema, reviewCatalogDuplicates } from '../services/catalogDuplicateReviewService.js'
 import { z } from 'zod'
@@ -9,6 +10,7 @@ import {
   AI_MODELS,
 } from '../services/aiService.js'
 import { downloadProcessingUpload, removeProcessingUploads } from '../services/processingUploadService.js'
+import { addAiRule, deleteAiRule, listAiRules, parseMemoryCommand, runMemoryCommand, AI_RULE_MAX_CHARS } from '../services/aiMemoryService.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -34,6 +36,11 @@ const configSchema = z.object({
 })
 
 // POST /api/v1/ai/config — зберегти ключ / модель / увімкнення (тільки власник/адмін)
+// GET /api/v1/ai/nbu-rate?currency=USD — офіційний курс НБУ на сьогодні для накладних у валюті
+router.get('/nbu-rate', requireRole('owner', 'admin', 'manager', 'cashier'), async (req, res, next) => {
+  try { res.json({ data: await getNbuRate(String(req.query.currency ?? 'USD')) }) } catch (err) { next(err) }
+})
+
 router.post('/config', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
     const parsed = configSchema.safeParse(req.body)
@@ -92,6 +99,11 @@ const chatSchema = z.object({
       mime_type: z.enum(['image/jpeg', 'image/png', 'image/webp']),
       data_base64: z.string().min(1).max(6_000_000),
     }),
+    // PDF накладної передається напряму (тимчасове сховище приймає лише фото й таблиці).
+    z.object({
+      mime_type: z.literal('application/pdf'),
+      data_base64: z.string().min(1).max(5_500_000),
+    }),
   ])).max(4).optional(),
 })
 const supplyInvoicePhotoSchema = z.object({
@@ -135,11 +147,33 @@ router.post('/supply-invoice-photo', requireRole('owner', 'admin', 'manager', 'c
 })
 
 // POST /api/v1/ai/chat — діалог із «директором»
+// Пам'ять помічника: правила власника (без міграції — JSON у приватному сховищі файлів).
+router.get('/memory', requireRole('owner', 'admin', 'manager', 'cashier'), async (req, res, next) => {
+  try { res.json({ data: await listAiRules(req.user!.tenant_id) }) } catch (err) { next(err) }
+})
+router.post('/memory', requireRole('owner', 'admin'), async (req, res, next) => {
+  try {
+    const parsed = z.object({ text: z.string().min(3).max(AI_RULE_MAX_CHARS) }).safeParse(req.body)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', `Правило: від 3 до ${AI_RULE_MAX_CHARS} символів`, 422)
+    res.json({ data: (await addAiRule(req.user!.tenant_id, req.user!.id, parsed.data.text)).rules })
+  } catch (err) { next(err) }
+})
+router.delete('/memory/:id', requireRole('owner', 'admin'), async (req, res, next) => {
+  try { res.json({ data: (await deleteAiRule(req.user!.tenant_id, String(req.params.id))).rules }) } catch (err) { next(err) }
+})
+
 router.post('/chat', requireRole('owner', 'admin', 'manager', 'cashier'), async (req, res, next) => {
   const storagePaths: string[] = []
   try {
     const parsed = chatSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
+    // «Запам'ятай: …», «Забудь правило 2», «Які правила?» — виконуються без запиту до ШІ (безкоштовно).
+    const memory = !parsed.data.file_text && !(parsed.data.images ?? []).length ? parseMemoryCommand(parsed.data.message) : null
+    if (memory) {
+      const reply = await runMemoryCommand(req.user!.tenant_id, req.user!.id, req.user!.role, memory)
+      res.json({ data: { reply, actions: [], usage: { prompt_tokens: 0, completion_tokens: 0, cost_usd: 0 } } })
+      return
+    }
     const images = []
     for (const image of parsed.data.images ?? []) {
       if ('data_base64' in image) {
