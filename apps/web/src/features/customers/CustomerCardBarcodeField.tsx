@@ -21,7 +21,7 @@ export function CustomerCardBarcodeField({ value, onChange, disabled }: Props) {
       <input id={id} type="text" value={value} disabled={disabled}
         onChange={(event) => onChange(event.target.value.replace(/\s/g, ''))}
         onKeyDown={preventCardScanSubmit}
-        autoComplete="off" spellCheck={false} aria-describedby={`${id}-help`}
+        autoComplete="off" spellCheck={false} aria-describedby={`${id}-help`} data-scanner-owner="true"
         placeholder="Відскануйте або введіть код своєї картки"
         className="min-w-0 w-full flex-[1_1_240px] rounded-lg border border-gray-200 px-3 py-2.5 font-mono text-sm outline-none focus:ring-2 focus:ring-yellow-400" />
       <button type="button" disabled={disabled || Boolean(value)}

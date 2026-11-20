@@ -115,6 +115,8 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
       else reset()
     }
 
+    const ownsScan = (element: Element | null) => element instanceof HTMLElement && element.dataset.scannerOwner === 'true'
+
     const isExplicitInputMode = (element: Element | null) => {
       if (!(element instanceof HTMLElement)) return false
       if (element.dataset.posScannerCapture === 'true') return false
@@ -126,6 +128,16 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return
+
+      // Поле, яке саме приймає скан (штрихкод картки клієнта): код лишається в полі, а не йде
+      // в пошук товару («Штрих-код не знайдено в базі», 20.11.2026). F7-префікс лише глушимо.
+      if (ownsScan(document.activeElement)) {
+        if (event.key === 'F7') { event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation() }
+        reset()
+        resetField()
+        prefixGuardUntil = 0
+        return
+      }
 
       // Префікс сканера: сканер магазину шле F7 перед КОЖНИМ кодом. Chrome на
       // F7 відкриває діалог «режим активного курсора» — екран «мигає», а цифри
