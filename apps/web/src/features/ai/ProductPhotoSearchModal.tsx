@@ -39,8 +39,6 @@ export function ProductPhotoSearchModal({ open, products, onClose, onSaved }: {
       })
       .catch(reason => { if (alive) setError(reason instanceof Error ? reason.message : 'Пошук фото не вдався') })
     return () => { alive = false }
-    // Пошук запускається один раз на відкриття вікна.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
   const toggle = (id: string) => setSelected(current => {
