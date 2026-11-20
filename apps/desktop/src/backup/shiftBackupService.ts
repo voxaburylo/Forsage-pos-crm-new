@@ -3,7 +3,9 @@ import path from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { mkdir, rename, stat } from 'node:fs/promises'
 import { existsSync, createReadStream, readdirSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { LocalDatabase } from '../db/localDatabase'
+import { DEFAULT_TENANT_ID } from '../db/localTypes'
 import { createVerifiedBackup } from '../db/verifiedBackup'
 import type { exportShiftSnapshot } from './shiftExportWorker'
 
@@ -20,7 +22,24 @@ export class ShiftBackupService {
   private uploads = new Set<string>()
   private stopped = false
   constructor(private db: LocalDatabase, private programDirectory: string, private onError: (error: unknown) => void,
-    private exporter?: typeof exportShiftSnapshot) {}
+    private exporter?: typeof exportShiftSnapshot, private options: { dailyCopy?: boolean } = {}) {}
+  /**
+   * 20.11.2026: зміни не закривались із 14.11, і хмарна копія не робилась тиждень.
+   * Якщо за добу не було жодної копії (ні після зміни, ні щоденної), ставимо щоденну копію в ту саму чергу:
+   * знімок, вивантаження й відправка в хмару — тим самим перевіреним шляхом, що й після закриття зміни.
+   */
+  ensureDailyCopy(now = new Date()): string | null {
+    const since = new Date(now.getTime() - 24 * 3600_000).toISOString()
+    const recent = this.db.prepare('SELECT 1 FROM shift_backups WHERE closed_at > ? LIMIT 1').get(since)
+    if (recent) return null
+    const deviceId = this.db.deviceId
+    if (!deviceId) return null
+    const last = this.db.prepare('SELECT tenant_id FROM shift_backups ORDER BY closed_at DESC LIMIT 1').get() as { tenant_id?: string } | undefined
+    const id = randomUUID(), at = now.toISOString()
+    this.db.prepare(`INSERT OR IGNORE INTO shift_backups (id, tenant_id, device_id, closed_at, created_at) VALUES (?, ?, ?, ?, ?)`)
+      .run(id, last?.tenant_id ?? DEFAULT_TENANT_ID, deviceId, at, at)
+    return id
+  }
   start() {
     this.stopped = false
     if (this.timer) return
@@ -31,6 +50,7 @@ export class ShiftBackupService {
   tick(): Promise<void> {
     if (this.stopped) return Promise.resolve()
     if (this.running) return this.running
+    if (this.options.dailyCopy) { try { this.ensureDailyCopy() } catch (error) { this.onError(error) } }
     this.running = this.runNext().catch(this.onError).finally(() => { this.running = null })
     return this.running
   }

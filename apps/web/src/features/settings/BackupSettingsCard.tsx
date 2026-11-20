@@ -81,7 +81,7 @@ export function BackupSettingsCard() {
         <p className="text-sm text-gray-600">Excel: папка «Вивантаження» поруч із програмою, окремо товари та клієнти. Сервер: приватна копія бази з доступними локальними фото, до 7 останніх перевірених копій на комп’ютер. Без інтернету чекає наступного підключення програми. Знімок створюється під час виконання резервування; відсутні файли фото відновити неможливо.</p>
         {loadError&&<p role="alert" className="text-sm text-red-700">{loadError}</p>}
         {!loading&&!loadError&&<BackupStatusSummary backups={backups} shifts={shiftCopies}/>}
-        {!loading&&!loadError&&shiftCopies.length>0&&<details><summary className="cursor-pointer py-2 text-sm font-medium">Історія копій після зміни</summary>{shiftCopies.map(copy=><div key={copy.id} className="border-b py-2 text-sm break-words">
+        {!loading&&!loadError&&shiftCopies.length>0&&<details><summary className="cursor-pointer py-2 text-sm font-medium">Історія копій (після зміни і щоденні)</summary>{shiftCopies.map(copy=><div key={copy.id} className="border-b py-2 text-sm break-words">
           <strong>{formatMoment(copy.closed_at)}</strong>
           <p>{copy.exports_ready?'Excel збережено: '+copy.export_directory:'Excel: файли не готові або ще не перевірені'}</p>
           <p>{copy.cloud_completed_at?'Серверну копію перевірено: '+formatMoment(copy.cloud_completed_at):'Серверна копія: очікує відправлення'}</p>
