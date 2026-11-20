@@ -307,7 +307,9 @@ export class AiInvoiceMatcher {
       for (const token of terms) {
         const entries = this.tokens.get(token)
         if (!entries || entries.size > 1000 || token.length < 3) continue
-        const weight = /^\d{4,}$/.test(token) ? 4 : 1
+        // Код із 5+ цифр — сильна ознака. 4 цифри часто збігаються з розміром («4040» = серветка 40×40),
+        // тож самі по собі не роблять товар «схожим», лише підсилюють збіг слів (20.11.2026).
+        const weight = /^\d{5,}$/.test(token) ? 4 : /^\d{4}$/.test(token) ? 2 : 1
         for (const id of entries) scores.set(id, (scores.get(id) ?? 0) + weight)
       }
       candidates = [...scores].filter(([id, score]) => score >= 4 && !incompatible(source, brand, this.products.get(id)!))
