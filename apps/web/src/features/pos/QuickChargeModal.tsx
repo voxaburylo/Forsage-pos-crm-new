@@ -8,6 +8,7 @@ import { searchProductsOffline } from '@/lib/offlineDB'
 import { useAuthStore } from '@/stores/authStore'
 import { requestDesktopSync } from '@/features/products/productApi'
 import { desktopBridge } from '@/lib/desktopBridge'
+import { freeSaleLineName, freeSaleName, freeSaleSku, nextFreeSaleIndex } from './quickChargeModel'
 
 type Kind = 'tire_service' | 'free_sale'
 type Staff = { id: string; full_name: string; role: string }
@@ -57,9 +58,12 @@ export function QuickChargeModal({
     savingRef.current = true
     setSaving(true)
     try {
-      const sku = isTire ? 'POS-TIRE-SERVICE' : 'POS-FREE-SALE'
-      let data: { id: string; sku: string; name: string; unit: string; retail_price: number } | null = null
       const desktop = desktopBridge()
+      // На касі кожна «вільна сума» — окремий рядок (своя службова позиція POS-FREE-SALE, -2, -3 …).
+      const freeIndex = !isTire && desktop ? nextFreeSaleIndex(store.items.map((item) => item.sku)) : 1
+      if (freeIndex === null) throw new Error('У чеку вже 9 вільних сум. Проведіть цей чек і почніть новий.')
+      const sku = isTire ? 'POS-TIRE-SERVICE' : freeSaleSku(freeIndex)
+      let data: { id: string; sku: string; name: string; unit: string; retail_price: number } | null = null
       if (desktop) {
         if (!desktop.catalog.findBySku || !desktop.catalog.saveProduct) {
           throw new Error('Локальний каталог недоступний. Запустіть актуальну версію програми.')
@@ -69,7 +73,7 @@ export function QuickChargeModal({
         if (!data) {
           data = await desktop.catalog.saveProduct({
             id: crypto.randomUUID(), sku,
-            name: isTire ? 'Шиномонтажні послуги' : 'Вільний продаж',
+            name: isTire ? 'Шиномонтажні послуги' : freeSaleName(freeIndex),
             unit: 'посл.', retail_price: 0, qty_on_hand: 0,
             is_service: true, is_active: true,
           }, { reuseExistingSku: true })
@@ -88,15 +92,15 @@ export function QuickChargeModal({
       }
       if (!data) throw new Error('Не вдалося створити службову позицію')
 
-      // У чеку має бути одна підсумкова сума такого типу. Повторне введення
-      // замінює її, а не множить попередню ціну на кількість.
+      // Шиномонтаж — одна підсумкова сума: повторне введення замінює її, а не множить ціну на кількість.
+      // Вільна сума на касі сюди не потрапляє: для неї взято вільну службову позицію.
       if (store.items.some((item) => item.productId === data.id)) {
         store.removeItem(data.id)
       }
       store.addItem({
         productId: data.id,
         sku: data.sku,
-        name: data.name,
+        name: isTire ? data.name : freeSaleLineName(data.name, description),
         unit: data.unit,
         qty: 1,
         unitPrice: price,
