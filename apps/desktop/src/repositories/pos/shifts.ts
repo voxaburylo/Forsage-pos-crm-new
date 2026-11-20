@@ -65,14 +65,15 @@ export class LocalPosShifts extends LocalPosFiscalGuards {
   }
 
   /** Усі відкриті зміни каси з іменем касира — для нагадування «зміну не закрито N днів». */
-  listOpenShifts(tenantId = DEFAULT_TENANT_ID): Array<{ id: string; cashier_id: string; cashier_name: string | null; opened_at: string }> {
-    return this.db.prepare(`
+  listOpenShifts(tenantId = DEFAULT_TENANT_ID): Array<{ id: string; cashier_id: string; cashier_name: string | null; opened_at: string; expected_cash: number }> {
+    return this.db.readSnapshot(() => (this.db.prepare(`
       SELECT s.id, s.cashier_id, u.full_name AS cashier_name, s.opened_at
       FROM shifts s
       LEFT JOIN staff_users u ON u.id = s.cashier_id AND u.tenant_id = s.tenant_id
       WHERE s.tenant_id = ? AND s.status = 'open' AND s.deleted_at IS NULL
       ORDER BY s.opened_at ASC
-    `).all(tenantId) as unknown as Array<{ id: string; cashier_id: string; cashier_name: string | null; opened_at: string }>
+    `).all(tenantId) as unknown as Array<{ id: string; cashier_id: string; cashier_name: string | null; opened_at: string }>)
+      .map(shift => ({ ...shift, expected_cash: readOpenCashBreakdown(this.db, tenantId, shift.id).expected_amount })))
   }
 
   findOpenShift(cashierId: string, tenantId = DEFAULT_TENANT_ID): string | null {
@@ -344,9 +345,17 @@ export class LocalPosShifts extends LocalPosFiscalGuards {
     })
   }
 
-  closeShift(cashierId: string, actualAmount: number, comment: string | null, shiftId: string, tenantId = DEFAULT_TENANT_ID, role = 'cashier'): { ok: true; id: string } {
+  /**
+   * `actorId` — хто закриває. Зазвичай касир закриває свою зміну. 20.11.2026: зміни касирів, які забули їх
+   * закрити (з 15.11), ніхто не міг закрити — власник чи адміністратор тепер закриває чужу зміну з поясненням.
+   */
+  closeShift(cashierId: string, actualAmount: number, comment: string | null, shiftId: string, tenantId = DEFAULT_TENANT_ID, role = 'cashier', actorId = cashierId): { ok: true; id: string } {
     validateCashAmount(actualAmount)
     if (!shiftId?.trim()) throw new Error('Не вказано зміну для закриття')
+    if (actorId !== cashierId) {
+      if (role !== 'owner' && role !== 'admin') throw new Error('Недостатньо прав: чужу зміну закриває лише власник або адміністратор')
+      if (!comment?.trim()) throw new Error('Вкажіть, чому зміну касира закриває власник')
+    }
     return idempotentMutation(this.db, `shift-close:${tenantId}`, shiftId, { cashierId, actualAmount, comment: comment?.trim() || null }, () => {
       const shift = this.getOpenShift(cashierId, tenantId)
       if (!shift || shift.id !== shiftId) throw new Error('Ця зміна вже закрита або не належить касиру. Оновіть дані зміни.')

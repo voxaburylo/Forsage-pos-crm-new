@@ -1994,7 +1994,9 @@ app.whenReady().then(async () => {
   })
   handleDesktopIpc('desktop:pos:close-shift', (_event, cashierId: string, actualAmount: number, comment: string | null, shiftId: string) => {
     const session = requireDesktopSession()
-    const result = requireLocalPos().closeShift(session.id, actualAmount, comment, shiftId, session.tenant_id, session.role)
+    // Власник/адміністратор може закрити забуту зміну іншого касира; касир — лише свою, як і раніше.
+    const foreign = typeof cashierId === 'string' && cashierId !== session.id && (session.role === 'owner' || session.role === 'admin')
+    const result = requireLocalPos().closeShift(foreign ? cashierId : session.id, actualAmount, comment, shiftId, session.tenant_id, session.role, session.id)
     setImmediate(() => { void shiftBackups?.tick() })
     return result
   })
