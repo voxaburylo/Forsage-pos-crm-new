@@ -6,6 +6,7 @@ import { adminApi } from '@/features/admin/adminApi'
 import type { ShopSettings, QuickItemConfig, QuickChildItem } from '@/features/admin/adminApi'
 import { aiApi, AI_MODEL_LABELS } from '@/features/ai/aiApi'
 import type { AiStatus, AiModel } from '@/features/ai/aiApi'
+import { AiRulesCard } from '@/features/ai/AiRulesCard'
 import { DEFAULT_QUICK_ITEMS } from '@/features/pos/FavoritesPanel'
 import { Layout } from '@/components/Layout'
 import { Button, Card, Input, Modal } from '@/components/ui'
@@ -35,6 +36,7 @@ const COLOR_OPTIONS = [
 
 export default function SettingsPage() {
   const navigate = useNavigate()
+  const currentRole = useAuthStore((state) => String(state.session?.user?.app_metadata?.role ?? ''))
   const offlineMode = useAuthStore((state) => state.offlineMode)
   const [form, setForm]     = useState<Partial<ShopSettings>>({})
   const [settingsSnapshot, setSettingsSnapshot] = useState<string | null>(null)
@@ -991,6 +993,7 @@ export default function SettingsPage() {
               Перевірити звʼязок
             </Button>
           </div>
+          <AiRulesCard canEdit={currentRole === 'owner' || currentRole === 'admin'} />
         </Card>
         )}
 

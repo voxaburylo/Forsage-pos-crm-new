@@ -12,6 +12,7 @@ import { AI_TIME_LIMITS, AiExecutionBudget, isAiBudgetError, withAiExecutionBudg
 import { boundedAiReadResult, readAiDuplicates, readAiLookup } from './aiCatalogReads.js'
 import { parseAiJsonObject, mergeAiInvoicePages, hasAiInvoicePhotoContent } from './aiInvoiceResponse.js'
 import { aiUserMessage, withAiDataBoundary } from './aiPromptSafety.js'
+import { rulesPromptSafe } from './aiMemoryService.js'
 import { createAiToolBudget, parseAiReadArguments } from './aiToolSafety.js'
 import { safeAiErrorInfo } from './aiResponseSafety.js'
 import { cleanCrossProposal } from './aiCrossNumberRules.js'
@@ -1044,7 +1045,8 @@ async function recognizeSupplyInvoicePhotoWithinBudget(
 Якщо фото містить лише підсумок продовження, поверни products: [] та прочитані підсумки. Не створюй товар із рядка «Разом», ПДВ або підпису.
 Фото може бути повернутим: читай таблицю за напрямком тексту, зберігаючи кожний товарний рядок.`
 
-  const system = withAiDataBoundary(instruction + '\n' + jsonOnlyInstruction(SUPPLY_INVOICE_PHOTO_SCHEMA))
+  const ownerRules = await budget.run(() => rulesPromptSafe(tenantId))
+  const system = withAiDataBoundary(instruction + ownerRules + '\n' + jsonOnlyInstruction(SUPPLY_INVOICE_PHOTO_SCHEMA))
   const claude = new ClaudeClient(cfg.apiKey, cfg.model as AiModel)
   let promptTokens = 0
   let completionTokens = 0
@@ -1133,6 +1135,7 @@ async function runChatWithinBudget(
   if (!cfg.enabled) throw new AppError('AI_DISABLED', 'Помічник АІ вимкнено в Налаштуваннях.', 400)
 
   const claude = new ClaudeClient(cfg.apiKey, cfg.model as AiModel)
+  const ownerRules = await budget.run(() => rulesPromptSafe(tenantId))
   const userText = aiUserMessage(params.message, params.fileText)
   const images = (params.images ?? []).slice(0, 4)
   const actions: PendingAction[] = []
@@ -1211,7 +1214,7 @@ async function runChatWithinBudget(
   let result: { reply: string; finished: boolean }
   try {
     result = await claude.chat(budget, {
-      system: withAiDataBoundary(SYSTEM_PROMPT),
+      system: withAiDataBoundary(SYSTEM_PROMPT + ownerRules),
       tools: CLAUDE_TOOLS,
       history: (params.history ?? []).filter(m => m.text?.trim()),
       userText,

@@ -64,6 +64,8 @@ export interface AiChatResponse {
   usage: { prompt_tokens: number; completion_tokens: number; cost_usd: number }
 }
 
+export interface AiRule { id: string; text: string; created_at: string; created_by: string | null }
+
 export interface AiChatMessage {
   role: 'user' | 'model'
   text: string
@@ -74,6 +76,9 @@ export const aiApi = {
     api.post<{ data: { proposals: Array<{ id: string; name: string; sku: string; category_id: string | null; reason: string }> } }>('/api/v1/ai/catalog-review', body, undefined, { timeoutMs: 120000, silent: true }),
   status: () => api.get<{ data: AiStatus }>('/api/v1/ai/status', { silent: true, timeoutMs: 15_000 }),
   usage:  () => api.get<{ data: AiUsage }>('/api/v1/ai/usage'),
+  rules: () => api.get<{ data: AiRule[] }>('/api/v1/ai/memory', { silent: true, timeoutMs: 15_000 }),
+  addRule: (text: string) => api.post<{ data: AiRule[] }>('/api/v1/ai/memory', { text }),
+  deleteRule: (id: string) => api.delete<{ data: AiRule[] }>('/api/v1/ai/memory/' + encodeURIComponent(id)),
 
   saveConfig: (body: { api_key?: string | null; model?: AiModel; enabled?: boolean }) =>
     api.post<{ data: { enabled: boolean; model: AiModel; has_key: boolean } }>('/api/v1/ai/config', body),
