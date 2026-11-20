@@ -56,19 +56,52 @@ export function aiInvoiceProductName(raw: Record<string, unknown>): string {
   return text(name + (material ? ' (метал)' : ''))
 }
 
-export interface AiInvoiceCandidate { id: string; name: string; sku: string; barcode: string | null; brand: string | null; unit?: string | null; retail_price?: number; category_id?: string | null; storage_bin?: string | null; photo_url?: string | null }
+export interface AiInvoiceCandidate { id: string; name: string; sku: string; barcode: string | null; brand: string | null; unit?: string | null; retail_price?: number; purchase_price?: number; category_id?: string | null; storage_bin?: string | null; photo_url?: string | null }
 export interface AiInvoiceReview {
   name: string; source_name: string; brand: string; product_id: string | null
   status: 'matched' | 'review' | 'new'; reason: string; candidates: AiInvoiceCandidate[]
   validation_errors?: string[]; already_saved?: boolean; invoice_id?: string
 }
 
+/**
+ * Catalog numbers written with spaces between digit groups: "EL 101 514", "EL 100 553" — the same
+ * number as "EL101514" / "101514" on the card. Only 3-digit tail groups are joined (thousand-style
+ * grouping), and the joined number must have at least 6 digits, so sizes and pack counts stay apart.
+ */
+function spacedPartNumbers(value: string): string[] {
+  const result: string[] = []
+  for (const match of text(value).matchAll(/(?:^|[^\p{L}\p{N}])(?:(\p{L}{1,4})\s+)?(\d{1,4}(?:\s\d{3})+)(?=$|[^\p{L}\p{N}])/gu)) {
+    const digits = match[2].replace(/\s/g, '')
+    if (digits.length < 6) continue
+    result.push(digits)
+    if (match[1] && /^[a-z]+$/i.test(match[1])) result.push(code(match[1] + digits))
+  }
+  return result
+}
+
 function partNumbers(value: string): string[] {
+  return [...new Set([...partNumberTokens(value), ...spacedPartNumbers(value)])]
+}
+
+function partNumberTokens(value: string): string[] {
   return (text(value).match(/[\p{L}\p{N}]+(?:[-/][\p{L}\p{N}]+)*/gu) ?? [])
     .filter(token => (/^[0-9]{6,}$/.test(token) || (/[\p{L}]/u.test(token) && (token.match(/\d/g)?.length ?? 0) >= 3 && code(token).length >= 5))
       && !/^\d{1,2}w-?\d{2}$/i.test(token) && !/^\d+(?:mm|ml|мм|мл)$/i.test(token)
-      && !/^\d+(?:[xх×]\d+)+/iu.test(token) && !/^(?:API|ACEA|SAE|ISO|DOT|GL)[-\d]/i.test(token))
+      && !/^\d+(?:[xх×]\d+)+/iu.test(token) && !/^(?:API|ACEA|SAE|ISO|DOT|GL)[-\d]/i.test(token)
+      && !measurementRange(token))
     .map(code)
+}
+
+/**
+ * «10-30В», «12V/24V», «6/12B», «140А/45А», «17-19мм» — діапазон вимірювань, не каталожний номер.
+ * 18.11.2026: «Фара LED Winso 10-30В» лягла в «Присадка Bardahl … 1030B», «Тестер … 12V/24V» — у «Двійник … 12V/24V».
+ * Одиночний код на кшталт «1030B» лишається номером: це лише діапазон із двох і більше частин.
+ */
+function measurementRange(token: string): boolean {
+  const parts = token.split(/[-/]/)
+  return parts.length >= 2
+    && parts.every(part => /^\d+(?:[.,]\d+)?(?:в|v|b|вт|w|а|a|ач|ah|мм|mm|см|cm|л|l|мл|ml|т|t|атм|lm|лм|k|к|гр|g|кг|kg)?$/iu.test(part))
+    && parts.some(part => /\d[\p{L}]/u.test(part))
 }
 const brandKey = (value: string) => {
   const key = code(value)
@@ -146,7 +179,28 @@ export function previewAiInvoiceRows(db: Pick<LocalDatabase, 'prepare'>, tenant:
       })
     }
   }
-  return new AiInvoiceMatcher(db, tenant).previewRows(rows)
+  return matcherFor(db, tenant).previewRows(rows)
+}
+
+/**
+ * Довідник збігів (30 тис. товарів) будується ~2 с. 19.11.2026: перевірка накладної будувала його
+ * заново на кожну правку рядка. Тепер він живе в постійному фоновому процесі й перебудовується лише
+ * тоді, коли змінився каталог (кількість і остання зміна товарів, штрихкодів, псевдонімів, брендів).
+ */
+let cachedMatcher: { key: string; matcher: AiInvoiceMatcher } | null = null
+let matcherCacheEnabled = false
+export function enableAiInvoiceMatcherCache(enabled = true): void { matcherCacheEnabled = enabled; if (!enabled) cachedMatcher = null }
+export function aiInvoiceCatalogSignature(db: Pick<LocalDatabase, 'prepare'>, tenant: string): string {
+  return ['products', 'product_barcodes', 'product_aliases', 'brands'].map(table => {
+    const row = db.prepare(`SELECT count(*) AS n, max(updated_at) AS u FROM ${table} WHERE tenant_id = ?`).get(tenant) as { n: number; u: string | null }
+    return row.n + ':' + (row.u ?? '')
+  }).join('|') + '|' + tenant
+}
+function matcherFor(db: Pick<LocalDatabase, 'prepare'>, tenant: string): AiInvoiceMatcher {
+  if (!matcherCacheEnabled) return new AiInvoiceMatcher(db, tenant)
+  const key = aiInvoiceCatalogSignature(db, tenant)
+  if (cachedMatcher?.key !== key) cachedMatcher = { key, matcher: new AiInvoiceMatcher(db, tenant) }
+  return cachedMatcher.matcher
 }
 
 /** One catalog snapshot per invoice. Similarity suggests; only unique exact identities auto-match. */
@@ -160,7 +214,7 @@ export class AiInvoiceMatcher {
   private archivedLinks = new Map<string, Set<string>>()
   private tokens = new Map<string, Set<string>>()
   constructor(db: Pick<LocalDatabase, 'prepare'>, tenant: string) {
-    const products = db.prepare(`SELECT p.id,p.name,p.sku,p.barcode,p.unit,p.retail_price,p.category_id,p.storage_bin,p.photo_url,b.name AS brand FROM products p
+    const products = db.prepare(`SELECT p.id,p.name,p.sku,p.barcode,p.unit,p.retail_price,p.purchase_price,p.category_id,p.storage_bin,p.photo_url,b.name AS brand FROM products p
       LEFT JOIN brands b ON b.id=p.brand_id AND b.tenant_id=p.tenant_id
       WHERE p.tenant_id=? AND p.deleted_at IS NULL AND p.is_active=1 AND p.is_service=0`).all(tenant) as unknown as AiInvoiceCandidate[]
     for (const product of products) this.add(product)

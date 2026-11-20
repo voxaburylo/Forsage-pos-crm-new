@@ -564,6 +564,8 @@ interface ForsageDesktopBridge {
     cleanupTidyPlan?: () => Promise<import('@/features/admin/catalogTidyModel').TidyPlan>
     cleanupTidyApply?: (input: import('@/features/admin/catalogTidyModel').TidyApplyInput) => Promise<import('@/features/admin/catalogTidyModel').TidyResult>
     agentApply?: (input: { operation_id: string; items: any[] }) => Promise<{ updated: number; backupPath: string }>
+    /** Відбитки карток для запису змін, запропонованих у чаті помічника. Старі збірки цього не мають. */
+    agentFingerprints?: (ids: string[]) => Promise<Array<{ product_id: string; fingerprint: string | null; name?: string; category_id?: string | null }>>
     findByBarcode: (barcode: string) => Promise<DesktopProduct | null>
     findById?: (id: string) => Promise<DesktopProduct | null>
     findBySku?: (sku: string) => Promise<DesktopProduct | null>
@@ -752,6 +754,8 @@ interface ForsageDesktopBridge {
   pos: {
     openShift: (input: { cashier_id: string; opening_cash?: number; notes?: string | null }) => Promise<string>
     getOpenShift: (cashierId: string) => Promise<Shift | null>
+    /** Відкриті зміни всіх касирів. Старі збірки цього не мають. */
+    listOpenShifts?: () => Promise<Array<{ id: string; cashier_id: string; cashier_name: string | null; opened_at: string }>>
     checkout: (input: DesktopCheckoutInput) => Promise<DesktopCheckoutResult>
     listSales?: (input?: any) => Promise<any>
     dashboardSummary?: (input: { tenant_id?: string; date_from: string; date_to: string }) => Promise<any>

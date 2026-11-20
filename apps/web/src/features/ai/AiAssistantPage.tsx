@@ -3,6 +3,10 @@ import { adminApi } from '@/features/admin/adminApi'
 import { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react'
 import { fileToCompressedImage } from './aiImageInput'
 import { aiActionOperationId } from './aiActionOperation'
+import { isPastedTable } from './aiPasteKind'
+import { applyChatCrossNumbers, type ChatCrossBridge } from './aiCrossApply'
+import { applyChatCatalogUpdates, ensureChatCategories, renameChatCategories, type ChatCatalogBridge } from './aiCatalogApply'
+import { applyChatMerges, type ChatMergeBridge } from './aiMergeApply'
 import { AiServerConnection } from './AiServerConnection'
 import { aiAvailabilityProblem, type AiAvailabilityProblem } from './aiAvailability'
 import { reportLocalError } from '@/lib/localDiagnostics'
@@ -22,12 +26,12 @@ import { openAiInvoiceDraft } from './openAiInvoiceDraft'
 import { useAuthStore } from '@/stores/authStore'
 import { api } from '@/lib/api'
 import { convertSupplyPrices, readSupplyExchangeRate, supplyImportAction, type AiSupplyRow, type AiSupplyInput } from './aiSupplyImport'
-import { AiSupplyResponseError, collectSupplyResponse } from './aiSupplyResponse'
+import { AiSupplyResponseError, collectSupplyResponse, flagNamesNotInSource } from './aiSupplyResponse'
 import { readAiSupplyInput } from './readAiSupplyInput'
 import { AiClipboardTimeoutError, readAiClipboard } from './readAiClipboard'
 import { dataUrlToBlob, removeProcessingUploads, uploadProcessingBlob } from '@/lib/processingUploads'
 import { requestDesktopSync } from '@/features/products/productApi'
-import { isDesktopRuntime } from '@/lib/desktopBridge'
+import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
 import { aiChatStorageKey, readAiChat, saveAiChat } from './aiChatStorage'
 import { aiRequestHistory } from './aiRequestHistory'
 import { isOrderPhotoRequest, isSupplyRecognitionRequest, SUPPLY_PHOTO_INSTRUCTION } from './aiPhotoIntent'
@@ -114,6 +118,26 @@ interface TextAttachment {
   reviewReason?: string
   sourceCurrency?: string
   sourceChecks?: AiSupplyInput['sourceChecks']
+}
+
+/** PDF накладної: до 3.5 МБ, щоб запит вмістився в ліміт сервера. */
+const MAX_PDF_BYTES = 3.5 * 1024 * 1024
+function isPdfFile(file: File): boolean {
+  return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
+}
+const isPdfDataUrl = (dataUrl: string) => dataUrl.startsWith('data:application/pdf')
+function fileToPdfDataUrl(file: File): Promise<{ name: string; dataUrl: string }> {
+  if (file.size > MAX_PDF_BYTES) return Promise.reject(new Error('PDF завеликий — максимум 3.5 МБ. Розділіть його або зробіть фото сторінок.'))
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const payload = String(reader.result ?? '').split(',', 2)[1]
+      if (!payload) { reject(new Error('Не вдалося прочитати PDF')); return }
+      resolve({ name: file.name, dataUrl: 'data:application/pdf;base64,' + payload })
+    }
+    reader.onerror = () => reject(new Error('Не вдалося прочитати PDF'))
+    reader.readAsDataURL(file)
+  })
 }
 
 function isImageFile(file: File): boolean {
@@ -227,6 +251,28 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
   const [processingAttachments, setProcessingAttachments] = useState(false)
   const [attachment, setAttachment] = useState<TextAttachment | null>(null)
   const [exchangeRate, setExchangeRate] = useState('')
+  // Валюта цін на фото/PDF накладної (таблиця визначає валюту сама). Курс власника запам'ятовуємо.
+  const [photoCurrency, setPhotoCurrency] = useState<'' | 'USD' | 'EUR'>('')
+  // Курс за замовчуванням — НБУ на сьогодні (рішення власника 19.11.2026); поле можна змінити.
+  const [rateNote, setRateNote] = useState('')
+  const fillNbuRate = useCallback(async (currency: string) => {
+    setRateNote('Отримую курс НБУ…')
+    try {
+      const { data } = await aiApi.nbuRate(currency)
+      setExchangeRate(String(data.rate))
+      setRateNote(`Курс НБУ на ${data.date}`)
+    } catch {
+      let saved = ''
+      try { saved = localStorage.getItem('forsage:rate:' + currency) ?? '' } catch { /* optional */ }
+      setExchangeRate(saved)
+      setRateNote(saved ? 'НБУ недоступний — підставлено ваш останній курс' : 'НБУ недоступний — введіть курс')
+    }
+  }, [])
+  const choosePhotoCurrency = (currency: '' | 'USD' | 'EUR') => {
+    setPhotoCurrency(currency)
+    setRateNote('')
+    if (currency) void fillNbuRate(currency)
+  }
   const [imageAttachments, setImageAttachments] = useState<Array<{ name: string; dataUrl: string }>>([])
   const [orderModalAction, setOrderModalAction] = useState<AiPendingAction | null>(null)
   const [applied, setApplied] = useState<Record<string, 'ok' | 'rejected'>>(savedChat.applied ?? {})
@@ -302,6 +348,9 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
     // A clipboard / spreadsheet document always represents received quantities, not catalog stock.
     setLocalInvoiceMode(true)
     setExchangeRate('')
+    setRateNote('')
+    // Таблиця у валюті — одразу курс НБУ на сьогодні (можна змінити).
+    if (parsed.sourceCurrency) void fillNbuRate(parsed.sourceCurrency)
     setAttachment({ name, parts: parsed.products.length ? parts : [parsed.text], rowCount: parsed.products.length || rowCount, products: parsed.products, categoryCount: parsed.categoryCount, reviewReason: parsed.reviewReason, sourceCurrency: parsed.sourceCurrency, sourceChecks: parsed.sourceChecks })
     if (parsed.reviewReason) toast.warning('Файл прикріплено. Для цієї форми накладної потрібен AI-розбір — натисніть «Надіслати».')
     else toast.success(parsed.products.length ? `Розібрано ${parsed.products.length} позицій. Натисніть «Перевірити таблицю».` : 'Текст прикріплено. AI підготує таблицю для перевірки.')
@@ -312,6 +361,13 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
     if (imageAttachments.length + attachmentBusy.current >= MAX_IMAGES) { toast.error(`Максимум ${MAX_IMAGES} фото за раз`); return }
     attachmentBusy.current++; setProcessingAttachments(true)
     try {
+      if (isPdfFile(file)) {
+        const pdf = await fileToPdfDataUrl(file)
+        if (!isCurrentContext()) return
+        setImageAttachments((prev) => [...prev, pdf])
+        toast.success(`PDF «${file.name}» прикріплено`)
+        return
+      }
       if (isImageFile(file)) {
         if (imageAttachments.length >= MAX_IMAGES) {
           toast.error(`Максимум ${MAX_IMAGES} фото за раз`)
@@ -349,7 +405,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
 
   async function handleFiles(files: File[]) {
     if (!isCurrentContext() || !files.length || sendBusy.current || applyBusy.current || attachmentBusy.current) return
-    const tables = files.filter(file => !isImageFile(file))
+    const tables = files.filter(file => !isImageFile(file) && !isPdfFile(file))
     if (tables.length > 1 || (tables.length && (files.length > 1 || imageAttachments.length)) || (!tables.length && attachment)) {
       toast.error('Додавайте одну таблицю або фото однієї накладної. Спочатку приберіть попереднє вкладення.'); return
     }
@@ -380,7 +436,11 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
       if (!isCurrentContext()) return
       // The parser claims its own lock synchronously, before the next user event.
       releaseRead()
-      if (content && 'text' in content) { await attachClipboardText(content.text); return }
+      if (content && 'text' in content) {
+        // Звичайний текст (інструкція) — у поле повідомлення, а не як таблицю приходу.
+        if (!isPastedTable(content.text, localInvoiceMode)) { setInput(prev => (prev ? prev + '\n' : '') + content.text.trim()); return }
+        await attachClipboardText(content.text); return
+      }
       if (content && 'files' in content) { await handleFiles(content.files); return }
       toast.warning('У буфері немає тексту чи фото. Скопіюйте таблицю або виберіть Excel-файл.')
     } catch (error) {
@@ -399,11 +459,13 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
     if (!isCurrentContext() || sendBusy.current || attachmentBusy.current || applyBusy.current) return
     if (!attachment?.products?.length && (loadingStatus || !status || statusError || !status.enabled || !status.has_key)) return
     let importRate = 1
-    try { if (attachment?.sourceCurrency) importRate = readSupplyExchangeRate(exchangeRate) }
+    const sourceCurrency = attachment?.sourceCurrency ?? (imageAttachments.length && photoCurrency ? photoCurrency : undefined)
+    try { if (sourceCurrency) importRate = readSupplyExchangeRate(exchangeRate) }
     catch (error) { toast.error((error as Error).message); return }
-    const currencyNote = attachment?.sourceCurrency ? ` Валюта ${attachment.sourceCurrency}; курс ${importRate} грн за 1 ${attachment.sourceCurrency}.` : ''
+    if (sourceCurrency) { try { localStorage.setItem('forsage:rate:' + sourceCurrency, exchangeRate.trim()) } catch { /* optional */ } }
+    const currencyNote = sourceCurrency ? ` Валюта ${sourceCurrency}; курс ${importRate} грн за 1 ${sourceCurrency}.` : ''
     let directProducts = attachment?.products
-    try { if (directProducts?.length && attachment?.sourceCurrency) directProducts = convertSupplyPrices(directProducts, importRate) }
+    try { if (directProducts?.length && sourceCurrency) directProducts = convertSupplyPrices(directProducts, importRate) }
     catch (error) { toast.error((error as Error).message); return }
     sendBusy.current = true
 
@@ -450,11 +512,15 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
       if (hasImages) {
         images = []
         for (const image of imageAttachments) {
+          if (isPdfDataUrl(image.dataUrl)) {
+            images.push({ mime_type: 'application/pdf', data_base64: image.dataUrl.split(',', 2)[1] })
+            continue
+          }
           const uploaded = await uploadProcessingBlob(dataUrlToBlob(image.dataUrl), 'ai')
           uploadedPaths.push(uploaded.path)
           if (!isCurrentContext()) return
           images.push({
-            mime_type: uploaded.mimeType as AiChatImage['mime_type'],
+            mime_type: uploaded.mimeType as 'image/jpeg' | 'image/png' | 'image/webp',
             storage_path: uploaded.path,
           })
         }
@@ -469,7 +535,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
           '\nНазва name має бути зрозумілою на маленькій етикетці: спочатку тип товару, бренд, модель/артикул та головний розмір або об’єм, потім уточнення. Бренд записуй і в назві, і в brand_name, якщо він явно відомий із джерела. Не починай з упаковки «метал», кількості у коробці чи службового коду постачальника. Не обрізай значущі характеристики: 1л і 4л, 5м і 7.5м — різні товари. Не вигадуй бренд: DEXRON, ATF, API, SAE, ACEA — специфікації, не виробник. Збережи повну вихідну назву в source_name, якщо формат відповіді це дозволяє. Наявність товару перевірятиме локальна програма; не вигадуй product_id або рішення про об’єднання.'
         : ''
       const partsToSend = fileParts.length > 0 ? fileParts : [undefined]
-      const currencyInstruction = attachment?.sourceCurrency ? `Ціни джерела в ${attachment.sourceCurrency}. Поверни числові закупівельні ціни БЕЗ конвертації, точно як у файлі, навіть якщо поле інструмента назване purchase_price_uah. Програма сама застосує курс після розпізнавання.` : ''
+      const currencyInstruction = sourceCurrency ? `Ціни джерела в ${sourceCurrency}. Поверни числові закупівельні ціни БЕЗ конвертації, точно як у файлі, навіть якщо поле інструмента назване purchase_price_uah. Програма сама застосує курс після розпізнавання.` : ''
       const taskPrompt = requestInvoice ? [hasImages ? SUPPLY_PHOTO_INSTRUCTION : fallbackPrompt, currencyInstruction, message ? `Коментар користувача: ${message}` : ''].filter(Boolean).join('\n') : message || fallbackPrompt
       let failedAt = -1
       let failureMessage = ''
@@ -504,8 +570,11 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
       let actions = requestInvoice ? [] : responses.flatMap((response) => response.actions)
       if (requestInvoice) {
         try {
-          const { products, metadata } = collectSupplyResponse(responses, partsToSend.length, attachment?.sourceChecks)
-          const action = supplyImportAction(attachment?.sourceCurrency ? convertSupplyPrices(products, importRate) : products, (attachment?.name ?? 'Фото накладної') + currencyNote)
+          const collected = collectSupplyResponse(responses, partsToSend.length, attachment?.sourceChecks)
+          const metadata = collected.metadata
+          // Текстове джерело: модельні номери в назвах мають бути у файлі (ШІ не «виправляє» LX-303D2 на D4).
+          const products = attachment?.parts?.length ? flagNamesNotInSource(collected.products, attachment.parts.join('\n')) : collected.products
+          const action = supplyImportAction(sourceCurrency ? convertSupplyPrices(products, importRate) : products, (attachment?.name ?? 'Фото накладної') + currencyNote)
           actions = [{ ...action, payload: { ...metadata, ...action.payload } }]
         } catch (error) {
           reportLocalError(new Error(error instanceof AiSupplyResponseError && error.kind === 'missing-table'
@@ -623,6 +692,82 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
         }
       }
       if (action.tool === 'create_supply_invoice_bulk') { await openInvoice(action); return true }
+      if (action.tool === 'create_categories_bulk' || action.tool === 'rename_categories_bulk') {
+        const payload = payloadOverride ?? action.payload
+        const categories = (await adminApi.listCategories()).data
+        if (!isCurrentContext()) return false
+        const outcome = action.tool === 'create_categories_bulk'
+          ? await ensureChatCategories(Array.isArray(payload?.names) ? payload.names : [], categories, async name => ((await adminApi.createCategory(name)) as { data: { id: string; name: string } }).data)
+            .then(r => ({ done: r.created.length, skipped: r.failed, verb: 'Створено категорій' }))
+          : await renameChatCategories(Array.isArray(payload?.renames) ? payload.renames : [], categories, (id, name) => adminApi.updateCategory(id, name))
+            .then(r => ({ done: r.renamed, skipped: r.skipped, verb: 'Перейменовано категорій' }))
+        if (!isCurrentContext()) return false
+        requestDesktopSync()
+        setApplyErrors((prev) => ({ ...prev, [action.id]: outcome.skipped }))
+        const msg = `${outcome.verb}: ${outcome.done}` + (outcome.skipped.length ? `, пропущено ${outcome.skipped.length}` : '')
+        if (markSaved(msg, outcome.skipped.length || !outcome.done ? 'warn' : 'ok')) {
+          if (outcome.done) toast.success(msg); else toast.warning(msg)
+        }
+        return true
+      }
+      if (action.tool === 'merge_products_bulk') {
+        const catalog = desktopBridge()?.catalog
+        if (!catalog?.cleanupPreview || !catalog.cleanupApply) throw new Error('Оновіть програму каси: ця версія ще не об’єднує картки з чату. Дані не змінено.')
+        const payload = payloadOverride ?? action.payload
+        const toUuid = (hex: string) => `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`
+        const result = await applyChatMerges(
+          Array.isArray(payload?.merges) ? payload.merges : [],
+          catalog as unknown as ChatMergeBridge,
+          async index => toUuid(await aiActionOperationId(storageKey, action.id + ':merge:' + index)),
+        )
+        if (!isCurrentContext()) return false
+        requestDesktopSync()
+        setApplyErrors((prev) => ({ ...prev, [action.id]: result.skipped }))
+        const msg = `Об’єднано пар: ${result.merged}` + (result.skipped.length ? `, пропущено ${result.skipped.length}` : '')
+          + '. Облікова кількість — сума карток; фактичний залишок перевірте ревізією.'
+        if (markSaved(msg, result.skipped.length || !result.merged ? 'warn' : 'ok')) {
+          if (result.merged) toast.success(msg); else toast.warning(msg)
+        }
+        return true
+      }
+      if (action.tool === 'add_cross_numbers_bulk') {
+        const catalog = desktopBridge()?.catalog
+        if (!catalog?.changeCrossNumbers) throw new Error('Оновіть програму каси: ця версія ще не додає крос-номери з чату. Дані не змінено.')
+        const payload = payloadOverride ?? action.payload
+        const result = await applyChatCrossNumbers(Array.isArray(payload?.items) ? payload.items : [], catalog as unknown as ChatCrossBridge)
+        if (!isCurrentContext()) return false
+        requestDesktopSync()
+        setApplyErrors((prev) => ({ ...prev, [action.id]: result.skipped }))
+        const msg = `Крос-номери додано: ${result.numbers} до ${result.products} товарів` + (result.skipped.length ? `, пропущено ${result.skipped.length}` : '')
+        if (markSaved(msg, result.skipped.length || !result.products ? 'warn' : 'ok')) {
+          if (result.products) toast.success(msg); else toast.warning(msg)
+        }
+        return true
+      }
+      if (action.tool === 'update_products_bulk') {
+        const catalog = desktopBridge()?.catalog
+        if (!catalog?.agentFingerprints || !catalog.agentApply) throw new Error('Оновіть програму каси: ця версія ще не записує зміни товарів із чату. Дані не змінено.')
+        const categories = (await adminApi.listCategories()).data
+        if (!isCurrentContext()) return false
+        const toUuid = (hex: string) => `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`
+        const result = await applyChatCatalogUpdates(
+          (payloadOverride ?? action.payload)?.updates ?? [],
+          catalog as unknown as ChatCatalogBridge,
+          categories,
+          async chunk => toUuid(await aiActionOperationId(storageKey, action.id + ':catalog:' + chunk)),
+          async name => ((await adminApi.createCategory(name)) as { data: { id: string; name: string } }).data,
+        )
+        if (!isCurrentContext()) return false
+        requestDesktopSync()
+        setApplyErrors((prev) => ({ ...prev, [action.id]: result.skipped }))
+        const msg = `Змінено товарів: ${result.updated}` + (result.createdCategories.length ? `, нових категорій ${result.createdCategories.length}` : '')
+          + (result.skipped.length ? `, пропущено ${result.skipped.length}` : '')
+          + (result.unchanged ? `, без змін ${result.unchanged}` : '') + (result.backupPath ? '. Резервну копію створено.' : '')
+        if (markSaved(msg, result.skipped.length || !result.updated ? 'warn' : 'ok')) {
+          if (result.updated) toast.success(msg); else toast.warning(msg)
+        }
+        return true
+      }
       const operationId = action.tool === 'create_order' ? await aiActionOperationId(storageKey, action.id) : undefined
       if (!isCurrentContext()) return false
       const { data } = await aiApi.applyAction({ tool: action.tool, payload: payloadOverride ?? action.payload, operation_id: operationId })
@@ -705,7 +850,8 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
     if (sendBusy.current || applyBusy.current || attachmentBusy.current) return
     const text = e.clipboardData.getData('text/plain')
     // Excel places both an image and tabular text in the clipboard. Preserve the exact numbers.
-    if (text.trim() && (text.includes('\t') || text.trim().includes('\n') || localInvoiceMode)) {
+    // Лише схоже на таблицю (табуляції, колонки «;»/«|») або явний режим накладної; звичайний текст — як повідомлення.
+    if (isPastedTable(text, localInvoiceMode)) {
       e.preventDefault(); await attachClipboardText(text); return
     }
     const files = Array.from(e.clipboardData.files)
@@ -941,9 +1087,21 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
 
         {/* Поле вводу */}
         <div className="mt-3 border border-gray-200 rounded-2xl bg-white p-2 shadow-sm">
+          {!attachment && imageAttachments.length > 0 && <div className="mb-2 flex flex-wrap items-center gap-2 px-2 text-sm text-gray-700">
+            Ціни в накладній у:
+            {([['', '₴ грн'], ['USD', '$ долари'], ['EUR', '€ євро']] as const).map(([id, label]) => (
+              <button key={id || 'uah'} type="button" disabled={busy} onClick={() => choosePhotoCurrency(id)}
+                className={`rounded-full px-3 py-1 text-xs font-semibold ${photoCurrency === id ? 'bg-yellow-400 text-gray-900' : 'bg-gray-100 text-gray-600'}`}>{label}</button>
+            ))}
+            {photoCurrency && <label className="flex items-center gap-2 text-amber-900">курс грн за 1 {photoCurrency}:
+              <input aria-label={`Курс ${photoCurrency}`} inputMode="decimal" value={exchangeRate} onChange={event => { setExchangeRate(event.target.value); setRateNote('Ваш курс') }} disabled={busy} placeholder="Введіть курс" className="w-28 rounded-lg border border-amber-300 px-2 py-1" />
+              {rateNote && <span className="text-xs text-gray-500">{rateNote}</span>}
+            </label>}
+          </div>}
           {attachment?.sourceCurrency && <label className="mb-2 flex flex-wrap items-center gap-2 px-2 text-sm text-amber-900">
             Ціни у {attachment.sourceCurrency}. Курс грн за 1 {attachment.sourceCurrency}:
-            <input aria-label={`Курс ${attachment.sourceCurrency}`} inputMode="decimal" value={exchangeRate} onChange={event => setExchangeRate(event.target.value)} disabled={busy} placeholder="Введіть курс" className="w-32 rounded-lg border border-amber-300 px-2 py-1" />
+            <input aria-label={`Курс ${attachment.sourceCurrency}`} inputMode="decimal" value={exchangeRate} onChange={event => { setExchangeRate(event.target.value); setRateNote('Ваш курс') }} disabled={busy} placeholder="Введіть курс" className="w-32 rounded-lg border border-amber-300 px-2 py-1" />
+            {rateNote && <span className="text-xs text-gray-500">{rateNote}</span>}
           </label>}
           {attachment?.reviewReason && <p className="mb-2 px-2 text-xs text-amber-800">{attachment.reviewReason}</p>}
           {attachment && (
@@ -971,7 +1129,9 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
             <div className="flex gap-2 mb-2 px-1 flex-wrap">
               {imageAttachments.map((img, i) => (
                 <div key={i} className="relative group">
-                  <img src={img.dataUrl} alt={img.name} className="h-16 w-16 object-cover rounded-lg border border-gray-200" />
+                  {isPdfDataUrl(img.dataUrl)
+                    ? <div title={img.name} className="h-16 w-16 flex items-center justify-center rounded-lg border border-gray-200 bg-red-50 text-xs font-semibold text-red-700">PDF</div>
+                    : <img src={img.dataUrl} alt={img.name} className="h-16 w-16 object-cover rounded-lg border border-gray-200" />}
                   <button
                     type="button"
                     onClick={() => setImageAttachments((prev) => prev.filter((_, x) => x !== i))}
@@ -995,7 +1155,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
             <input
               ref={fileRef}
               type="file"
-              accept=".xlsx,.xls,.csv,.txt,.jpg,.jpeg,.png,.webp,image/*"
+              accept=".xlsx,.xls,.csv,.txt,.pdf,application/pdf,.jpg,.jpeg,.png,.webp,image/*"
               multiple
               className="hidden"
               onChange={(e) => {

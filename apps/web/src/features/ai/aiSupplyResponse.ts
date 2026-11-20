@@ -71,3 +71,21 @@ export function collectSupplyResponse(responses: readonly unknown[], expectedPar
   }
   return { products, metadata }
 }
+
+/**
+ * 18.11.2026: з таблиці «Voice LX-303D2» ШІ записав назву «LX-303D4». Для текстових джерел (Excel, буфер)
+ * кожен модельний номер у назві має бути у файлі; якщо ні — рядок отримує примітку «перевірте назву».
+ */
+export function flagNamesNotInSource(products: AiSupplyRow[], sourceText: string): AiSupplyRow[] {
+  const source = sourceText.normalize('NFKC').toUpperCase().replace(/[^A-ZА-ЯІЇЄҐ0-9]/g, '')
+  if (!source) return products
+  return products.map(product => {
+    const codes = (product.name.normalize('NFKC').match(/[\p{L}\p{N}]+(?:[-/.][\p{L}\p{N}]+)*/gu) ?? [])
+      .filter(token => /\p{L}/u.test(token) && /\d/.test(token) && token.replace(/\D/g, '').length >= 2)
+      .map(token => ({ token, key: token.toUpperCase().replace(/[^A-ZА-ЯІЇЄҐ0-9]/g, '') }))
+      .filter(code => code.key.length >= 4 && !source.includes(code.key))
+    if (!codes.length) return product
+    const note = `Назва містить «${codes.map(code => code.token).join('», «')}», чого немає у файлі — перевірте назву.`
+    return { ...product, purchase_price_note: product.purchase_price_note ? product.purchase_price_note + ' ' + note : note }
+  })
+}

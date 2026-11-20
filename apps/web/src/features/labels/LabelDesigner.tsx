@@ -12,6 +12,7 @@ import { toast } from '@/components/ui/Toast'
 import { PrintService } from '@/lib/printService'
 import { renderBarcodePrintSvg, renderBarcodeSvg } from '@/lib/barcodeSvg'
 import { desktopBridge } from '@/lib/desktopBridge'
+import { reportLocalError } from '@/lib/localDiagnostics'
 import { offlineProductMatchesQuery } from '@/lib/offlineDB'
 import { usePOSBarcodeScanner } from '@/features/pos/usePOSBarcodeScanner'
 import { loadTsplSettings, saveTsplSettings, pickLabelPrinter, type TsplLabelPrintSettings } from './tsplPrintSettings'
@@ -1040,7 +1041,13 @@ export async function printLabelDocument(document: LabelPrintDocument): Promise<
       density: tspl.density,
       rotate180: tspl.rotate180,
     })
-    void labels
+    // 19.11.2026: «етикеток друкується менше» — звіряємо, скільки сторінок пішло на принтер.
+    if (Number.isFinite(labels) && document.count > 0 && labels !== document.count) {
+      reportLocalError(new Error('LABEL_COUNT_MISMATCH expected=' + document.count + ' sent=' + labels))
+      toast.warning(`На принтер надіслано ${labels} етикеток із ${document.count}. Перевірте, яких бракує, і допечатайте лише їх.`)
+    } else if (document.count > 0) {
+      toast.success(`На принтер надіслано ${labels} етикеток. Якщо надруковано менше — відкалібруйте датчик проміжку принтера (утримувати кнопку FEED).`)
+    }
   } catch (error) {
     console.error('TSPL label print failed', error)
     throw new Error(

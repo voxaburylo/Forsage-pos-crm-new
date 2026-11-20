@@ -14,6 +14,7 @@ import { parseAiJsonObject, mergeAiInvoicePages, hasAiInvoicePhotoContent } from
 import { aiUserMessage, withAiDataBoundary } from './aiPromptSafety.js'
 import { createAiToolBudget, parseAiReadArguments } from './aiToolSafety.js'
 import { safeAiErrorInfo } from './aiResponseSafety.js'
+import { cleanCrossProposal } from './aiCrossNumberRules.js'
 
 // ─── Моделі та приблизна вартість ($ за 1M токенів) ──────────────────────────
 // Значення орієнтовні (тарифи Anthropic можуть змінюватись) — лічильник показуємо
@@ -118,8 +119,8 @@ export async function testKey(apiKey: string, model: string): Promise<{ ok: bool
   } catch (e: any) {
     if (isAiBudgetError(e)) throw e
     logger.warn(safeAiErrorInfo(e), '[ai] test key failed')
-    // Закінчений баланс — не «поганий ключ»: власнику треба поповнити рахунок, а не міняти ключ.
-    if (e instanceof AppError && e.code === 'AI_QUOTA_EXCEEDED') throw e
+    // Точна причина замість загальної: порожній баланс, неправильний ключ чи збій Anthropic лікуються по-різному.
+    if (e instanceof AppError && ['AI_QUOTA_EXCEEDED', 'AI_KEY_INVALID', 'AI_UPSTREAM_UNAVAILABLE'].includes(e.code)) throw e
     throw new AppError('AI_KEY_INVALID', 'Не вдалося перевірити ключ Anthropic. Перевірте ключ (починається з sk-ant-), доступ до моделі та баланс.', 400)
   }
 }
@@ -181,9 +182,52 @@ export async function getUsageSummary(tenantId: string) {
 const READ_TOOLS = new Set(['search_products', 'get_product', 'list_categories', 'list_brands', 'search_customers', 'list_products_page', 'find_duplicate_products'])
 const WRITE_TOOLS = new Set(['update_product', 'create_product', 'create_customer', 'update_customer', 'create_category', 'create_order'])
 // Масові дії: одна картка-пропозиція з багатьма рядками, застосовується пакетом
-const BULK_TOOLS = new Set(['create_customers_bulk', 'create_products_bulk', 'create_categories_bulk', 'update_products_bulk', 'merge_products_bulk'])
+const BULK_TOOLS = new Set(['create_customers_bulk', 'create_products_bulk', 'create_categories_bulk', 'rename_categories_bulk', 'update_products_bulk', 'merge_products_bulk', 'add_cross_numbers_bulk'])
+/** Пошук у інтернеті (веб-пошук Anthropic) — окремо від читання бази: довший і платний. */
+const RESEARCH_TOOL = 'search_cross_numbers'
 
 const toolDeclarations: FunctionDeclaration[] = [
+  {
+    name: 'search_cross_numbers',
+    description: 'Пошук крос-номерів і OE-номерів товарів в інтернеті (каталоги виробників, магазини запчастин). До 3 товарів за виклик; product_id бери з search_products. Повертає текст знахідок і список джерел (url). Нічого не записує.',
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: { product_ids: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } } },
+      required: ['product_ids'],
+    },
+  },
+  {
+    name: 'add_cross_numbers_bulk',
+    description: 'Додати товарам крос-номери, у яких ти ТОЧНО впевнений: номер прямо вказаний як аналог/OE саме цього товару (той самий виробник і артикул) у джерелі з search_cross_numbers. Кожен номер — з url джерела. Сумнівні не додавай. Одна пропозиція, користувач підтвердить.',
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        items: {
+          type: SchemaType.ARRAY,
+          items: {
+            type: SchemaType.OBJECT,
+            properties: {
+              product_id: { type: SchemaType.STRING },
+              numbers: {
+                type: SchemaType.ARRAY,
+                items: {
+                  type: SchemaType.OBJECT,
+                  properties: {
+                    number: { type: SchemaType.STRING, description: 'Каталожний номер як у джерелі' },
+                    brand: { type: SchemaType.STRING, description: 'Виробник цього номера' },
+                    source_url: { type: SchemaType.STRING, description: 'Сторінка, де номер указано як аналог цього товару' },
+                  },
+                  required: ['number', 'source_url'],
+                },
+              },
+            },
+            required: ['product_id', 'numbers'],
+          },
+        },
+      },
+      required: ['items'],
+    },
+  },
   {
     name: 'search_products',
     description: 'Знайти товари на складі за артикулом, назвою, штрихкодом або OEM. Повертає ціни в гривнях.',
@@ -388,7 +432,7 @@ const toolDeclarations: FunctionDeclaration[] = [
             properties: {
               product_id: { type: SchemaType.STRING },
               new_name: { type: SchemaType.STRING, description: 'Нова назва (укр). Бренди, артикули, розміри, латиницю НЕ чіпати' },
-              category_name: { type: SchemaType.STRING, description: 'Назва категорії (знайдемо або створимо)' },
+              category_name: { type: SchemaType.STRING, description: 'Назва категорії з list_categories; якщо підхожої немає — нова коротка назва українською (каса створить її)' },
             },
             required: ['product_id'],
           },
@@ -399,7 +443,7 @@ const toolDeclarations: FunctionDeclaration[] = [
   },
   {
     name: 'merge_products_bulk',
-    description: 'МАСОВЕ злиття дублів товарів. Кожна пара: primary (залишається, сюди переносяться залишки й історія) + duplicate (зникає). Пари бери ТІЛЬКИ з find_duplicate_products. Основним обирай товар з заповненішою карткою або більшим залишком.',
+    description: 'МАСОВЕ злиття дублів товарів. Кожна пара: primary (залишається, сюди переносяться облікова кількість і історія) + duplicate (зникає). Пари бери з find_duplicate_products або з search_products, коли власник сам назвав товари. Основним обирай картку, назву/артикул якої власник хоче лишити, інакше стару заповнену картку. До кожної пари — коротка причина (reason).',
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
@@ -410,6 +454,7 @@ const toolDeclarations: FunctionDeclaration[] = [
             properties: {
               primary_product_id: { type: SchemaType.STRING },
               duplicate_product_id: { type: SchemaType.STRING },
+              reason: { type: SchemaType.STRING, description: 'Чому це той самий товар: «той самий номер EL 101 514 = EL 101514, та сама упаковка 2шт»' },
             },
             required: ['primary_product_id', 'duplicate_product_id'],
           },
@@ -477,6 +522,27 @@ const toolDeclarations: FunctionDeclaration[] = [
     },
   },
   {
+    name: 'rename_categories_bulk',
+    description: 'МАСОВЕ перейменування наявних категорій («папок»), напр. переклад українською. category_id бери ТІЛЬКИ з list_categories. Одна пропозиція, користувач підтвердить.',
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        renames: {
+          type: SchemaType.ARRAY,
+          items: {
+            type: SchemaType.OBJECT,
+            properties: {
+              category_id: { type: SchemaType.STRING },
+              new_name: { type: SchemaType.STRING, description: 'Нова назва українською' },
+            },
+            required: ['category_id', 'new_name'],
+          },
+        },
+      },
+      required: ['renames'],
+    },
+  },
+  {
     name: 'create_categories_bulk',
     description: 'МАСОВЕ створення категорій («папок») зі списку назв. Одна пропозиція, пакетне застосування.',
     parameters: {
@@ -537,8 +603,16 @@ const SYSTEM_PROMPT = `Ти — AI-помічник «Директор» для 
 
 МАСОВЕ НАВЕДЕННЯ ПОРЯДКУ В КАТАЛОЗІ (переклад, сортування, дублі):
 - Переклад назв українською: виклич list_products_page(page=1, filter='russian_names') → отримаєш до 200 товарів → переклади НАЗВИ (бренди, артикули, коди, розміри, латиницю НЕ чіпай) → виклич update_products_bulk з парами product_id + new_name. ОДНА сторінка = ОДИН виклик update_products_bulk. Далі скажи користувачу, скільки сторінок лишилось, і чекай наступної команди «далі».
-- Розкладання по категоріях: list_products_page(filter='no_category') + list_categories → update_products_bulk з category_name для кожного товару (категорія створиться сама, якщо нової нема).
+- Розкладання по категоріях: list_products_page(filter='no_category') + list_categories → update_products_bulk з category_name: спершу наявна категорія за призначенням; якщо підхожої немає — коротка загальна назва нової українською (каса створить її сама). Не плоди категорії за брендом чи розміром.
+- Назви категорій українською: list_categories → rename_categories_bulk з парами category_id + new_name лише для тих, що російською чи з помилками («Фильтра» → «Фільтри», «Масла-ATF» → «Оливи-ATF»). Якщо українська назва вже є в іншої категорії — не перейменовуй, а скажи про дубль.
+- Зрозуміла назва з частин: назву, що починається з упаковки чи службового слова («(метал) 10W40 API SL/CF 1л (12)»), а тип товару й бренд лежать окремо (поле brand, категорія), збери в людську: спочатку тип товару, потім бренд із поля brand, потім характеристики, обʼєм, упаковка. Приклад: «(метал) 10W40 API SL/CF 1л (12)», brand «Polo Expert», категорія «Масла» → «Моторна олива Polo Expert 10W40 API SL/CF 1л, метал (12)». Тип визначай за категорією й специфікацією (W40/API SL — моторна олива; GL-4/GL-5, 80W90 — трансмісійна олива); якщо не впевнений у типі — не змінюй назву.
+- У новій назві ВСІ числа й коди старої назви мають лишитися в тому самому порядку (10W40, 1л, (12), артикули): програма відхилить картку, у якій зникла чи додалась цифра. Бренд, який уже є в назві, не прибирай.
 - Дублі: find_duplicate_products(by='name' або by='sku') — сервер сам знайде групи по всьому каталогу. Переглянь групи, обери в кожній ОСНОВНИЙ товар (більший залишок / заповненіша картка) і виклич merge_products_bulk. Залишки та історія дубліката перенесуться в основний, дублікат зникне. НЕ зливай товари, якщо не впевнений, що це той самий товар (різні розміри/сторони/обʼєми — це РІЗНІ товари!).
+- РОЗБІР ПРОБЛЕМИ ЗА ОПИСОМ ВЛАСНИКА («обʼєднай дублі після накладної», «замок EL 101 514 потрапив не в ту картку», «клеми лягли не туди»):
+  1) знайди кожен названий товар через search_products (за номером без пробілів і з пробілами, за назвою, артикулом, штрихкодом); 2) покажи власнику знайдені картки списком: артикул, назва, залишок; 3) пари, що точно той самий товар (той самий каталожний номер, бренд, упаковка/кількість у комплекті, сторона, обʼєм), запропонуй одним merge_products_bulk з причиною до кожної пари; 4) сумнівні (різна упаковка «1шт»/«2шт», інший обʼєм чи сторона, інший комплект) НЕ обʼєднуй — перелічи окремо й спитай.
+  Залишки сам НЕ переносиш і не виправляєш: облікова кількість змінюється лише документами. Якщо товар ліг не в ту картку (наприклад, клеми 135 г на картку 200 г), поясни коротко: «Ревізія → порахуйте обидві картки на полиці й поставте факт», і скажи, яку картку якою кількістю перевірити. Неправильний артикул у старій картці можна виправити через update_products_bulk лише назвою/категорією — артикул власник виправляє в картці сам; назви, яку саме картку і на що змінити.
+  Якщо картку з недавньої накладної не знайдено — вона могла ще не дійти з каси на сервер; так і скажи, не вигадуй.
+- КРОС-НОМЕРИ («додай кроси», «знайди аналоги до …»): search_products → search_cross_numbers (до 3 товарів за раз) → add_cross_numbers_bulk лише з номерами, де ти ТОЧНО впевнений: джерело прямо називає номер аналогом/OE саме цього товару (той самий виробник і артикул товару), url зі списку sources. Номери з інших товарів, розміри, обʼєми, штрихкоди й сумнівні — не додавай, перелічи окремо. Скажи, скільки номерів знайдено і скільки відкинуто.
 - НІКОЛИ не проси весь каталог одразу і не обробляй більше 200 товарів за один виклик — працюй сторінками. product_id бери тільки з відповідей інструментів.
 
 Правила:
@@ -601,7 +675,7 @@ async function executeReadTool(name: string, args: any, tenantId: string, budget
       const page = Math.max(Number(args?.page) || 1, 1)
       const filter = String(args?.filter ?? 'all')
       let q = db.from('products')
-        .select('id, sku, name, category:categories(name)', { count: 'exact' })
+        .select('id, sku, name, brand:brands(name), category:categories(name)', { count: 'exact' })
         .eq('tenant_id', tenantId)
         .is('deleted_at', null)
         .order('name')
@@ -619,6 +693,7 @@ async function executeReadTool(name: string, args: any, tenantId: string, budget
         pages: Math.ceil((count ?? 0) / perPage),
         products: (data ?? []).map((p: any) => ({
           product_id: p.id, sku: p.sku, name: p.name,
+          brand: p.brand?.name ?? null,
           category: p.category?.name ?? null,
         })),
       }
@@ -732,6 +807,49 @@ async function buildPendingAction(name: string, args: any, tenantId: string, bud
       changes: [], count: list.length,
       columns: ['Залишається', 'Зливається (зникне)'], items,
       payload: { merges: list },
+    }
+  }
+
+  if (name === 'add_cross_numbers_bulk') {
+    const list = cleanCrossProposal(args?.items)
+    const ids = list.map(item => item.product_id)
+    const current = new Map<string, { sku: string; name: string }>()
+    if (ids.length) {
+      const { data } = await budget.run(signal => db.from('products').select('id, sku, name')
+        .eq('tenant_id', tenantId).in('id', ids.slice(0, 200)).abortSignal(signal))
+      for (const p of data ?? []) current.set(p.id, { sku: p.sku, name: p.name })
+    }
+    const items = list.filter(item => current.has(item.product_id))
+    if (!items.length) throw new AppError('AI_INVALID_RESPONSE', 'Немає жодного крос-номера з надійним джерелом', 422)
+    return {
+      id, tool: name, title: `Додати крос-номери: ${items.reduce((sum, item) => sum + item.numbers.length, 0)} до ${items.length} товарів`,
+      changes: [], count: items.length,
+      columns: ['Артикул', 'Товар', 'Крос-номери', 'Джерело'],
+      items: items.map(item => ({
+        'Артикул': current.get(item.product_id)?.sku ?? '?',
+        'Товар': current.get(item.product_id)?.name ?? '?',
+        'Крос-номери': item.numbers.map(n => n.brand ? `${n.number} (${n.brand})` : n.number).join(', '),
+        'Джерело': [...new Set(item.numbers.map(n => n.source))].join(', '),
+      })),
+      payload: { items },
+    }
+  }
+
+  if (name === 'rename_categories_bulk') {
+    const list: any[] = Array.isArray(args?.renames) ? args.renames : []
+    const ids = list.map((r) => String(r.category_id)).filter(Boolean)
+    const current = new Map<string, string>()
+    if (ids.length) {
+      const { data } = await budget.run(signal => db.from('categories').select('id, name')
+        .eq('tenant_id', tenantId).in('id', ids.slice(0, 500)).abortSignal(signal))
+      for (const c of data ?? []) current.set(c.id, c.name)
+    }
+    return {
+      id, tool: name, title: `Перейменувати категорії: ${list.length}`,
+      changes: [], count: list.length,
+      columns: ['Було', 'Стане'],
+      items: list.map((r) => ({ 'Було': current.get(String(r.category_id)) ?? '(не знайдено)', 'Стане': String(r.new_name ?? '—') })),
+      payload: { renames: list },
     }
   }
 
@@ -1022,6 +1140,24 @@ async function runChatWithinBudget(
   let corrections = 0
 
   const handleCall = async (name: string, args: Record<string, unknown>): Promise<unknown> => {
+    if (name === RESEARCH_TOOL) {
+      try {
+        const ids = Array.isArray((args as any)?.product_ids) ? (args as any).product_ids.map(String).slice(0, 3) : []
+        if (!ids.length) return { error: 'Вкажіть product_id товарів (до 3)' }
+        const { data } = await budget.run(signal => db.from('products').select('id, sku, name, brand:brands(name)')
+          .eq('tenant_id', tenantId).in('id', ids).abortSignal(signal))
+        if (!data?.length) return { error: 'Товари не знайдено' }
+        const lines = data.map((p: any) => `- product_id ${p.id}: ${p.name}; артикул ${p.sku || '—'}; бренд ${p.brand?.name ?? '—'}`).join('\n')
+        const found = await withAiExecutionBudget(120_000, research => claude.research(research,
+          'Знайди крос-номери (аналоги інших виробників) і OE-номери для цих автотоварів. Для кожного товару: номер, виробник номера, url сторінки, де номер прямо вказано як аналог/OE саме цього товару. Не вгадуй: якщо прямого підтвердження немає — так і напиши.\n' + lines, 5), budget.signal)
+        usage.promptTokens += found.promptTokens
+        usage.completionTokens += found.completionTokens
+        return { text: found.text.slice(0, 20_000), sources: found.sources.slice(0, 30) }
+      } catch (e: any) {
+        if (isAiBudgetError(e)) throw e
+        return { error: 'Пошук в інтернеті не вдався', ...safeAiErrorInfo(e) }
+      }
+    }
     if (READ_TOOLS.has(name)) {
       try {
         return boundedAiReadResult(await withAiExecutionBudget(AI_TIME_LIMITS.read,
@@ -1560,3 +1696,4 @@ async function runBatch<T>(
   }
   return { created, failed: errors.length, errors: errors.slice(0, 50) }
 }
+

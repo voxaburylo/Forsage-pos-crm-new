@@ -110,6 +110,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     cleanupTidyPlan: () => ipcRenderer.invoke('desktop:catalog:cleanup-tidy-plan'),
     cleanupTidyApply: (input: unknown) => ipcRenderer.invoke('desktop:catalog:cleanup-tidy-apply', input),
     agentApply: (input: unknown) => ipcRenderer.invoke('desktop:catalog:agent-apply', input),
+    agentFingerprints: (ids: unknown) => ipcRenderer.invoke('desktop:catalog:agent-fingerprints', ids),
     listCategories: () =>
       ipcRenderer.invoke('desktop:catalog:list-categories'),
     listBrands: () =>
@@ -280,6 +281,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:pos:open-shift', input),
     getOpenShift: (cashierId: string) =>
       ipcRenderer.invoke('desktop:pos:get-open-shift', cashierId),
+    listOpenShifts: () => ipcRenderer.invoke('desktop:pos:list-open-shifts'),
     checkout: (input: unknown) => ipcRenderer.invoke('desktop:pos:checkout', input),
     listSales: (input?: unknown) => ipcRenderer.invoke('desktop:pos:list-sales', input),
     dashboardSummary: (input: unknown) => ipcRenderer.invoke('desktop:pos:dashboard-summary', input),

@@ -16,7 +16,23 @@ interface Props {
 const BUCKET = 'product-photos'
 const MAX_PX = 1200
 const JPEG_QUALITY = 0.82
+const ALPHA_QUALITY = 0.9
 
+/** Чи є в картинці прозорі пікселі (PNG/WebP/GIF без фону). Без доступу до пікселів — вважаємо, що немає. */
+function hasTransparency(ctx: CanvasRenderingContext2D, width: number, height: number): boolean {
+  if (typeof ctx.getImageData !== 'function') return false
+  try {
+    const data = ctx.getImageData(0, 0, width, height).data
+    for (let index = 3; index < data.length; index += 4) if (data[index] < 250) return true
+  } catch { /* tainted or unsupported canvas */ }
+  return false
+}
+
+/**
+ * Готує фото товару: зменшує до 1200 px. Звичайне фото — JPEG на білому тлі. Картинка без фону
+ * (PNG/WebP/GIF з прозорістю) зберігає прозорість — WebP (або PNG, якщо WebP недоступний), щоб
+ * у швидкому доступі й каталозі товар був без білого прямокутника.
+ */
 export async function compressToJpeg(source: File | Blob, signal?: AbortSignal): Promise<Blob> {
   signal?.throwIfAborted()
   if (source.type && !source.type.startsWith('image/')) throw new Error('Оберіть зображення: JPG, PNG або WebP')
@@ -48,9 +64,19 @@ export async function compressToJpeg(source: File | Blob, signal?: AbortSignal):
         canvas.height = Math.max(1, Math.round(img.height * scale))
         const ctx = canvas.getContext('2d')
         if (!ctx) { finish(); return }
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+        if (!/jpe?g/i.test(source.type) && hasTransparency(ctx, canvas.width, canvas.height)) {
+          canvas.toBlob((blob) => {
+            if (blob?.size && blob.type === 'image/webp') { finish(blob); return }
+            canvas.toBlob((png) => finish(png ?? undefined), 'image/png')
+          }, 'image/webp', ALPHA_QUALITY)
+          return
+        }
+        // Біле тло під картинкою: JPEG не має прозорості.
+        ctx.globalCompositeOperation = 'destination-over'
         ctx.fillStyle = '#fff'
         ctx.fillRect(0, 0, canvas.width, canvas.height)
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+        ctx.globalCompositeOperation = 'source-over'
         canvas.toBlob((blob) => finish(blob ?? undefined), 'image/jpeg', JPEG_QUALITY)
       } catch { finish() }
     }
@@ -94,11 +120,12 @@ export async function uploadToStorage(blob: Blob, folder: string): Promise<strin
   if (localSave) return localSave(folder, await blob.arrayBuffer())
 
   const { supabase } = await import('@/lib/supabase')
-  const ext  = 'jpg'
+  const contentType = blob.type === 'image/webp' || blob.type === 'image/png' ? blob.type : 'image/jpeg'
+  const ext = contentType === 'image/webp' ? 'webp' : contentType === 'image/png' ? 'png' : 'jpg'
   const path = `${folder}/${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`
 
   const { error } = await supabase.storage.from(BUCKET).upload(path, blob, {
-    contentType: 'image/jpeg',
+    contentType,
     upsert: false,
   })
   if (error) throw new Error(error.message)

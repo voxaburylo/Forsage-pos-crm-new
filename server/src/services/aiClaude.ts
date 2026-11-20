@@ -51,7 +51,11 @@ export function claudeTools(declarations: readonly FunctionDeclaration[]): Anthr
   }))
 }
 
-function imageBlock(image: ClaudeImage): Anthropic.Beta.BetaImageBlockParam {
+/** Фото — блок зображення; PDF накладної Claude читає як документ (текст і вигляд сторінок). */
+function imageBlock(image: ClaudeImage): Anthropic.Beta.BetaImageBlockParam | Anthropic.Beta.BetaRequestDocumentBlock {
+  if (image.mime_type === 'application/pdf') {
+    return { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: image.data_base64 } }
+  }
   const mediaType = (['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(image.mime_type)
     ? image.mime_type : 'image/jpeg') as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'
   return { type: 'image', source: { type: 'base64', media_type: mediaType, data: image.data_base64 } }
@@ -64,6 +68,9 @@ export function claudeAppError(error: unknown): AppError {
     return new AppError('AI_KEY_INVALID', 'Ключ Anthropic не підходить або не має доступу до моделі. Перевірте його в Налаштуваннях → ШІ.', 400)
   if (error instanceof Anthropic.RateLimitError)
     return new AppError('AI_QUOTA_EXCEEDED', 'Досягнуто ліміту Anthropic або закінчився баланс. Перевірте рахунок на console.anthropic.com. Дані не збережено.', 429)
+  // Нульовий баланс Anthropic повертає 400 «credit balance is too low» — це не поганий запит, а порожній рахунок.
+  if (error instanceof Anthropic.BadRequestError && /credit balance/i.test(String((error as Error).message ?? '')))
+    return new AppError('AI_QUOTA_EXCEEDED', 'На рахунку Anthropic закінчилися кошти. Поповніть баланс на console.anthropic.com (Billing) і повторіть. Дані не збережено.', 429)
   if (error instanceof Anthropic.BadRequestError)
     return new AppError('AI_INVALID_RESPONSE', 'Claude не прийняв запит. Зменшіть фото або розділіть запит і повторіть. Дані не збережено.', 422)
   return new AppError('AI_UPSTREAM_UNAVAILABLE', 'Claude тимчасово недоступний. Зачекайте кілька секунд і повторіть запит.', 503)

@@ -42,6 +42,7 @@ import type {
 } from './db/localTypes'
 import { LocalCatalogRepository } from './repositories/catalogRepository'
 import { applyCatalogBatch } from './repositories/catalogBatchWorker'
+import { CatalogAgentRepository } from './repositories/catalogAgentRepository'
 import { createAiInvoiceInWorker, previewAiInvoiceInWorker, commitReceivingInWorker } from './repositories/supplyInvoiceWorker'
 import { LocalInventoryRepository } from './repositories/inventoryRepository'
 import { LocalOrderRepository } from './repositories/orderRepository'
@@ -589,6 +590,8 @@ const EXPECTED_COMMAND_FAILURES = [
 ]
 
 function isExpectedCommandFailure(message: string): boolean {
+  // «Не пускає провести накладну» повторювалося без сліду: причину рядка пишемо завжди (лише код).
+  if (message.includes('RECEIVING_LINE:') || message.includes('RECEIVING_STEP:')) return false
   return EXPECTED_COMMAND_FAILURES.some((marker) => message.includes(marker))
 }
 
@@ -1402,7 +1405,10 @@ app.whenReady().then(async () => {
     if (bytes.length === 0 || bytes.length > 10 * 1024 * 1024) throw new Error('Неприпустимий розмір фото')
     const photoDir = path.join(desktopDataRoot, 'photos', safeFolder)
     await mkdir(photoDir, { recursive: true })
-    const photoPath = path.join(photoDir, Date.now() + '-' + crypto.randomUUID() + '.jpg')
+    // Розширення за вмістом: картинки без фону зберігаються як PNG/WebP з прозорістю.
+    const isPng = bytes.length > 8 && bytes.readUInt32BE(0) === 0x89504e47
+    const isWebp = bytes.length > 12 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP'
+    const photoPath = path.join(photoDir, Date.now() + '-' + crypto.randomUUID() + (isPng ? '.png' : isWebp ? '.webp' : '.jpg'))
     await writeFile(photoPath, bytes)
     return pathToFileURL(photoPath).href
   })
@@ -1522,6 +1528,7 @@ app.whenReady().then(async () => {
       return { ...run.finish(), backupPath }
     } finally { cleanupMutationInProgress = false }
   })
+  handleDesktopIpc('desktop:catalog:agent-fingerprints', (_event, ids) => new CatalogAgentRepository(requireLocalDatabase()).fingerprints(ids))
   handleDesktopIpc('desktop:catalog:agent-apply', async (_event, input) => {
     const userId = requireDesktopSession().id
     const backupPath = await requireLocalDatabase().backupNow()
@@ -1992,6 +1999,7 @@ app.whenReady().then(async () => {
     const session = requireDesktopSession()
     return requireLocalPos().openShift({ ...input, cashier_id: session.id, tenant_id: session.tenant_id })
   })
+  handleDesktopIpc('desktop:pos:list-open-shifts', () => requireLocalPos().listOpenShifts(requireDesktopSession().tenant_id))
   handleDesktopIpc('desktop:pos:get-open-shift', (_event, cashierId: string) => {
     const session = requireDesktopSession()
     return requireLocalPos().getOpenShift(session.id, session.tenant_id)

@@ -8,6 +8,7 @@ import { idempotentMutation } from './idempotentMutation'
 import { captureSupplyWriteState } from './supplyWriteSafety'
 import { checkedSupplyMoney, normalizeSupplyItem, checkedAiSupplyUnit } from './supplyValidation'
 import { AiInvoiceMatcher, invoiceBrand, rememberInvoiceProductName } from './aiInvoiceIdentity'
+import { receivingLineReason } from '../diagnostics/receivingReasons'
 
 export interface ReceivingProductBase {
   name: string; sku: string; barcode: string | null; category_id: string | null
@@ -53,7 +54,36 @@ function productInput(row: any): LocalProductUpsert {
 }
 function lineFailure(index: number, message: string): never {
   // Retain the row index across Electron error localization, without raw SQL.
-  throw new Error(`RECEIVING_LINE:${index}: Рядок ${index + 1}: ${message}`)
+  // The reason code is safe for the problem log; the text with names stays with the cashier.
+  throw new Error(`RECEIVING_LINE:${index}:${receivingLineReason(message)}: Рядок ${index + 1}: ${message}`)
+}
+/** A failure after the rows were checked: name the step, keep the original error for the cashier. */
+function atStep<T>(step: 'invoice-save' | 'payment' | 'posting', run: () => T): T {
+  try { return run() }
+  catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (message.startsWith('RECEIVING_') || message.includes('DOCUMENT_CONFLICT')) throw error
+    throw new Error(`RECEIVING_STEP:${step}: ${message}`)
+  }
+}
+/**
+ * Two different goods in one invoice must not share a barcode or SKU: posting would silently
+ * add the second row to the first card. The same goods repeated on two rows stay allowed.
+ */
+export function findInvoiceIdentifierConflict(items: ReceivingLine[]): { index: number; other: number; field: 'barcode' | 'sku'; value: string } | null {
+  const seen = { barcode: new Map<string, number>(), sku: new Map<string, number>() }
+  const sameGoods = (a: ReceivingLine, b: ReceivingLine) => a.product_id && b.product_id
+    ? a.product_id === b.product_id : nameKey(a.product_name) === nameKey(b.product_name)
+  for (const [index, line] of items.entries()) {
+    for (const field of ['barcode', 'sku'] as const) {
+      const key = field === 'barcode' ? barcodeKey(line.barcode) : skuKey(line.sku)
+      if (!key) continue
+      const other = seen[field].get(key)
+      if (other !== undefined && !sameGoods(items[other], line)) return { index, other, field, value: clean(line[field]) }
+      if (other === undefined) seen[field].set(key, index)
+    }
+  }
+  return null
 }
 
 /** One outer BEGIN IMMEDIATE covers cards, document, split payments, stock and receipt. */
@@ -102,6 +132,9 @@ export function commitReceiving(db: LocalDatabase, input: ReceivingCommitInput):
       if (nullable(line.category_id) && !db.prepare('SELECT id FROM categories WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL').get(line.category_id!, tenant))
         lineFailure(i, 'Категорію видалено. Виберіть актуальну категорію.')
     })
+    const conflict = findInvoiceIdentifierConflict(input.items)
+    if (conflict) lineFailure(conflict.index, `${conflict.field === 'barcode' ? 'Штрихкод' : 'Артикул'} «${conflict.value}» вже є в рядку ${conflict.other + 1} `
+      + 'з іншим товаром. Виправте штрихкод/артикул в одному з рядків або виберіть ту саму картку.')
     for (const payment of input.payments) {
       if (checkedSupplyMoney(payment.amount, 'Сума оплати') <= 0
         || !['cash', 'card', 'transfer'].includes(payment.payment_method)
@@ -201,11 +234,11 @@ export function commitReceiving(db: LocalDatabase, input: ReceivingCommitInput):
     }))
     const body = { tenant_id: tenant, user_id: input.user_id, supplier_id: input.supplier_id,
       invoice_number: input.invoice_number, notes: input.notes, items: invoiceItems }
-    let invoice = exists ? supply.updateInvoice(input.invoice_id, { ...body, expected_revision: input.expected_revision })
-      : supply.createInvoice({ ...body, id: input.invoice_id, paid_amount: 0 })
-    for (const payment of input.payments) invoice = supply.payInvoice(invoice.id, { ...payment, tenant_id: tenant,
-      user_id: input.user_id, payment_id: randomUUID(), expected_revision: invoice.edit_revision })
-    supply.postInvoice(invoice.id, { tenant_id: tenant, user_id: input.user_id, expected_revision: invoice.edit_revision })
+    let invoice = atStep('invoice-save', () => exists ? supply.updateInvoice(input.invoice_id, { ...body, expected_revision: input.expected_revision })
+      : supply.createInvoice({ ...body, id: input.invoice_id, paid_amount: 0 }))
+    for (const payment of input.payments) invoice = atStep('payment', () => supply.payInvoice(invoice.id, { ...payment, tenant_id: tenant,
+      user_id: input.user_id, payment_id: randomUUID(), expected_revision: invoice.edit_revision }))
+    atStep('posting', () => supply.postInvoice(invoice.id, { tenant_id: tenant, user_id: input.user_id, expected_revision: invoice.edit_revision }))
     return { id: invoice.id as string }
   }, result => captureSupplyWriteState(db, result.id, tenant))
   return supply.getInvoice(result.id, tenant)

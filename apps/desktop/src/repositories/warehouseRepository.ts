@@ -100,7 +100,7 @@ export class LocalWarehouseRepository {
     const fromBin = String(product.storage_bin ?? '').trim() || null
     if (input.from_bin !== undefined && (String(input.from_bin ?? '').trim() || null) !== fromBin) throw new Error('Комірка товару вже змінилася. Знайдіть товар повторно.')
     if (toBin === fromBin) throw new Error('Товар уже знаходиться в цій комірці')
-    const barcodes = this.db.prepare('SELECT barcode FROM product_barcodes WHERE product_id = ? AND tenant_id = ? AND deleted_at IS NULL').all(product.id, tenantId) as Array<{ barcode: string }>
+    const barcodes = this.db.prepare('SELECT barcode FROM product_barcodes WHERE product_id = ? AND +tenant_id = ? AND deleted_at IS NULL').all(product.id, tenantId) as Array<{ barcode: string }>
     const searchText = normalizeSearchText([product.sku, product.name, product.barcode, toBin, ...barcodes.map(row => row.barcode)].filter(Boolean).join(' '))
     const timestamp = nowIso()
     const id = randomUUID()

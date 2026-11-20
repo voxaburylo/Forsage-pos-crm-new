@@ -42,3 +42,14 @@ describe('AI rows inside the ordinary invoice', () => {
     expect(new Set(items.map(item=>item.client_key)).size).toBe(2000)
   })
 })
+
+import { invoicePurchaseJump } from './invoiceFormModel'
+describe('purchase price jump on an existing card', () => {
+  it('warns when the invoice price is 1.5x away from the card purchase', () => {
+    const base = { name: 'Bardahl', sku: '80943', barcode: null, category_id: null, storage_bin: null, retail_price: 81500, photo_url: null, purchase_price: 65000 }
+    expect(invoicePurchaseJump({ product_id: 'p', purchase_price: 45050, product_base: { ...base, purchase_price: 13000 } })).toEqual({ before: 13000, after: 45050 })
+    expect(invoicePurchaseJump({ product_id: 'p', purchase_price: 45050, product_base: base })).toBeNull()
+    expect(invoicePurchaseJump({ product_id: 'p', purchase_price: 40000, product_base: base })).toEqual({ before: 65000, after: 40000 })
+    expect(invoicePurchaseJump({ product_id: undefined, purchase_price: 40000, product_base: base })).toBeNull()
+  })
+})

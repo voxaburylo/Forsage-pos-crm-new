@@ -32,11 +32,27 @@ export interface LineItem {
 export interface InvoiceProductBase {
   name: string; sku: string; barcode: string | null; category_id: string | null
   storage_bin: string | null; retail_price: number; photo_url: string | null
+  /** Закупка картки до цієї накладної (для попередження про різкий стрибок). */
+  purchase_price?: number
 }
-export function invoiceProductBase(product: { name: string; sku: string; retail_price: number; barcode?: string | null; category_id?: string | null; storage_bin?: string | null; photo_url?: string | null }): InvoiceProductBase {
+export function invoiceProductBase(product: { name: string; sku: string; retail_price: number; barcode?: string | null; category_id?: string | null; storage_bin?: string | null; photo_url?: string | null; purchase_price?: number | null }): InvoiceProductBase {
   const text = (value: string | null | undefined) => value?.trim() || null
   return { name: product.name.trim(), sku: product.sku.trim(), retail_price: product.retail_price,
-    barcode: text(product.barcode), category_id: text(product.category_id), storage_bin: text(product.storage_bin), photo_url: text(product.photo_url) }
+    barcode: text(product.barcode), category_id: text(product.category_id), storage_bin: text(product.storage_bin), photo_url: text(product.photo_url),
+    ...(Number(product.purchase_price) > 0 ? { purchase_price: Number(product.purchase_price) } : {}) }
+}
+
+/**
+ * 19.11.2026: рядки «Фара 10-30В» і «Тестер 12V/24V» лягли в чужі картки й переписали закупку
+ * 650 → 450,50 і 130 → 700,50. Різкий стрибок закупки (у 1,5 раза й більше) у вже наявній картці —
+ * ознака, що товар зіставлено не з тією карткою. Не блокує, а просить перевірити.
+ */
+export const PURCHASE_JUMP_RATIO = 1.5
+export function invoicePurchaseJump(item: Pick<LineItem, 'product_id' | 'purchase_price' | 'product_base'>): { before: number; after: number } | null {
+  const before = item.product_base?.purchase_price ?? 0
+  if (!item.product_id || !(before > 0) || !(item.purchase_price > 0)) return null
+  const ratio = item.purchase_price / before
+  return ratio >= PURCHASE_JUMP_RATIO || ratio <= 1 / PURCHASE_JUMP_RATIO ? { before, after: item.purchase_price } : null
 }
 /**
  * Ціна продажу, яка потрапить у картку після проведення: ціна рядка або, якщо

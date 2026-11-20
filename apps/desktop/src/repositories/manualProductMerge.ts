@@ -121,7 +121,7 @@ export function mergeProductsManually(db: MergeDatabase, input: ManualProductMer
       .run(quantity, source.brand_id, timestamp, timestamp, input.tenant_id, target.id)
     // Use existing mirror operations. The local signed balance snapshot remains authoritative.
     const current = product(target.id)!
-    const additionalBarcodes = (db.prepare('SELECT barcode FROM product_barcodes WHERE tenant_id=? AND product_id=? AND deleted_at IS NULL AND is_primary=0').all(input.tenant_id,target.id) as Row[]).map(row => row.barcode)
+    const additionalBarcodes = (db.prepare('SELECT barcode FROM product_barcodes WHERE +tenant_id=? AND product_id=? AND deleted_at IS NULL AND is_primary=0').all(input.tenant_id,target.id) as Row[]).map(row => row.barcode)
     const primaryPayload = { ...current, specs: json(current.specs_json), additional_barcodes: additionalBarcodes,
       is_active: Boolean(current.is_active), is_service: Boolean(current.is_service), is_favorite: Boolean(current.is_favorite),
       requires_core_return: Boolean(current.requires_core_return) }

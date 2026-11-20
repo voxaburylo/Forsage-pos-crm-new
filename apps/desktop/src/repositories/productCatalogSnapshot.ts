@@ -10,7 +10,7 @@ export function readProductCatalogSnapshot(db: LocalDatabase, id: string, tenant
     .get(id, tenant) as Record<string, any> | undefined
   if (!row) throw new Error('Товар для копії каталогу не знайдено; зміни не збережено.')
   const codes = db.prepare(`SELECT barcode FROM product_barcodes
-    WHERE tenant_id=? AND product_id=? AND deleted_at IS NULL AND is_primary=0 ORDER BY barcode`)
+    WHERE +tenant_id=? AND product_id=? AND deleted_at IS NULL AND is_primary=0 ORDER BY barcode`)
     .all(tenant, id) as Array<{ barcode: string }>
   const crosses = db.prepare(`SELECT cross_number FROM product_cross_numbers
     WHERE tenant_id=? AND product_id=? AND deleted_at IS NULL ORDER BY cross_number`)

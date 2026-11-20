@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { getNbuRate } from '../services/nbuRateService.js'
 import { catalogReviewSchema, reviewCatalog } from '../services/catalogAgentService.js'
 import { duplicateReviewSchema, reviewCatalogDuplicates } from '../services/catalogDuplicateReviewService.js'
 import { z } from 'zod'
@@ -34,6 +35,11 @@ const configSchema = z.object({
 })
 
 // POST /api/v1/ai/config — зберегти ключ / модель / увімкнення (тільки власник/адмін)
+// GET /api/v1/ai/nbu-rate?currency=USD — офіційний курс НБУ на сьогодні для накладних у валюті
+router.get('/nbu-rate', requireRole('owner', 'admin', 'manager', 'cashier'), async (req, res, next) => {
+  try { res.json({ data: await getNbuRate(String(req.query.currency ?? 'USD')) }) } catch (err) { next(err) }
+})
+
 router.post('/config', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
     const parsed = configSchema.safeParse(req.body)
@@ -91,6 +97,11 @@ const chatSchema = z.object({
     z.object({
       mime_type: z.enum(['image/jpeg', 'image/png', 'image/webp']),
       data_base64: z.string().min(1).max(6_000_000),
+    }),
+    // PDF накладної передається напряму (тимчасове сховище приймає лише фото й таблиці).
+    z.object({
+      mime_type: z.literal('application/pdf'),
+      data_base64: z.string().min(1).max(5_500_000),
     }),
   ])).max(4).optional(),
 })
