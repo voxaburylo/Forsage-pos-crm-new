@@ -1,5 +1,6 @@
 import { localAnalytics } from './repositories/localAnalytics'
 import path from 'node:path'
+import { pendingUnitSpellings, tidyUnitSpellings } from './repositories/catalogUnitTidy'
 import { RendererRecovery } from './rendererRecovery'
 import { deferQuitForMainWindow, NativeCloseController, requestUnloadScript } from './nativeClose'
 import { BlackBox } from './diagnostics/blackBox'
@@ -1157,6 +1158,16 @@ app.whenReady().then(async () => {
         detail: 'Копія бази (після зміни або щоденна) повториться сама. ' + (error instanceof Error ? error.message : String(error)) })
     }, undefined, { dailyCopy: true })
   shiftBackups.start()
+  // 20.11.2026: однакове написання одиниць у картках (шт/компл/…), один раз після оновлення; спершу копія бази.
+  const unitTidyDb = localDatabase
+  setTimeout(() => {
+    void (async () => {
+      if (localNetwork?.getStatus().mode === 'client' || !pendingUnitSpellings(unitTidyDb)) return
+      await unitTidyDb.backupNow()
+      const changed = tidyUnitSpellings(unitTidyDb)
+      blackBox?.record('catalog-unit-tidy', { changed })
+    })().catch(error => writeDesktopDiagnostic('catalog-unit-tidy-failed', error))
+  }, 15_000)
   externalBackups = new ExternalBackupService(dataRoot, localDatabase, error => {
     writeDesktopDiagnostic('external-backup-failed', error)
     recordDesktopProblem({ source: 'database', code: 'database.external_backup_failed',

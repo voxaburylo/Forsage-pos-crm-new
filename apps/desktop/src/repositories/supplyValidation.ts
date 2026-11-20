@@ -10,6 +10,17 @@ export function normalizeAiSupplyUnit(value: string): string {
   return canonical(clean)
 }
 
+/**
+ * Однакове написання одиниці в картці (крок «Привести одиниці виміру»). Повертає null, якщо одиниця
+ * незнайома: такі картки не чіпаємо. «Пара» — це «компл» (рішення власника 20.11.2026).
+ */
+const TIDY_UNITS = new Set(['шт', 'компл', 'л', 'м', 'кг', 'мл', 'упак'])
+export function tidyUnit(value: string | null | undefined): string | null {
+  if (!value?.trim()) return 'шт'
+  const unit = normalizeAiSupplyUnit(value)
+  return TIDY_UNITS.has(unit) ? unit : null
+}
+
 /** Exact unit compatibility for AI receiving; never infer a pack multiplier. */
 /**
  * Одиниця накладної, яку власник уже раз підтвердив для картки як «1 до 1» (пара перчаток = 1 шт картки).
