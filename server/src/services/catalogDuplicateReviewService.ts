@@ -51,7 +51,7 @@ export async function reviewCatalogDuplicates(tenantId: string, userId: string, 
       }))
     try {
       const answer = await new ClaudeClient(cfg.apiKey, cfg.model as any).complete(budget, { system, text: JSON.stringify(input), maxTokens: 8000 })
-      await budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, answer.promptTokens, answer.completionTokens, signal))
+      await budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, answer.promptTokens, answer.completionTokens, signal, answer.costAdjustUsd ?? 0))
       if (answer.truncated) throw new AppError('AI_RESPONSE_TOO_LARGE', 'Відповідь ШІ завелика. Перевірте менше груп за раз.', 422)
       let result: ReturnType<typeof validateDuplicateReviews>
       try { result = validateDuplicateReviews(parseAiJsonObject(answer.text), input) }

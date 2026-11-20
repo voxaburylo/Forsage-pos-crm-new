@@ -184,7 +184,7 @@ export async function findCrossNumbers(products: ClaimedProduct[], apiKey: strin
   const search = await withAiExecutionBudget(240_000, budget => claude.research(budget, buildPrompt(products)))
   const sources = search.sources
   if (sources.length === 0) {
-    await recordAiUsage(products[0].tenant_id, null, model, search.promptTokens, search.completionTokens)
+    await recordAiUsage(products[0].tenant_id, null, model, search.promptTokens, search.completionTokens, undefined, search.costAdjustUsd ?? 0)
     return { products: [], sources: [] }
   }
 
@@ -213,6 +213,8 @@ ${JSON.stringify(sources.map((source, evidence_index) => ({ evidence_index, ...s
     model,
     search.promptTokens + extraction.promptTokens,
     search.completionTokens + extraction.completionTokens,
+    undefined,
+    (search.costAdjustUsd ?? 0) + (extraction.costAdjustUsd ?? 0),
   )
 
   const parsed = enrichmentResponseSchema.safeParse(parseAiJsonObject(extraction.text) ?? {})
