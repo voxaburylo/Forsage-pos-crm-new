@@ -76,26 +76,6 @@ export class LocalPosShifts extends LocalPosFiscalGuards {
       .map(shift => ({ ...shift, expected_cash: readOpenCashBreakdown(this.db, tenantId, shift.id).expected_amount })))
   }
 
-  /**
-   * 20.11.2026, рішення власника: без зайвих кнопок. Зміна, яку касир забув закрити (відкрита понад
-   * `days` діб), закривається сама — з готівкою, яку розрахувала програма, і поміткою в примітці.
-   * Без закриття не робилась копія «при закритті зміни»; зміни касирів від 15.11 ніхто не міг закрити.
-   */
-  autoCloseStaleShifts(now = new Date(), days = 2): Array<{ id: string; cashier_id: string; expected_cash: number }> {
-    const cutoff = new Date(now.getTime() - days * 86_400_000).toISOString()
-    const stale = this.db.prepare(`SELECT id, tenant_id, cashier_id FROM shifts
-      WHERE status = 'open' AND deleted_at IS NULL AND opened_at < ? ORDER BY opened_at`).all(cutoff) as Array<{ id: string; tenant_id: string; cashier_id: string }>
-    const closed: Array<{ id: string; cashier_id: string; expected_cash: number }> = []
-    for (const shift of stale) {
-      const expected = readOpenCashBreakdown(this.db, shift.tenant_id, shift.id).expected_amount
-      if (expected < 0) continue
-      this.closeShift(shift.cashier_id, expected, 'Касир не закрив зміну — закрито автоматично через ' + days + ' дні, готівка за розрахунком програми',
-        shift.id, shift.tenant_id, 'owner', 'system')
-      closed.push({ id: shift.id, cashier_id: shift.cashier_id, expected_cash: expected })
-    }
-    return closed
-  }
-
   findOpenShift(cashierId: string, tenantId = DEFAULT_TENANT_ID): string | null {
     return this.getOpenShift(cashierId, tenantId)?.id ?? null
   }
