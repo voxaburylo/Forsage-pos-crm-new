@@ -10,6 +10,7 @@ import { desktopBridge } from '@/lib/desktopBridge'
 import { ShiftReminder } from '@/components/ShiftReminder'
 import { businessDateKey, businessDateRangeUtc } from '@/lib/businessDate'
 import { staffApi } from '@/features/staff/staffApi'
+import { ExternalBackupReminder } from '@/features/settings/ExternalBackupReminder'
 import { parseDashboardData, parseDashboardTires, type DashboardData as Analytics, type DashboardTireWorker } from '@/features/analytics/dashboardData'
 
 
@@ -159,6 +160,7 @@ export default function DashboardPage() {
       </div>
 
       <ShiftReminder />
+      {canSeeProfit && <ExternalBackupReminder />}
       {loadError ? (
         <p role="alert" className="mb-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{loadError}</p>
       ) : <>

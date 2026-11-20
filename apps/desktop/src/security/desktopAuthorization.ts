@@ -53,6 +53,12 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   ['desktop:backup:restore', OWNER_ROLES],
   // Аварійне відновлення: скачати найсвіжішу копію з хмари у папку копій цього ПК (заміна бази — окремий крок).
   ['desktop:backup:fetch-cloud', OWNER_ROLES],
+  // Копії на флешку: вибір носія, запис і повернення копії з носія — тільки власник.
+  ['desktop:backup:external-status', OWNER_ROLES],
+  ['desktop:backup:external-choose', OWNER_ROLES],
+  ['desktop:backup:external-clear', OWNER_ROLES],
+  ['desktop:backup:external-run', OWNER_ROLES],
+  ['desktop:backup:external-import', OWNER_ROLES],
   // Журнал проблем читає той, хто стоїть за касою: саме він бачить збій першим
   // і має що сказати. Закривати й вивантажувати список — справа власника.
   ['desktop:problems:list', RECEIVING_ROLES],

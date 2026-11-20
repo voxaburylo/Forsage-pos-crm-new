@@ -84,6 +84,13 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
   listBackups: () => ipcRenderer.invoke('desktop:backup:list'),
   restoreBackup: (fileName: string) => ipcRenderer.invoke('desktop:backup:restore', fileName),
   fetchCloudBackup: (request: unknown) => ipcRenderer.invoke('desktop:backup:fetch-cloud', request),
+  externalBackup: {
+    status: () => ipcRenderer.invoke('desktop:backup:external-status'),
+    choose: () => ipcRenderer.invoke('desktop:backup:external-choose'),
+    clear: () => ipcRenderer.invoke('desktop:backup:external-clear'),
+    run: () => ipcRenderer.invoke('desktop:backup:external-run'),
+    importCopy: (fileName: string) => ipcRenderer.invoke('desktop:backup:external-import', fileName),
+  },
   catalog: {
     findByBarcode: (barcode: string) =>
       ipcRenderer.invoke('desktop:catalog:find-by-barcode', barcode),
