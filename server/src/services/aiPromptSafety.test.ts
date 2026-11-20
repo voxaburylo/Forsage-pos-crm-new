@@ -26,8 +26,8 @@ describe('AI untrusted input boundary', () => {
   })
   it('wires the boundary into chat and invoice OCR', () => {
     const source = readFileSync(new URL('./aiService.ts',import.meta.url),'utf8')
-    expect(source).toContain('system: withAiDataBoundary(SYSTEM_PROMPT)')
-    expect(source).toContain("withAiDataBoundary(instruction + '\\n' + jsonOnlyInstruction(SUPPLY_INVOICE_PHOTO_SCHEMA))")
+    expect(source).toContain('system: withAiDataBoundary(SYSTEM_PROMPT + ownerRules)')
+    expect(source).toContain("withAiDataBoundary(instruction + ownerRules + '\\n' + jsonOnlyInstruction(SUPPLY_INVOICE_PHOTO_SCHEMA))")
     expect(source).toContain('aiUserMessage(params.message, params.fileText)')
     expect(source).not.toContain('params.fileText.slice(0, 900_000)')
   })
