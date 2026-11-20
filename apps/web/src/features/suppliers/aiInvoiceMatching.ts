@@ -36,8 +36,15 @@ export function bindInvoiceCandidate(item: LineItem, product: InvoiceCandidate):
 export function applyInvoiceMatch(item: LineItem, review: InvoiceMatch): LineItem {
   const choice = item.product_id || (item.ai_review?.choice !== 'new' ? item.ai_review?.choice : '') || review.product_id
   const product = review.candidates.find(candidate => candidate.id === choice)
-  const next = product && product.id !== item.product_id ? bindInvoiceCandidate(item, product) : item
+  const bound = product && product.id !== item.product_id ? bindInvoiceCandidate(item, product) : item
+  // Одиницю накладної для цієї картки власник уже підтверджував («пар» = «шт»): рахуємо в одиницях картки без питання.
+  const next = review.unit_as_card && bound.product_id && bound.unit !== review.unit_as_card ? { ...bound, unit: review.unit_as_card } : bound
   return { ...next, ai_review: { ...next.ai_review!, result: review } }
+}
+/** «Пара» в накладній — це «компл» (рішення власника 20.11.2026: рукавички тощо лише комплектами). */
+function invoiceUnit(unit: string): string {
+  if (!unit) return 'шт'
+  return /^пар[аи]?\.?$/iu.test(unit.trim()) ? 'компл' : unit
 }
 export function aiRowsToInvoiceItems(rows: Record<string, unknown>[], reviews: InvoiceMatch[], categories: Array<{id:string;name:string}>, settings: Record<string, any>): LineItem[] {
   if (rows.length !== reviews.length || !rows.length) throw new Error('Перевірено не всі рядки накладної')
@@ -52,7 +59,7 @@ export function aiRowsToInvoiceItems(rows: Record<string, unknown>[], reviews: I
     const retail = roundRetailBySettings(Math.round(purchase * (1 + Number(categoryMarkup?.markup_pct ?? rule?.markupPct ?? 30) / 100)), settings)
     const item: LineItem = {
       client_key: crypto.randomUUID(), product_name: review.name, sku: value(raw.sku ?? raw.article),
-      barcode: '', unit: value(raw.unit) || 'шт', qty: Number.isFinite(qty) ? qty : 0,
+      barcode: '', unit: invoiceUnit(value(raw.unit)), qty: Number.isFinite(qty) ? qty : 0,
       purchase_price: Number.isFinite(purchase) ? purchase : 0, retail_price: retail,
       total: Number.isFinite(qty * purchase) ? Math.round(qty * purchase) : 0,
       category_id: category?.id ?? null, is_new: true,

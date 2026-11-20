@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { LocalDatabase } from '../db/localDatabase'
-import { checkedAiSupplyUnit, checkedAiSupplyQuantity, checkedAiSupplyPrice, normalizeSupplyItem } from './supplyValidation'
+import { checkedAiSupplyUnit, checkedAiSupplyQuantity, checkedAiSupplyPrice, normalizeSupplyItem, normalizeAiSupplyUnit, rememberableUnitEquivalence } from './supplyValidation'
 
 const text = (value: unknown) => String(value ?? '').normalize('NFKC').replace(/\s+/g, ' ').trim()
 const code = (value: unknown) => {
@@ -61,6 +61,33 @@ export interface AiInvoiceReview {
   name: string; source_name: string; brand: string; product_id: string | null
   status: 'matched' | 'review' | 'new'; reason: string; candidates: AiInvoiceCandidate[]
   validation_errors?: string[]; already_saved?: boolean; invoice_id?: string
+  /** Одиниця накладної вже підтверджена для цієї картки: рядок рахується в одиницях картки без питання. */
+  unit_as_card?: string
+}
+
+/** Підтверджені власником одиниці «1 до 1» по картках (20.11.2026): { product_id: ['пара'] }. */
+const unitEquivalenceKey = (tenant: string) => 'ai-unit-equivalence:' + tenant
+export function loadUnitEquivalences(db: Pick<LocalDatabase, 'prepare'>, tenant: string): Map<string, Set<string>> {
+  const result = new Map<string, Set<string>>()
+  const row = db.prepare('SELECT value_json FROM app_meta WHERE key=?').get(unitEquivalenceKey(tenant)) as { value_json: string } | undefined
+  let parsed: unknown = {}
+  try { parsed = JSON.parse(row?.value_json || '{}') } catch { /* пошкоджений запис — нічого не пам'ятаємо */ }
+  if (parsed && typeof parsed === 'object') for (const [id, units] of Object.entries(parsed as Record<string, unknown>)) {
+    if (Array.isArray(units)) result.set(id, new Set(units.filter((unit): unit is string => typeof unit === 'string')))
+  }
+  return result
+}
+/** Записується лише після проведення рядка, де власник сам перевів одиницю накладної в одиницю картки. */
+export function rememberUnitEquivalence(db: Pick<LocalDatabase, 'prepare'>, tenant: string, productId: string, sourceUnit: unknown, lineUnit: unknown, cardUnit: string | null | undefined): void {
+  if (typeof lineUnit !== 'string' || normalizeAiSupplyUnit(lineUnit) !== normalizeAiSupplyUnit(cardUnit || 'шт')) return
+  const unit = rememberableUnitEquivalence(sourceUnit, cardUnit)
+  if (!unit) return
+  const all = loadUnitEquivalences(db, tenant)
+  if (all.get(productId)?.has(unit)) return
+  all.set(productId, new Set([...(all.get(productId) ?? []), unit]))
+  const json = JSON.stringify(Object.fromEntries([...all].map(([id, units]) => [id, [...units]])))
+  db.prepare(`INSERT INTO app_meta(key,value_json,updated_at) VALUES(?,?,?)
+    ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at`).run(unitEquivalenceKey(tenant), json, new Date().toISOString())
 }
 
 /**
@@ -202,6 +229,7 @@ function matcherFor(db: Pick<LocalDatabase, 'prepare'>, tenant: string): AiInvoi
   if (!matcherCacheEnabled) return new AiInvoiceMatcher(db, tenant)
   const key = aiInvoiceCatalogSignature(db, tenant)
   if (cachedMatcher?.key !== key) cachedMatcher = { key, matcher: new AiInvoiceMatcher(db, tenant) }
+  else cachedMatcher.matcher.unitEquivalences = loadUnitEquivalences(db, tenant)
   return cachedMatcher.matcher
 }
 
@@ -215,7 +243,9 @@ export class AiInvoiceMatcher {
   private archivedSkus = new Set<string>()
   private archivedLinks = new Map<string, Set<string>>()
   private tokens = new Map<string, Set<string>>()
+  unitEquivalences: Map<string, Set<string>>
   constructor(db: Pick<LocalDatabase, 'prepare'>, tenant: string) {
+    this.unitEquivalences = loadUnitEquivalences(db, tenant)
     const products = db.prepare(`SELECT p.id,p.name,p.sku,p.barcode,p.unit,p.retail_price,p.purchase_price,p.category_id,p.storage_bin,p.photo_url,b.name AS brand FROM products p
       LEFT JOIN brands b ON b.id=p.brand_id AND b.tenant_id=p.tenant_id
       WHERE p.tenant_id=? AND p.deleted_at IS NULL AND p.is_active=1 AND p.is_service=0`).all(tenant) as unknown as AiInvoiceCandidate[]
@@ -325,7 +355,10 @@ export class AiInvoiceMatcher {
     const product = this.products.get(choice && choice !== 'new' ? choice : review.product_id ?? '')
     if (!text(raw.name ?? raw.title ?? raw.description)) errors.push('Відсутня назва товару')
     check(() => normalizeSupplyItem({ qty: checkedAiSupplyQuantity(raw.qty ?? raw.quantity ?? raw.qty_on_hand), purchase_price: checkedAiSupplyPrice(raw.purchase_price_uah ?? raw.purchase_price ?? raw.cost_price) }))
-    check(() => checkedAiSupplyUnit(raw.unit, product ? product.unit ?? 'шт' : undefined, 'Рядок'))
+    const confirmedUnits = product ? this.unitEquivalences.get(product.id) : undefined
+    check(() => checkedAiSupplyUnit(raw.unit, product ? product.unit ?? 'шт' : undefined, 'Рядок', confirmedUnits))
+    const sourceUnit = typeof raw.unit === 'string' ? normalizeAiSupplyUnit(raw.unit) : ''
+    const unitAsCard = product && sourceUnit && confirmedUnits?.has(sourceUnit) && sourceUnit !== normalizeAiSupplyUnit(product.unit ?? 'шт') ? product.unit ?? 'шт' : undefined
     if (choice && choice !== 'new' && !product) errors.push('Вибрану картку видалено або вимкнено. Виберіть товар повторно.')
 
     if (!product && choice === 'new' && review.status === 'review' && (
@@ -336,7 +369,7 @@ export class AiInvoiceMatcher {
     if (!product && (choice === 'new' || review.status === 'new') && this.archivedSkus.has(code(raw.sku ?? raw.article ?? raw.part_number ?? raw.oem_number))) {
       errors.push('Артикул належить видаленій картці. Виберіть активний товар або виправте артикул нового. Видалену картку не відновлено.')
     }
-    return { ...review, candidates: product && !review.candidates.some(item => item.id === product.id) ? [...review.candidates, product] : review.candidates, validation_errors: errors }
+    return { ...review, candidates: product && !review.candidates.some(item => item.id === product.id) ? [...review.candidates, product] : review.candidates, validation_errors: errors, ...(unitAsCard ? { unit_as_card: unitAsCard } : {}) }
   }
   previewRows(rows: Array<Record<string, unknown>>): AiInvoiceReview[] {
     const reviews = rows.map(row => this.preview(row))

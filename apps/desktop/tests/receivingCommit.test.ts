@@ -8,6 +8,7 @@ import { LocalCatalogRepository } from '../src/repositories/catalogRepository'
 import { LocalSupplyRepository } from '../src/repositories/supplyRepository'
 import { LocalPosRepository } from '../src/repositories/posRepository'
 import { commitReceiving, type ReceivingCommitInput, type ReceivingLine } from '../src/repositories/receivingCommit'
+import { AiInvoiceMatcher } from '../src/repositories/aiInvoiceIdentity'
 import { isDesktopChannelAllowed } from '../src/security/desktopAuthorization'
 
 describe('atomic receiving on isolated SQLite', () => {
@@ -46,6 +47,36 @@ describe('atomic receiving on isolated SQLite', () => {
     const saved = commitReceiving(db, body([{ ...item, qty: 98, unit: 'шт' }]))
     expect(saved.items[0].qty).toBe(98)
     expect(catalog.findById(item.product_id!)?.qty_on_hand).toBe(101)
+  })
+  it('remembers a confirmed 1:1 unit per card: «пар» once confirmed as «шт» is not asked again (20.11.2026)', () => {
+    const item = linked(), id = item.product_id!
+    const tenant = (db.prepare('SELECT tenant_id FROM products WHERE id=?').get(id) as { tenant_id: string }).tenant_id
+    const row = (unit: string) => ({ name: item.product_name, unit, qty: 5, purchase_price_uah: 21.06, match_choice: id })
+    expect(new AiInvoiceMatcher(db, tenant).previewRows([row('пар')])[0].validation_errors?.join(' ')).toContain('одиниця')
+    // Упаковку не запам'ятовуємо навіть після підтвердження — там кількість може відрізнятися.
+    commitReceiving(db, body([{ ...item, unit: 'шт', ai_review: { source: { name: item.product_name, unit: 'упак' }, choice: id } }]))
+    expect(new AiInvoiceMatcher(db, tenant).previewRows([row('упак')])[0].validation_errors?.join(' ')).toContain('одиниця')
+    // Власник раз натиснув «Рахувати в одиницях картки»: рядок проведено в «шт».
+    commitReceiving(db, body([{ ...item, unit: 'шт', ai_review: { source: { name: item.product_name, unit: 'пар' }, choice: id } }]))
+    const next = new AiInvoiceMatcher(db, tenant).previewRows([row('пар'), row('пари')])
+    expect(next.map(review => review.validation_errors)).toEqual([[], []])
+    expect(next.map(review => review.unit_as_card)).toEqual(['шт', 'шт'])
+    // Інша картка цього не успадковує.
+    const other = catalog.saveProduct({ id: randomUUID(), sku: 'GLOVE-2', name: 'Рукавички інші', qty_on_hand: 0 })
+    expect(new AiInvoiceMatcher(db, tenant).previewRows([{ ...row('пар'), name: other.name, match_choice: other.id }])[0].validation_errors?.join(' ')).toContain('одиниця')
+    expect(catalog.findById(id)?.qty_on_hand).toBe(3 + 98 + 98)
+  })
+  it('counts invoice pairs as «компл»: a «компл» or old «Пара» card takes «пар» without asking (20.11.2026)', () => {
+    const kit = catalog.saveProduct({ id: randomUUID(), sku: 'KIT-1', name: 'Рукавички комплект', unit: 'компл', qty_on_hand: 0 })
+    const pair = catalog.saveProduct({ id: randomUUID(), sku: 'PAIR-1', name: 'Рукавички пара', unit: 'Пара', qty_on_hand: 0 })
+    const tenant = (db.prepare('SELECT tenant_id FROM products WHERE id=?').get(kit.id) as { tenant_id: string }).tenant_id
+    const reviews = new AiInvoiceMatcher(db, tenant).previewRows([
+      { name: kit.name, unit: 'пар', qty: 5, purchase_price_uah: 20, match_choice: kit.id },
+      { name: pair.name, unit: 'пари', qty: 5, purchase_price_uah: 20, match_choice: pair.id },
+    ])
+    expect(reviews.map(review => review.validation_errors)).toEqual([[], []])
+    const saved = commitReceiving(db, body([line({ sku: 'NEW-GLOVE', product_name: 'Рукавички нові', qty: 5, unit: 'пар', ai_review: { source: { name: 'Рукавички нові' }, choice: 'new' } })]))
+    expect(catalog.findById(saved.items[0].product_id)?.unit).toBe('компл')
   })
   it('creates an AI new card, brand and folder only with final posting; a replay is harmless', () => {
     const item = line({ sku: 'NEW-AI', product_name: 'Ключ NewBrand 20 дюймів', qty: 1, unit: 'pcs',
