@@ -733,6 +733,8 @@ interface ForsageDesktopBridge {
     getInvoice: (id: string, tenantId?: string) => Promise<any>
     createInvoice: (input: any) => Promise<any>
     commitReceiving?: (input: any) => Promise<any>
+    /** Заздалегідь будує довідник перевірки накладної. Старі збірки цього не мають. */
+    prewarmInvoiceCheck?: () => Promise<{ ok: true }>
     previewInvoiceFromAi?: (input: { rows: Array<Record<string, unknown>>; operation_id?: string }) => Promise<Array<{
       name: string; source_name: string; brand: string; product_id: string | null
       status: 'matched' | 'review' | 'new'; reason: string; validation_errors?: string[]; already_saved?: boolean; invoice_id?: string

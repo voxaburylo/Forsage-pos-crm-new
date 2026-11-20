@@ -43,7 +43,7 @@ import type {
 import { LocalCatalogRepository } from './repositories/catalogRepository'
 import { applyCatalogBatch } from './repositories/catalogBatchWorker'
 import { CatalogAgentRepository } from './repositories/catalogAgentRepository'
-import { createAiInvoiceInWorker, previewAiInvoiceInWorker, commitReceivingInWorker } from './repositories/supplyInvoiceWorker'
+import { createAiInvoiceInWorker, previewAiInvoiceInWorker, commitReceivingInWorker, prewarmAiInvoiceCheck } from './repositories/supplyInvoiceWorker'
 import { LocalInventoryRepository } from './repositories/inventoryRepository'
 import { LocalOrderRepository } from './repositories/orderRepository'
 import { LocalPosRepository } from './repositories/posRepository'
@@ -666,6 +666,9 @@ function handleDesktopIpc(channel: string, listener: DesktopIpcListener): void {
       }
       throw error
     } finally {
+      // 19.11.2026: «Друк завершився помилкою ×202» висіли відкритими, хоча наступні чеки друкувались.
+      // Успішний друк тим самим каналом закриває старі записи цього каналу.
+      if (!failed && channel.startsWith('desktop:print:')) { try { localProblems?.resolveCode(`ipc.${channel}`) } catch { /* optional */ } }
       const durationMs = Date.now() - startedAt
       blackBox?.record('command-end', { channel, sequence, duration_ms: durationMs,
         status: failed ? 'failed' : 'ok', role: desktopAuthSession?.role ?? 'signed-out' })
@@ -1930,6 +1933,10 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:pos:get-customer-sales', (_event, id: string, tenantId?: string) =>
     requireLocalPos().getCustomerSales(id, tenantId),
   )
+  handleDesktopIpc('desktop:supply:prewarm-invoice-check', async () => {
+    await prewarmAiInvoiceCheck(requireLocalDatabase().dataRoot, requireDesktopSession().tenant_id)
+    return { ok: true }
+  })
   handleDesktopIpc('desktop:supply:preview-invoice-from-ai', (_event, input: any) =>
     previewAiInvoiceInWorker(requireLocalDatabase().dataRoot, { ...input, tenant_id: requireDesktopSession().tenant_id }),
   )

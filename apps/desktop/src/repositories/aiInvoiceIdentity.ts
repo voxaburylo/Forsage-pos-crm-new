@@ -196,6 +196,8 @@ export function aiInvoiceCatalogSignature(db: Pick<LocalDatabase, 'prepare'>, te
     return row.n + ':' + (row.u ?? '')
   }).join('|') + '|' + tenant
 }
+/** Заздалегідь будує довідник (при відкритті накладної), щоб і перша перевірка була миттєвою. */
+export function prewarmAiInvoiceMatcher(db: Pick<LocalDatabase, 'prepare'>, tenant: string): void { matcherFor(db, tenant) }
 function matcherFor(db: Pick<LocalDatabase, 'prepare'>, tenant: string): AiInvoiceMatcher {
   if (!matcherCacheEnabled) return new AiInvoiceMatcher(db, tenant)
   const key = aiInvoiceCatalogSignature(db, tenant)

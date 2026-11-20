@@ -5,7 +5,7 @@ import { Worker, parentPort, workerData } from 'node:worker_threads'
 import { LocalDatabase } from '../db/localDatabase'
 import { LocalSupplyRepository } from './supplyRepository'
 import { commitReceiving, type ReceivingCommitInput } from './receivingCommit'
-import { enableAiInvoiceMatcherCache, previewAiInvoiceRows } from './aiInvoiceIdentity'
+import { enableAiInvoiceMatcherCache, prewarmAiInvoiceMatcher, previewAiInvoiceRows } from './aiInvoiceIdentity'
 import { DEFAULT_TENANT_ID } from '../db/localTypes'
 
 type Input = Parameters<LocalSupplyRepository['createInvoiceFromAiRows']>[0]
@@ -62,7 +62,11 @@ function runSupplyWorker(dataRoot: string, input: Input | ReceivingCommitInput |
 /** Постійний процес перевірки накладної: тримає довідник збігів у пам'яті між правками рядків. */
 const previewServers = new Map<string, { worker: Worker; pending: Map<number, { resolve: (value: any) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }> }>()
 let previewRequest = 0
-function previewInServer(dataRoot: string, input: PreviewInput): Promise<any> {
+/** Фоновий «прогрів» довідника при відкритті накладної; помилка не важлива — перевірка просто побудує його сама. */
+export function prewarmAiInvoiceCheck(dataRoot: string, tenantId: string): Promise<unknown> {
+  return previewInServer(dataRoot, { tenant_id: tenantId } as any, true).catch(() => null)
+}
+function previewInServer(dataRoot: string, input: PreviewInput, prewarm = false): Promise<any> {
   let server = previewServers.get(dataRoot)
   if (!server) {
     const worker = new Worker(path.join(__dirname, 'supplyInvoiceWorker.js'), { workerData: { aiInvoice: true, operation: 'previewServer', dataRoot } })
@@ -93,7 +97,7 @@ function previewInServer(dataRoot: string, input: PreviewInput): Promise<any> {
       void target.worker.terminate()
     }, 180_000)
     target.pending.set(id, { resolve, reject, timer })
-    target.worker.postMessage({ id, input })
+    target.worker.postMessage({ id, input, prewarm })
   })
 }
 
@@ -111,7 +115,15 @@ function previewRowsFromDisk(dataRoot: string, input: any) {
 if (parentPort && workerData?.aiInvoice && workerData.operation === 'previewServer') {
   enableAiInvoiceMatcherCache()
   const port = parentPort
-  port.on('message', (message: { id: number; input: any }) => {
+  port.on('message', (message: { id: number; input: any; prewarm?: boolean }) => {
+    if (message.prewarm) {
+      try {
+        const reader = new DatabaseSync(path.join(workerData.dataRoot, 'data', 'forsage.db'), { readOnly: true, timeout: 5000 })
+        try { reader.exec('BEGIN'); prewarmAiInvoiceMatcher(reader, message.input?.tenant_id ?? DEFAULT_TENANT_ID) } finally { reader.close() }
+        port.postMessage({ id: message.id, result: { ready: true } })
+      } catch (error) { port.postMessage({ id: message.id, error: error instanceof Error ? error.message : String(error) }) }
+      return
+    }
     try { port.postMessage({ id: message.id, result: previewRowsFromDisk(workerData.dataRoot, message.input) }) }
     catch (error) { port.postMessage({ id: message.id, error: error instanceof Error ? error.message : String(error) }) }
   })

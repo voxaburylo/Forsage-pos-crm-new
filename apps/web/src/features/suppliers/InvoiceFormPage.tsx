@@ -165,6 +165,8 @@ export default function InvoiceFormPage() {
   }, [supplierId, invoiceNumber, notes, items, paidAmount, cashboxPaidAmount, payFullNow, paymentMethod, fundSource, serverDraftId])
 
   const aiMatching = useAiInvoiceMatching(items, setItems)
+  // Довідник перевірки рядків будується у фоні одразу при відкритті накладної — перша перевірка теж миттєва.
+  useEffect(() => { void desktopBridge()?.supply?.prewarmInvoiceCheck?.().catch(() => {}) }, [])
   function setAiRowUnit(rowKey: string, unit: string) {
     setItems(current => current.map(item => item.client_key === rowKey ? { ...item, unit } : item))
   }
