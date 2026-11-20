@@ -20,6 +20,18 @@ describe('AI invoice identity and label names', () => {
   const row = (data: Record<string, unknown>) => ({ qty: 4, purchase_price_uah: 120, ...data })
   const add = (id: string, name: string, extra = {}) => catalog.upsertProduct({ id, sku: id, name, qty_on_hand: 3, ...extra })
 
+  it('a short 4-digit article alone does not make unrelated cards "similar" (gloves 4040 vs napkin 40x40, 20.11.2026)', () => {
+    add('82939', 'Салфетка микрофибра универсальная Winso серая 4040 150310')
+    add('89310', 'Серветка мікрофібра вафельна VSC-4040 WGL 40*40 см')
+    const gloves = supply.previewInvoiceFromAiRows({ rows: [row({ name: 'Рукавички ЗІРКА трикотажні червоні з чорним ПВХ', sku: '4040' })] })[0]
+    expect(gloves.status).toBe('new')
+    // A long code is still strong evidence on its own.
+    add('85927', 'Фільтр салону SSANGYONG JAKOPARTS J1340405')
+    add('77001', 'Фільтр повітряний 1340405 інший виробник')
+    const filter = supply.previewInvoiceFromAiRows({ rows: [row({ name: 'Фільтр салону 1340405', sku: 'X-1' })] })[0]
+    expect(filter.status).not.toBe('new')
+  })
+
   it('finds the card when the supplier spaces the catalog number (EL 101 514 = EL 101514)', () => {
     add('EL 101514', 'Центральный замок (5-ти пров) Elegant EL 101514 Цена за 2шт', { barcode: '6931015143656' })
     add('EL 101516', 'Центральный замок (5-ти пров) посилений Elegant EL 101516 Цена за 2шт')
