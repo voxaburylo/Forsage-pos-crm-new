@@ -32,6 +32,20 @@ describe('shift backups and full customer history',()=>{
     expect(pos.closeShift(cashier,0,null,id)).toEqual({ok:true,id})
     expect(db.prepare('SELECT count(*) n FROM shift_backups').get()).toEqual({n:1})
   })
+  it('queues a daily copy when no copy was made for a day, even without closing the shift',()=>{
+    const service=new ShiftBackupService(db,path.join(root,'program'),()=>{},async()=>{throw Error('skip')},{dailyCopy:true})
+    const first=service.ensureDailyCopy(new Date('2026-11-20T08:00:00Z'))
+    expect(first).toMatch(/^[0-9a-f-]{36}$/)
+    expect(db.prepare('SELECT tenant_id,device_id,closed_at FROM shift_backups').all()).toEqual([{tenant_id:DEFAULT_TENANT_ID,device_id:db.deviceId,closed_at:'2026-11-20T08:00:00.000Z'}])
+    expect(service.ensureDailyCopy(new Date('2026-11-21T07:00:00Z'))).toBeNull()
+    expect(service.ensureDailyCopy(new Date('2026-11-21T08:30:00Z'))).not.toBeNull()
+    expect(db.prepare('SELECT count(*) n FROM shift_backups').get()).toEqual({n:2})
+  })
+  it('a closed shift counts as the day copy',()=>{
+    const id=pos.openShift({cashier_id:cashier});pos.closeShift(cashier,0,null,id)
+    const service=new ShiftBackupService(db,path.join(root,'program'),()=>{},undefined,{dailyCopy:true})
+    expect(service.ensureDailyCopy()).toBeNull()
+  })
   it('rolls back both close and job when recording the backup job fails',()=>{
     const id=pos.openShift({cashier_id:cashier})
     db.exec("CREATE TRIGGER fail_job BEFORE INSERT ON shift_backups BEGIN SELECT RAISE(ABORT,'test failure'); END")

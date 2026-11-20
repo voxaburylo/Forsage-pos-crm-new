@@ -1148,9 +1148,9 @@ app.whenReady().then(async () => {
     process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath), error => {
       writeDesktopDiagnostic('shift-backup-failed', error)
       recordDesktopProblem({ source: 'database', code: 'database.shift_backup_failed',
-        title: 'Не вдалося зберегти вивантаження після зміни',
-        detail: 'Зміна закрита. Вивантаження повториться. ' + (error instanceof Error ? error.message : String(error)) })
-    })
+        title: 'Не вдалося зберегти резервну копію бази',
+        detail: 'Копія бази (після зміни або щоденна) повториться сама. ' + (error instanceof Error ? error.message : String(error)) })
+    }, undefined, { dailyCopy: true })
   shiftBackups.start()
   stopBackupScheduler = startBackupScheduler(localDatabase, (error) => {
     writeDesktopDiagnostic('local-backup-failed', error)
