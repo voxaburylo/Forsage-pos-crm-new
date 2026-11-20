@@ -10,6 +10,7 @@ import {
   AI_MODELS,
 } from '../services/aiService.js'
 import { downloadProcessingUpload, removeProcessingUploads } from '../services/processingUploadService.js'
+import { findProductPhotos, productPhotoRequestSchema } from '../services/aiProductPhotoService.js'
 import { addAiRule, deleteAiRule, listAiRules, parseMemoryCommand, runMemoryCommand, AI_RULE_MAX_CHARS } from '../services/aiMemoryService.js'
 
 const router = Router()
@@ -147,6 +148,15 @@ router.post('/supply-invoice-photo', requireRole('owner', 'admin', 'manager', 'c
 })
 
 // POST /api/v1/ai/chat — діалог із «директором»
+// Фото товарів з інтернету: лише пропозиції з точним артикулом на сторінці; зберігає програма після вибору власника.
+router.post('/product-photos', requireRole('owner', 'admin'), async (req, res, next) => {
+  try {
+    const parsed = productPhotoRequestSchema.safeParse(req.body)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Виберіть від 1 до 8 товарів', 422, parsed.error.flatten())
+    res.json({ data: await findProductPhotos(req.user!.tenant_id, req.user!.id, parsed.data) })
+  } catch (err) { next(err) }
+})
+
 // Пам'ять помічника: правила власника (без міграції — JSON у приватному сховищі файлів).
 router.get('/memory', requireRole('owner', 'admin', 'manager', 'cashier'), async (req, res, next) => {
   try { res.json({ data: await listAiRules(req.user!.tenant_id) }) } catch (err) { next(err) }
