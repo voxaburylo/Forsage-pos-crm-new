@@ -26,11 +26,13 @@ interface Snapshot {
 }
 
 // One statement means all sections see the same committed database snapshot.
+// 20.11.2026: у серверних sales/sale_items/returns/return_items немає deleted_at — пряма перевірка
+// ламала «Статистику» у вебі з 11.10. to_jsonb(...)->>'deleted_at' працює з колонкою і без неї.
 // Product-card prices must never replace the price recorded in a receipt.
 const dashboardSql = `
   WITH selected_sales AS (
     SELECT id, tenant_id, total, COALESCE(completed_at, created_at) occurred_at
-    FROM sales WHERE tenant_id=$1 AND deleted_at IS NULL AND status IN ('completed','returned')
+    FROM sales s0 WHERE tenant_id=$1 AND to_jsonb(s0)->>'deleted_at' IS NULL AND status IN ('completed','returned')
       AND COALESCE(completed_at, created_at) >= $2::timestamptz
       AND COALESCE(completed_at, created_at) < $3::timestamptz
   ), sale_costs AS (
@@ -39,12 +41,12 @@ const dashboardSql = `
       COUNT(si.id) FILTER (WHERE si.cost_price IS NULL OR si.cost_price < 0
         OR si.qty IS NULL OR si.qty <= 0 OR si.total IS NULL OR si.total < 0) invalid_items
     FROM selected_sales s
-    LEFT JOIN sale_items si ON s.id=si.sale_id AND s.tenant_id=si.tenant_id AND si.deleted_at IS NULL
+    LEFT JOIN sale_items si ON s.id=si.sale_id AND s.tenant_id=si.tenant_id AND to_jsonb(si)->>'deleted_at' IS NULL
     GROUP BY s.id
   ), selected_returns AS (
     SELECT id, tenant_id, sale_id, created_at, stock_action,
       COALESCE(refund_kopecks, refund_amount) refund_total
-    FROM returns WHERE tenant_id=$1 AND deleted_at IS NULL AND status='completed'
+    FROM returns r0 WHERE tenant_id=$1 AND to_jsonb(r0)->>'deleted_at' IS NULL AND status='completed'
       AND created_at >= $2::timestamptz AND created_at < $3::timestamptz
   ), return_costs AS (
     SELECT r.id,
@@ -55,10 +57,10 @@ const dashboardSql = `
         OR ri.product_id IS DISTINCT FROM si.product_id OR ri.quantity IS NULL OR ri.quantity <= 0
         OR ri.total_kopecks IS NULL OR ri.total_kopecks < 0) invalid_items
     FROM selected_returns r
-    LEFT JOIN return_items ri ON ri.return_id=r.id AND ri.tenant_id=r.tenant_id AND ri.deleted_at IS NULL
+    LEFT JOIN return_items ri ON ri.return_id=r.id AND ri.tenant_id=r.tenant_id AND to_jsonb(ri)->>'deleted_at' IS NULL
     LEFT JOIN sale_items si ON si.id=ri.sale_item_id AND si.tenant_id=r.tenant_id AND si.sale_id=r.sale_id
     LEFT JOIN sales s ON s.id=r.sale_id AND s.tenant_id=r.tenant_id
-      AND s.deleted_at IS NULL AND s.status IN ('completed','returned')
+      AND to_jsonb(s)->>'deleted_at' IS NULL AND s.status IN ('completed','returned')
     GROUP BY r.id
   ), movements AS (
     SELECT s.occurred_at, s.total revenue, COALESCE(c.cogs,0) cogs,
