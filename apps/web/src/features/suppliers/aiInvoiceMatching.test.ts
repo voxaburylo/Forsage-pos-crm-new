@@ -7,8 +7,12 @@ describe('AI rows inside the ordinary invoice', () => {
   it('counts a row in card units when the owner already confirmed this unit for the card («пар» = «шт»)', () => {
     const [item] = aiRowsToInvoiceItems([{...raw,unit:'пар',qty:5}],[{...matched,unit_as_card:'шт'}],[],{})
     expect(item).toMatchObject({product_id:'ours',unit:'шт',qty:5})
-    const [plain] = aiRowsToInvoiceItems([{...raw,unit:'пар',qty:5}],[matched],[],{})
-    expect(plain.unit).toBe('пар')
+    const [plain] = aiRowsToInvoiceItems([{...raw,unit:'уп',qty:5}],[matched],[],{})
+    expect(plain.unit).toBe('уп')
+  })
+  it('shows invoice pairs as «компл» (owner decision 20.11.2026)', () => {
+    for (const unit of ['пар','пара','Пари','пар.']) expect(aiRowsToInvoiceItems([{...raw,unit}],[{...matched,product_id:null,status:'new',candidates:[]}],[],{})[0].unit).toBe('компл')
+    expect(aiRowsToInvoiceItems([{...raw,unit:'парт'}],[{...matched,product_id:null,status:'new',candidates:[]}],[],{})[0].unit).toBe('парт')
   })
   it('automatically uses a known card despite a stale new choice; preserves invoice money and quantity', () => {
     const [item] = aiRowsToInvoiceItems([raw],[matched],[],{})

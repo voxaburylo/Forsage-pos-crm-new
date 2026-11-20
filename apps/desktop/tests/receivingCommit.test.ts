@@ -66,6 +66,18 @@ describe('atomic receiving on isolated SQLite', () => {
     expect(new AiInvoiceMatcher(db, tenant).previewRows([{ ...row('пар'), name: other.name, match_choice: other.id }])[0].validation_errors?.join(' ')).toContain('одиниця')
     expect(catalog.findById(id)?.qty_on_hand).toBe(3 + 98 + 98)
   })
+  it('counts invoice pairs as «компл»: a «компл» or old «Пара» card takes «пар» without asking (20.11.2026)', () => {
+    const kit = catalog.saveProduct({ id: randomUUID(), sku: 'KIT-1', name: 'Рукавички комплект', unit: 'компл', qty_on_hand: 0 })
+    const pair = catalog.saveProduct({ id: randomUUID(), sku: 'PAIR-1', name: 'Рукавички пара', unit: 'Пара', qty_on_hand: 0 })
+    const tenant = (db.prepare('SELECT tenant_id FROM products WHERE id=?').get(kit.id) as { tenant_id: string }).tenant_id
+    const reviews = new AiInvoiceMatcher(db, tenant).previewRows([
+      { name: kit.name, unit: 'пар', qty: 5, purchase_price_uah: 20, match_choice: kit.id },
+      { name: pair.name, unit: 'пари', qty: 5, purchase_price_uah: 20, match_choice: pair.id },
+    ])
+    expect(reviews.map(review => review.validation_errors)).toEqual([[], []])
+    const saved = commitReceiving(db, body([line({ sku: 'NEW-GLOVE', product_name: 'Рукавички нові', qty: 5, unit: 'пар', ai_review: { source: { name: 'Рукавички нові' }, choice: 'new' } })]))
+    expect(catalog.findById(saved.items[0].product_id)?.unit).toBe('компл')
+  })
   it('creates an AI new card, brand and folder only with final posting; a replay is harmless', () => {
     const item = line({ sku: 'NEW-AI', product_name: 'Ключ NewBrand 20 дюймів', qty: 1, unit: 'pcs',
       ai_category_name: 'Ключі нові', ai_review: { source: { name: 'Ключ 20 дюймів', brand: 'NewBrand' }, choice: 'new' } })

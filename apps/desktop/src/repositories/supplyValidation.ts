@@ -3,7 +3,7 @@ import { stockQuantity } from './stockQuantity'
 /** Spelling only: an explicit 1:1 unit annotation is not a pack conversion. */
 export function normalizeAiSupplyUnit(value: string): string {
   const clean = value.normalize('NFKC').trim().toLocaleLowerCase('uk-UA').replace(/\s+/g, ' ').replace(/\.$/, '')
-  const aliases: Record<string, string> = { pcs: 'шт', pc: 'шт', piece: 'шт', pieces: 'шт', штук: 'шт', штука: 'шт', штуки: 'шт', kg: 'кг', кілограм: 'кг', килограмм: 'кг', l: 'л', літр: 'л', литр: 'л', m: 'м', метр: 'м', комплект: 'компл', комплекти: 'компл', 'к-т': 'компл', 'ком-т': 'компл', кмпл: 'компл', од: 'шт', одиниця: 'шт', пар: 'пара', пари: 'пара', уп: 'упак', упаковка: 'упак', упаков: 'упак', упако: 'упак' }
+  const aliases: Record<string, string> = { pcs: 'шт', pc: 'шт', piece: 'шт', pieces: 'шт', штук: 'шт', штука: 'шт', штуки: 'шт', kg: 'кг', кілограм: 'кг', килограмм: 'кг', l: 'л', літр: 'л', литр: 'л', m: 'м', метр: 'м', комплект: 'компл', комплекти: 'компл', 'к-т': 'компл', 'ком-т': 'компл', кмпл: 'компл', од: 'шт', одиниця: 'шт', пар: 'компл', пара: 'компл', пари: 'компл', уп: 'упак', упаковка: 'упак', упаков: 'упак', упако: 'упак' }
   const canonical = (unit: string) => aliases[unit.trim().replace(/\.$/, '')] ?? unit.trim().replace(/\.$/, '')
   const one = clean.match(/^([^()]+)\(\s*1(?:[.,]0+)?\s+([^()]+)\)$/u)
   if (one && canonical(one[1]) === canonical(one[2])) return canonical(one[1])
