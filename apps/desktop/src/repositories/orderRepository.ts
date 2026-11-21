@@ -52,6 +52,8 @@ function canChangeOrderStatus(from: string, to: string): boolean {
   return from === to || (ORDER_STATUS_TRANSITIONS[from] ?? []).includes(to)
 }
 
+export interface InvoiceArrivalOrder { order_id: string; order_number: number; customer_name: string | null; customer_phone: string | null; items: Array<{ name: string; qty: number }>; complete: boolean }
+export interface InvoiceArrivalShortage { order_number: number; name: string; needed: number; available: number }
 type LocalOrderItemState = { item_status: string; sell_price: number; qty: number; core_deposit_amount: number }
 
 
@@ -677,6 +679,74 @@ export class LocalOrderRepository {
     })
     return { updated: uniqueIds.length }
   }
+  /**
+   * 22.11.2026 (етап 10 плану): проведена накладна сама відмічає «прибуло» в замовленнях, які чекають цей товар,
+   * і повертає список «кому подзвонити». Збіг лише точний: та сама картка товару або той самий артикул
+   * (артикул картки чи її крос-номер). Розподіл — за чергою замовлень; якщо товару менше, ніж чекають,
+   * позиція лишається «чекаємо» і потрапляє в «не вистачило». Повтор для тієї ж накладної нічого не змінює.
+   */
+  applyInvoiceArrival(invoiceId: string, tenantId = DEFAULT_TENANT_ID): { orders: InvoiceArrivalOrder[]; shortages: InvoiceArrivalShortage[]; already_applied: boolean } {
+    if (typeof invoiceId !== 'string' || !/^[a-zA-Z0-9-]{1,128}$/.test(invoiceId)) throw new Error('Некоректна накладна')
+    const key = `order-arrival:${tenantId}:${invoiceId}`
+    return this.db.transaction(() => {
+      const receipt = this.db.prepare('SELECT value_json FROM app_meta WHERE key = ?').get(key) as { value_json: string } | undefined
+      if (receipt) return { ...JSON.parse(receipt.value_json), already_applied: true }
+      const invoice = this.db.prepare('SELECT status FROM supply_invoices WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL').get(invoiceId, tenantId) as { status: string } | undefined
+      if (!invoice) throw new Error('Накладну не знайдено')
+      if (invoice.status !== 'posted') throw new Error('Прибуття в замовленнях відмічається лише після проведення накладної')
+      const skuKey = (value: unknown) => String(value ?? '').normalize('NFKC').toUpperCase().replace(/[^\p{L}\p{N}]/gu, '')
+      const received = this.db.prepare(`SELECT i.product_id, SUM(i.qty) AS qty, p.sku, p.name FROM supply_invoice_items i
+        JOIN products p ON p.id = i.product_id AND p.tenant_id = i.tenant_id
+        WHERE i.invoice_id = ? AND i.tenant_id = ? AND i.deleted_at IS NULL GROUP BY i.product_id`).all(invoiceId, tenantId) as Array<{ product_id: string; qty: number; sku: string; name: string }>
+      const left = new Map<string, number>(), productBySku = new Map<string, string | null>()
+      const remember = (code: string, productId: string) => { if (code.length >= 4) productBySku.set(code, productBySku.has(code) && productBySku.get(code) !== productId ? null : productId) }
+      for (const row of received) {
+        left.set(row.product_id, num(row.qty))
+        remember(skuKey(row.sku), row.product_id)
+        for (const cross of this.db.prepare('SELECT cross_number FROM product_cross_numbers WHERE product_id = ? AND tenant_id = ? AND deleted_at IS NULL').all(row.product_id, tenantId) as Array<{ cross_number: string }>) remember(skuKey(cross.cross_number), row.product_id)
+      }
+      const waiting = this.db.prepare(`SELECT i.id, i.order_id, i.name, i.sku, i.product_id, i.qty, o.order_number
+        FROM customer_order_items i JOIN customer_orders o ON o.id = i.order_id AND o.tenant_id = i.tenant_id
+        WHERE i.tenant_id = ? AND i.deleted_at IS NULL AND o.deleted_at IS NULL AND i.item_status IN ('pending', 'ordered')
+          AND i.item_type <> 'service' AND o.status NOT IN ('completed', 'canceled', 'archived')
+        ORDER BY o.created_at ASC, i.created_at ASC`).all(tenantId) as Array<{ id: string; order_id: string; name: string; sku: string | null; product_id: string | null; qty: number; order_number: number }>
+      const touched = new Map<string, Array<{ name: string; qty: number }>>(), shortages: InvoiceArrivalShortage[] = []
+      for (const item of waiting) {
+        const productId = item.product_id && left.has(item.product_id) ? item.product_id : productBySku.get(skuKey(item.sku)) ?? null
+        if (!productId) continue
+        const need = num(item.qty), available = left.get(productId) ?? 0
+        if (available < need) { shortages.push({ order_number: item.order_number, name: item.name, needed: need, available }); continue }
+        try {
+          // Окрема вкладена транзакція на позицію: якщо резерв неможливий (залишок пішов у мінус раніше),
+          // ця позиція лишається «чекаємо», а решта накладної відмічається як слід.
+          this.db.transaction(() => {
+        if (!item.product_id) {
+          // Товар тепер на складі: позиція отримує картку, щоб резерв і видача списали саме його.
+          const timestamp = this.nextTimestamp(tenantId, item.order_id)
+          this.db.prepare('UPDATE customer_order_items SET product_id = ?, dirty_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?').run(productId, timestamp, timestamp, item.id, tenantId)
+        }
+        this.updateOrderItemStatus(item.order_id, item.id, 'arrived', tenantId)
+          })
+        } catch {
+          shortages.push({ order_number: item.order_number, name: item.name, needed: need, available: 0 })
+          continue
+        }
+        left.set(productId, subtractStockQuantity(available, need))
+        touched.set(item.order_id, [...(touched.get(item.order_id) ?? []), { name: item.name, qty: need }])
+      }
+      const orders: InvoiceArrivalOrder[] = [...touched].map(([orderId, items]) => {
+        const order = this.getOrder(orderId, tenantId)
+        this.addOutbox(tenantId, 'customer_order', orderId, 'order.updated', order, this.nextTimestamp(tenantId, orderId))
+        const customer = order.customer_id ? this.db.prepare('SELECT full_name, phone FROM customers WHERE id = ? AND tenant_id = ?').get(order.customer_id, tenantId) as { full_name: string | null; phone: string | null } | undefined : undefined
+        return { order_id: orderId, order_number: order.order_number, customer_name: customer?.full_name ?? null, customer_phone: customer?.phone ?? null,
+          items, complete: order.status === 'ready' }
+      })
+      const result = { orders, shortages }
+      this.db.prepare('INSERT INTO app_meta(key, value_json, updated_at) VALUES (?, ?, ?)').run(key, JSON.stringify(result), nowIso())
+      return { ...result, already_applied: false }
+    })
+  }
+
   listReadyOrders(input: { tenant_id?: string; search?: string; customer_id?: string | null; limit?: number } = {}): any[] {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const search = String(input.search ?? '').trim().toLowerCase()

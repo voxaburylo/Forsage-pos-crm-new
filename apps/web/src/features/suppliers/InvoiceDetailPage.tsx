@@ -5,6 +5,7 @@ import { useParams } from 'react-router-dom'
 import { useViewNavigation } from '@/hooks/useViewNavigation'
 import { Tag, Trash2 } from 'lucide-react'
 import { supplierApi } from './supplierApi'
+import { announceInvoiceArrival } from '@/features/orders/OrderArrivalModal'
 import { sourceForPaymentMethod, methodForPaymentSource } from './supplierPaymentSelection'
 import type { SupplyInvoice } from '@/types/supplier'
 import { Layout } from '@/components/Layout'
@@ -84,6 +85,7 @@ export default function InvoiceDetailPage() {
     try {
       await supplierApi.postInvoice(id!, invoice?.edit_revision)
       toast.success('Накладну проведено')
+      void announceInvoiceArrival(id)
       load()
     } catch (error) {
       reportActionError(error, 'Помилка проведення')

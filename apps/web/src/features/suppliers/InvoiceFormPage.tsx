@@ -1,3 +1,4 @@
+import { announceInvoiceArrival } from '@/features/orders/OrderArrivalModal'
 import { RowPhotoCell } from './RowPhotoCell'
 import { AiInvoiceLineMatch } from './AiInvoiceLineMatch'
 import { useAiInvoiceMatching } from './useAiInvoiceMatching'
@@ -1341,6 +1342,7 @@ export default function InvoiceFormPage() {
       setServerDraftId(result.data.id)
       setInitialPaymentAvailable(false)
       toast.success('Накладну проведено — товари, оплата та залишки збережені разом')
+      void announceInvoiceArrival(result.data.id)
       invoiceDraftPersistenceDisabledRef.current = true
       clearSupplyInvoiceDraft(invoiceDraftKey, serverDraftIdRef.current)
       back()

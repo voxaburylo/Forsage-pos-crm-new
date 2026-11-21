@@ -1,3 +1,4 @@
+import { OrderArrivalModal } from '@/features/orders/OrderArrivalModal'
 import { Component, lazy, Suspense, useEffect, useState, type ErrorInfo, type ReactNode } from 'react'
 import { createBrowserRouter, createHashRouter, RouterProvider, Routes, Route, Navigate, useLocation, useParams } from 'react-router-dom'
 import ProtectedRoute from '@/components/ProtectedRoute'
@@ -200,6 +201,7 @@ function Workspace() {
     <>
       <div id="desktop-workspace">
       <NavigationGuard />
+      <OrderArrivalModal />
       <LocalSyncAgent />
       <AppErrorBoundary>
       <Suspense fallback={<Loader />}>
