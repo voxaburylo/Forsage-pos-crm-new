@@ -99,7 +99,7 @@ describe('order prepayment with bonuses', () => {
     expect(bonus()).toBe(20000)
     // Бонуси не є грошима в касі: звіт зміни не падає і не показує їх як готівку.
     const report = pos.getShiftReport(cashier)
-    expect(report.by_method).toMatchObject({ cash: 0, card: 0, transfer: 0, account: 0 })
-    expect(report.payment_received_total).toBe(0)
+    expect(report!.by_method).toMatchObject({ cash: 0, card: 0, transfer: 0, account: 0 })
+    expect(report!.payment_received_total).toBe(0)
   })
 })
