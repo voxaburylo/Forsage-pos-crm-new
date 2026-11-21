@@ -8,7 +8,6 @@ import { formatMoney } from '@/lib/utils'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { useDialogEscape } from '@/hooks/useDialogEscape'
 import { canUseIntegratedTerminal, runPaymentConfirmation } from './paymentContract'
-import { posLineCost } from './posMoney'
 
 interface SplitAmounts {
   cash_amount: number
@@ -166,7 +165,8 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
       customerApi.get(customerId).then((res) => {
         if (cancelled) return
         const balance = validBonusAmount(res.data.bonus_balance ?? 0)
-        const maxRedeem = Math.min(balance, Math.floor(goodsTotal * 0.30))
+        // Рішення власника 20.11.2026: бонусами можна оплатити весь товар.
+        const maxRedeem = Math.min(balance, goodsTotal)
         apply(balance, maxRedeem)
       }).catch(failed)
       return () => { cancelled = true }
@@ -184,9 +184,9 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   const bonusBalance = bonusReady && bonusAvailability.status === 'ready' ? bonusAvailability.balance : 0
   const maxBonus = bonusReady && bonusAvailability.status === 'ready' ? bonusAvailability.maximum : 0
   // Обчислення сум (потрібні і для діалогу термінала, і для основного UI)
-  // Бонуси — теж знижка: вони не можуть опустити чек нижче закупівельної вартості товарів.
-  const bonusRoomAboveCost = Math.max(0, store.total - store.totalCoreDeposit - store.items.reduce((sum, item) => sum + posLineCost(item), 0))
-  const bonusCap = Math.min(bonusBalance, maxBonus, bonusRoomAboveCost)
+  // Рішення власника 21.11.2026: бонуси — гроші клієнта, ними можна оплатити товар повністю
+  // (межа закупівельної ціни стосується лише знижок).
+  const bonusCap = Math.min(bonusBalance, maxBonus)
   const _bonusRedeemed = Math.min(
     parsePaymentKopecks(bonusInput),
     bonusCap, Math.max(0, store.total - store.totalCoreDeposit),

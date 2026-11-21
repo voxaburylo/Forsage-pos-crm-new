@@ -13,6 +13,9 @@ export default defineConfig({
     // але SQLite у WAL-режимі на Windows чутлива до паралельних відкриттів
     // одного файлу, тому файли виконуються послідовно.
     fileParallelism: false,
+    // 20.11.2026: повний прогін без обмеження інколи падав ERR_IPC_CHANNEL_CLOSED (обрив робочого процесу);
+    // з двома процесами — стабільно.
+    maxWorkers: 2,
     testTimeout: 30_000,
   },
 })

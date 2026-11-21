@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { AlertTriangle } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { desktopBridge } from '@/lib/desktopBridge'
 
 type OpenShift = { id: string; cashier_name: string | null; opened_at: string }
@@ -19,6 +20,7 @@ export function staleShifts(shifts: readonly OpenShift[], now = new Date()): Arr
  * зміни» і не йде копія в хмару. Нагадування на головній, поки є відкрита зміна з минулих днів.
  */
 export function ShiftReminder() {
+  const navigate = useNavigate()
   const [stale, setStale] = useState<Array<OpenShift & { days: number }>>([])
   const [lastBackup, setLastBackup] = useState<string | null>(null)
   useEffect(() => {
@@ -37,7 +39,7 @@ export function ShiftReminder() {
       <AlertTriangle size={18} className="mt-0.5 shrink-0" />
       <div>
         <p className="font-semibold">Зміну не закрито: {stale.map(shift => `${shift.cashier_name ?? 'касир'} — ${shift.days} дн. (з ${new Date(shift.opened_at).toLocaleDateString('uk-UA', { timeZone: 'Europe/Kyiv' })})`).join('; ')}</p>
-        <p className="mt-1">Поки зміну не закрито, не створюється резервна копія «при закритті зміни» і не йде копія в хмару. Закрийте зміну в касі (кнопка «Закрити зміну»).
+        <p className="mt-1">Поки зміну не закрито, не створюється резервна копія «при закритті зміни» і не йде копія в хмару. Касир закриває свою зміну в касі; забуту зміну власник закриває в <button type="button" onClick={() => navigate('/shifts')} className="font-semibold underline">Фінанси → Зміни</button>.
           {lastBackup ? ` Остання копія зміни: ${new Date(lastBackup).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv' })}.` : ' Копій змін ще немає.'}</p>
       </div>
     </div>

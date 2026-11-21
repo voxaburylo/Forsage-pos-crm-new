@@ -1,5 +1,6 @@
 import { localAnalytics } from './repositories/localAnalytics'
 import path from 'node:path'
+import { pendingUnitSpellings, tidyUnitSpellings } from './repositories/catalogUnitTidy'
 import { isExpectedCommandFailure } from './diagnostics/expectedCommandFailure'
 import { RendererRecovery } from './rendererRecovery'
 import { deferQuitForMainWindow, NativeCloseController, requestUnloadScript } from './nativeClose'
@@ -1143,6 +1144,16 @@ app.whenReady().then(async () => {
         detail: 'Копія бази (після зміни або щоденна) повториться сама. ' + (error instanceof Error ? error.message : String(error)) })
     }, undefined, { dailyCopy: true })
   shiftBackups.start()
+  // 20.11.2026: однакове написання одиниць у картках (шт/компл/…), один раз після оновлення; спершу копія бази.
+  const unitTidyDb = localDatabase
+  setTimeout(() => {
+    void (async () => {
+      if (localNetwork?.getStatus().mode === 'client' || !pendingUnitSpellings(unitTidyDb)) return
+      await unitTidyDb.backupNow()
+      const changed = tidyUnitSpellings(unitTidyDb)
+      blackBox?.record('catalog-unit-tidy', { changed })
+    })().catch(error => writeDesktopDiagnostic('catalog-unit-tidy-failed', error))
+  }, 15_000)
   externalBackups = new ExternalBackupService(dataRoot, localDatabase, error => {
     writeDesktopDiagnostic('external-backup-failed', error)
     recordDesktopProblem({ source: 'database', code: 'database.external_backup_failed',
@@ -1980,7 +1991,9 @@ app.whenReady().then(async () => {
   })
   handleDesktopIpc('desktop:pos:close-shift', (_event, cashierId: string, actualAmount: number, comment: string | null, shiftId: string) => {
     const session = requireDesktopSession()
-    const result = requireLocalPos().closeShift(session.id, actualAmount, comment, shiftId, session.tenant_id, session.role)
+    // Власник/адміністратор може закрити забуту зміну іншого касира; касир — лише свою, як і раніше.
+    const foreign = typeof cashierId === 'string' && cashierId !== session.id && (session.role === 'owner' || session.role === 'admin')
+    const result = requireLocalPos().closeShift(foreign ? cashierId : session.id, actualAmount, comment, shiftId, session.tenant_id, session.role, session.id)
     setImmediate(() => { void shiftBackups?.tick() })
     return result
   })

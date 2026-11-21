@@ -95,7 +95,8 @@ export const ORDERS_TABS = [
 export const FINANCE_TABS = [
   { to: '/sales', label: 'Журнал чеків' },
   { to: '/returns', label: 'Повернення' },
-  { to: '/cashflow', label: 'Каса та витрати' }
+  { to: '/cashflow', label: 'Каса та витрати' },
+  { to: '/shifts', label: 'Зміни', roles: ['owner', 'admin'] },
 ]
 
 export const SUPPLIERS_TABS = [

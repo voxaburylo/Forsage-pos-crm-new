@@ -758,7 +758,7 @@ interface ForsageDesktopBridge {
     openShift: (input: { cashier_id: string; opening_cash?: number; notes?: string | null }) => Promise<string>
     getOpenShift: (cashierId: string) => Promise<Shift | null>
     /** Відкриті зміни всіх касирів. Старі збірки цього не мають. */
-    listOpenShifts?: () => Promise<Array<{ id: string; cashier_id: string; cashier_name: string | null; opened_at: string }>>
+    listOpenShifts?: () => Promise<Array<{ id: string; cashier_id: string; cashier_name: string | null; opened_at: string; expected_cash?: number }>>
     checkout: (input: DesktopCheckoutInput) => Promise<DesktopCheckoutResult>
     listSales?: (input?: any) => Promise<any>
     dashboardSummary?: (input: { tenant_id?: string; date_from: string; date_to: string }) => Promise<any>

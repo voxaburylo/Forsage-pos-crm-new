@@ -7,6 +7,7 @@ import { Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { createGzip, createGunzip } from 'node:zlib'
 import path from 'node:path'
+import { Worker } from 'node:worker_threads'
 
 /**
  * Друга копія бази поза диском C: (флешка або зовнішній диск). Рішення власника 17.11.2026.
@@ -137,6 +138,16 @@ export async function writeExternalCopy(sourceDb: string, folder: string, now = 
   }
 }
 
+/** Excel на флешці потрібен лише свіжий: лишаємо останні `keep` файлів кожного виду. */
+export function pruneExcelFiles(dir: string, keep = 1): string[] {
+  const removed: string[] = []
+  for (const kind of ['Товари', 'Клієнти']) {
+    const files = readdirSync(dir).filter(name => name.startsWith(kind + '_') && name.endsWith('.xlsx')).sort().reverse()
+    for (const name of files.slice(keep)) { removeQuietly(path.join(dir, name)); removed.push(name) }
+  }
+  return removed
+}
+
 /** Лишаємо `keep` найсвіжіших; якщо місця мало — прибираємо старі, але не менше трьох копій. */
 export function pruneExternalCopies(folder: string, keep = EXTERNAL_KEEP, freeBytes?: () => number): string[] {
   const copies = listExternalCopies(folder)
@@ -189,7 +200,9 @@ export class ExternalBackupService {
   private timer: NodeJS.Timeout | null = null
   private running: Promise<ExternalCopy> | null = null
   constructor(private readonly dataRoot: string, private readonly database: BackupSource,
-    private readonly onError: (error: unknown) => void) {}
+    private readonly onError: (error: unknown) => void,
+    /** Для тестів: замість окремого потоку. */
+    private readonly excelExporter?: (input: { snapshot: string; output: string; stamp: string; capturedAt: string }) => Promise<unknown>) {}
 
   start() {
     void this.runIfDue()
@@ -211,6 +224,19 @@ export class ExternalBackupService {
     return this.runNow().catch(error => { this.onError(error); return null })
   }
 
+  /** Excel будується в окремому потоці, щоб каса не завмирала. */
+  private excel(snapshot: string, output: string, createdAt: string): Promise<unknown> {
+    if (this.excelExporter) return this.excelExporter({ snapshot, output, stamp: createdAt.replace(/[:T]/g, '-'), capturedAt: new Date().toISOString() })
+    return new Promise((resolve, reject) => {
+      const worker = new Worker(path.join(__dirname, 'shiftExportWorker.js'), { workerData: { snapshot, output, stamp: createdAt.replace(/[:T]/g, '-'), capturedAt: new Date().toISOString(), excelOnly: true } })
+      let result: unknown, failure: Error | undefined
+      const timer = setTimeout(() => { failure = new Error('Перевищено час створення Excel'); void worker.terminate() }, 120_000)
+      worker.on('message', message => { if (message.error) failure = new Error(message.error); else result = message.result })
+      worker.on('error', error => { failure = error })
+      worker.on('exit', code => { clearTimeout(timer); if (failure || code !== 0 || !result) reject(failure ?? new Error('Створення Excel перервано')); else resolve(result) })
+    })
+  }
+
   runNow(): Promise<ExternalCopy> {
     if (this.running) return this.running
     const task = (async () => {
@@ -223,6 +249,9 @@ export class ExternalBackupService {
         const source = fresh && Date.now() - Date.parse(fresh.createdAt) < 2 * 60 * 60_000 ? fresh.filePath : await this.database.backupNow()
         const copy = await writeExternalCopy(source, config.folder)
         pruneExternalCopies(config.folder)
+        // Поряд — Excel «Товари» і «Клієнти» (рішення власника 20.11.2026). Збій Excel не скасовує копію бази.
+        try { await this.excel(source, copyDirectory(config.folder), copy.createdAt); pruneExcelFiles(copyDirectory(config.folder)) }
+        catch (error) { this.onError(error) }
         writeExternalConfig(this.dataRoot, { ...readExternalConfig(this.dataRoot), last_copy_at: new Date().toISOString(), last_error: null })
         return copy
       } catch (error) {

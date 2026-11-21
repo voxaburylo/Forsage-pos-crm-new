@@ -3,6 +3,7 @@ import { isStoredReceivingDetail, receivingProblemDetail } from './receivingReas
 
 const explanations: Record<string, string> = {
   unknown: 'Технічна помилка; причину можна зіставити за відбитком',
+  message: 'Повідомлення програми',
   'foreign-brand-key': 'Відсутній зв’язок із брендом товару (products_brand_id_fkey)',
   'foreign-key': 'Не знайдено пов’язаний запис',
   'unique-constraint': 'Запис з таким ідентифікатором уже існує',
@@ -68,6 +69,8 @@ export function safeProblemDetail(value: unknown, problemCode: string): string |
   const diagnostic = safeDiagnosticDetails(text)
   const known = knownServerReplies.find(([pattern]) => pattern.test(text))?.[1]
   if (known) return explanations[known] + ' [' + known + ']. Відбиток: ' + diagnostic.fingerprint + '.'
+  const own = ownMessage(text)
+  if (own && !diagnostic.error_code) return own + ' [message]. Відбиток: ' + diagnostic.fingerprint + '.'
   const candidate = text.includes('products_brand_id_fkey') ? 'foreign-brand-key' : String(diagnostic.error_code ?? 'unknown')
   const code = Object.hasOwn(explanations, candidate) ? candidate : 'unknown'
   return explanations[code] + ' [' + code + ']. Відбиток: ' + diagnostic.fingerprint + '.'
@@ -91,4 +94,15 @@ export function safeProblemContext(value: unknown): Record<string, unknown> | nu
     if (Object.keys(safe).length) data.error = safe
   }
   return Object.keys(data).length ? data : null
+}
+
+/**
+ * 20.11.2026: журнал показував «Технічна помилка [unknown]» навіть там, де програма сама пояснила
+ * причину українською («Сесію ревізії вже завершено…»). Власне повідомлення програми показуємо,
+ * але без того, що в лапках (назви товарів, імена) і без довгих чисел (телефони, коди).
+ */
+export function ownMessage(text: string): string | null {
+  const line = text.split('\n')[0].trim()
+  if (!/^[А-ЯІЇЄҐ]/u.test(line) || line.length > 240 || /@|\bat\s|https?:/i.test(line)) return null
+  return line.replace(/«[^»]*»/gu, '«…»').replace(/"[^"]*"/g, '"…"').replace(/\d{6,}/g, '…')
 }

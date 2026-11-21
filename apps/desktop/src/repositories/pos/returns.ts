@@ -459,6 +459,8 @@ export class LocalPosReturns extends LocalPosSales {
         )
       }
 
+      this.takeBackEarnedBonus(tenantId, ready.sale, ready.refund, returnId, ready.approved_by, timestamp)
+
       const returnState = this.getSaleForReturn(ready.sale.id, tenantId)
       const remaining = returnState.items
         .reduce((sum: number, item: any) => sum + Number(item.available_qty ?? 0), 0)
@@ -515,6 +517,38 @@ export class LocalPosReturns extends LocalPosSales {
       }
       return result
     })
+  }
+
+  /**
+   * Рішення власника 20.11.2026: при поверненні віднімається бонус, нарахований на повернену частину чека,
+   * щоб власник не мав збитку. Частка — сума повернення / сума чека без застави. Разом не більше нарахованого;
+   * якщо бонусів у клієнта вже менше — віднімаємо скільки є (баланс не стає від'ємним).
+   */
+  private takeBackEarnedBonus(tenantId: string, sale: any, refund: number, returnId: string, userId: string, timestamp: string): void {
+    if (!sale?.customer_id || !(refund > 0)) return
+    const earned = Number((this.db.prepare(`SELECT COALESCE(SUM(amount),0) AS n FROM bonus_transactions
+      WHERE tenant_id=? AND source_sale_id=? AND transaction_type='earn' AND deleted_at IS NULL`).get(tenantId, sale.id) as { n: number }).n)
+    if (earned <= 0) return
+    const taken = -Number((this.db.prepare(`SELECT COALESCE(SUM(amount),0) AS n FROM bonus_transactions
+      WHERE tenant_id=? AND source_sale_id=? AND transaction_type='manual' AND amount<0 AND description LIKE 'Повернення:%' AND deleted_at IS NULL`).get(tenantId, sale.id) as { n: number }).n)
+    const base = Number(sale.total ?? 0) - Number((this.db.prepare(`SELECT COALESCE(SUM(core_deposit_amount * qty),0) AS n FROM sale_items
+      WHERE tenant_id=? AND sale_id=?`).get(tenantId, sale.id) as { n: number }).n)
+    if (base <= 0) return
+    const due = Math.min(earned - taken, Math.round(earned * Math.min(refund, base) / base))
+    const customer = this.getCustomerForMoney(sale.customer_id, tenantId)
+    const amount = Math.min(due, Math.max(0, Number((customer as any).bonus_balance ?? 0)))
+    if (amount <= 0) return
+    const transactionId = randomUUID()
+    const description = 'Повернення: мінус бонуси за чек ' + (sale.sale_number ?? '')
+    this.db.prepare('UPDATE customers SET bonus_balance = bonus_balance - ?, dirty_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?')
+      .run(amount, timestamp, timestamp, sale.customer_id, tenantId)
+    this.db.prepare(`INSERT INTO bonus_transactions (id, tenant_id, customer_id, amount, transaction_type, source_sale_id,
+      description, created_by, dirty_at, created_at, updated_at) VALUES (?, ?, ?, ?, 'manual', ?, ?, ?, ?, ?, ?)`)
+      .run(transactionId, tenantId, sale.customer_id, -amount, sale.id, description, userId, timestamp, timestamp, timestamp)
+    this.addOutbox(tenantId, 'customer', sale.customer_id, 'customer.bonus_adjusted', {
+      customer_id: sale.customer_id, transaction_id: transactionId, amount: -amount, transaction_type: 'manual',
+      sale_id: sale.id, return_id: returnId, description, created_by: userId, created_at: timestamp,
+    }, timestamp)
   }
 
   protected assertReturnReady(input: any): {

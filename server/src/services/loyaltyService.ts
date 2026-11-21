@@ -5,7 +5,12 @@ import { AppError } from '../middleware/errorHandler.js'
 // No fallback TENANT_ID
 const SETTINGS_TABLE = 'loyalty_settings'
 
-async function expireBonuses(customerId: string, tenantId: string): Promise<number> {
+/** Рішення власника 20.11.2026: бонуси не згорають. Функція лишається для старих викликів і нічого не списує. */
+async function expireBonuses(_customerId: string, _tenantId: string): Promise<number> {
+  return 0
+}
+
+export async function legacyExpireBonuses(customerId: string, tenantId: string): Promise<number> {
   return runTransaction(async (client) => {
     const customer = await client.query(
       `SELECT COALESCE(bonus_balance, 0) AS bonus_balance

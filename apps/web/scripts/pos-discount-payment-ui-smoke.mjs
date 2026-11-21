@@ -55,7 +55,8 @@ try {
   for (const method of ['cash', 'card', 'mixed', 'transfer']) {
     const page = await setup()
     const bonus = page.locator('input[type=number][max]')
-    assert.equal(await bonus.getAttribute('max'), '27.00', 'bonus cap excludes the core deposit')
+    // Рішення власника 20.11.2026: бонусами — весь товар (90 грн), але не застава за сердечник.
+    assert.equal(await bonus.getAttribute('max'), '90.00', 'bonus cap is all goods and excludes the core deposit')
     await bonus.fill('1000')
     if (method === 'cash') await page.getByRole('button', { name: 'Без решти', exact: true }).click()
     if (method === 'card') await page.getByRole('button', { name: 'Термінал', exact: true }).click()
@@ -71,11 +72,11 @@ try {
     }
     await page.waitForFunction(() => fixture.calls.length === 1, null, { timeout: 7000 })
     const [actual, cash, redeemed, split, fiscal, auth, print] = await page.evaluate(() => fixture.calls[0])
-    assert.equal(actual, method); assert.equal(redeemed, 2700)
+    assert.equal(actual, method); assert.equal(redeemed, 9000)
     assert.equal(fiscal, false); assert.equal(print, false)
-    if (method === 'cash') assert.equal(cash, 26300)
+    if (method === 'cash') assert.equal(cash, 20000)
     if (method === 'card' || method === 'mixed') assert.equal(auth, 'TEST-ONLY')
-    if (method === 'mixed') assert.deepEqual(split, { cash_amount: 10000, card_amount: 16300 })
+    if (method === 'mixed') assert.deepEqual(split, { cash_amount: 10000, card_amount: 10000 })
     await page.evaluate(() => fixture.resolve()); await page.close()
   }
   const switched = await setup()

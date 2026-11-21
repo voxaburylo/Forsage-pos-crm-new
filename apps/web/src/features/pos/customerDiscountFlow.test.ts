@@ -213,12 +213,13 @@ describe('readiness: basket → isolated local sale → restart → return', () 
     }
     expect(pos.getExpectedCash('cashier')!.expected_amount).toBe(10000)
   })
-  it('does not apply cashback as an immediate discount or accrue it on a core deposit', () => {
+  it('does not apply cashback as an immediate discount or accrue it on a core deposit; it goes to bonuses', () => {
     const client = localCustomer(10, 'cashback')
     product(1, 10000, 20000)
     const sale = pay()
     expect(pos.getSale(sale)).toMatchObject({ discount: 0, total: 30000 })
-    expect(db.prepare('SELECT deposit_balance n FROM customers WHERE id=?').get(client)).toEqual({ n: 1000 })
+    // Рішення власника 20.11.2026: накопичення йде в бонуси, рахунок клієнта (передоплата) не змінюється.
+    expect(db.prepare('SELECT deposit_balance d, bonus_balance b FROM customers WHERE id=?').get(client)).toEqual({ d: 0, b: 1000 })
   })
   it('rejects a bonus debit missing its matching receipt discount before changing any money or stock', () => {
     const client = localCustomer(0)
