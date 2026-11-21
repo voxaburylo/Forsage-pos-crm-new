@@ -1154,6 +1154,8 @@ export function chatEffort(params: { message: string; fileText?: string; images?
   if (params.fileText?.trim() || (params.images?.length ?? 0) > 0) return 'medium'
   const text = params.message.trim()
   if (text.length > 160 || text.includes('\n')) return 'medium'
+  // Кроси й аналоги — пошук в інтернеті з відбором надійних номерів: не спрощуємо.
+  if (/крос|аналог|oem|оригінальн|оригинальн/i.test(text)) return 'medium'
   return 'low'
 }
 

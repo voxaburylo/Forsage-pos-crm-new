@@ -309,6 +309,8 @@ describe('chatEffort (21.11.2026: faster answers without losing quality)', () =>
     expect(chatEffort({ message: 'накладна', images: [{}] })).toBe('medium')
     expect(chatEffort({ message: 'x'.repeat(161) })).toBe('medium')
     expect(chatEffort({ message: 'перший\nдругий' })).toBe('medium')
+    expect(chatEffort({ message: 'знайди кроси на шарові Логан' })).toBe('medium')
+    expect(chatEffort({ message: 'найди аналоги HU819' })).toBe('medium')
   })
 })
 
