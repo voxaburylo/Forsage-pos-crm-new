@@ -6,16 +6,13 @@ import { installLocalDiagnostics } from './lib/localDiagnostics'
 
 installLocalDiagnostics()
 
-// VitePWA активує новий service worker автоматично. Одразу перезавантажуємо
-// сторінку після зміни контролера, щоб відкрита вкладка не продовжувала
-// працювати зі старим JS і застарілою адресою API. Прапорець захищає від циклу.
+// 21.11.2026: service worker більше не реєструється (див. vite.config.ts) — він лише перезавантажував
+// сторінку при кожному відкритті. Прибираємо стару реєстрацію тихо, без перезавантаження: index.html
+// і так завжди свіжий (no-store), а файли з хешем у назві кешуються браузером.
 if ('serviceWorker' in navigator) {
-  let reloadingForUpdate = false
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (reloadingForUpdate) return
-    reloadingForUpdate = true
-    window.location.reload()
-  })
+  void navigator.serviceWorker.getRegistrations()
+    .then(registrations => Promise.all(registrations.map(registration => registration.unregister())))
+    .catch(() => { /* not critical */ })
 }
 
 createRoot(document.getElementById('root')!).render(

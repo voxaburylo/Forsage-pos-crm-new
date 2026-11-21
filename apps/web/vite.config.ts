@@ -17,6 +17,10 @@ export default defineConfig({
       // сторінку це не перезавантажує: оновлення з'явиться при наступному reload.
       registerType: 'autoUpdate',
       selfDestroying: true,
+      // 21.11.2026 (план швидкості вебу): registerSW.js реєстрував цей самознищувальний sw.js при КОЖНОМУ
+      // відкритті, а він одразу перезавантажував сторінку — веб вантажився двічі. Реєстрацію вимкнено;
+      // sw.js лишається лише для старих браузерів, де його вже зареєстровано: один раз прибере себе.
+      injectRegister: false,
       includeAssets: ['*.svg'],
       manifest: {
         name: 'Forsage CRM',
