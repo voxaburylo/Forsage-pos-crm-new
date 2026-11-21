@@ -128,7 +128,8 @@ async function requestOnce<T>(path: string, options?: RequestOptions): Promise<T
   }
   const token = await getAccessToken()
   options?.signal?.throwIfAborted()
-  const { silent, _retry, onProgressLine: _onProgressLine, ...fetchOptions } = options ?? {}
+  const { silent, _retry, ...fetchOptions } = options ?? {}
+  delete fetchOptions.onProgressLine
   delete fetchOptions.timeoutMs
 
   let res: Response
