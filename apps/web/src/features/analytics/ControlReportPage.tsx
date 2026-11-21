@@ -46,7 +46,7 @@ export default function ControlReportPage() {
   const allTabs: Array<{ id: Tab; label: string; count?: number }> = [
     { id: 'compare', label: 'Порівняння періодів' },
     { id: 'staff', label: 'По працівниках', count: report?.staff?.length },
-    { id: 'running', label: 'Закінчуються', count: report?.running_out?.length },
+    { id: 'running', label: 'Закінчуються (за продажами)', count: report?.running_out?.length },
     { id: 'below', label: 'Нижче закупки', count: report?.below_cost.length },
     { id: 'low', label: `Націнка до ${marginPct}%`, count: report?.low_margin.length },
     { id: 'stale', label: 'Залежані товари', count: report?.stale.length },

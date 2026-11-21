@@ -20,8 +20,9 @@ export const ANALYTICS_GROUPS: AnalyticsGroup[] = [
     { label: 'P&L', to: '/analytics/sales?tab=profit', roles: ADMIN },
   ] },
   { id: 'products', label: 'Товари', links: [
-    { label: 'Закінчуються', to: '/analytics/control?tab=running', roles: OFFICE },
-    { label: 'Мало товару', to: '/analytics/sales?tab=lowstock', roles: ADMIN },
+    // Два різні показники (не дубль): прогноз за швидкістю продажів (сервер) і залишок нижче мінімуму картки (каса).
+    { label: 'Закінчуються (за продажами)', to: '/analytics/control?tab=running', roles: OFFICE },
+    { label: 'Нижче мінімуму', to: '/analytics/sales?tab=lowstock', roles: ADMIN },
     { label: 'Перерахунок', to: '/analytics/recount', roles: OFFICE },
     { label: 'Залежані', to: '/analytics/control?tab=stale', roles: OFFICE },
     { label: 'Нижче закупки', to: '/analytics/control?tab=below', roles: OFFICE },

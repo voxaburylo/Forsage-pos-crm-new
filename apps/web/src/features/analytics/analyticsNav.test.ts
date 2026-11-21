@@ -16,7 +16,7 @@ it('keeps role limits: a cashier sees only sold goods and tyre service', () => {
 it('highlights the exact report and falls back to the page when the tab is not in the address', () => {
   const groups = visibleAnalyticsGroups('owner')
   expect(activeAnalyticsLink(groups, '/analytics/control', '?tab=stale')?.label).toBe('Залежані')
-  expect(activeAnalyticsLink(groups, '/analytics/control', '')?.label).toBe('Закінчуються')
+  expect(activeAnalyticsLink(groups, '/analytics/control', '')?.label).toBe('Закінчуються (за продажами)')
   expect(activeAnalyticsLink(groups, '/abc', '')?.label).toBe('ABC-аналіз')
 })
 

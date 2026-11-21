@@ -531,7 +531,7 @@ export default function DailyReport() {
     { id: 'today',    label: 'Підсумки',   icon: <TrendingUp size={15} /> },
     { id: 'sold',     label: 'Продані товари', icon: <BarChart2 size={15} /> },
     { id: 'tire',     label: 'Шиномонтаж', icon: <Wrench size={15} /> },
-    { id: 'lowstock', label: 'Мало товару', icon: <AlertTriangle size={15} /> },
+    { id: 'lowstock', label: 'Нижче мінімуму', icon: <AlertTriangle size={15} /> },
     { id: 'debtors',  label: 'Боржники',   icon: <Users size={15} /> },
     { id: 'writeoffs', label: 'Списання',  icon: <Trash2 size={15} /> },
     { id: 'profit',    label: 'P&L',        icon: <DollarSign size={15} /> },
