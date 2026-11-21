@@ -7,7 +7,7 @@ import { assertDocumentRevision, requireDocumentRevision } from './documentRevis
 import { idempotentMutation } from './idempotentMutation'
 import { captureSupplyWriteState } from './supplyWriteSafety'
 import { checkedSupplyMoney, normalizeSupplyItem, checkedAiSupplyUnit } from './supplyValidation'
-import { AiInvoiceMatcher, invoiceBrand, rememberInvoiceProductName, rememberUnitEquivalence } from './aiInvoiceIdentity'
+import { AiInvoiceMatcher, invoiceBrand, rememberConfirmedSku, rememberInvoiceProductName, rememberUnitEquivalence } from './aiInvoiceIdentity'
 import { receivingLineReason } from '../diagnostics/receivingReasons'
 
 export interface ReceivingProductBase {
@@ -242,6 +242,7 @@ export function commitReceiving(db: LocalDatabase, input: ReceivingCommitInput):
         add(stored)
         if (line.ai_review && line.product_id && line.ai_review.choice === line.product_id) {
           rememberInvoiceProductName(db, tenant, saved.id, line.ai_review.source)
+          rememberConfirmedSku(db, tenant, saved.id, line.ai_review.source)
         }
         // Власник сам перевів одиницю накладної в одиницю картки («пар» → «шт»): наступного разу не питати.
         if (line.ai_review && line.product_id && product) rememberUnitEquivalence(db, tenant, saved.id, line.ai_review.source.unit, line.unit, saved.unit)

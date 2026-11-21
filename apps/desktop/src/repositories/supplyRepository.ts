@@ -5,7 +5,7 @@ import { advanceSupplyTerminalSupplier } from './supplyTerminalState'
 import { moveDeletedSupplierHistory } from './deletedSupplierHistory'
 import { prepareSupplierHistory, applySupplierHistory } from './supplierHistoryMerge'
 import { readSupplierPaymentState, verifySupplierPaymentCash, verifySupplierPaymentRows, verifySupplierPaymentState, supplierPaymentConflict } from './supplierPaymentSafety'
-import { rememberInvoiceProductName, AiInvoiceMatcher, previewAiInvoiceRows } from './aiInvoiceIdentity'
+import { rememberConfirmedSku, rememberInvoiceProductName, AiInvoiceMatcher, previewAiInvoiceRows } from './aiInvoiceIdentity'
 import { addStockQuantity, stockQuantity, subtractStockQuantity } from './stockQuantity'
 import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID } from '../db/localTypes'
@@ -523,7 +523,7 @@ export class LocalSupplyRepository {
           categoryId = product.category_id ?? categoryId
         }
 
-        if (String(raw.match_choice ?? '') === product.id) rememberInvoiceProductName(this.db, tenantId, product.id, raw)
+        if (String(raw.match_choice ?? '') === product.id) { rememberInvoiceProductName(this.db, tenantId, product.id, raw); rememberConfirmedSku(this.db, tenantId, product.id, raw) }
         items.push({ product_id: product.id, qty: rowQty, purchase_price: purchasePrice })
         draftItems.push({
           product_id: product.id,
