@@ -210,6 +210,14 @@ describe('actual AI service budget wiring, synthetic Claude SDK and database onl
   const result=await recognizeSupplyInvoicePhoto('shop','user',{images:[photo]})
   expect(result.actions[0].payload.invoice_total).toBe(240)
  })
+ it('asks for the goods total, not the amount due with the previous debt (УТ-26784: 6580 vs 6579.49)',async()=>{
+  mocks.create.mockResolvedValue(json({products:[{name:'Фільтр',qty:2,purchase_price_uah:120}],invoice_total:240}))
+  await recognizeSupplyInvoicePhoto('shop','user',{images:[photo]})
+  const request=JSON.stringify(mocks.create.mock.calls[0])
+  expect(request).toContain('Разом')
+  expect(request).toContain('з урахуванням заборгованості')
+  expect(request).not.toContain('накладної до сплати')
+ })
  it('rejects an incomplete multi-photo invoice before publishing any proposal',async()=>{
   for(const data of [
    {products:[{name:'Фільтр',qty:2,purchase_price_uah:120}],page_number:1,page_count:2},
