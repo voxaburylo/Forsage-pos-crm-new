@@ -188,10 +188,29 @@ const BULK_TOOLS = new Set(['create_customers_bulk', 'create_products_bulk', 'cr
 /** Пошук у інтернеті (веб-пошук Anthropic) — окремо від читання бази: довший і платний. */
 const RESEARCH_TOOL = 'search_cross_numbers'
 
+/**
+ * 21.11.2026 (прохання власника): аналоги — брендів, які реально продаються в Україні, плюс OE-номери;
+ * джерела — українські каталоги запчастин і каталоги виробників. Підтвердження обов'язкове, як і раніше.
+ */
+export function crossResearchPrompt(productLines: string): string {
+  return [
+    'Знайди для цих автотоварів крос-номери аналогів і оригінальні (OE) номери виробника авто.',
+    'Пріоритет — бренди, популярні в Україні:',
+    '- фільтри: MANN, WIX, MAHLE/KNECHT, BOSCH, Blue Print, FILTRON, HENGST, UFI, PURFLUX, Champion, SCT, Sakura;',
+    '- ходова й кермо (шарові, наконечники, тяги, сайлентблоки, стійки стабілізатора): CTR, LEMFÖRDER, TRW, FEBI, MOOG, DELPHI, SIDEM, RTS, Ruville;',
+    '- гальма: BOSCH, TRW, ATE, Brembo, Ferodo, Textar, Jurid; амортизатори: KYB, Monroe, SACHS, Bilstein;',
+    '- запалювання: NGK, BOSCH, DENSO, Champion; ремені й ролики: GATES, ContiTech, DAYCO, SKF, INA; підшипники: SKF, FAG, SNR.',
+    'Джерела: українські каталоги запчастин (avtopro.ua, exist.ua, elit.ua, ukrparts.com.ua) і каталоги виробників (mann-filter.com, wixfilters.com, catalog.mahle.com, boschaftermarket тощо). Оголошення (eBay, OLX тощо) — не джерело.',
+    'Для кожного товару: номер, бренд номера (або марка авто для OE), url сторінки, де номер прямо вказано як аналог/OE САМЕ цього товару (той самий артикул і виробник товару).',
+    'Не вгадуй і не переноси номери з інших товарів; якщо прямого підтвердження немає — так і напиши.',
+    productLines,
+  ].join('\n')
+}
+
 const toolDeclarations: FunctionDeclaration[] = [
   {
     name: 'search_cross_numbers',
-    description: 'Пошук крос-номерів і OE-номерів товарів в інтернеті (каталоги виробників, магазини запчастин). До 3 товарів за виклик; product_id бери з search_products. Повертає текст знахідок і список джерел (url). Нічого не записує.',
+    description: 'Пошук крос-номерів (аналогів брендів, популярних в Україні) і оригінальних OE-номерів в інтернеті. До 5 товарів за виклик; для 10–30 товарів виклич кілька разів ОДНОЧАСНО (вони виконуються паралельно). product_id бери з search_products. Повертає текст знахідок і список джерел (url). Нічого не записує.',
     parameters: {
       type: SchemaType.OBJECT,
       properties: { product_ids: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } } },
@@ -232,12 +251,13 @@ const toolDeclarations: FunctionDeclaration[] = [
   },
   {
     name: 'search_products',
-    description: 'Знайти товари на складі за артикулом, назвою, штрихкодом або OEM. Повертає ціни в гривнях.',
+    description: 'Знайти товари на складі за артикулом, назвою, штрихкодом або OEM. Повертає ціни в гривнях. Для пакетної роботи («усі масляні фільтри», «шарові на Логан») — limit до 30 і in_stock_only, якщо просять лише наявні.',
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
         query: { type: SchemaType.STRING, description: 'Пошуковий запит' },
-        limit: { type: SchemaType.NUMBER, description: 'Скільки показати (1-15)' },
+        limit: { type: SchemaType.NUMBER, description: 'Скільки показати (1-30)' },
+        in_stock_only: { type: SchemaType.BOOLEAN, description: 'Лише товари, які є в наявності' },
       },
       required: ['query'],
     },
@@ -616,7 +636,9 @@ const SYSTEM_PROMPT = `Ти — AI-помічник «Директор» для 
   1) знайди кожен названий товар через search_products (за номером без пробілів і з пробілами, за назвою, артикулом, штрихкодом); 2) покажи власнику знайдені картки списком: артикул, назва, залишок; 3) пари, що точно той самий товар (той самий каталожний номер, бренд, упаковка/кількість у комплекті, сторона, обʼєм), запропонуй одним merge_products_bulk з причиною до кожної пари; 4) сумнівні (різна упаковка «1шт»/«2шт», інший обʼєм чи сторона, інший комплект) НЕ обʼєднуй — перелічи окремо й спитай.
   Залишки сам НЕ переносиш і не виправляєш: облікова кількість змінюється лише документами. Якщо товар ліг не в ту картку (наприклад, клеми 135 г на картку 200 г), поясни коротко: «Ревізія → порахуйте обидві картки на полиці й поставте факт», і скажи, яку картку якою кількістю перевірити. Неправильний артикул у старій картці можна виправити через update_products_bulk лише назвою/категорією — артикул власник виправляє в картці сам; назви, яку саме картку і на що змінити.
   Якщо картку з недавньої накладної не знайдено — вона могла ще не дійти з каси на сервер; так і скажи, не вигадуй.
-- КРОС-НОМЕРИ («додай кроси», «знайди аналоги до …»): search_products → search_cross_numbers (до 3 товарів за раз) → add_cross_numbers_bulk лише з номерами, де ти ТОЧНО впевнений: джерело прямо називає номер аналогом/OE саме цього товару (той самий виробник і артикул товару), url зі списку sources. Номери з інших товарів, розміри, обʼєми, штрихкоди й сумнівні — не додавай, перелічи окремо. Скажи, скільки номерів знайдено і скільки відкинуто.
+- КРОС-НОМЕРИ: аналоги брендів, ПОПУЛЯРНИХ В УКРАЇНІ, і оригінальні OE-номери виробника авто. У відповіді НЕ згадуй сайти й джерела (url лишаються лише в пропозиції для перевірки) — пиши номер і бренд.
+  ПАКЕТ («візьми шарові на Логан і знайди кроси», «усі масляні фільтри в наявності»): search_products з limit до 30 (in_stock_only, якщо «в наявності») → search_cross_numbers по 5 товарів, кілька викликів В ОДНОМУ кроці (паралельно) → ОДИН add_cross_numbers_bulk на всі товари. Наприкінці коротко: скільки товарів оброблено, скільки номерів додано, для яких товарів нічого надійного не знайдено.
+- КРОС-НОМЕРИ («додай кроси», «знайди аналоги до …»): search_products → search_cross_numbers (до 5 товарів за раз) → add_cross_numbers_bulk лише з номерами, де ти ТОЧНО впевнений: джерело прямо називає номер аналогом/OE саме цього товару (той самий виробник і артикул товару), url зі списку sources. Номери з інших товарів, розміри, обʼєми, штрихкоди й сумнівні — не додавай, перелічи окремо. Скажи, скільки номерів знайдено і скільки відкинуто.
 - НІКОЛИ не проси весь каталог одразу і не обробляй більше 200 товарів за один виклик — працюй сторінками. product_id бери тільки з відповідей інструментів.
 
 Правила:
@@ -647,8 +669,10 @@ async function executeReadTool(name: string, args: any, tenantId: string, budget
   args = parseAiReadArguments(name, args)
   switch (name) {
     case 'search_products': {
-      const limit = Math.min(Math.max(Number(args?.limit) || 8, 1), 15)
-      const results = await searchProductsForPOS(String(args?.query ?? ''), limit, tenantId)
+      const limit = Math.min(Math.max(Number(args?.limit) || 8, 1), 30)
+      const inStockOnly = args?.in_stock_only === true
+      const found = await searchProductsForPOS(String(args?.query ?? ''), inStockOnly ? Math.min(limit * 4, 120) : limit, tenantId)
+      const results = (inStockOnly ? found.filter((r) => Number(r.qty_available ?? r.qty_on_hand) > 0) : found).slice(0, limit)
       return {
         products: results.map((r) => ({
           product_id: r.id,
@@ -1130,6 +1154,8 @@ export function chatEffort(params: { message: string; fileText?: string; images?
   if (params.fileText?.trim() || (params.images?.length ?? 0) > 0) return 'medium'
   const text = params.message.trim()
   if (text.length > 160 || text.includes('\n')) return 'medium'
+  // Кроси й аналоги — пошук в інтернеті з відбором надійних номерів: не спрощуємо.
+  if (/крос|аналог|oem|оригінальн|оригинальн/i.test(text)) return 'medium'
   return 'low'
 }
 
@@ -1171,14 +1197,14 @@ async function runChatWithinBudget(
   const handleCall = async (name: string, args: Record<string, unknown>): Promise<unknown> => {
     if (name === RESEARCH_TOOL) {
       try {
-        const ids = Array.isArray((args as any)?.product_ids) ? (args as any).product_ids.map(String).slice(0, 3) : []
-        if (!ids.length) return { error: 'Вкажіть product_id товарів (до 3)' }
+        const ids = Array.isArray((args as any)?.product_ids) ? (args as any).product_ids.map(String).slice(0, 5) : []
+        if (!ids.length) return { error: 'Вкажіть product_id товарів (до 5)' }
         const { data } = await budget.run(signal => db.from('products').select('id, sku, name, brand:brands(name)')
           .eq('tenant_id', tenantId).in('id', ids).abortSignal(signal))
         if (!data?.length) return { error: 'Товари не знайдено' }
         const lines = data.map((p: any) => `- product_id ${p.id}: ${p.name}; артикул ${p.sku || '—'}; бренд ${p.brand?.name ?? '—'}`).join('\n')
-        const found = await withAiExecutionBudget(120_000, research => claude.research(research,
-          'Знайди крос-номери (аналоги інших виробників) і OE-номери для цих автотоварів. Для кожного товару: номер, виробник номера, url сторінки, де номер прямо вказано як аналог/OE саме цього товару. Не вгадуй: якщо прямого підтвердження немає — так і напиши.\n' + lines, 5), budget.signal)
+        const found = await withAiExecutionBudget(150_000, research => claude.research(research,
+          crossResearchPrompt(lines), Math.min(4 + ids.length, 9)), budget.signal)
         usage.promptTokens += found.promptTokens
         usage.completionTokens += found.completionTokens
         usage.costAdjustUsd = (usage.costAdjustUsd ?? 0) + (found.costAdjustUsd ?? 0)
@@ -1255,8 +1281,12 @@ async function runChatWithinBudget(
       handleCalls: async calls => {
         try { reserveToolCalls(calls.length) }
         catch { throw new AppError('AI_TOOL_LIMIT', 'Забагато дій в одному запиті ШІ. Звузьте запит і повторіть. Зміни не застосовано.', 422) }
-        const results: unknown[] = []
-        for (const call of calls) results.push(await handleCall(call.name, call.args))
+        // 21.11.2026: пошуки кросів в інтернеті (довгі) — паралельно; решта — по черзі, як і раніше.
+        const results: unknown[] = new Array(calls.length)
+        const research = calls.map((call, index) => ({ call, index })).filter(({ call }) => call.name === RESEARCH_TOOL)
+        const researchDone = Promise.all(research.map(async ({ call, index }) => { results[index] = await handleCall(call.name, call.args) }))
+        for (const [index, call] of calls.entries()) if (call.name !== RESEARCH_TOOL) results[index] = await handleCall(call.name, call.args)
+        await researchDone
         return results
       },
     })

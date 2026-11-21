@@ -19,7 +19,7 @@ describe('AI tool request bounds', () => {
   it('rejects invalid enums, IDs, limits and unknown tool names', () => {
     for(const [name,args] of [
       ['get_product',{product_id:'*'}], ['list_products_page',{filter:'everything'}],
-      ['search_products',{query:'filter',limit:16}], ['search_customers',{query:'John',limit:21}],
+      ['search_products',{query:'filter',limit:31}], ['search_customers',{query:'John',limit:21}],
       ['list_products_page',{per_page:201}], ['find_duplicate_products',{limit:41}],
       ['find_duplicate_products',{by:'password'}], ['__proto__',{}], ['run_sql',{}],
     ] as const) expect(()=>parseAiReadArguments(name,args)).toThrow()
@@ -40,6 +40,6 @@ describe('AI tool request bounds', () => {
   it('guards integration before tool dispatch and read execution', () => {
     const source=readFileSync(new URL('./aiService.ts',import.meta.url),'utf8')
     expect(source).toContain('args = parseAiReadArguments(name, args)')
-    expect(source.indexOf('reserveToolCalls(calls.length)')).toBeLessThan(source.indexOf('for (const call of calls)'))
+    expect(source.indexOf('reserveToolCalls(calls.length)')).toBeLessThan(source.indexOf('await handleCall(call.name, call.args)'))
   })
 })
