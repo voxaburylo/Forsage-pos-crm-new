@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
-import { Save, Store, MapPin, Percent, RotateCcw, CreditCard, Ban, Plus, Trash2, ArrowUp, ArrowDown, Pencil, X, Zap, Users, Printer, Sparkles, Database } from 'lucide-react'
+import { Save, Store, MapPin, Percent, RotateCcw, CreditCard, Ban, Plus, Trash2, ArrowUp, ArrowDown, Pencil, X, Zap, Users, Printer, Sparkles, Database, Bell, Package } from 'lucide-react'
 import { adminApi } from '@/features/admin/adminApi'
 import type { ShopSettings, QuickItemConfig, QuickChildItem } from '@/features/admin/adminApi'
 import { aiApi, AI_MODEL_LABELS } from '@/features/ai/aiApi'
@@ -23,6 +23,9 @@ import { ServerCopyStatusCard } from './ServerCopyStatusCard'
 import { FiscalSettingsCard } from './FiscalSettingsCard'
 import { LanSettingsCard } from './LanSettingsCard'
 import { LiteModeCard } from './LiteModeCard'
+import { LabelPrinterCard } from './LabelPrinterCard'
+import { SettingsLinksCard } from './SettingsLinksCard'
+import { CatalogDictionaries } from '@/features/admin/AdminPage'
 import { SettingsFormOnly, SettingsSection, SettingsTabBar, SettingsTabsProvider } from './SettingsTabs'
 
 import { loadReceiptPrinterSettings, saveReceiptPrinterSettings } from '@/features/pos/receiptPrinterSettings'
@@ -86,28 +89,6 @@ export default function SettingsPage() {
 
   // Quick item edit modal
   
-  // Full reset state
-  const [resetModalOpen, setResetModalOpen] = useState(false)
-  const [resetConfirmText, setResetConfirmText] = useState('')
-  const [resetting, setResetting] = useState(false)
-  const resetConfirmed = ['ВИДАЛИТИ ВСЕ', 'УДАЛИТЬ ВСЕ'].includes(resetConfirmText.trim().toUpperCase())
-
-  async function handleResetAllData() {
-    if (!resetConfirmed) return
-    setResetting(true)
-    try {
-      await adminApi.resetAllData()
-      toast.success('Усі дані програми успішно скинуто')
-      setResetModalOpen(false)
-      setResetConfirmText('')
-      window.location.reload()
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Помилка скидання даних')
-    } finally {
-      setResetting(false)
-    }
-  }
-
   // ─── Помічник АІ (Claude) ──────────────────────────────────────
   const [aiStatus, setAiStatus] = useState<AiStatus | null>(null)
   const [aiKey, setAiKey]       = useState('')          // порожньо = не змінювати
@@ -171,7 +152,7 @@ export default function SettingsPage() {
     || aiEnabled !== (aiStatus?.enabled ?? false) || newMin || newMax || newPct
     || childLabel || childSku || childPrice
     || (editItem && JSON.stringify(editItem) !== JSON.stringify((form.pos_quick_items?.length ? form.pos_quick_items : DEFAULT_QUICK_ITEMS)[editIdx ?? -1]))),
-  saving || sellerSaving || aiSaving || resetting)
+  saving || sellerSaving || aiSaving)
 
   useEffect(() => {
     let active = true
@@ -363,6 +344,33 @@ export default function SettingsPage() {
       <SettingsTabsProvider>
       <div className="max-w-2xl">
         <SettingsTabBar />
+        {/* 21.11.2026 (план «порядок у налаштуваннях»): довідники товарів і повідомлення — тут, а не на прихованих сторінках. */}
+        <SettingsSection tab="products" title="Категорії бренди довідники товарів">
+          <SettingsLinksCard icon={<Package size={18} className="text-gray-500" />} title="Довідники товарів"
+            note="Категорії й бренди, номенклатура постачальників і очищення дублів."
+            links={[
+              { to: '/settings/draft-nomenclature', label: 'Номенклатура постачальників' },
+              { to: '/admin/catalog-cleanup', label: 'Очищення номенклатури: дублі та артикули' },
+            ]}>
+            <CatalogDictionaries />
+          </SettingsLinksCard>
+        </SettingsSection>
+        <SettingsSection tab="notifications" title="Канали шаблони сповіщення telegram">
+          <SettingsLinksCard icon={<Bell size={18} className="text-amber-500" />} title="Канали та шаблони повідомлень"
+            links={[
+              { to: '/settings/channels', label: 'Канали (Telegram, месенджери)' },
+              { to: '/settings/templates', label: 'Шаблони повідомлень клієнтам' },
+              { to: '/notifications', label: 'Вхідні сповіщення' },
+            ]} />
+        </SettingsSection>
+        <SettingsSection tab="till" title="Принтер етикеток друк етикеток">
+          <LabelPrinterCard />
+        </SettingsSection>
+        <SettingsSection tab="service" title="Журнал аудиту дії працівників">
+          <SettingsLinksCard icon={<Database size={18} className="text-gray-500" />} title="Журнал аудиту"
+            note="Хто й коли змінював дані в програмі."
+            links={[{ to: '/audit', label: 'Відкрити журнал аудиту' }]} />
+        </SettingsSection>
         <form onSubmit={handleSubmit}>
           <SettingsSection tab="shop" title="Основна інформація назва магазину адреса телефон чернова номенклатура">
           {/* ========== Основна інформація ========== */}
@@ -464,7 +472,7 @@ export default function SettingsPage() {
           {isDesktopRuntime() && <FiscalSettingsCard />}
           </SettingsSection>
 
-          <SettingsSection tab="sales" title="Правила продажу знижка продаж у мінус друк чека принтер ширина чека telegram знижка працівника">
+          <SettingsSection tab="sales" title="Правила продажу максимальна знижка продаж у мінус">
           {/* ========== Правила продажу ========== */}
           <Card className="mt-6 space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-gray-100">
@@ -503,6 +511,12 @@ export default function SettingsPage() {
               </label>
             </div>
 
+          </Card>
+          </SettingsSection>
+
+          <SettingsSection tab="till" title="Друк чека автодрук ширина чека принтер чеків">
+          <Card className="mt-6 space-y-4">
+            <div className="flex items-center gap-2 pb-3 border-b border-gray-100"><Printer size={18} className="text-gray-500" /><h3 className="text-sm font-semibold text-gray-800">Друк чеків</h3></div>
             {/* Авто-друк чека */}
             <div className="flex items-center justify-between py-2 border-t border-gray-100">
               <div className="flex items-start gap-3">
@@ -570,6 +584,12 @@ export default function SettingsPage() {
               </div>
             )}
 
+          </Card>
+          </SettingsSection>
+
+          <SettingsSection tab="notifications" title="Повідомлення Telegram вечірній звіт власнику">
+          <Card className="mt-6 space-y-4">
+            <div className="flex items-center gap-2 pb-3 border-b border-gray-100"><Bell size={18} className="text-amber-500" /><h3 className="text-sm font-semibold text-gray-800">Повідомлення власнику (Telegram)</h3></div>
             {/* Вечірній звіт власнику */}
             <div className="pt-2 border-t border-gray-100">
               <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -587,6 +607,12 @@ export default function SettingsPage() {
               </p>
             </div>
 
+          </Card>
+          </SettingsSection>
+
+          <SettingsSection tab="sales" title="Знижка для працівників">
+          <Card className="mt-6 space-y-4">
+            <div className="flex items-center gap-2 pb-3 border-b border-gray-100"><Users size={18} className="text-blue-500" /><h3 className="text-sm font-semibold text-gray-800">Знижка для працівників</h3></div>
             {/* Знижка для працівників */}
             <div className="pt-2 border-t border-gray-100">
               <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -643,7 +669,7 @@ export default function SettingsPage() {
           </Card>
           </SettingsSection>
 
-          <SettingsSection tab="sales" title="Матриця націнок націнка округлення ціни">
+          <SettingsSection tab="products" title="Матриця націнок націнка округлення ціни">
           {/* ========== Матриця націнок ========== */}
           <Card className="mt-6 space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-gray-100">
@@ -920,7 +946,7 @@ export default function SettingsPage() {
           </Card>
           </SettingsSection>
 
-          <SettingsFormOnly tabs={['shop', 'sales', 'till', 'service']}>
+          <SettingsFormOnly tabs={['shop', 'products', 'sales', 'till', 'notifications', 'service']}>
           {/* ========== Зберегти ========== */}
           <div className="mt-6">
             <Button type="submit" loading={saving} icon={<Save size={16} />}>
@@ -1047,69 +1073,8 @@ export default function SettingsPage() {
         <SettingsSection tab="service" title="Полегшений режим старий ПК швидкість анімації">
         <LiteModeCard />
         </SettingsSection>
-        <SettingsSection tab="service" title="Небезпечна зона скидання даних">
-        {/* ========== Небезпечна зона (Скидання всіх даних) ========== */}
-        {!isDesktopRuntime() && (
-        <Card className="mt-6 border-red-200 bg-red-50/50 space-y-4">
-          <div className="flex items-center gap-2 pb-3 border-b border-red-100">
-            <Trash2 size={18} className="text-red-600" />
-            <h3 className="text-sm font-semibold text-red-800">Небезпечна зона</h3>
-          </div>
-          <p className="text-xs text-red-700 font-medium">
-            Ця дія безповоротно видалить усі дані: товари, категорії, бренди, постачальників, клієнтів, продажі, замовлення, повернення, виписки, касові операції, витрати, а також усіх інших менеджерів/працівників.
-            Ваш поточний акаунт власника буде збережено.
-          </p>
-          <div>
-            <Button type="button" variant="danger" onClick={() => setResetModalOpen(true)}>
-              Скинути всі дані програми
-            </Button>
-          </div>
-        </Card>
-        )}
-        </SettingsSection>
       </div>
 
-      {/* Модальне вікно підтвердження повного скидання */}
-      <Modal
-        open={!isDesktopRuntime() && resetModalOpen}
-        onClose={() => { setResetModalOpen(false); setResetConfirmText('') }}
-        title="Повне скидання даних"
-        size="sm"
-      >
-        <div className="space-y-4">
-          <p className="text-sm text-gray-600">
-            Ви впевнені, що хочете видалити всі дані? Цю дію неможливо скасувати.
-          </p>
-          <div className="bg-red-50 p-3 rounded-lg text-xs text-red-700">
-            Для підтвердження введіть фразу <strong className="font-bold">ВИДАЛИТИ ВСЕ</strong> нижче.
-          </div>
-          <Input
-            label="Підтвердження"
-            value={resetConfirmText}
-            onChange={(e) => setResetConfirmText(e.target.value)}
-            placeholder="ВИДАЛИТИ ВСЕ"
-          />
-          <div className="flex gap-3">
-            <Button
-              type="button"
-              variant="danger"
-              className="flex-1"
-              loading={resetting}
-              disabled={!resetConfirmed}
-              onClick={handleResetAllData}
-            >
-              Видалити все
-            </Button>
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => { setResetModalOpen(false); setResetConfirmText('') }}
-            >
-              Скасувати
-            </Button>
-          </div>
-        </div>
-      </Modal>
 
 
       {/* ═══════════════════════════════════════════════════════════

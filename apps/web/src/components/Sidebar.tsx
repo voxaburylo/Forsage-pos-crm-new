@@ -57,6 +57,9 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/inventory',           icon: <Package size={18} />,         label: 'Інвентаризація',       roles: ['owner','admin','manager','storekeeper','cashier','sto_viewer'] },
       { to: '/labels',              icon: <Tag size={18} />,             label: 'Друк етикеток',        roles: ['owner','admin'] },
       { to: '/suppliers',           icon: <Truck size={18} />,           label: 'Постачальники',        roles: ['owner','admin','manager','storekeeper'] },
+      // 21.11.2026 (план «порядок»): раніше відкривались лише за адресою.
+      { to: '/auto-purchase',       icon: <PackagePlus size={18} />,     label: 'Автозакупівля',        roles: ['owner','admin','manager'] },
+      { to: '/internal',            icon: <Package size={18} />,         label: 'Внутрішнє споживання', roles: ['owner','admin','manager'] },
     ],
   },
   {
@@ -66,6 +69,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/customers',           icon: <Users size={18} />,           label: 'Клієнти' },
       { to: '/orders',              icon: <ClipboardList size={18} />,   label: 'Замовлення',           roles: ['owner','admin','manager'] },
       { to: '/inventory/picking',   icon: <ClipboardList size={18} />,   label: 'Збірка замовлень',     roles: ['owner','admin','manager','storekeeper'] },
+      { to: '/waitlist',            icon: <Users size={18} />,           label: 'Очікування товару',    roles: ['owner','admin','manager'] },
     ],
   },
   {

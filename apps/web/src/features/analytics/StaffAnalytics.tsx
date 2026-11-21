@@ -80,7 +80,7 @@ export default function StaffAnalytics() {
   }
 
   return (
-    <Layout title="Аналітика персоналу">
+    <Layout title="Аналітика персоналу" serverSource>
       <div className="max-w-7xl min-w-0 space-y-6">
         {/* Controls */}
         <div className="flex flex-wrap items-center justify-between gap-4 bg-white p-4 rounded-xl border border-gray-100 shadow-sm">
