@@ -8,8 +8,10 @@ import { Search } from 'lucide-react'
  */
 export const SETTINGS_TABS = [
   { id: 'shop', label: 'Магазин' },
-  { id: 'sales', label: 'Продаж і ціни' },
+  { id: 'products', label: 'Товари' },
+  { id: 'sales', label: 'Продаж' },
   { id: 'till', label: 'Каса і друк' },
+  { id: 'notifications', label: 'Повідомлення' },
   { id: 'network', label: 'Мережа і копії' },
   { id: 'ai', label: 'ШІ' },
   { id: 'service', label: 'Обслуговування' },
