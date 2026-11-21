@@ -52,6 +52,7 @@ function canChangeOrderStatus(from: string, to: string): boolean {
   return from === to || (ORDER_STATUS_TRANSITIONS[from] ?? []).includes(to)
 }
 
+export interface OrderPartSuggestion { name: string; sku: string; buy_price: number; sell_price: number; supplier_id: string | null; supplier_name: string | null; last_used_at: string }
 export interface InvoiceArrivalOrder { order_id: string; order_number: number; customer_name: string | null; customer_phone: string | null; items: Array<{ name: string; qty: number }>; complete: boolean }
 export interface InvoiceArrivalShortage { order_number: number; name: string; needed: number; available: number }
 type LocalOrderItemState = { item_status: string; sell_price: number; qty: number; core_deposit_amount: number }
@@ -679,6 +680,39 @@ export class LocalOrderRepository {
     })
     return { updated: uniqueIds.length }
   }
+  /**
+   * 22.11.2026 (етап 3 плану): довідник запчастин «під замовлення» — те, що вже замовляли клієнтам і чого
+   * немає на складі карткою. Окремої таблиці немає: довідник — це історія позицій замовлень без картки товару.
+   * Повертає останній запис для кожної пари «назва + артикул»: закупка, ціна продажу, постачальник.
+   */
+  suggestOrderParts(query: string, tenantId = DEFAULT_TENANT_ID, limit = 8): OrderPartSuggestion[] {
+    const needle = String(query ?? '').normalize('NFKC').trim().toLowerCase()
+    if (needle.length < 2 || needle.length > 80) return []
+    const compact = needle.replace(/[^\p{L}\p{N}]/gu, '')
+    // SQLite не вміє порівнювати кирилицю без урахування регістру, тому відбір — у коді, по останніх позиціях.
+    const rows = (this.db.prepare(`SELECT i.name, i.sku, i.buy_price, i.sell_price, i.supplier_id, s.name AS supplier_name, i.updated_at
+      FROM customer_order_items i
+      JOIN customer_orders o ON o.id = i.order_id AND o.tenant_id = i.tenant_id
+      LEFT JOIN suppliers s ON s.id = i.supplier_id AND s.tenant_id = i.tenant_id
+      WHERE i.tenant_id = ? AND i.deleted_at IS NULL AND o.deleted_at IS NULL AND i.product_id IS NULL
+        AND i.item_type <> 'service' AND i.item_status <> 'canceled' AND trim(i.name) <> ''
+      ORDER BY i.updated_at DESC LIMIT 5000`).all(tenantId) as Array<{ name: string; sku: string | null; buy_price: number; sell_price: number; supplier_id: string | null; supplier_name: string | null; updated_at: string }>)
+      .filter(row => {
+        const name = row.name.normalize('NFKC').toLowerCase(), sku = String(row.sku ?? '').normalize('NFKC').toLowerCase()
+        return name.includes(needle) || sku.includes(needle) || (compact.length >= 2 && sku.replace(/[^\p{L}\p{N}]/gu, '').includes(compact))
+      })
+    const seen = new Set<string>(), result: OrderPartSuggestion[] = []
+    for (const row of rows) {
+      const key = row.name.trim().toLowerCase() + '|' + String(row.sku ?? '').trim().toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      result.push({ name: row.name.trim(), sku: String(row.sku ?? '').trim(), buy_price: Math.round(num(row.buy_price)), sell_price: Math.round(num(row.sell_price)),
+        supplier_id: row.supplier_id, supplier_name: row.supplier_name, last_used_at: row.updated_at })
+      if (result.length >= Math.max(1, Math.min(20, limit))) break
+    }
+    return result
+  }
+
   /**
    * 22.11.2026 (етап 10 плану): проведена накладна сама відмічає «прибуло» в замовленнях, які чекають цей товар,
    * і повертає список «кому подзвонити». Збіг лише точний: та сама картка товару або той самий артикул

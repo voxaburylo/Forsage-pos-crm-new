@@ -1871,6 +1871,8 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:orders:cancel', (_event, id: string, input) =>
     requireLocalOrders().cancelOrder(id, { ...(input ?? {}), user_id: requireDesktopSession().id }),
   )
+  handleDesktopIpc('desktop:orders:suggest-parts', (_event, query: string) =>
+    requireLocalOrders().suggestOrderParts(query, requireDesktopSession().tenant_id))
   handleDesktopIpc('desktop:orders:arrival-from-invoice', (_event, invoiceId: string) =>
     requireLocalOrders().applyInvoiceArrival(invoiceId, requireDesktopSession().tenant_id))
   handleDesktopIpc('desktop:orders:pending-items', (_event, supplierId: string, tenantId?: string) =>

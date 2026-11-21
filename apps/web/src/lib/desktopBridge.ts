@@ -732,6 +732,8 @@ interface ForsageDesktopBridge {
     cancel?: (id: string, input?: any) => Promise<any>
     pendingItems?: (supplierId: string, tenantId?: string) => Promise<any[]>
     bulkArrival?: (itemIds: string[], tenantId?: string) => Promise<{ updated: number }>
+    /** 22.11.2026: довідник запчастин «під замовлення» — те, що вже замовляли клієнтам (ціни в копійках). */
+    suggestParts?: (query: string) => Promise<Array<{ name: string; sku: string; buy_price: number; sell_price: number; supplier_id: string | null; supplier_name: string | null; last_used_at: string }>>
     /** 22.11.2026: проведена накладна відмічає «прибуло» в замовленнях і повертає список «кому подзвонити». */
     arrivalFromInvoice?: (invoiceId: string) => Promise<{
       orders: Array<{ order_id: string; order_number: number; customer_name: string | null; customer_phone: string | null; items: Array<{ name: string; qty: number }>; complete: boolean }>

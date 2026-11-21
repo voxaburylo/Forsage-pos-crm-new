@@ -21,6 +21,7 @@ import { Button, Input, Card } from '@/components/ui'
 import { buildMessengerText, printInvoice, printDeliveryNote, loadSellerRequisites, hasSellerRequisites } from './orderDocuments'
 import { toast } from '@/components/ui/Toast'
 import { OrderProductResults } from './OrderProductResults'
+import { OrderPartSuggestions, type OrderPartSuggestion } from './OrderPartSuggestions'
 import { availableStock, orderNumber, stockFirst, validateOrderRows, replaceOrderProduct } from './orderUx'
 import { readOrderFormDraft, writeOrderFormDraft, removeOrderFormDraft } from './orderFormDraft'
 import { beginOrderSaveAttempt, checkOrderSaveAttempt, clearOrderSaveAttempt, readOrderSaveAttempt } from './orderSaveAttempt'
@@ -1032,6 +1033,17 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
     return () => window.removeEventListener('paste', onPaste)
   }, [])
 
+  function addSuggestedPart(part: OrderPartSuggestion) {
+    setItems((rows) => [...rows.filter((row) => row.name.trim() || row.sku.trim()), {
+      ...EMPTY_ITEM, local_key: crypto.randomUUID(), source_type: 'supplier',
+      name: part.name, sku: part.sku, supplier_id: part.supplier_id ?? '',
+      buy_price: part.buy_price > 0 ? kopecksToHryvnia(part.buy_price) : '0',
+      sell_price: part.sell_price > 0 ? kopecksToHryvnia(part.sell_price) : '0',
+    }])
+    setSearch('')
+    setSearchResults([])
+  }
+
   function addManualItemRow(name = '') {
     setItems((rows) => [...rows, { ...EMPTY_ITEM, local_key: crypto.randomUUID(), source_type: 'supplier', name }])
   }
@@ -1675,6 +1687,8 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
               {!searchLoading && searchResults.length > 0 && (
                 <OrderProductResults products={searchResults} onSelect={addProductAsItem} replacing={replaceIndex !== null} />
               )}
+              {/* Довідник запчастин «під замовлення»: спершу склад (вище), потім те, що вже замовляли. */}
+              {replaceIndex === null && <OrderPartSuggestions query={search} onPick={addSuggestedPart} />}
 
               {/* Не знайдено → пропонуємо додати під замовлення */}
               {replaceIndex === null && !searchLoading && !searchError && search.trim().length >= 2 && searchResults.length === 0 && (
