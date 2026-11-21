@@ -114,7 +114,8 @@ it('uses saved manager, then order manager, then cashier; scopes joins to the sh
   expect(pos.listSales({ product_search: 'Помпа' }).pagination.total).toBe(0)
 })
 it('paginates 1001 matches deterministically without duplicates or a 1000-item cap and never writes', () => {
-  for (let i = 0; i < 1001; i++) sale('receipt-' + String(i).padStart(4, '0'))
+  // Одна транзакція: 2002 окремі записи з synchronous=FULL на диску CI займали ~9 с із межі 30 с.
+  db.transaction(() => { for (let i = 0; i < 1001; i++) sale('receipt-' + String(i).padStart(4, '0')) })
   const before = db.prepare('SELECT count(*) n FROM sync_outbox').get(); db.prepare('PRAGMA query_only=ON').run()
   const seen = new Set<string>()
   for (let page = 1; page <= 11; page++) {

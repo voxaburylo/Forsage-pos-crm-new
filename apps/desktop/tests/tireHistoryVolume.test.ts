@@ -26,20 +26,23 @@ it.each([1, 50, 100])('returns the complete isolated day of %i receipts per work
     .run(shift, tenant, cashier, timestamp, timestamp, timestamp)
   db.prepare("INSERT INTO products (id,tenant_id,sku,name,purchase_price,retail_price,qty_on_hand,created_at,updated_at) VALUES (?,?,'POS-TIRE-SERVICE','Тестова послуга',0,10000,0,?,?)")
     .run(product, tenant, timestamp, timestamp)
-  for (const [index, worker] of workers.entries()) {
-    db.prepare("INSERT INTO staff_users (id,tenant_id,full_name,role,is_active,created_at,updated_at) VALUES (?,?,?,'tire_worker',1,?,?)")
-      .run(worker, tenant, 'Майстер ' + index, timestamp, timestamp)
-    db.prepare("INSERT INTO commission_rules (id,tenant_id,user_id,pct_from_revenue,pct_from_profit,rule_type,created_at,updated_at) VALUES (?,?,?,10,0,'tire_service',?,?)")
-      .run(randomUUID(), tenant, worker, timestamp, timestamp)
-    for (let i = 0; i < count; i++) {
-      const sale = randomUUID()
-      db.prepare("INSERT INTO sales (id,tenant_id,sale_number,cashier_id,manager_id,shift_id,status,total,payment_method,completed_at,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,'completed',10000,'cash',?,?,?,?)")
-        .run(sale, tenant, `VOLUME-${index}-${i}`, cashier, worker, shift, timestamp, 'Коментар ' + i, timestamp, timestamp)
-      db.prepare('INSERT INTO sale_items (id,tenant_id,sale_id,product_id,sku,qty,unit_price,purchase_price,total,created_at,updated_at) VALUES (?,?,?,?,?,1,10000,0,10000,?,?)')
-        .run(randomUUID(), tenant, sale, product, 'POS-TIRE-SERVICE', timestamp, timestamp)
-      expect(staff.recordSaleCommissions(sale, tenant, cashier)).toHaveLength(1)
+  // Підготовка — одна транзакція: 400 окремих записів із synchronous=FULL на диску CI займали понад 30 с.
+  db.transaction(() => {
+    for (const [index, worker] of workers.entries()) {
+      db.prepare("INSERT INTO staff_users (id,tenant_id,full_name,role,is_active,created_at,updated_at) VALUES (?,?,?,'tire_worker',1,?,?)")
+        .run(worker, tenant, 'Майстер ' + index, timestamp, timestamp)
+      db.prepare("INSERT INTO commission_rules (id,tenant_id,user_id,pct_from_revenue,pct_from_profit,rule_type,created_at,updated_at) VALUES (?,?,?,10,0,'tire_service',?,?)")
+        .run(randomUUID(), tenant, worker, timestamp, timestamp)
+      for (let i = 0; i < count; i++) {
+        const sale = randomUUID()
+        db.prepare("INSERT INTO sales (id,tenant_id,sale_number,cashier_id,manager_id,shift_id,status,total,payment_method,completed_at,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,'completed',10000,'cash',?,?,?,?)")
+          .run(sale, tenant, `VOLUME-${index}-${i}`, cashier, worker, shift, timestamp, 'Коментар ' + i, timestamp, timestamp)
+        db.prepare('INSERT INTO sale_items (id,tenant_id,sale_id,product_id,sku,qty,unit_price,purchase_price,total,created_at,updated_at) VALUES (?,?,?,?,?,1,10000,0,10000,?,?)')
+          .run(randomUUID(), tenant, sale, product, 'POS-TIRE-SERVICE', timestamp, timestamp)
+        expect(staff.recordSaleCommissions(sale, tenant, cashier)).toHaveLength(1)
+      }
     }
-  }
+  })
   const report = staff.tireServiceReport('2026-09-30', tenant)
   expect(report.receipts).toHaveLength(count * 2)
   expect(report.salary_operations).toHaveLength(count * 2)
