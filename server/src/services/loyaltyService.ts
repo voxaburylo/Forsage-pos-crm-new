@@ -230,11 +230,7 @@ export async function redeemBonus(params: {
     .maybeSingle()
 
   if (!customer) throw new AppError('NOT_FOUND', 'Клієнта не знайдено', 404)
-  const settings = await getSettings(params.tenantId)
-  if (!settings.is_enabled) {
-    throw new AppError('LOYALTY_DISABLED', 'Програма лояльності вимкнена', 400)
-  }
-
+  // Рішення власника 20.11.2026: накопичені бонуси клієнт може витратити завжди — без вимикача програми.
   const balance = await getBalance(params.customerId, params.tenantId)
   if (params.amount > balance) {
     throw new AppError('INSUFFICIENT_BONUS', 'Недостатньо бонусів', 400)
@@ -283,8 +279,7 @@ export async function redeemBonus(params: {
 
 // ── Націнка та сума списання ─────────────────────────────────
 
-export async function maxRedeem(saleTotal: number, tenantId: string): Promise<number> {
-  const settings = await getSettings(tenantId)
-  if (!settings.is_enabled) return 0
-  return Math.floor(saleTotal * (settings.max_redeem_pct / 100))
+/** Рішення власника 20.11.2026: бонусами можна оплатити весь товар чека (як і на касі). */
+export async function maxRedeem(saleTotal: number, _tenantId: string): Promise<number> {
+  return Math.max(0, Math.floor(saleTotal))
 }
