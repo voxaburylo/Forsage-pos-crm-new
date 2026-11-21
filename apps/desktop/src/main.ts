@@ -489,7 +489,7 @@ function recordOnlinePasswordFailure(attemptKey: string): never {
     : 'Невірний номер телефону або пароль')
 }
 
-async function loginOnlineAndProvisionLocal(phone: string, password: string, generation: number): Promise<DesktopOnlineLoginResult> {
+async function loginOnlineAndProvisionLocal(phone: string, password: string, generation: number | null): Promise<DesktopOnlineLoginResult> {
   const normalizedPhone = normalizeAuthPhone(phone)
   if (!normalizedPhone || !password) throw new Error('Вкажіть номер телефону та пароль')
   const attemptKey = `${DEFAULT_TENANT_ID}:${normalizedPhone}`
@@ -549,7 +549,8 @@ async function loginOnlineAndProvisionLocal(phone: string, password: string, gen
   if (payload.user?.app_metadata?.is_active === false || payload.user?.app_metadata?.can_login === false || payload.user?.app_metadata?.role === 'tire_worker' || payload.user?.app_metadata?.deleted_at) {
     throw new Error('[LOCAL_AUTH_DISABLED] Доступ працівника на сервері вимкнено. Зверніться до власника.')
   }
-  if (generation !== desktopLoginGeneration) throw Error('Спробу входу скасовано')
+  // generation = null — перевірка для ПК менеджера: вхід на самому головному ПК не змінюється.
+  if (generation !== null && generation !== desktopLoginGeneration) throw Error('Спробу входу скасовано')
   const user = requireLocalStaff().adoptServerAuthenticatedPassword(
     serverUserId,
     normalizedPhone,
@@ -1184,7 +1185,17 @@ app.whenReady().then(async () => {
     writeDesktopDiagnostic('lan-update-source-unavailable', error)
   }
   localNetwork = new LocalNetworkCoordinator(dataRoot, executeLanCommand, resolveLanSession, {
-    authenticate: async (phone, password) => requireLocalStaff().loginWithPassword(phone, password),
+    authenticate: async (phone, password) => {
+      try {
+        return requireLocalStaff().loginWithPassword(phone, password)
+      } catch (error) {
+        // 21.11.2026: працівника створено на сервері, а на головному ПК він ще не входив —
+        // пароля тут немає. Один раз перевіряємо його через сервер входу і зберігаємо лише хеш;
+        // токени сервера не використовуються, вхід на головному ПК не змінюється.
+        if (!(error instanceof Error) || !error.message.includes('[LOCAL_AUTH_MISSING]')) throw error
+        return (await loginOnlineAndProvisionLocal(phone, password, null)).user
+      }
+    },
     ...(releaseSource ? { updateMetadata: () => releaseSource.describe(), updateChunk: input => releaseSource.chunk(input) } : {}),
   })
   lanOrderQueue = new LanOrderQueue(localDatabase, (channel, args, session) => localNetwork!.invoke(channel, args, session))
