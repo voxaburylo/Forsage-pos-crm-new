@@ -45,4 +45,9 @@ CREATE INDEX IF NOT EXISTS idx_products_normalized_supplier_article_eq ON public
 -- Обмін ревізій: «was_counted = $n ORDER BY updated_at, id» — 3 663 запити по ~0,2 с і 70 по ~1,5 с на 94 тис. рядків.
 CREATE INDEX IF NOT EXISTS idx_inventory_items_counted_updated ON public.inventory_items (was_counted, updated_at, id);
 
+-- «Дані станом на» у вебі (тепер раз на 20 с): max(updated_at)/max(created_at) ішли повним переглядом
+-- local_balance_mirror (30 тис.) і sales — ~160 мс на запит. З індексами — одне читання з кінця індексу.
+CREATE INDEX IF NOT EXISTS idx_local_balance_mirror_tenant_updated ON public.local_balance_mirror (tenant_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_sales_tenant_created ON public.sales (tenant_id, created_at);
+
 NOTIFY pgrst, 'reload schema';
