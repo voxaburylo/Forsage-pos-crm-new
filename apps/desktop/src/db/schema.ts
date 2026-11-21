@@ -1396,6 +1396,17 @@ export interface LocalMigration {
   sql: string
 }
 
+/**
+ * 21.11.2026 (план швидкості, «накладні»): перевірка після проведення шукала рух товару й чергу синхронізації
+ * за кодом документа повним переглядом таблиць — ~1,2 с із 1,5 с на накладну з 30 рядків (заміряно на копії бази).
+ * Лише індекси: даних не змінюють, версію схеми НЕ підвищують (стара збірка відкриє базу, відкат можливий).
+ * Виконується при кожному відкритті бази, IF NOT EXISTS.
+ */
+export const LOCAL_PERFORMANCE_INDEXES_SQL = `
+  CREATE INDEX IF NOT EXISTS idx_inventory_movements_source_id ON inventory_movements(source_id);
+  CREATE INDEX IF NOT EXISTS idx_sync_outbox_aggregate ON sync_outbox(aggregate_type, aggregate_id, sequence);
+`
+
 export const LOCAL_MIGRATIONS: LocalMigration[] = [
   // Existing migrations remain unchanged; the new table is added after them below.
   { version: 1, sql: MIGRATION_001_CORE_SQL },

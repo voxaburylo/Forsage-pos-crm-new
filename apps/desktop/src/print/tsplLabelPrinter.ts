@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { runPrintScript } from './printWarmShell'
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
@@ -221,11 +221,8 @@ function sendRawToPrinter(printerName: string, data: Buffer, signal: AbortSignal
   const documentName = `Forsage-label-${randomUUID().slice(0, 8)}`
 
   if (signal.aborted) return Promise.reject(new Error('TSPL_PRINT_ABORTED'))
-  const ps = spawn('powershell.exe', [
-    '-NoProfile', '-NoLogo', '-NonInteractive',
-    '-ExecutionPolicy', 'Bypass', '-File', scriptPath,
-    '-PrinterName', printerName, '-DocumentName', documentName,
-  ], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+  // Прогрітий PowerShell (модуль друку вже завантажено) — без ~1 с запуску на кожну етикетку.
+  const ps = runPrintScript(scriptPath, { PrinterName: printerName, DocumentName: documentName })
   return waitForPrintProcess(ps, data.toString('base64'), {
     successMarker: 'RAW_PRINT_OK', failureCode: 'RAW_PRINT_FAILED',
     timeoutCode: 'RAW_PRINT_TIMEOUT', timeoutMs: 60_000,

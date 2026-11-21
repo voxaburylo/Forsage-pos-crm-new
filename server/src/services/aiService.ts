@@ -1119,18 +1119,39 @@ async function recognizeSupplyInvoicePhotoWithinBudget(
   }
 }
 
+export type ChatProgress = (event: { stage: 'tools'; tools: string[] } | { stage: 'answer' }) => void
+
+/**
+ * 21.11.2026 (план: швидкість ШІ без втрати якості). Коротке питання без файлів і фото («скільки є
+ * фільтра 2108?») — effort low: відповідь помітно швидша. Накладні, файли, таблиці, довгі завдання —
+ * як і раніше medium.
+ */
+export function chatEffort(params: { message: string; fileText?: string; images?: unknown[] }): 'low' | 'medium' {
+  if (params.fileText?.trim() || (params.images?.length ?? 0) > 0) return 'medium'
+  const text = params.message.trim()
+  if (text.length > 160 || text.includes('\n')) return 'medium'
+  return 'low'
+}
+
 export async function runChat(
   tenantId: string,
   userId: string | null,
-  params: { history?: ChatMessage[]; message: string; fileText?: string; images?: ChatImage[] },
+  params: { history?: ChatMessage[]; message: string; fileText?: string; images?: ChatImage[]; onProgress?: ChatProgress },
 ): Promise<{ reply: string; actions: PendingAction[]; usage: { prompt_tokens: number; completion_tokens: number; cost_usd: number } }> {
-  return withAiExecutionBudget(AI_TIME_LIMITS.chat, budget => runChatWithinBudget(tenantId, userId, params, budget))
+  // 21.11.2026: тривалість кожного запиту в журналі сервера — щоб «швидше» можна було довести цифрами.
+  const startedAt = Date.now()
+  const effort = chatEffort(params)
+  try {
+    return await withAiExecutionBudget(AI_TIME_LIMITS.chat, budget => runChatWithinBudget(tenantId, userId, params, budget))
+  } finally {
+    logger.info({ duration_ms: Date.now() - startedAt, effort, images: params.images?.length ?? 0, file: Boolean(params.fileText) }, '[ai] chat finished')
+  }
 }
 
 async function runChatWithinBudget(
   tenantId: string,
   userId: string | null,
-  params: { history?: ChatMessage[]; message: string; fileText?: string; images?: ChatImage[] },
+  params: { history?: ChatMessage[]; message: string; fileText?: string; images?: ChatImage[]; onProgress?: ChatProgress },
   budget: AiExecutionBudget,
 ): Promise<{ reply: string; actions: PendingAction[]; usage: { prompt_tokens: number; completion_tokens: number; cost_usd: number } }> {
   const cfg = await budget.run(signal => getAiConfig(tenantId, signal))
@@ -1229,6 +1250,8 @@ async function runChatWithinBudget(
       maxSteps: 10,
       usage,
       review,
+      effort: chatEffort(params),
+      onProgress: params.onProgress,
       handleCalls: async calls => {
         try { reserveToolCalls(calls.length) }
         catch { throw new AppError('AI_TOOL_LIMIT', 'Забагато дій в одному запиті ШІ. Звузьте запит і повторіть. Зміни не застосовано.', 422) }

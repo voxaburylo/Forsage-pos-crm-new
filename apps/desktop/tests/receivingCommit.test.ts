@@ -147,9 +147,23 @@ describe('atomic receiving on isolated SQLite', () => {
     commitReceiving(db, body([{ ...row, retail_price: 2000 }]))
     const saved = catalog.findById(row.product_id!)!; expect(saved.qty_on_hand).toBe(100); expect(saved.storage_bin).toBe('А-1'); expect(saved.retail_price).toBe(2000)
   })
-  it('rejects two editors changing the same price and identifies the row', () => {
+  // 21.11.2026: два редактори змінили ціну — лишається БІЛЬША (правило власника: ціни автоматично не знижуємо),
+  // замість відмови всієї накладної (37 відмов «Картка товару змінилася» в журналі).
+  it('keeps the higher price when two editors changed the same price', () => {
     const row = linked(); db.prepare('UPDATE products SET retail_price = 1800 WHERE id = ?').run(row.product_id!)
-    const before = snapshot(); expect(() => commitReceiving(db, body([{ ...row, retail_price: 2000 }]))).toThrow('RECEIVING_LINE:0:'); expect(snapshot()).toEqual(before)
+    commitReceiving(db, body([{ ...row, retail_price: 2000 }]))
+    expect(catalog.findById(row.product_id!)?.retail_price).toBe(2000)
+  })
+  it('never lowers a price someone raised while the invoice was open', () => {
+    const row = linked(); db.prepare('UPDATE products SET retail_price = 1800 WHERE id = ?').run(row.product_id!)
+    commitReceiving(db, body([{ ...row, retail_price: 1500 }]))
+    expect(catalog.findById(row.product_id!)?.retail_price).toBe(1800)
+  })
+  it('names the field and both values when two editors changed the same name', () => {
+    const row = linked(); db.prepare('UPDATE products SET name = ? WHERE id = ?').run('Круг змінений', row.product_id!)
+    const before = snapshot()
+    expect(() => commitReceiving(db, body([{ ...row, product_name: 'Круг з накладної' }]))).toThrow(/RECEIVING_LINE:0:.*назва в картці зараз «Круг змінений», у накладній «Круг з накладної»/)
+    expect(snapshot()).toEqual(before)
   })
   it('matches existing exact SKU/barcode without replacing identity and rejects contradictory codes', () => {
     const row = linked(); catalog.saveProduct({ id: randomUUID(), sku: 'OTHER', name: 'Інший', barcode: '00123', qty_on_hand: 0 })

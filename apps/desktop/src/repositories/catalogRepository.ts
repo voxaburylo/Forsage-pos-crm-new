@@ -1389,6 +1389,29 @@ export class LocalCatalogRepository {
     return settings
   }
   // Усі підбори використовують той самий порядок, що й повний каталог.
+  /**
+   * 21.11.2026 (рішення власника): продаж у мінус дозволено, а товари з від'ємним залишком
+   * потрапляють у «Аналітика → Перерахунок». Рядок зникає сам після ревізії чи приходу.
+   */
+  listNegativeStock(tenantId = DEFAULT_TENANT_ID): Array<{
+    id: string; sku: string | null; name: string; unit: string | null; qty_on_hand: number
+    last_sale_at: string | null; last_cashier: string | null
+  }> {
+    return this.db.prepare(`
+      SELECT p.id, p.sku, p.name, p.unit, p.qty_on_hand,
+        (SELECT s.created_at FROM sale_items si JOIN sales s ON s.id = si.sale_id
+          WHERE si.product_id = p.id AND s.tenant_id = p.tenant_id AND s.status = 'completed'
+          ORDER BY s.created_at DESC LIMIT 1) AS last_sale_at,
+        (SELECT u.full_name FROM sale_items si JOIN sales s ON s.id = si.sale_id
+          LEFT JOIN staff_users u ON u.id = s.cashier_id
+          WHERE si.product_id = p.id AND s.tenant_id = p.tenant_id AND s.status = 'completed'
+          ORDER BY s.created_at DESC LIMIT 1) AS last_cashier
+      FROM products p
+      WHERE p.tenant_id = ? AND p.deleted_at IS NULL AND COALESCE(p.is_service, 0) = 0 AND p.qty_on_hand < 0
+      ORDER BY p.qty_on_hand ASC, p.name
+    `).all(tenantId) as never
+  }
+
   listPopular(tenantId = DEFAULT_TENANT_ID, limit = 50): LocalProduct[] {
     return this.listProducts({ limit }, tenantId).data
   }

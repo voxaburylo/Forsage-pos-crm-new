@@ -1,4 +1,5 @@
 import { customerDiscountPct } from '@/features/customers/customerDiscount'
+import { stockWarningText } from './stockWarning'
 import { useState, useRef, useEffect, forwardRef, useImperativeHandle, memo } from 'react'
 import { Search, Plus, MapPin, Camera, ShoppingCart, WifiOff, Database } from 'lucide-react'
 import { supplierImportsApi } from '@/features/suppliers/supplierImportsApi'
@@ -476,11 +477,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
     const lowStock = !p.is_service && qtyAvailable < newTotalQty
 
     if (lowStock) {
-      if (qtyAvailable <= 0) {
-        toast.warning('Недостатньо на складі: ' + p.name + ' (немає в наявності)')
-      } else {
-        toast.warning('Недостатньо на складі: ' + p.name + ' (доступно ' + qtyAvailable + ' ' + p.unit + ')')
-      }
+      toast.warning(stockWarningText(p.name, qtyAvailable, p.unit))
       playWarning()
     } else {
       playSuccessBeep()

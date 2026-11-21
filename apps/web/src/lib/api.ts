@@ -23,6 +23,8 @@ export interface RequestOptions extends Omit<RequestInit, 'headers'> {
   silent?: boolean   // true = не показувати автоматичний toast
   _retry?: boolean   // внутрішній прапор — запобігає infinite loop при refresh
   timeoutMs?: number // якщо задано — запит переривається через цей час (щоб UI не зависав назавжди)
+  /** Рядки ходу роботи ШІ (NDJSON); без нього відповідь читається як звичайний JSON. */
+  onProgressLine?: (event: unknown) => void
 }
 
 async function getAccessToken(): Promise<string | null> {
@@ -78,6 +80,40 @@ async function refreshToken(): Promise<string | null> {
   }
 }
 
+/**
+ * 21.11.2026: відповідь ШІ рядками — спершу хід роботи ({progress}), наприкінці {data} або {error}.
+ * Помилка в потоці кидається так само, як звичайна помилка API.
+ */
+export async function readNdjsonResponse<T>(body: ReadableStream<Uint8Array>, onProgress: (event: unknown) => void, path = ''): Promise<T> {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  const handle = (line: string): T | undefined => {
+    if (!line.trim()) return undefined
+    const parsed = JSON.parse(line) as { progress?: unknown; data?: unknown; error?: { code?: string; message?: string; status?: number } }
+    if (parsed.progress !== undefined) { onProgress(parsed.progress); return undefined }
+    if (parsed.error) {
+      const message = humanizeApiError(apiValidationError(path, parsed.error.message ?? 'Помилка ШІ', parsed.error.code, undefined), parsed.error.code)
+      throw Object.assign(new Error(message), { status: parsed.error.status ?? 500, code: parsed.error.code })
+    }
+    return parsed as T
+  }
+  for (;;) {
+    const { value, done } = await reader.read()
+    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done })
+    let newline: number
+    while ((newline = buffer.indexOf('\n')) >= 0) {
+      const result = handle(buffer.slice(0, newline))
+      buffer = buffer.slice(newline + 1)
+      if (result !== undefined) return result
+    }
+    if (done) break
+  }
+  const last = handle(buffer)
+  if (last !== undefined) return last
+  throw new Error('Відповідь ШІ обірвалась. Повторіть запит; зміни не застосовано.')
+}
+
 export function request<T>(path: string, options?: RequestOptions): Promise<T> {
   return withRequestDeadline(signal => requestOnce<T>(path, { ...options, signal }),
     options?.timeoutMs ?? DEFAULT_API_REQUEST_TIMEOUT_MS, options?.signal)
@@ -93,6 +129,7 @@ async function requestOnce<T>(path: string, options?: RequestOptions): Promise<T
   const token = await getAccessToken()
   options?.signal?.throwIfAborted()
   const { silent, _retry, ...fetchOptions } = options ?? {}
+  delete fetchOptions.onProgressLine
   delete fetchOptions.timeoutMs
 
   let res: Response
@@ -166,6 +203,9 @@ async function requestOnce<T>(path: string, options?: RequestOptions): Promise<T
     throw err
   }
 
+  if (options?.onProgressLine && (res.headers.get('content-type') ?? '').includes('application/x-ndjson') && res.body) {
+    return readNdjsonResponse<T>(res.body, options.onProgressLine, path)
+  }
   if (res.status === 204) return undefined as T
   try {
     return await res.json()
@@ -182,7 +222,7 @@ async function requestOnce<T>(path: string, options?: RequestOptions): Promise<T
 
 export const api = {
   get:    <T>(path: string, opts?: Pick<RequestOptions, 'silent' | 'timeoutMs'>) => request<T>(path, opts),
-  post:   <T>(path: string, body: unknown, headers?: Record<string, string>, opts?: Pick<RequestOptions, 'silent' | 'timeoutMs'>) => request<T>(path, { method: 'POST',  body: JSON.stringify(body), headers, ...opts }),
+  post:   <T>(path: string, body: unknown, headers?: Record<string, string>, opts?: Pick<RequestOptions, 'silent' | 'timeoutMs' | 'onProgressLine'>) => request<T>(path, { method: 'POST',  body: JSON.stringify(body), headers, ...opts }),
   put:    <T>(path: string, body: unknown, opts?: Pick<RequestOptions, 'silent' | 'timeoutMs'>) => request<T>(path, { method: 'PUT',   body: JSON.stringify(body), ...opts }),
   patch:  <T>(path: string, body: unknown, opts?: Pick<RequestOptions, 'silent' | 'timeoutMs'>) => request<T>(path, { method: 'PATCH', body: JSON.stringify(body), ...opts }),
   delete: <T>(path: string, opts?: Pick<RequestOptions, 'silent' | 'timeoutMs'>) => request<T>(path, { method: 'DELETE', ...opts }),

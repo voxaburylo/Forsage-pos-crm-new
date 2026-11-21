@@ -155,6 +155,7 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
       ipcRenderer.invoke('desktop:catalog:change-cross-numbers', productId, change),
     listAnalogs: (productId: string, limit?: number) =>
       ipcRenderer.invoke('desktop:catalog:list-analogs', productId, limit),
+    negativeStock: () => ipcRenderer.invoke('desktop:catalog:negative-stock'),
   },
   supplierCatalog: {
     importOperationIds: true,

@@ -80,6 +80,7 @@ import { assertLanIdentityConnection, canPairEmptyClient, cacheLanIdentity, hasL
 import { createPortableReleaseSource, downloadPortableUpdate, launchPortableUpdateAfterQuit, readPortableUpdateOutcome, type StagedUpdate } from './updates/portableUpdate'
 import { LanOrderClient } from './lan/orderClient'
 import { isSpoolerGuardError, postflightPrinter, preflightPrinter } from './print/spoolerGuard'
+import { disposePrintWarmShell, prewarmPrintShell } from './print/printWarmShell'
 import { desktopTenantArgumentPositions, isDesktopChannelAllowed, PUBLIC_DESKTOP_CHANNELS } from './security/desktopAuthorization'
 import { activeSession } from './security/activeSession'
 import { customerWritePayload } from './security/customerWritePolicy'
@@ -1077,6 +1078,8 @@ function openLocalDatabaseOrExplain(dataRoot: string): LocalDatabaseOpenResult |
 
 app.whenReady().then(async () => {
   blackBox?.record('app-ready')
+  // Перший друк дня не чекає запуску PowerShell (на старому ПК це 3–5 с). Після старту, щоб не гальмувати запуск.
+  setTimeout(() => prewarmPrintShell(app.getPath('userData')), 20_000).unref?.()
   powerMonitor.on('suspend', () => blackBox?.record('system-suspend'))
   powerMonitor.on('resume', () => blackBox?.record('system-resume'))
   let rendererBudgetAt = 0, rendererBudget = 0
@@ -1199,7 +1202,9 @@ app.whenReady().then(async () => {
   lanUpdateTimer = setInterval(() => { void checkLanUpdate() }, 5 * 60_000)
   lanUpdateTimer.unref()
 
-  handleDesktopIpc('desktop:get-runtime-info', () => ({ ...requireLocalDatabase().info(), build: desktopBuildInfo }))
+  // 21.11.2026: ПК менеджера бачить, що нову версію з головного ПК уже завантажено (встановиться при закритті).
+  handleDesktopIpc('desktop:get-runtime-info', () => ({ ...requireLocalDatabase().info(), build: desktopBuildInfo,
+    stagedUpdateReleaseId: stagedLanUpdate?.releaseId ?? null }))
 
   handleDesktopIpc('desktop:lan:first-run-status', () => {
     const status = localNetwork!.getStatus()
@@ -1551,6 +1556,7 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:catalog:list-analogs', (_event, productId: string, limit?: number) =>
     requireLocalCatalog().listAnalogs(productId, undefined, limit),
   )
+  handleDesktopIpc('desktop:catalog:negative-stock', () => requireLocalCatalog().listNegativeStock())
   handleDesktopIpc('desktop:catalog:list-popular', (_event, limit?: number) =>
     requireLocalCatalog().listPopular(undefined, limit),
   )
@@ -2210,6 +2216,7 @@ app.on('before-quit', (event) => {
   if (databaseMaintenance) return
   blackBox?.record('shutdown-start')
   databaseMaintenance = true
+  disposePrintWarmShell()
   if (lanOrderTimer) clearInterval(lanOrderTimer)
   lanOrderTimer = null
   if (lanUpdateTimer) clearInterval(lanUpdateTimer)

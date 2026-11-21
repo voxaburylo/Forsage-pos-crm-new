@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { runPrintScript } from './printWarmShell'
 import fs from 'node:fs'
 import path from 'node:path'
 import { app } from 'electron'
@@ -137,7 +137,7 @@ function runGuardScript(
   fileName: string,
   script: string,
   printerName: string,
-  extraArgs: string[],
+  extraParams: Record<string, string | number>,
   timeoutMs: number,
   okMarker: string,
 ): Promise<void> {
@@ -145,13 +145,10 @@ function runGuardScript(
   fs.writeFileSync(scriptPath, script, 'utf8')
 
   return new Promise((resolve, reject) => {
-    const ps = spawn('powershell.exe', [
-      '-NoProfile', '-NoLogo', '-NonInteractive',
-      '-ExecutionPolicy', 'Bypass',
-      '-File', scriptPath,
-      '-PrinterName', printerName,
-      ...extraArgs,
-    ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    // Прогрітий PowerShell: перевірка черги не чекає ~1 с запуску процесу (3–5 с на старому ПК).
+    const ps = runPrintScript(scriptPath, { PrinterName: printerName, ...extraParams })
+    try { ps.stdin.end() } catch { /* the helper reads no data */ }
+    ps.stdin.on('error', () => { /* helper may exit before EOF */ })
 
     let stdout = ''
     let stderr = ''
@@ -177,7 +174,7 @@ function runGuardScript(
 export function preflightPrinter(printerName: string): Promise<void> {
   const name = printerName.trim()
   if (!name) return Promise.resolve()
-  return runGuardScript('print-preflight.ps1', PREFLIGHT_SCRIPT, name, [], 15000, 'PREFLIGHT_OK')
+  return runGuardScript('print-preflight.ps1', PREFLIGHT_SCRIPT, name, {}, 15000, 'PREFLIGHT_OK')
 }
 
 /**
@@ -198,11 +195,7 @@ export function postflightPrinter(
     'print-postflight.ps1',
     POSTFLIGHT_SCRIPT,
     name,
-    [
-      '-DocumentName', document,
-      '-SubmittedAfter', submittedAfter,
-      '-TimeoutSeconds', String(timeoutSeconds),
-    ],
+    { DocumentName: document, SubmittedAfter: submittedAfter, TimeoutSeconds: timeoutSeconds },
     (timeoutSeconds + 10) * 1000,
     'POSTFLIGHT_OK',
   ).catch((error: unknown) => {

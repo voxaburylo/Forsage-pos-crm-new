@@ -3,7 +3,7 @@ import { customerDiscountPct } from '@/features/customers/customerDiscount'
 import { canEditCustomerCard } from '@/features/customers/customerEditPermissions'
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Zap, LogOut, ArrowLeftRight, RotateCcw, Home, LayoutGrid, CircleDollarSign, Wrench, ReceiptText, UserRound } from 'lucide-react'
+import { Zap, LogOut, ArrowLeftRight, RotateCcw, Home, LayoutGrid, CircleDollarSign, Wrench, ReceiptText, UserRound, Keyboard } from 'lucide-react'
 import { CashierSwitchModal, useCashierSwitchAvailable } from './CashierSwitchModal'
 import { usePOS } from './usePOS'
 import { SearchPanel, type SearchPanelHandle } from './SearchPanel'
@@ -24,6 +24,7 @@ import { CrossSellPanel } from './CrossSellPanel'
 import { ReadyOrdersPanel } from './ReadyOrdersPanel'
 import { QuickChargeModal } from './QuickChargeModal'
 import { HelpModal } from './HelpModal'
+import { posHotkeyAction } from './posHotkeys'
 import { SuspendModal } from './SuspendModal'
 import { SuspendedListModal } from './SuspendedListModal'
 
@@ -46,6 +47,7 @@ import { usePOSBarcodeScanner } from './usePOSBarcodeScanner'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { connectOpenReceipts } from './cartRecovery'
 import { useViewNavigation } from '@/hooks/useViewNavigation'
+import { shiftEndPrompt } from './shiftEndPrompt'
 
 function posCustomerFromCustomer(c: Customer): POSCustomer {
   const tierDiscountPct = customerDiscountPct(c)
@@ -287,6 +289,12 @@ export default function POSPage() {
   }, [])
 
   const shift = store.currentShift
+  const [promptClock, setPromptClock] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = window.setInterval(() => setPromptClock(Date.now()), 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
+  const endPrompt = shiftEndPrompt(shift?.opened_at, new Date(promptClock))
   const [mobileTab, setMobileTab] = useState<'search' | 'cart' | 'ready_orders'>('search')
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [quickOpen, setQuickOpen] = useState(false)
@@ -429,6 +437,20 @@ export default function POSPage() {
       if (e.defaultPrevented || e.isComposing || anyModalOpen || document.querySelector('[role="dialog"][aria-modal="true"]')) return
       const active = document.activeElement
       const isInput = active instanceof HTMLElement && (active.matches('input, textarea, select') || active.isContentEditable)
+
+      // 21.11.2026 (план: «каса без мишки»). На кнопці оплати давно було написано «(F2)», але клавіша
+      // ні до чого не була під'єднана. F-клавіші працюють і з поля пошуку (сканер шле F7 — його не чіпаємо).
+      const hotkey = posHotkeyAction(e.key, store.items.length > 0)
+      if (hotkey) {
+        e.preventDefault()
+        if (hotkey === 'pay') setPayOpen(true)
+        else if (hotkey === 'customer') setCustomerOpen(true)
+        else if (hotkey === 'suspend') setSuspendOpen(true)
+        else if (hotkey === 'suspended') setSuspendedOpen(true)
+        else if (hotkey === 'find-receipt') setFindReceiptOpen(true)
+        else if (hotkey === 'help') setHelpOpen(true)
+        return
+      }
 
       if (e.key === 'Escape' && !isInput) {
         searchRef.current?.clear()
@@ -671,6 +693,18 @@ export default function POSPage() {
       >
 
 
+      {endPrompt && (
+        <div role="status" className={`shrink-0 border-b px-4 py-2 flex items-center gap-3 text-sm font-medium ${endPrompt === 'stale' ? 'bg-amber-900/80 border-amber-500 text-amber-100' : 'bg-gray-800 border-gray-700 text-gray-200'}`}>
+          <span>{endPrompt === 'stale'
+            ? 'Зміну відкрито ще вчора або раніше. Закрийте її — без цього не робиться копія зміни.'
+            : 'Кінець дня: не забудьте закрити зміну — звіт і копія зміни створяться автоматично.'}</span>
+          <button type="button" onClick={() => setCloseOpen(true)}
+            className="ml-auto shrink-0 rounded-lg bg-amber-600 px-3 py-1 text-xs font-bold text-white hover:bg-amber-500">
+            Закрити зміну
+          </button>
+        </div>
+      )}
+
       {/* Connectivity banner */}
       {!desktopRuntime && !serverOnline && (
         <div className="shrink-0 bg-red-900/80 border-b border-red-500 px-4 py-2 flex items-center gap-2 text-red-200 text-sm font-medium">
@@ -747,8 +781,13 @@ export default function POSPage() {
           </button>
           <button onClick={() => setFindReceiptOpen(true)}
             className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-blue-300 hover:text-blue-200 hover:bg-gray-800 transition-colors text-xs font-medium"
-            title="Останні чеки за 14 днів, пошук і повторний друк">
+            title="Останні чеки за 14 днів, пошук і повторний друк (F9)">
             <ReceiptText size={15} /><span className="hidden xl:inline">Чеки</span>
+          </button>
+          <button onClick={() => setHelpOpen(true)}
+            className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors text-xs font-medium"
+            title="Гарячі клавіші каси (F1)">
+            <Keyboard size={15} /><span className="hidden xl:inline">Клавіші</span>
           </button>
           {cashierSwitchAvailable && (
             <button onClick={openCashierSwitch} data-cashier-switch-button

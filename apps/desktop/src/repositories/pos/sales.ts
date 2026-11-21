@@ -666,7 +666,7 @@ export class LocalPosSales extends LocalPosCustomers {
       `).get(tenantId, productId) as { qty: number } | undefined
       const available = subtractStockQuantity(Number(product.qty_on_hand ?? 0), Number(reserve?.qty ?? 0))
       if (requestedQty > available) {
-        throw new Error(`Недостатньо товару «${product.name}». Доступно: ${available}, потрібно: ${requestedQty}`)
+        throw new Error(`Недостатньо товару «${product.name}». Доступно: ${available}, потрібно: ${requestedQty}. Щоб продавати в мінус, увімкніть «Продаж при відсутності товару» в Налаштуваннях.`)
       }
     }
   }

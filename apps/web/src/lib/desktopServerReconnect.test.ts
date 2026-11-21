@@ -26,8 +26,9 @@ describe('відновлення звʼязку з сервером після �
     const source = readFileSync(new URL('../hooks/useServerStatus.ts', import.meta.url), 'utf8')
     const timeout = /const TIMEOUT_MS = ([0-9_]+)/.exec(source)
     expect(timeout).not.toBeNull()
-    // Render після ночі відповідає 20-25 секунд (заміряно 21,4 с). Коротший
-    // таймаут означав би «інтернету немає» щоранку.
-    expect(Number(timeout![1].replace(/_/g, ''))).toBeGreaterThanOrEqual(25_000)
+    // Render (20-25 с прокидання) виведено; Vercel відповідає за 0,3 с, холодний старт — кілька секунд.
+    // «Офлайн» оголошується лише після двох невдач поспіль, тож один повільний старт не рве синхронізацію.
+    expect(Number(timeout![1].replace(/_/g, ''))).toBeGreaterThanOrEqual(10_000)
+    expect(source).toContain('failures >= 2')
   })
 })

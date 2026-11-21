@@ -58,6 +58,9 @@ export interface AiApplyResult {
   }
 }
 
+export type { AiChatProgress } from './aiProgress'
+import type { AiChatProgress } from './aiProgress'
+
 export interface AiChatResponse {
   reply: string
   actions: AiPendingAction[]
@@ -88,8 +91,12 @@ export const aiApi = {
   test: (body?: { api_key?: string; model?: AiModel }) =>
     api.post<{ data: { ok: boolean } }>('/api/v1/ai/test', body ?? {}),
 
-  chat: (body: { message: string; history?: AiChatMessage[]; file_text?: string; images?: AiChatImage[] }) =>
-    api.post<{ data: AiChatResponse }>('/api/v1/ai/chat', { ...body, history: body.history ? aiRequestHistory(body.history) : undefined }, undefined, { timeoutMs: 600000, silent: true }),
+  chat: (body: { message: string; history?: AiChatMessage[]; file_text?: string; images?: AiChatImage[] }, onProgress?: (event: AiChatProgress) => void) =>
+    api.post<{ data: AiChatResponse }>('/api/v1/ai/chat', { ...body, history: body.history ? aiRequestHistory(body.history) : undefined },
+      onProgress ? { 'X-AI-Progress': '1' } : undefined, {
+      timeoutMs: 600000, silent: true,
+      ...(onProgress ? { onProgressLine: (event: unknown) => onProgress(event as AiChatProgress) } : {}),
+    }),
 
   recognizeSupplyInvoice: (body: { message?: string; images: AiChatImage[] }) =>
     api.post<{ data: AiChatResponse }>('/api/v1/ai/supply-invoice-photo', body, undefined, { timeoutMs: 180000, silent: true }),

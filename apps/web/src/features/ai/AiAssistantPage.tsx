@@ -20,7 +20,8 @@ import { Layout } from '@/components/Layout'
 import { Button, Card, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { aiApi } from './aiApi'
-import type { AiStatus, AiPendingAction, AiChatMessage, AiActionChange, AiChatImage } from './aiApi'
+import { aiProgressLabel } from './aiProgress'
+import type { AiChatResponse, AiStatus, AiPendingAction, AiChatMessage, AiActionChange, AiChatImage } from './aiApi'
 import { OrderConfirmModal } from './OrderConfirmModal'
 import { openAiInvoiceDraft } from './openAiInvoiceDraft'
 import { useAuthStore } from '@/stores/authStore'
@@ -540,8 +541,13 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
       let failedAt = -1
       let failureMessage = ''
       let failureReason: unknown
-      for (let index = 0; index < partsToSend.length; index += 1) {
-        if (partsToSend.length > 1) setSendingProgress(`Обробляю частину ${index + 1} із ${partsToSend.length}…`)
+      // 21.11.2026 (план: швидкість ШІ): великий файл ділиться на частини, і частини тепер ідуть
+      // ПАРАЛЕЛЬНО (до 3 одночасно), а не по черзі. Порядок відповідей зберігається; при збої
+      // беремо лише частини ДО першої невдалої — як і раніше, нічого не губиться мовчки.
+      const partResults: Array<AiChatResponse | undefined> = new Array(partsToSend.length)
+      const partFailures = new Map<number, unknown>()
+      let finishedParts = 0
+      const runPart = async (index: number) => {
         const partPrompt = partsToSend.length > 1
           ? `${taskPrompt}\n\nЦе частина ${index + 1} з ${partsToSend.length}. Оброби всі рядки цієї частини, не пропускаючи товари.`
           : taskPrompt
@@ -553,15 +559,33 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
               history: index === 0 && !requestInvoice ? history : undefined,
               file_text: partsToSend[index],
               images: index === 0 ? images : undefined,
+            }, event => {
+              if (!isCurrentContext()) return
+              setSendingProgress(partsToSend.length > 1
+                ? `Готово частин: ${finishedParts} із ${partsToSend.length}. ${aiProgressLabel(event)}`
+                : aiProgressLabel(event))
             })
-          if (!isCurrentContext()) return
-          responses.push(response.data)
+          partResults[index] = response.data
         } catch (error) {
-          failedAt = index
-          failureMessage = error instanceof Error ? error.message : 'Помилка запиту'
-          failureReason = error
-          break
+          partFailures.set(index, error)
+        } finally {
+          finishedParts += 1
+          if (partsToSend.length > 1 && isCurrentContext()) setSendingProgress(`Готово частин: ${finishedParts} із ${partsToSend.length}…`)
         }
+      }
+      let nextPart = 0
+      await Promise.all(Array.from({ length: Math.min(3, partsToSend.length) }, async () => {
+        while (nextPart < partsToSend.length && partFailures.size === 0) await runPart(nextPart++)
+      }))
+      if (!isCurrentContext()) return
+      if (partFailures.size > 0) {
+        failedAt = Math.min(...partFailures.keys())
+        failureReason = partFailures.get(failedAt)
+        failureMessage = failureReason instanceof Error ? failureReason.message : 'Помилка запиту'
+      }
+      for (let index = 0; index < (failedAt >= 0 ? failedAt : partsToSend.length); index += 1) {
+        const data = partResults[index]
+        if (data) responses.push(data)
       }
 
       if ((responses.length === 0 || requestInvoice) && failedAt >= 0) throw Object.assign(
@@ -948,7 +972,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
                 </p>
               </div>
               {canConfigure ? (
-                <Button type="button" variant="secondary" onClick={() => navigate('/settings')} className="text-xs shrink-0">
+                <Button type="button" variant="secondary" onClick={() => navigate('/settings?tab=ai')} className="text-xs shrink-0">
                   <SettingsIcon size={14} className="mr-1" /> Налаштування
                 </Button>
               ) : (

@@ -11,6 +11,8 @@ import { printDefinitelyNotSent } from '../src/print/printAttemptGuard'
 it('keeps post-submission printer errors uncertain rather than permitting an unchecked repeat', async () => {
   const process = Object.assign(new EventEmitter(), {
     stdout: new EventEmitter(), stderr: new EventEmitter(), kill: vi.fn(),
+    stdin: Object.assign(new EventEmitter(), { writable: true, write: vi.fn(), end: vi.fn() }),
+    exitCode: null, signalCode: null, killed: false,
   })
   fake.spawn.mockReturnValue(process)
   const failure = postflightPrinter('POS-58', 'test-receipt', new Date().toISOString()).catch(error => error)

@@ -1,4 +1,5 @@
 import { useRef, useState, useCallback, useEffect } from 'react'
+import { stockWarningText } from './stockWarning'
 import { Minus, Trash2, User, X, Plus as PlusIcon, ChevronLeft, ChevronRight } from 'lucide-react'
 import { usePOSStore } from '@/stores/posStore'
 import type { POSItem } from '@/stores/posStore'
@@ -72,9 +73,7 @@ const ReceiptItemRow = memo(function ReceiptItemRow({
     }
     const qty = +value.toFixed(3)
     if (item.qtyOnHand < qty) {
-      toast.warning(item.qtyOnHand <= 0
-        ? `Недостатньо на складі: ${item.name} (немає в наявності)`
-        : `Недостатньо на складі: ${item.name} (доступно ${item.qtyOnHand} ${item.unit})`)
+      toast.warning(stockWarningText(item.name, item.qtyOnHand, item.unit))
     }
     updateQty(qty)
   }
@@ -202,9 +201,7 @@ const ReceiptItemRow = memo(function ReceiptItemRow({
                 e.stopPropagation()
                 const newQty = +(item.qty + 1).toFixed(3)
                 if (item.qtyOnHand < newQty) {
-                  toast.warning(item.qtyOnHand <= 0
-                    ? `Недостатньо на складі: ${item.name} (немає в наявності)`
-                    : `Недостатньо на складі: ${item.name} (доступно ${item.qtyOnHand} ${item.unit})`)
+                  toast.warning(stockWarningText(item.name, item.qtyOnHand, item.unit))
                 }
                 updateQty(newQty)
               }}
@@ -424,7 +421,7 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onEditCustomer, customer
             </button>
           </div>
         ) : (
-          <button onClick={onSelectCustomer} className="rounded-xl border-2 border-yellow-400 bg-yellow-400 px-4 py-2 text-sm font-bold text-black shadow-sm hover:bg-yellow-300 touch-target ripple">
+          <button onClick={onSelectCustomer} title="Вибрати клієнта (F3)" className="rounded-xl border-2 border-yellow-400 bg-yellow-400 px-4 py-2 text-sm font-bold text-black shadow-sm hover:bg-yellow-300 touch-target ripple">
             + Додати клієнта
           </button>
         )}

@@ -203,13 +203,35 @@ router.post('/chat', requireRole('owner', 'admin', 'manager', 'cashier'), async 
         data_base64: uploaded.buffer.toString('base64'),
       })
     }
-    const out = await runChat(req.user!.tenant_id, req.user!.id, {
-      message: parsed.data.message,
-      history: parsed.data.history,
-      fileText: parsed.data.file_text,
-      images: images.length > 0 ? images : undefined,
-    })
-    res.json({ data: out })
+    // 21.11.2026: клієнт може попросити хід роботи рядками NDJSON (X-AI-Progress: 1). Без заголовка — як раніше.
+    const progress = req.get('x-ai-progress') === '1'
+    if (progress) {
+      res.status(200)
+      res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8')
+      res.setHeader('Cache-Control', 'no-cache, no-transform')
+      res.setHeader('X-Accel-Buffering', 'no')
+      res.flushHeaders?.()
+      res.write(JSON.stringify({ progress: { stage: 'start' } }) + '\n')
+    }
+    try {
+      const out = await runChat(req.user!.tenant_id, req.user!.id, {
+        message: parsed.data.message,
+        history: parsed.data.history,
+        fileText: parsed.data.file_text,
+        images: images.length > 0 ? images : undefined,
+        onProgress: progress ? event => { res.write(JSON.stringify({ progress: event }) + '\n') } : undefined,
+      })
+      if (progress) res.end(JSON.stringify({ data: out }) + '\n')
+      else res.json({ data: out })
+    } catch (error) {
+      if (!progress) throw error
+      const appError = error instanceof AppError ? error : null
+      res.end(JSON.stringify({ error: {
+        code: appError?.code ?? 'AI_UPSTREAM_UNAVAILABLE',
+        message: appError?.message ?? 'ШІ тимчасово недоступний. Повторіть запит.',
+        status: appError?.status ?? 503,
+      } }) + '\n')
+    }
   } catch (err) { next(err) }
   finally {
     await removeProcessingUploads(storagePaths, req.user!.id).catch(() => {})
