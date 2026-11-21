@@ -124,8 +124,9 @@ try {
   }
   if (!process.env.FORSAGE_UX_CASE || process.env.FORSAGE_UX_CASE === 'bonus-limit') {
     for (const scenario of [
-      { serverMode: false, price: 10000, discount: 1000, coreDeposit: 20000, maximum: 2700 },
-      { serverMode: false, price: 103, maximum: 30 },
+      // Рішення власника 20.11.2026: на касі бонусами — весь товар без застави (раніше 30%).
+      { serverMode: false, price: 10000, discount: 1000, coreDeposit: 20000, balance: 20000, maximum: 9000 },
+      { serverMode: false, price: 103, maximum: 103 },
       { serverMode: false, price: 10000, balance: 700, maximum: 700 },
       { serverMode: true, percent: 10, price: 10000, discount: 1000, coreDeposit: 20000, maximum: 900 },
       { serverMode: true, percent: 100, price: 10000, balance: 20000, maximum: 10000 },
@@ -150,7 +151,7 @@ try {
     await disabled.getByText(/Для цього чека списання бонусів недоступне/).waitFor()
     assert.equal(await disabled.locator('input[type=number][max]').count(), 0)
     await disabled.close()
-    passed.push('bonus maximum: desktop30%, configuredserver10/100/0%, core exclusion, discounts, rounding, low balance and actual payload clamp')
+    passed.push('bonus maximum: desktop all goods, configuredserver10/100/0%, core exclusion, discounts, rounding, low balance and actual payload clamp')
   }
   assert.deepEqual(errors, []); assert.deepEqual(blocked, [])
   console.log(JSON.stringify({ passed: true, cases: passed, liveWrites: 0, printing: 0 }))
