@@ -362,3 +362,17 @@ input:-webkit-autofill:active {
   -webkit-text-fill-color: #F5F5F5 !important;
   transition: background-color 5000s ease-in-out 0s;
 }
+
+/* 21.11.2026: полегшений режим для старого ПК (див. lib/liteMode.ts). Процесор не малює анімації, тіні й розмиття. */
+html.lite-mode *, html.lite-mode *::before, html.lite-mode *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+  text-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+/* Тіні прибираємо лише декоративні (shadow-*): рамки фокуса (ring) лишаються видимими. */
+html.lite-mode [class*="shadow"]:not(:focus-visible) { box-shadow: none !important; }
+html.lite-mode .animate-spin { animation-duration: 1s !important; animation-iteration-count: infinite !important; }

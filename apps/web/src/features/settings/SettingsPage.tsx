@@ -22,6 +22,7 @@ import { ProblemLogCard } from './ProblemLogCard'
 import { ServerCopyStatusCard } from './ServerCopyStatusCard'
 import { FiscalSettingsCard } from './FiscalSettingsCard'
 import { LanSettingsCard } from './LanSettingsCard'
+import { LiteModeCard } from './LiteModeCard'
 import { SettingsFormOnly, SettingsSection, SettingsTabBar, SettingsTabsProvider } from './SettingsTabs'
 
 import { loadReceiptPrinterSettings, saveReceiptPrinterSettings } from '@/features/pos/receiptPrinterSettings'
@@ -1038,6 +1039,9 @@ export default function SettingsPage() {
         )}
         </SettingsSection>
 
+        <SettingsSection tab="service" title="Полегшений режим старий ПК швидкість анімації">
+        <LiteModeCard />
+        </SettingsSection>
         <SettingsSection tab="service" title="Небезпечна зона скидання даних">
         {/* ========== Небезпечна зона (Скидання всіх даних) ========== */}
         {!isDesktopRuntime() && (

@@ -3,7 +3,7 @@ import { customerDiscountPct } from '@/features/customers/customerDiscount'
 import { canEditCustomerCard } from '@/features/customers/customerEditPermissions'
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Zap, LogOut, ArrowLeftRight, RotateCcw, Home, LayoutGrid, CircleDollarSign, Wrench, ReceiptText, UserRound } from 'lucide-react'
+import { Zap, LogOut, ArrowLeftRight, RotateCcw, Home, LayoutGrid, CircleDollarSign, Wrench, ReceiptText, UserRound, Keyboard } from 'lucide-react'
 import { CashierSwitchModal, useCashierSwitchAvailable } from './CashierSwitchModal'
 import { usePOS } from './usePOS'
 import { SearchPanel, type SearchPanelHandle } from './SearchPanel'
@@ -24,6 +24,7 @@ import { CrossSellPanel } from './CrossSellPanel'
 import { ReadyOrdersPanel } from './ReadyOrdersPanel'
 import { QuickChargeModal } from './QuickChargeModal'
 import { HelpModal } from './HelpModal'
+import { posHotkeyAction } from './posHotkeys'
 import { SuspendModal } from './SuspendModal'
 import { SuspendedListModal } from './SuspendedListModal'
 
@@ -437,6 +438,20 @@ export default function POSPage() {
       const active = document.activeElement
       const isInput = active instanceof HTMLElement && (active.matches('input, textarea, select') || active.isContentEditable)
 
+      // 21.11.2026 (план: «каса без мишки»). На кнопці оплати давно було написано «(F2)», але клавіша
+      // ні до чого не була під'єднана. F-клавіші працюють і з поля пошуку (сканер шле F7 — його не чіпаємо).
+      const hotkey = posHotkeyAction(e.key, store.items.length > 0)
+      if (hotkey) {
+        e.preventDefault()
+        if (hotkey === 'pay') setPayOpen(true)
+        else if (hotkey === 'customer') setCustomerOpen(true)
+        else if (hotkey === 'suspend') setSuspendOpen(true)
+        else if (hotkey === 'suspended') setSuspendedOpen(true)
+        else if (hotkey === 'find-receipt') setFindReceiptOpen(true)
+        else if (hotkey === 'help') setHelpOpen(true)
+        return
+      }
+
       if (e.key === 'Escape' && !isInput) {
         searchRef.current?.clear()
       }
@@ -766,8 +781,13 @@ export default function POSPage() {
           </button>
           <button onClick={() => setFindReceiptOpen(true)}
             className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-blue-300 hover:text-blue-200 hover:bg-gray-800 transition-colors text-xs font-medium"
-            title="Останні чеки за 14 днів, пошук і повторний друк">
+            title="Останні чеки за 14 днів, пошук і повторний друк (F9)">
             <ReceiptText size={15} /><span className="hidden xl:inline">Чеки</span>
+          </button>
+          <button onClick={() => setHelpOpen(true)}
+            className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors text-xs font-medium"
+            title="Гарячі клавіші каси (F1)">
+            <Keyboard size={15} /><span className="hidden xl:inline">Клавіші</span>
           </button>
           {cashierSwitchAvailable && (
             <button onClick={openCashierSwitch} data-cashier-switch-button
