@@ -677,7 +677,7 @@ export default function OrderDetailPage() {
                     <td className="px-2 py-1.5 text-right font-semibold">{formatMoney(p.amount)}</td>
                     <td className="px-2 py-1.5 text-center">
                       <Badge color={p.method === 'cash' ? 'green' : p.method === 'card' ? 'blue' : 'yellow'}>
-                        {p.method === 'cash' ? 'Готівка' : p.method === 'card' ? 'Картка' : 'Переказ'}
+                        {p.method === 'cash' ? 'Готівка' : p.method === 'card' ? 'Картка' : p.method === 'bonus' ? 'Бонуси' : p.method === 'account' ? 'З рахунку' : 'Переказ'}
                       </Badge>
                     </td>
                     <td className="px-2 py-1.5 text-center">{p.is_fiscal ? '✅' : '—'}</td>

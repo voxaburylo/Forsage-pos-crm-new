@@ -27,7 +27,7 @@ interface OrderItem {
 interface ReadyOrder {
   id: string
   order_number?: number | null
-  customer: { id: string; phone: string; full_name: string | null; card_barcode?: string | null } | null
+  customer: { id: string; phone: string; full_name: string | null; card_barcode?: string | null; bonus_balance?: number | null } | null
   total_amount: number
   discount_amount?: number
   prepayment: number
@@ -66,7 +66,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
   const [payAmount, setPayAmount] = useState('')
   const [payAction, setPayAction] = useState<PaymentAction>('deposit')
   const [closeAfterPayment, setCloseAfterPayment] = useState(false)
-  const [payMethod, setPayMethod] = useState<'cash' | 'card' | 'transfer' | 'account'>('cash')
+  const [payMethod, setPayMethod] = useState<'cash' | 'card' | 'transfer' | 'account' | 'bonus'>('cash')
   const localOrderFiscalUnsupported = Boolean(desktopBridge())
   const [fiscal, setFiscal] = useState(() => {
     if (desktopBridge()) return false
@@ -83,6 +83,8 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
   const [accountBalance, setAccountBalance] = useState<number | null>(null)
   const paymentAttemptRef = useRef<{ fingerprint: string; paymentId: string } | null>(null)
   const payOrderCustomerId = payOrder?.customer?.id
+  // Рішення власника 20.11.2026: бонуси — гроші клієнта, ними можна оплатити замовлення повністю або частково.
+  const bonusBalance = Math.max(0, Math.round(Number(payOrder?.customer?.bonus_balance ?? 0)))
   const selectedCustomerId = store.customer?.id ?? null
 
   useEffect(() => {
@@ -95,7 +97,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
 
   useEffect(() => {
     setAccountBalance(null)
-    setPayMethod((current) => current === 'account' ? 'cash' : current)
+    setPayMethod((current) => current === 'account' || current === 'bonus' ? 'cash' : current)
     if (!payOrderCustomerId) return
 
     let cancelled = false
@@ -235,6 +237,10 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
       toast.error('Для повної оплати потрібно закрити весь залишок')
       return
     }
+    if (payMethod === 'bonus' && amountVal > bonusBalance) {
+      toast.error(`У клієнта лише ${formatMoney(bonusBalance)} бонусів`)
+      return
+    }
     if (payMethod === 'account' && amountVal > (accountBalance ?? 0)) {
       toast.error(`На рахунку клієнта лише ${formatMoney(accountBalance ?? 0)}`)
       return
@@ -260,9 +266,11 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
           amount: amountVal,
           payment_id: paymentId,
           method: payMethod,
-          is_fiscal: fiscal,
+          is_fiscal: payMethod === 'bonus' ? false : fiscal,
           shift_id: store.currentShift?.id || null,
-          notes: payMethod === 'account'
+          notes: payMethod === 'bonus'
+            ? 'Оплата замовлення бонусами'
+            : payMethod === 'account'
             ? 'Оплата замовлення з рахунку клієнта'
             : payAction === 'full'
               ? 'Касова повна оплата замовлення'
@@ -283,7 +291,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
         if (issued) toast.success('Оплату внесено, замовлення видано!')
         else toast.error('Оплату збережено, але замовлення НЕ видано. Усуньте причину та повторіть лише видачу.')
       } else {
-        toast.success(payAction === 'full' ? 'Повну оплату внесено!' : (payMethod === 'account' ? 'Списано з рахунку клієнта!' : 'Передоплату внесено!'))
+        toast.success(payAction === 'full' ? 'Повну оплату внесено!' : (payMethod === 'bonus' ? 'Оплачено бонусами!' : payMethod === 'account' ? 'Списано з рахунку клієнта!' : 'Передоплату внесено!'))
         await load()
       }
     } catch (e) {
@@ -563,6 +571,18 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                     >
                       З рахунку {accountBalance != null ? `(${formatMoney(accountBalance)})` : ''}
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => setPayMethod('bonus')}
+                      disabled={!payOrder.customer?.id || bonusBalance <= 0}
+                      className={`py-3 text-sm font-semibold rounded-xl border transition-colors disabled:opacity-40 ${
+                        payMethod === 'bonus'
+                          ? 'bg-purple-600 text-white border-purple-500'
+                          : 'bg-gray-900 text-purple-300 border-gray-700 hover:bg-gray-750'
+                      }`}
+                    >
+                      Бонуси ({formatMoney(bonusBalance)})
+                    </button>
                   </div>
                 </div>
 
@@ -806,6 +826,18 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                     }`}
                   >
                     З рахунку {accountBalance != null ? `(${formatMoney(accountBalance)})` : ''}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPayMethod('bonus')}
+                    disabled={!payOrder.customer?.id || bonusBalance <= 0}
+                    className={`py-3 text-sm font-semibold rounded-lg border transition-colors disabled:opacity-40 ${
+                      payMethod === 'bonus'
+                        ? 'bg-purple-600 text-white border-purple-500'
+                        : 'bg-gray-900 text-purple-300 border-gray-700 hover:bg-gray-750'
+                    }`}
+                  >
+                    Бонуси ({formatMoney(bonusBalance)})
                   </button>
                 </div>
               </div>
