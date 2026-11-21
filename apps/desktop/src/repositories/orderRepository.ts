@@ -41,6 +41,7 @@ const ORDER_STATUS_TRANSITIONS: Record<string, string[]> = {
  * «замовлено, чекаємо», «прибуло», «клієнту подзвонили» або «видано» (перекреслене → архів).
  * Лише при СТВОРЕННІ; гроші й залишки не зачіпаються: оплати приймає тільки каса.
  */
+const notebookOrderKey = (tenantId: string, orderId: string) => `notebook-order:${tenantId}:${orderId}`
 const NOTEBOOK_INITIAL_STATUSES = new Set(['ordered', 'arrived', 'called', 'archived'])
 function initialOrderStatus(input: any): string {
   if (input?.initial_status === undefined || input.initial_status === null) return 'lead'
@@ -379,6 +380,10 @@ export class LocalOrderRepository {
         }
       }
 
+      if (!existing && status !== 'lead') {
+        this.db.prepare('INSERT OR IGNORE INTO app_meta(key, value_json, updated_at) VALUES (?, ?, ?)')
+          .run(notebookOrderKey(tenantId, id), JSON.stringify({ initial_status: status }), timestamp)
+      }
       const syncPayload = this.getOrder(id, tenantId)
       this.addOutbox(
         tenantId,
@@ -427,7 +432,11 @@ export class LocalOrderRepository {
       FROM order_payments
       WHERE tenant_id = ? AND order_id = ? AND deleted_at IS NULL
     `).get(tenantId, orderId) as { count: number; paid: number } | undefined
-    if (!['lead', 'quoted', 'new'].includes(String(order.status))
+    // Замовлення, перенесене з блокнота, одразу має стан «замовлено» / «архів». Помилкове перенесення
+    // треба мати змогу прибрати — поки по ньому не було грошей, чека й виданих позицій.
+    const fromNotebook = this.isNotebookOrder(orderId, tenantId)
+      && order.items.every((item: any) => !['handed', 'returned'].includes(String(item.item_status)))
+    if (!(['lead', 'quoted', 'new'].includes(String(order.status)) || fromNotebook)
       || num(order.prepayment) !== 0
       || num(order.total_paid) !== 0
       || num(ledger?.count) > 0
@@ -448,7 +457,7 @@ export class LocalOrderRepository {
         UPDATE stock_reserves SET released_at = ?, dirty_at = ?, updated_at = ?
         WHERE order_id = ? AND tenant_id = ? AND released_at IS NULL AND deleted_at IS NULL
       `).run(timestamp, timestamp, timestamp, orderId, tenantId)
-      this.addOutbox(tenantId, 'customer_order', orderId, 'order.deleted', { id: orderId }, timestamp)
+      this.addOutbox(tenantId, 'customer_order', orderId, 'order.deleted', fromNotebook ? { id: orderId, from_notebook: true } : { id: orderId }, timestamp)
     })
     return { success: true }
   }
@@ -1422,6 +1431,10 @@ export class LocalOrderRepository {
     return rows.map((row) => this.decorateOrder(row, tenantId, byOrder.get(row.id) ?? []))
   }
 
+  private isNotebookOrder(orderId: string, tenantId: string): boolean {
+    return Boolean(this.db.prepare('SELECT 1 FROM app_meta WHERE key = ?').get(notebookOrderKey(tenantId, orderId)))
+  }
+
   private decorateOrder(row: any, tenantId: string, loadedItems?: any[]): any {
     const items = loadedItems ?? this.db.prepare(`
       SELECT * FROM customer_order_items
@@ -1430,6 +1443,7 @@ export class LocalOrderRepository {
     `).all(tenantId, row.id) as any[]
     return {
       id: row.id,
+      from_notebook: this.isNotebookOrder(row.id, tenantId),
       order_number: row.order_number,
       kp_number: row.kp_number,
       customer_id: row.customer_id,

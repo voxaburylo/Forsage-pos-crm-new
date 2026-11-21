@@ -27,6 +27,8 @@ export interface CustomerOrderItem {
 }
 
 export interface CustomerOrder {
+  /** 22.11.2026: перенесене з блокнота — його можна видалити, поки не було грошей і видачі. */
+  from_notebook?: boolean
   lan_sync?: { state: 'pending' | 'blocked' | 'cached'; message: string; local_id?: string; cached_at?: string; history_incomplete?: boolean }
   id: string
   order_number: number | null

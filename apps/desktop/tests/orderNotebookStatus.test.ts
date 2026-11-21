@@ -56,4 +56,24 @@ describe('notebook order initial status', () => {
     orders.saveOrder(input({ comment: 'Fiat Doblo' }))
     expect(count('customer_orders')).toBe(4)
   })
+
+  it('lets a mistaken notebook import be deleted while there was no money or handover, and only then', () => {
+    for (const status of ['ordered', 'arrived', 'called', 'archived']) {
+      const imported = orders.saveOrder(input({ initial_status: status, comment: 'Помилка ' + status }))
+      expect(imported.from_notebook).toBe(true)
+      expect(orders.deleteOrder(imported.id)).toEqual({ success: true })
+      expect(orders.getOrder(imported.id)).toBeNull()
+    }
+    const deleted = db.prepare("SELECT payload_json FROM sync_outbox WHERE operation_type = 'order.deleted' ORDER BY rowid DESC LIMIT 1").get() as { payload_json: string }
+    expect(JSON.parse(deleted.payload_json).from_notebook).toBe(true)
+    // An ordinary order that the manager moved to «замовлено» keeps the old rule.
+    const ordinary = orders.saveOrder(input({ comment: 'Звичайне' }))
+    expect(ordinary.from_notebook).toBe(false)
+    orders.updateOrderStatus(ordinary.id, 'ordered')
+    expect(() => orders.deleteOrder(ordinary.id)).toThrow('Видалити можна лише')
+    // A notebook order with a handed-over line is real history and stays.
+    const handed = orders.saveOrder(input({ initial_status: 'ordered', comment: 'Видане' }))
+    db.prepare("UPDATE customer_order_items SET item_status = 'handed' WHERE order_id = ?").run(handed.id)
+    expect(() => orders.deleteOrder(handed.id)).toThrow('Видалити можна лише')
+  })
 })
