@@ -1,11 +1,10 @@
 import { useState, useEffect } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { Package, Tag, Plus, Trash2, AlertTriangle, Pencil, Check, X, Search, Globe } from 'lucide-react'
+import { Package, Tag, Plus, Trash2, Pencil, Check, X, Search, Globe } from 'lucide-react'
 import { adminApi } from './adminApi'
 import { Layout } from '@/components/Layout'
 import { Button, Card, Modal, Input, Table, ConfirmDialog } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
-import { useAuthStore } from '@/stores/authStore'
 
 type Tab = 'categories' | 'brands'
 
@@ -20,31 +19,6 @@ function SimpleListTab({ type }: { type: 'categories' | 'brands' }) {
   const [extra, setExtra]         = useState('')
   const [saving, setSaving]       = useState(false)
   const [search, setSearch]       = useState('')
-
-  // --- Reset catalog (тільки для вкладки категорій, тільки owner) ---
-  const userRole = useAuthStore((s) => s.session?.user?.app_metadata?.role as string | undefined)
-  const isOwner  = userRole === 'owner'
-  const [resetOpen, setResetOpen]       = useState(false)
-  const [resetText, setResetText]       = useState('')
-  const [resetLoading, setResetLoading] = useState(false)
-  const CONFIRM_PHRASE = 'ВИДАЛИТИ ВСЕ'
-  const resetConfirmed = [CONFIRM_PHRASE, 'УДАЛИТЬ ВСЕ'].includes(resetText.trim().toUpperCase())
-
-  async function handleReset() {
-    if (!resetConfirmed) return
-    setResetLoading(true)
-    try {
-      const { data } = await adminApi.resetCatalog()
-      toast.success(`Видалено: ${data.products_deleted} товарів, ${data.categories_deleted} категорій`)
-      setResetOpen(false)
-      setResetText('')
-      load()
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Помилка очищення')
-    } finally {
-      setResetLoading(false)
-    }
-  }
 
   async function load() {
     setLoading(true)
@@ -198,15 +172,8 @@ function SimpleListTab({ type }: { type: 'categories' | 'brands' }) {
           />
         </div>
         <div className="flex gap-2">
-          {type === 'categories' && isOwner && (
-            <Button
-              variant="danger-outline"
-              icon={<Trash2 size={16} />}
-              onClick={() => setResetOpen(true)}
-            >
-              Очистити каталог
-            </Button>
-          )}
+          {/* 21.11.2026: «Очистити каталог» прибрано з екрана. Кнопка очищала лише серверну копію
+              (/api/v1/admin/reset-catalog), а робоча база каси лишалась — результат вводив в оману. */}
           <Button icon={<Plus size={16} />} onClick={() => setModalOpen(true)}>{title}</Button>
         </div>
       </div>
@@ -234,58 +201,6 @@ function SimpleListTab({ type }: { type: 'categories' | 'brands' }) {
         </form>
       </Modal>
 
-      {type === 'categories' && (
-        <Modal
-          open={resetOpen}
-          onClose={() => { if (!resetLoading) { setResetOpen(false); setResetText('') } }}
-          title="Очистити весь каталог"
-          size="sm"
-        >
-          <div className="space-y-4">
-            <div className="flex gap-3 p-3 rounded-lg bg-red-50 border border-red-200">
-              <AlertTriangle size={20} className="text-red-600 shrink-0 mt-0.5" />
-              <div className="text-sm text-red-900 space-y-1">
-                <p className="font-semibold">Незворотна операція!</p>
-                <p>Усі товари будуть позначені як видалені (soft-delete),
-                  усі категорії — видалені повністю.</p>
-                <p className="text-red-700">Продажі, повернення, рухи складу — залишаються цілими.</p>
-              </div>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Введіть <span className="font-mono font-bold text-red-600">{CONFIRM_PHRASE}</span> для підтвердження
-              </label>
-              <Input
-                value={resetText}
-                onChange={(e) => setResetText(e.target.value)}
-                placeholder={CONFIRM_PHRASE}
-                autoFocus
-                disabled={resetLoading}
-              />
-            </div>
-            <div className="flex gap-3">
-              <Button
-                type="button"
-                variant="danger"
-                loading={resetLoading}
-                disabled={!resetConfirmed}
-                onClick={handleReset}
-                className="flex-1"
-              >
-                Видалити все
-              </Button>
-              <Button
-                type="button"
-                variant="secondary"
-                disabled={resetLoading}
-                onClick={() => { setResetOpen(false); setResetText('') }}
-              >
-                Скасувати
-              </Button>
-            </div>
-          </div>
-        </Modal>
-      )}
 
       <ConfirmDialog
         open={confirmDelId !== null}
@@ -299,6 +214,31 @@ function SimpleListTab({ type }: { type: 'categories' | 'brands' }) {
         confirmLabel="Видалити"
         danger
       />
+    </>
+  )
+}
+
+/** Категорії й бренди. 21.11.2026: показується і в Налаштування → Товари (сторінка «Адміністрування» лишається за старою адресою). */
+export function CatalogDictionaries({ initialTab = 'categories' }: { initialTab?: Tab }) {
+  const [tab, setTab] = useState<Tab>(initialTab)
+  const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
+    { id: 'categories', label: 'Категорії',    icon: <Tag size={16} /> },
+    { id: 'brands',     label: 'Бренди',       icon: <Package size={16} /> },
+  ]
+  return (
+    <>
+      <div className="flex gap-2 mb-6">
+        {TABS.map((t) => (
+          <button key={t.id} type="button" onClick={() => setTab(t.id)}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              tab === t.id ? 'bg-accent text-black' : 'bg-white border border-gray-200 text-gray-600 hover:border-gray-300'
+            }`}>
+            {t.icon}{t.label}
+          </button>
+        ))}
+      </div>
+      {tab === 'categories' && <SimpleListTab type="categories" />}
+      {tab === 'brands'     && <SimpleListTab type="brands" />}
     </>
   )
 }

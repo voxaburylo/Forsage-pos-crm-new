@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { Menu } from 'lucide-react'
 import { Sidebar } from './Sidebar'
+import { AnalyticsNav } from './AnalyticsNav'
+import { isAnalyticsPath } from '@/features/analytics/analyticsNav'
 import { DataFreshness } from './DataFreshness'
 import { useLocation } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
@@ -98,7 +100,9 @@ export function Layout({ children, title, actions, onBack, contentClassName = ''
         </header>
 
         <main ref={scrollRef} id="app-main-scroll" className={`min-h-0 min-w-0 flex-1 p-4 md:p-6 overflow-auto pb-safe ${contentClassName}`}>
-          {activeGroup && <SubNavTabs tabs={activeGroup} currentRole={role} />}
+          {isAnalyticsPath(location.pathname)
+            ? <AnalyticsNav role={role} />
+            : activeGroup && <SubNavTabs tabs={activeGroup} currentRole={role} />}
           {children}
         </main>
       </div>
