@@ -46,6 +46,7 @@ import { usePOSBarcodeScanner } from './usePOSBarcodeScanner'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { connectOpenReceipts } from './cartRecovery'
 import { useViewNavigation } from '@/hooks/useViewNavigation'
+import { shiftEndPrompt } from './shiftEndPrompt'
 
 function posCustomerFromCustomer(c: Customer): POSCustomer {
   const tierDiscountPct = customerDiscountPct(c)
@@ -287,6 +288,12 @@ export default function POSPage() {
   }, [])
 
   const shift = store.currentShift
+  const [promptClock, setPromptClock] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = window.setInterval(() => setPromptClock(Date.now()), 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
+  const endPrompt = shiftEndPrompt(shift?.opened_at, new Date(promptClock))
   const [mobileTab, setMobileTab] = useState<'search' | 'cart' | 'ready_orders'>('search')
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [quickOpen, setQuickOpen] = useState(false)
@@ -670,6 +677,18 @@ export default function POSPage() {
         className="pos-app-shell flex h-full w-full flex-col overflow-hidden bg-[#1A1A1A]"
       >
 
+
+      {endPrompt && (
+        <div role="status" className={`shrink-0 border-b px-4 py-2 flex items-center gap-3 text-sm font-medium ${endPrompt === 'stale' ? 'bg-amber-900/80 border-amber-500 text-amber-100' : 'bg-gray-800 border-gray-700 text-gray-200'}`}>
+          <span>{endPrompt === 'stale'
+            ? 'Зміну відкрито ще вчора або раніше. Закрийте її — без цього не робиться копія зміни.'
+            : 'Кінець дня: не забудьте закрити зміну — звіт і копія зміни створяться автоматично.'}</span>
+          <button type="button" onClick={() => setCloseOpen(true)}
+            className="ml-auto shrink-0 rounded-lg bg-amber-600 px-3 py-1 text-xs font-bold text-white hover:bg-amber-500">
+            Закрити зміну
+          </button>
+        </div>
+      )}
 
       {/* Connectivity banner */}
       {!desktopRuntime && !serverOnline && (

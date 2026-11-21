@@ -80,6 +80,7 @@ import { assertLanIdentityConnection, canPairEmptyClient, cacheLanIdentity, hasL
 import { createPortableReleaseSource, downloadPortableUpdate, launchPortableUpdateAfterQuit, readPortableUpdateOutcome, type StagedUpdate } from './updates/portableUpdate'
 import { LanOrderClient } from './lan/orderClient'
 import { isSpoolerGuardError, postflightPrinter, preflightPrinter } from './print/spoolerGuard'
+import { disposePrintWarmShell, prewarmPrintShell } from './print/printWarmShell'
 import { desktopTenantArgumentPositions, isDesktopChannelAllowed, PUBLIC_DESKTOP_CHANNELS } from './security/desktopAuthorization'
 import { activeSession } from './security/activeSession'
 import { customerWritePayload } from './security/customerWritePolicy'
@@ -1077,6 +1078,8 @@ function openLocalDatabaseOrExplain(dataRoot: string): LocalDatabaseOpenResult |
 
 app.whenReady().then(async () => {
   blackBox?.record('app-ready')
+  // Перший друк дня не чекає запуску PowerShell (на старому ПК це 3–5 с). Після старту, щоб не гальмувати запуск.
+  setTimeout(() => prewarmPrintShell(app.getPath('userData')), 20_000).unref?.()
   powerMonitor.on('suspend', () => blackBox?.record('system-suspend'))
   powerMonitor.on('resume', () => blackBox?.record('system-resume'))
   let rendererBudgetAt = 0, rendererBudget = 0
@@ -2210,6 +2213,7 @@ app.on('before-quit', (event) => {
   if (databaseMaintenance) return
   blackBox?.record('shutdown-start')
   databaseMaintenance = true
+  disposePrintWarmShell()
   if (lanOrderTimer) clearInterval(lanOrderTimer)
   lanOrderTimer = null
   if (lanUpdateTimer) clearInterval(lanUpdateTimer)
