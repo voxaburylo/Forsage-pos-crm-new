@@ -425,6 +425,11 @@ export default function SettingsPage() {
                     </p>
                   )}
                   <BuildInfoSummary build={desktopRuntime?.build} />
+                  {desktopRuntime?.stagedUpdateReleaseId && (
+                    <p role="status" className="mt-2 rounded-lg bg-white/80 px-2 py-1 text-xs font-medium text-emerald-900">
+                      Нову версію завантажено з головного ПК. Вона встановиться сама, коли ви закриєте програму.
+                    </p>
+                  )}
                 </div>
               </div>
             </Card>

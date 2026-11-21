@@ -1202,7 +1202,9 @@ app.whenReady().then(async () => {
   lanUpdateTimer = setInterval(() => { void checkLanUpdate() }, 5 * 60_000)
   lanUpdateTimer.unref()
 
-  handleDesktopIpc('desktop:get-runtime-info', () => ({ ...requireLocalDatabase().info(), build: desktopBuildInfo }))
+  // 21.11.2026: ПК менеджера бачить, що нову версію з головного ПК уже завантажено (встановиться при закритті).
+  handleDesktopIpc('desktop:get-runtime-info', () => ({ ...requireLocalDatabase().info(), build: desktopBuildInfo,
+    stagedUpdateReleaseId: stagedLanUpdate?.releaseId ?? null }))
 
   handleDesktopIpc('desktop:lan:first-run-status', () => {
     const status = localNetwork!.getStatus()

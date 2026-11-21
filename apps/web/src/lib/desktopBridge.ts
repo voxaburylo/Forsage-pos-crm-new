@@ -96,6 +96,8 @@ export interface DesktopRuntimeInfo {
   schemaVersion: number
   pendingOperations: number
   lan?: DesktopLanStatus | null
+  /** ПК менеджера: нова версія з головного ПК завантажена й встановиться при закритті програми. */
+  stagedUpdateReleaseId?: string | null
 }
 
 export interface NegativeStockRow {
