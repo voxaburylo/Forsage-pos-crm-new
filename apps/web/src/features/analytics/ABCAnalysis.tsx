@@ -91,7 +91,7 @@ export default function ABCAnalysis() {
   ]
 
   return (
-    <Layout title="ABC-аналіз товарів">
+    <Layout title="ABC-аналіз товарів" serverSource>
       <div className="max-w-5xl space-y-4">
         <p className="text-sm text-gray-500">За останні 90 календарних днів, включно із сьогодні. Продажі за мінусом повернень; закупівельна ціна — з чека.</p>
         <ReportError message={error} retry={retry} />

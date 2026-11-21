@@ -4,9 +4,10 @@ import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { ReportSourceNote } from './ReportSourceNote'
 import './analyticsLayout.css'
 
-export function AnalyticsLayout(props: ComponentProps<typeof Layout>) {
+/** serverSource — звіт рахується на сервері (навіть на касі): підпис «серверна копія станом на …». */
+export function AnalyticsLayout({ serverSource = false, ...props }: ComponentProps<typeof Layout> & { serverSource?: boolean }) {
   return <Layout {...props} contentClassName="analytics-content">
-    <ReportSourceNote local={isDesktopRuntime()} />
+    <ReportSourceNote local={isDesktopRuntime()} server={serverSource} />
     {props.children}
   </Layout>
 }

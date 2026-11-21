@@ -14,6 +14,7 @@ import { REASON_LABEL } from '@/types/writeoff'
 import type { WriteoffReason } from '@/types/writeoff'
 import type { SalesPeriodReport, LowStockProduct, Debtor, SoldItem } from '@/types/report'
 import { AnalyticsLayout as Layout } from '@/features/analytics/AnalyticsLayout'
+import { reportTabsInGroup } from '@/features/analytics/analyticsNav'
 import { Card, Table, Badge } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney, formatDate, formatDateTime } from '@/lib/utils'
@@ -61,6 +62,8 @@ function CustomTooltip({ active, payload, label }: { active?: boolean; payload?:
   )
 }
 
+const URL_TABS = ['today', 'sold', 'lowstock', 'debtors', 'writeoffs', 'profit']
+
 function dateKeyDaysAgo(days: number): string {
   const date = new Date(businessDateKey() + 'T12:00:00Z')
   date.setUTCDate(date.getUTCDate() - days)
@@ -77,6 +80,8 @@ export default function DailyReport() {
   const canSeeTireReport = canSeeFullReports || role === 'cashier'
   const [savedTab, setTab] = useListViewState<Tab>('reports.tab', () => canSeeFullReports ? 'today' : 'sold')
   const linkKey = userScope + ':' + searchParams.toString()
+  const urlTab = searchParams.get('tab')
+  const groupTabs = reportTabsInGroup('/analytics/sales', urlTab)
   const [appliedLink, setAppliedLink] = useState<string | null>(null)
   const enteringTireLink = canSeeTireReport && searchParams.get('tab') === 'tire' && appliedLink !== linkKey
   const tireEntry = tireLinkContext(searchParams, businessDateKey())
@@ -516,6 +521,12 @@ export default function DailyReport() {
     else if (tab === 'tire')     loadTireReport()
   }, [tab, loadToday, loadWeekly, loadLowStock, loadDebtors, loadWriteoffs, loadProfit, loadTireReport])
 
+  // Перехід із меню груп аналітики: ?tab=sold / lowstock / debtors / writeoffs / profit / today.
+  useEffect(() => {
+    if (!urlTab || urlTab === 'tire' || !URL_TABS.includes(urlTab)) return
+    setTab(urlTab === 'today' ? summaryPeriod : urlTab as Tab)
+  }, [urlTab]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const TABS = [
     { id: 'today',    label: 'Підсумки',   icon: <TrendingUp size={15} /> },
     { id: 'sold',     label: 'Продані товари', icon: <BarChart2 size={15} /> },
@@ -525,6 +536,8 @@ export default function DailyReport() {
     { id: 'writeoffs', label: 'Списання',  icon: <Trash2 size={15} /> },
     { id: 'profit',    label: 'P&L',        icon: <DollarSign size={15} /> },
   ].filter((item) => canSeeFullReports || item.id === 'sold' || (canSeeTireReport && item.id === 'tire'))
+    // 21.11.2026: відкрито з групи аналітики (?tab=…) — показуємо лише вкладки цієї групи.
+    .filter((item) => !groupTabs || groupTabs.includes(item.id))
 
   function selectReport(id: string) {
     if (tireAction.isBusy() || !TABS.some(item => item.id === id)) return

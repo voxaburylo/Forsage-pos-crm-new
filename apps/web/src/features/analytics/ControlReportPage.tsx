@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
+import { reportTabsInGroup } from './analyticsNav'
+import { ReportSourceNote } from './ReportSourceNote'
 import { TrendingDown, TrendingUp } from 'lucide-react'
 import { Layout } from '@/components/Layout'
 import { Card } from '@/components/ui'
@@ -11,6 +13,8 @@ import {
 } from './controlReportModel'
 
 type Tab = 'compare' | 'staff' | 'running' | 'below' | 'low' | 'stale'
+const CONTROL_TABS: readonly Tab[] = ['compare', 'staff', 'running', 'below', 'low', 'stale']
+const isControlTab = (value: string | null): value is Tab => CONTROL_TABS.includes(value as Tab)
 
 /** «Контроль» для власника: порівняння періодів, продажі нижче закупки, низька націнка, залежані товари. */
 export default function ControlReportPage() {
@@ -20,7 +24,12 @@ export default function ControlReportPage() {
   const [report, setReport] = useState<ControlReport | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  const [tab, setTab] = useState<Tab>('compare')
+  // 21.11.2026: вкладку задає група аналітики (?tab=…); у звіті лишаються вкладки лише цієї групи.
+  const [searchParams] = useSearchParams()
+  const urlTab = searchParams.get('tab')
+  const groupTabs = reportTabsInGroup('/analytics/control', urlTab)
+  const [tab, setTab] = useState<Tab>(() => (isControlTab(urlTab) ? urlTab : groupTabs?.[0] as Tab | undefined) ?? 'compare')
+  useEffect(() => { if (isControlTab(urlTab)) setTab(urlTab) }, [urlTab])
 
   useEffect(() => {
     if (!period.from || !period.to || period.from > period.to) return
@@ -34,7 +43,7 @@ export default function ControlReportPage() {
     return () => { cancelled = true }
   }, [period.from, period.to, marginPct, staleDays])
 
-  const tabs: Array<{ id: Tab; label: string; count?: number }> = [
+  const allTabs: Array<{ id: Tab; label: string; count?: number }> = [
     { id: 'compare', label: 'Порівняння періодів' },
     { id: 'staff', label: 'По працівниках', count: report?.staff?.length },
     { id: 'running', label: 'Закінчуються', count: report?.running_out?.length },
@@ -42,9 +51,11 @@ export default function ControlReportPage() {
     { id: 'low', label: `Націнка до ${marginPct}%`, count: report?.low_margin.length },
     { id: 'stale', label: 'Залежані товари', count: report?.stale.length },
   ]
+  const tabs = allTabs.filter(item => !groupTabs || groupTabs.includes(item.id))
 
   return (
     <Layout title="Контроль">
+      <ReportSourceNote local={false} server />
       <Card className="mb-3 flex flex-wrap items-end gap-3 text-sm">
         <label>З <input type="date" value={period.from} onChange={e => setPeriod(p => ({ ...p, from: e.target.value }))} className="ml-1 rounded-lg border border-gray-200 px-2 py-1.5" /></label>
         <label>По <input type="date" value={period.to} onChange={e => setPeriod(p => ({ ...p, to: e.target.value }))} className="ml-1 rounded-lg border border-gray-200 px-2 py-1.5" /></label>
