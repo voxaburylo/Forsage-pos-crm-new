@@ -75,15 +75,19 @@ const dashboardSql = `
       SUM(receipts)::integer receipts, SUM(gross_revenue)::double precision gross_revenue,
       SUM(refund_total)::double precision refund_total
     FROM movements GROUP BY (occurred_at AT TIME ZONE 'Europe/Kyiv')::date
+  ), product_totals AS (
+    -- 21.11.2026: один прохід по товарах замість чотирьох (зведення на головній вебу ~0,5 с).
+    SELECT COUNT(*) products,
+      COUNT(*) FILTER (WHERE qty_on_hand <= reorder_point) low_stock,
+      COALESCE(SUM(GREATEST(qty_on_hand,0)*COALESCE(purchase_price,0)),0) stock_purchase_value,
+      COALESCE(SUM(GREATEST(qty_on_hand,0)*COALESCE(retail_price,0)),0) stock_retail_value
+    FROM products WHERE tenant_id=$1 AND deleted_at IS NULL AND is_active
   ), overview AS (
     SELECT
-      (SELECT COUNT(*) FROM products WHERE tenant_id=$1 AND deleted_at IS NULL AND is_active) products,
-      (SELECT COUNT(*) FROM products WHERE tenant_id=$1 AND deleted_at IS NULL AND is_active
-        AND qty_on_hand <= reorder_point) low_stock,
-      (SELECT COALESCE(SUM(GREATEST(qty_on_hand,0)*COALESCE(purchase_price,0)),0)
-        FROM products WHERE tenant_id=$1 AND deleted_at IS NULL AND is_active) stock_purchase_value,
-      (SELECT COALESCE(SUM(GREATEST(qty_on_hand,0)*COALESCE(retail_price,0)),0)
-        FROM products WHERE tenant_id=$1 AND deleted_at IS NULL AND is_active) stock_retail_value,
+      (SELECT products FROM product_totals) products,
+      (SELECT low_stock FROM product_totals) low_stock,
+      (SELECT stock_purchase_value FROM product_totals) stock_purchase_value,
+      (SELECT stock_retail_value FROM product_totals) stock_retail_value,
       (SELECT COUNT(*) FROM customers WHERE tenant_id=$1 AND deleted_at IS NULL) customers,
       (SELECT COUNT(*) FROM suppliers WHERE tenant_id=$1 AND deleted_at IS NULL) suppliers,
       (SELECT COUNT(*) FROM customer_orders WHERE tenant_id=$1 AND deleted_at IS NULL

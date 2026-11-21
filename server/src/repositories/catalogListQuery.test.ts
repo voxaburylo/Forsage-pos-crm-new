@@ -12,8 +12,17 @@ describe('PostgreSQL catalog pagination', () => {
         qty_on_hand numeric, retail_price integer, reorder_point numeric DEFAULT 2,
         is_active boolean DEFAULT true, is_service boolean DEFAULT false, is_favorite boolean DEFAULT false,
         brand_id text, category_id text, deleted_at timestamptz, created_at timestamptz DEFAULT now(),
-        normalized_oem text, normalized_supplier_article text, oem_number text, additional_barcodes jsonb
+        normalized_oem text, normalized_supplier_article text, oem_number text, additional_barcodes jsonb,
+        search_text text
       );
+      -- Як у міграції 20261121180000: пошукову колонку заповнює тригер.
+      CREATE FUNCTION products_set_search_text() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN
+        NEW.search_text := coalesce(NEW.name, '') || ' ' || coalesce(NEW.sku, '') || ' ' || coalesce(NEW.barcode, '') || ' '
+          || coalesce(NEW.oem_number, '') || ' ' || coalesce(NEW.normalized_oem, '') || ' ' || coalesce(NEW.normalized_supplier_article, '');
+        RETURN NEW;
+      END $fn$;
+      CREATE TRIGGER products_search_text_trg BEFORE INSERT OR UPDATE ON products FOR EACH ROW EXECUTE FUNCTION products_set_search_text();
       CREATE TABLE brands (id text, tenant_id text, name text, deleted_at timestamptz);
       CREATE TABLE categories (id text, tenant_id text, name text, deleted_at timestamptz);
       CREATE TABLE inventory_reserves (product_id text, tenant_id text, qty numeric, released_at timestamptz, expires_at timestamptz);

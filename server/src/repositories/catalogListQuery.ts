@@ -51,6 +51,33 @@ export function catalogListQuery(filters: ProductListQuery, tenantId: string, te
       `EXISTS (SELECT 1 FROM product_barcodes b WHERE b.tenant_id = p.tenant_id
         AND b.product_id = p.id AND b.deleted_at IS NULL AND b.barcode ILIKE ANY(${patterns}::text[]))`,
     )
+    // 21.11.2026 (план швидкості вебу): ті самі умови, але кандидатів спершу відбирає trigram-індекс
+    // по products.search_text (назва+артикул+штрихкод+OEM), а таблиці кросів/синонімів/кодів — своїми
+    // окремими гілками. Точні умови нижче лишаються перевіркою, тож знайдені товари ті самі.
+    // GIN не вміє ILIKE ANY(масив), тому шаблони розгорнуто в OR — кожен іде своїм індексним пошуком.
+    const productTexts = [...new Set([
+      ...(oemOnly ? [] : (values[Number(patterns.slice(1)) - 1] as string[])),
+      ...(values[Number(codes.slice(1)) - 1] as string[]),
+    ])]
+    // Не обрізаємо шаблони (інакше загубили б товари): якщо їх забагато — без попереднього відбору.
+    const textMatch = productTexts.length > 40 ? 'TRUE' : productTexts.length
+      ? productTexts.map(pattern => `q.search_text ILIKE ${bind(pattern)}`).join(' OR ')
+      : 'FALSE'
+    const candidates = [
+      `SELECT q.id FROM products q WHERE q.tenant_id = $1 AND (${textMatch})`,
+      `SELECT x.product_id FROM product_cross_numbers x WHERE x.tenant_id = $1 AND x.deleted_at IS NULL
+        AND x.normalized_number ILIKE ANY(${codes}::text[])`,
+    ]
+    if (!oemOnly) candidates.push(
+      `SELECT q.id FROM products q WHERE q.tenant_id = $1 AND COALESCE(q.additional_barcodes, '[]'::jsonb) ? ${exact}`,
+      `SELECT a.product_id FROM product_aliases a WHERE a.tenant_id = $1 AND a.deleted_at IS NULL
+        AND a.alias ILIKE ANY(${patterns}::text[])`,
+      `SELECT s.product_id FROM product_supplier_codes s WHERE s.tenant_id = $1
+        AND (s.supplier_code ILIKE ANY(${codes}::text[]) OR s.normalized_supplier_article ILIKE ANY(${codes}::text[]))`,
+      `SELECT b.product_id FROM product_barcodes b WHERE b.tenant_id = $1 AND b.deleted_at IS NULL
+        AND b.barcode ILIKE ANY(${patterns}::text[])`,
+    )
+    where.push(`p.id IN (${candidates.join(' UNION ')})`)
     where.push(`(${predicates.join(' OR ')})`)
     exactOrder = `CASE WHEN e.sku IN (${exact}, ${compact}) OR e.barcode IN (${exact}, ${compact}) THEN 0 ELSE 1 END`
   }
