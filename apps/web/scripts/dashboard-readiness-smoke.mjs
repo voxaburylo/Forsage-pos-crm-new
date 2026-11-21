@@ -143,7 +143,10 @@ try {
     fixture.mode='ok';fixture.data.total_revenue=77777;fixture.data.average_receipt=38889;
     fixture.data.cogs=0;fixture.data.gross_profit=0;fixture.data.daily[0].revenue=77777;fixture.data.daily[0].profit=0;
   })
-  await page.getByRole('button',{name:'7 днів',exact:true}).click()
+  // 21.11.2026: не власник бачить лише продажі за день — інший період обирає датою.
+  assert.equal(await page.getByRole('button',{name:'7 днів',exact:true}).count(),0)
+  assert.equal(await page.getByText('Собівартість залишків',{exact:true}).count(),0)
+  await page.getByLabel('Дата продажів').fill(await page.evaluate(() => { const d=new Date(Date.now()-86400000); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0') }))
   await page.getByText('777.77 грн',{exact:true}).first().waitFor()
   await page.evaluate(() => fixture.pending.shift()())
   assert.equal(await page.getByText('123.45 грн',{exact:true}).count(),0)

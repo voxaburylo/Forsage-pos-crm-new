@@ -658,6 +658,9 @@ interface ForsageDesktopBridge {
     updateUser: (id: string, input: any) => Promise<any>
     deleteUser: (id: string) => Promise<{ ok: true }>
     saveServerPassword: (id: string, password: string) => Promise<{ success: true }>
+    /** 21.11.2026: менеджери, яким власник дозволив продавати (лише головний ПК). */
+    saleAccess?: () => Promise<string[]>
+    setSaleAccess?: (id: string, enabled: boolean) => Promise<string[]>
     setPin: (userId: string, pin: string) => Promise<{ success: true }>
     verifyPin: (userId: string, pin: string) => Promise<{ valid: boolean; error?: string }>
     listCommissionRules: () => Promise<any[]>
@@ -772,6 +775,9 @@ interface ForsageDesktopBridge {
     getOpenShift: (cashierId: string) => Promise<Shift | null>
     /** Відкриті зміни всіх касирів. Старі збірки цього не мають. */
     listOpenShifts?: () => Promise<Array<{ id: string; cashier_id: string; cashier_name: string | null; opened_at: string; expected_cash?: number }>>
+    /** 21.11.2026: команди з вебу «показати/закрити зміну» — від імені власника чи адміна, який їх поставив. */
+    remoteShifts?: (requestedBy: string) => Promise<Array<{ id: string; cashier_id: string; cashier_name: string | null; opened_at: string; expected_cash: number }>>
+    remoteCloseShift?: (requestedBy: string, input: { shift_id: string; cashier_id: string; actual_amount: number; comment: string }) => Promise<{ ok: true; id: string }>
     checkout: (input: DesktopCheckoutInput) => Promise<DesktopCheckoutResult>
     listSales?: (input?: any) => Promise<any>
     dashboardSummary?: (input: { tenant_id?: string; date_from: string; date_to: string }) => Promise<any>

@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { desktopTenantArgumentPositions, isDesktopChannelAllowed, PUBLIC_DESKTOP_CHANNELS } from '../src/security/desktopAuthorization'
+import { desktopTenantArgumentPositions, isDesktopChannelAllowed, isManagerSaleChannel, PUBLIC_DESKTOP_CHANNELS } from '../src/security/desktopAuthorization'
 import { hashSecret, legacySecretHash, secretHashNeedsUpgrade, verifySecret } from '../src/security/secretHash'
 
 describe('desktop authorization boundary', () => {
-  it('keeps managers out of cash and fiscal mutations while allowing orders and receiving', () => {
+  it('gates manager cash and fiscal mutations by the owner switch while allowing orders and receiving', () => {
+    // 21.11.2026: роль пускає менеджера, але кожна така дія вимагає «Може продавати» (перевірка в main.ts).
     for (const channel of ['desktop:pos:checkout', 'desktop:pos:create-return', 'desktop:pos:create-cash-operation', 'desktop:orders:add-payment', 'desktop:orders:complete', 'desktop:fiscal:fiscalize-sale', 'desktop:fiscal:service-cash']) {
-      expect(isDesktopChannelAllowed(channel, 'manager')).toBe(false)
+      expect(isDesktopChannelAllowed(channel, 'manager')).toBe(true)
+      expect(isManagerSaleChannel(channel)).toBe(true)
+      expect(isDesktopChannelAllowed(channel, 'storekeeper')).toBe(false)
       expect(isDesktopChannelAllowed(channel, 'cashier')).toBe(true)
     }
     expect(isDesktopChannelAllowed('desktop:orders:save', 'manager')).toBe(true)

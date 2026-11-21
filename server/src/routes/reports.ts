@@ -10,11 +10,18 @@ router.use(requireAuth)
 
 // GET /api/v1/reports/control?from=&to=&margin_pct=&stale_days= — «Контроль»: порівняння періодів,
 // продажі нижче закупки, низька націнка, залежані товари. Лише читання.
+function hideIncome<T extends { current: object; previous: object }>(report: T): T {
+  const blank = <P extends object>(totals: P): P => Object.fromEntries(Object.entries(totals).map(([key, value]) => [key, typeof value === 'number' ? 0 : value])) as P
+  return { ...report, current: blank(report.current), previous: blank(report.previous), staff: [], staff_previous: [] }
+}
+
 router.get('/control', requireRole('owner', 'admin', 'manager'), async (req, res, next) => {
   try {
     const parsed = controlReportQuery.safeParse(req.query)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Вкажіть період звіту', 422)
-    res.json({ data: await buildControlReport(req.user!.tenant_id, parsed.data) })
+    const report = await buildControlReport(req.user!.tenant_id, parsed.data)
+    // 21.11.2026 (рішення власника): менеджер не бачить доходів магазину — підсумків періодів і виручки по працівниках.
+    res.json({ data: ['owner', 'admin'].includes(req.user!.role ?? '') ? report : hideIncome(report) })
   } catch (err) { next(err) }
 })
 

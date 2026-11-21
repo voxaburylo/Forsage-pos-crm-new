@@ -33,11 +33,25 @@ export const productUpdatePayload = z.object({
   changes: productFields.refine(value => Object.keys(value).length > 0, 'Немає змін'),
 }).strict().refine(value => Object.keys(value.changes).every(key => key in value.base), 'Для кожної зміни потрібне попереднє значення')
 
-export const createCommandSchema = z.object({
-  operation_id: z.string().uuid(),
-  command: z.literal('product.update'),
-  payload: productUpdatePayload,
+/** 21.11.2026: закриття незакритої зміни з вебу — каса читає відкриті зміни і закриває у своїй базі. */
+export const shiftClosePayload = z.object({
+  shift_id: z.string().uuid(),
+  cashier_id: z.string().uuid(),
+  /** Готівка в касі за перерахунком, у копійках. */
+  actual_amount: money,
+  comment: z.string().trim().min(3).max(300),
 }).strict()
+
+export const createCommandSchema = z.discriminatedUnion('command', [
+  z.object({ operation_id: z.string().uuid(), command: z.literal('product.update'), payload: productUpdatePayload }).strict(),
+  z.object({ operation_id: z.string().uuid(), command: z.literal('shift.list'), payload: z.object({}).strict() }).strict(),
+  z.object({ operation_id: z.string().uuid(), command: z.literal('shift.close'), payload: shiftClosePayload }).strict(),
+])
+/** Зміни каси з вебу — лише власник або адміністратор. */
+export const SHIFT_COMMAND_ROLES = ['owner', 'admin'] as const
+export function commandAllowedForRole(command: string, role: string | undefined): boolean {
+  return !command.startsWith('shift.') || (SHIFT_COMMAND_ROLES as readonly string[]).includes(role ?? '')
+}
 
 export const commandResultSchema = z.object({
   status: z.enum(['done', 'failed']),

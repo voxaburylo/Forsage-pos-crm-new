@@ -17,7 +17,7 @@ describe('employee lifecycle on isolated local database', () => {
     staff.updateUser('employee', { role: 'manager' })
     const changed = activeSession(db, identity)!
     expect(changed.role).toBe('manager')
-    expect(isDesktopChannelAllowed('desktop:pos:checkout', changed.role)).toBe(false)
+    expect(isDesktopChannelAllowed('desktop:staff:list-users', changed.role)).toBe(false)
     staff.updateUser('employee', { is_active: false })
     expect(activeSession(db, identity)).toBeNull()
     staff.updateUser('employee', { is_active: true, role: 'tire_worker' })

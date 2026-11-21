@@ -183,6 +183,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     updateUser: (id: string, input: unknown) => ipcRenderer.invoke('desktop:staff:update-user', id, input),
     deleteUser: (id: string) => ipcRenderer.invoke('desktop:staff:delete-user', id),
     saveServerPassword: (id: string, password: string) => ipcRenderer.invoke('desktop:staff:save-server-password', id, password),
+    saleAccess: () => ipcRenderer.invoke('desktop:staff:sale-access'),
+    setSaleAccess: (id: string, enabled: boolean) => ipcRenderer.invoke('desktop:staff:set-sale-access', id, enabled),
     setPin: (userId: string, pin: string) => ipcRenderer.invoke('desktop:staff:set-pin', userId, pin),
     verifyPin: (userId: string, pin: string) => ipcRenderer.invoke('desktop:staff:verify-pin', userId, pin),
     listCommissionRules: () => ipcRenderer.invoke('desktop:staff:list-commission-rules'),
@@ -284,6 +286,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     getOpenShift: (cashierId: string) =>
       ipcRenderer.invoke('desktop:pos:get-open-shift', cashierId),
     listOpenShifts: () => ipcRenderer.invoke('desktop:pos:list-open-shifts'),
+    remoteShifts: (requestedBy: string) => ipcRenderer.invoke('desktop:pos:remote-shifts', requestedBy),
+    remoteCloseShift: (requestedBy: string, input: unknown) => ipcRenderer.invoke('desktop:pos:remote-close-shift', requestedBy, input),
     checkout: (input: unknown) => ipcRenderer.invoke('desktop:pos:checkout', input),
     listSales: (input?: unknown) => ipcRenderer.invoke('desktop:pos:list-sales', input),
     dashboardSummary: (input: unknown) => ipcRenderer.invoke('desktop:pos:dashboard-summary', input),

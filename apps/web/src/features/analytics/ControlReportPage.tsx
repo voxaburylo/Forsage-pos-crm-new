@@ -1,3 +1,4 @@
+import { useAuthStore } from '@/stores/authStore'
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { reportTabsInGroup } from './analyticsNav'
@@ -28,8 +29,15 @@ export default function ControlReportPage() {
   const [searchParams] = useSearchParams()
   const urlTab = searchParams.get('tab')
   const groupTabs = reportTabsInGroup('/analytics/control', urlTab)
-  const [tab, setTab] = useState<Tab>(() => (isControlTab(urlTab) ? urlTab : groupTabs?.[0] as Tab | undefined) ?? 'compare')
-  useEffect(() => { if (isControlTab(urlTab)) setTab(urlTab) }, [urlTab])
+  // 21.11.2026: доходи (порівняння періодів, виручка по працівниках) — лише власнику й адміну.
+  const role = useAuthStore((state) => (state.session?.user?.app_metadata?.role as string | undefined) ?? '')
+  const canSeeIncome = role === 'owner' || role === 'admin'
+  const allowedTab = (value: Tab) => canSeeIncome || (value !== 'compare' && value !== 'staff')
+  const [tab, setTab] = useState<Tab>(() => {
+    const wanted = (isControlTab(urlTab) ? urlTab : groupTabs?.[0] as Tab | undefined) ?? 'compare'
+    return allowedTab(wanted) ? wanted : 'running'
+  })
+  useEffect(() => { if (isControlTab(urlTab) && allowedTab(urlTab)) setTab(urlTab) }, [urlTab, canSeeIncome])
 
   useEffect(() => {
     if (!period.from || !period.to || period.from > period.to) return
@@ -51,7 +59,7 @@ export default function ControlReportPage() {
     { id: 'low', label: `Націнка до ${marginPct}%`, count: report?.low_margin.length },
     { id: 'stale', label: 'Залежані товари', count: report?.stale.length },
   ]
-  const tabs = allTabs.filter(item => !groupTabs || groupTabs.includes(item.id))
+  const tabs = allTabs.filter(item => allowedTab(item.id)).filter(item => !groupTabs || groupTabs.includes(item.id) || !allowedTab(groupTabs[0] as Tab))
 
   return (
     <Layout title="Контроль">

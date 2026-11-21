@@ -8,6 +8,19 @@ const RECEIVING_ROLES: readonly DesktopRole[] = ['owner', 'admin', 'manager', 'c
 const INVENTORY_COUNTER_ROLES: readonly DesktopRole[] = ['owner', 'admin', 'manager', 'cashier', 'storekeeper', 'sto_viewer']
 const OWNER_ROLES: readonly DesktopRole[] = ['owner', 'admin']
 const CASHIER_ROLES: readonly DesktopRole[] = ['owner', 'admin', 'cashier']
+// 21.11.2026 (рішення власника): менеджер продає лише тоді, коли власник увімкнув йому
+// «Може продавати» в «Команда та ЗП». Роль тут пускає менеджера, а сам дозвіл перевіряє
+// головний ПК (main.ts, managerSaleAccess) — і для своєї каси, і для команд з ПК менеджера.
+const TILL_ROLES: readonly DesktopRole[] = ['owner', 'admin', 'manager', 'cashier']
+const MANAGER_SALE_EXACT = new Set<string>([
+  ...['checkout', 'create-return', 'refund-core-deposit', 'open-shift', 'close-shift', 'create-cash-operation',
+    'pay-debt', 'add-customer-deposit', 'payout-customer-deposit'].map(name => `desktop:pos:${name}`),
+  'desktop:orders:add-payment', 'desktop:orders:complete',
+])
+/** Дії каси, на які менеджеру потрібен окремий дозвіл власника. */
+export function isManagerSaleChannel(channel: string): boolean {
+  return MANAGER_SALE_EXACT.has(channel) || (channel.startsWith('desktop:fiscal:') && !['desktop:fiscal:get-config', 'desktop:fiscal:status'].includes(channel))
+}
 
 export const PUBLIC_DESKTOP_CHANNELS = new Set([
   'desktop:auth:login',
@@ -34,6 +47,9 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   ['desktop:orders:retry-offline', ['owner', 'admin', 'manager']],
   ['desktop:catalog:agent-scan', OWNER_ROLES],
   ['desktop:pos:list-open-shifts', ['owner', 'admin', 'manager']],
+  // Команда з вебу: хто б не сидів за касою, право дає власник/адмін, який її поставив (перевірка в main.ts).
+  ['desktop:pos:remote-shifts', POS_ROLES],
+  ['desktop:pos:remote-close-shift', POS_ROLES],
   ...['scan', 'preview', 'apply', 'apply-sku', 'tidy-plan', 'tidy-apply'].map((mode): [string, readonly DesktopRole[]] => [`desktop:catalog:cleanup-${mode}`, OWNER_ROLES]),
   ['desktop:catalog:agent-apply', OWNER_ROLES],
   ['desktop:catalog:negative-stock', ['owner', 'admin', 'manager', 'storekeeper']],
@@ -42,10 +58,10 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   ['desktop:warehouse:create-consumption', ['owner', 'admin', 'manager']],
   ['desktop:warehouse:resolve-consumption', ['owner', 'admin', 'manager']],
   ['desktop:pos:delete-customer', OWNER_ROLES],
-  ['desktop:orders:add-payment', CASHIER_ROLES],
-  ['desktop:orders:complete', CASHIER_ROLES],
+  ['desktop:orders:add-payment', TILL_ROLES],
+  ['desktop:orders:complete', TILL_ROLES],
   ...['checkout', 'create-return', 'refund-core-deposit', 'open-shift', 'close-shift', 'create-cash-operation',
-    'pay-debt', 'add-customer-deposit', 'payout-customer-deposit'].map((name): [string, readonly DesktopRole[]] => [`desktop:pos:${name}`, CASHIER_ROLES]),
+    'pay-debt', 'add-customer-deposit', 'payout-customer-deposit'].map((name): [string, readonly DesktopRole[]] => [`desktop:pos:${name}`, TILL_ROLES]),
 
   ['desktop:backup-now', OWNER_ROLES],
   ...['pending', 'status', 'upload', 'confirmed', 'failed'].map((name): [string, readonly DesktopRole[]] => [`desktop:backup:${name}`, CASHIER_ROLES]),
@@ -112,7 +128,7 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   ['desktop:supply:pay-invoice', RECEIVING_ROLES],
   ['desktop:supply:delete-invoice', RECEIVING_ROLES],
   ['desktop:pos:reconcile', OWNER_ROLES],
-  ['desktop:pos:payout-customer-deposit', ['owner', 'admin', 'cashier']],
+  ['desktop:pos:payout-customer-deposit', TILL_ROLES],
   ['desktop:fiscal:set-config', OWNER_ROLES],
   ['desktop:fiscal:get-config', POS_ROLES],
   ['desktop:fiscal:status', POS_ROLES],
@@ -128,7 +144,7 @@ const PREFIX_RULES: Array<[string, readonly DesktopRole[]]> = [
   ['desktop:inventory:', INVENTORY_COUNTER_ROLES],
   ['desktop:orders:', ORDER_ROLES],
   ['desktop:pos:', POS_ROLES],
-  ['desktop:fiscal:', CASHIER_ROLES],
+  ['desktop:fiscal:', TILL_ROLES],
   ['desktop:catalog:save-', STOCK_ROLES],
   ['desktop:catalog:delete-', STOCK_ROLES],
   ['desktop:catalog:upsert-', STOCK_ROLES],

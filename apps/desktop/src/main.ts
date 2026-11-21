@@ -81,7 +81,8 @@ import { createPortableReleaseSource, downloadPortableUpdate, launchPortableUpda
 import { LanOrderClient } from './lan/orderClient'
 import { isSpoolerGuardError, postflightPrinter, preflightPrinter } from './print/spoolerGuard'
 import { disposePrintWarmShell, prewarmPrintShell } from './print/printWarmShell'
-import { desktopTenantArgumentPositions, isDesktopChannelAllowed, PUBLIC_DESKTOP_CHANNELS } from './security/desktopAuthorization'
+import { desktopTenantArgumentPositions, isDesktopChannelAllowed, isManagerSaleChannel, PUBLIC_DESKTOP_CHANNELS } from './security/desktopAuthorization'
+import { MANAGER_SALE_DENIED, managerCanSell, managerSaleAllowedIds, setManagerSaleAccess } from './security/managerSaleAccess'
 import { activeSession } from './security/activeSession'
 import { customerWritePayload } from './security/customerWritePolicy'
 
@@ -684,6 +685,12 @@ async function executeDesktopCommand(
     if (!session) throw new Error('Доступ працівника вимкнено. Увійдіть заново.')
     if (!isDesktopChannelAllowed(channel, session.role)) {
       throw new Error('Недостатньо прав для цієї дії')
+    }
+    // Дозвіл «Може продавати» живе в базі головного ПК. На ПК менеджера продаж однаково
+    // перевіряє головний ПК; локально там лишається тільки ПРРО цього комп'ютера.
+    if (session.role === 'manager' && isManagerSaleChannel(channel) && localNetwork?.getStatus().mode !== 'client'
+      && !managerCanSell(requireLocalDatabase(), session.id)) {
+      throw new Error(MANAGER_SALE_DENIED)
     }
     for (const argument of args) validateTenantArguments(argument, session.tenant_id)
     for (const position of desktopTenantArgumentPositions(channel)) {
@@ -1705,6 +1712,9 @@ app.whenReady().then(async () => {
     if (id === session.id) throw new Error('Не можна видалити власний обліковий запис')
     return requireLocalStaff().deleteUser(id, session.tenant_id)
   })
+  handleDesktopIpc('desktop:staff:sale-access', () => managerSaleAllowedIds(requireLocalDatabase()))
+  handleDesktopIpc('desktop:staff:set-sale-access', (_event, id: string, enabled: boolean) =>
+    setManagerSaleAccess(requireLocalDatabase(), id, enabled))
   handleDesktopIpc('desktop:staff:save-server-password', (_event, id: string, password: string) =>
     requireLocalStaff().saveServerPassword(id, password))
   handleDesktopIpc('desktop:staff:set-pin', (_event, userId: string, pin: string) => requireLocalStaff().setPin(userId, pin))
@@ -2021,6 +2031,25 @@ app.whenReady().then(async () => {
   }) => {
     const session = requireDesktopSession()
     return requireLocalPos().openShift({ ...input, cashier_id: session.id, tenant_id: session.tenant_id })
+  })
+  // 21.11.2026: зміну закривають з вебу. Сервер прийняв команду лише від власника/адміна; каса ще раз
+  // перевіряє, що цей працівник — активний власник або адміністратор у СВОЇЙ базі, і закриває від його імені.
+  const remoteShiftActor = (requestedBy: string) => {
+    const session = requireDesktopSession()
+    if (localNetwork?.getStatus().mode === 'client') throw new Error('Зміни закриває головна каса')
+    const actor = typeof requestedBy === 'string' ? activeSession(requireLocalDatabase(), { id: requestedBy, tenant_id: session.tenant_id }) : null
+    if (!actor || (actor.role !== 'owner' && actor.role !== 'admin')) throw new Error('Недостатньо прав: зміну з вебу закриває лише власник або адміністратор')
+    return actor
+  }
+  handleDesktopIpc('desktop:pos:remote-shifts', (_event, requestedBy: string) => {
+    const actor = remoteShiftActor(requestedBy)
+    return requireLocalPos().listOpenShifts(actor.tenant_id)
+  })
+  handleDesktopIpc('desktop:pos:remote-close-shift', (_event, requestedBy: string, input: { shift_id: string; cashier_id: string; actual_amount: number; comment: string }) => {
+    const actor = remoteShiftActor(requestedBy)
+    const result = requireLocalPos().closeShift(String(input?.cashier_id ?? ''), Number(input?.actual_amount), String(input?.comment ?? ''), String(input?.shift_id ?? ''), actor.tenant_id, actor.role, actor.id)
+    setImmediate(() => { void shiftBackups?.tick() })
+    return result
   })
   handleDesktopIpc('desktop:pos:list-open-shifts', () => requireLocalPos().listOpenShifts(requireDesktopSession().tenant_id))
   handleDesktopIpc('desktop:pos:get-open-shift', (_event, cashierId: string) => {

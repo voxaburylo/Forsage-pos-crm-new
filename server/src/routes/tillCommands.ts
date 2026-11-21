@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
 import {
-  TILL_ROLES, WEB_COMMAND_ROLES, claimCommands, commandResultSchema, createCommand, createCommandSchema, finishCommand, readCommand, tillStatus,
+  TILL_ROLES, WEB_COMMAND_ROLES, claimCommands, commandAllowedForRole, commandResultSchema, createCommand, createCommandSchema, finishCommand, readCommand, tillStatus,
 } from '../services/tillCommandService.js'
 
 /** Запис із вебу через касу: веб ставить команду, каса її забирає й виконує у своїй базі. */
@@ -17,6 +17,7 @@ tillCommandsRouter.post('/', requireRole(...WEB_COMMAND_ROLES), async (req, res,
   try {
     const parsed = createCommandSchema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Некоректна зміна. Оновіть сторінку й спробуйте ще раз.', 422)
+    if (!commandAllowedForRole(parsed.data.command, req.user!.role)) throw new AppError('FORBIDDEN', 'Зміни каси з вебу закриває лише власник або адміністратор', 403)
     res.status(202).json({ data: await createCommand(req.user!.tenant_id, req.user!.id, parsed.data) })
   } catch (err) { next(err) }
 })

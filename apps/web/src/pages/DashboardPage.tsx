@@ -12,6 +12,7 @@ import { MorningBrief } from '@/components/MorningBrief'
 import { businessDateKey, businessDateRangeUtc } from '@/lib/businessDate'
 import { staffApi } from '@/features/staff/staffApi'
 import { ExternalBackupReminder } from '@/features/settings/ExternalBackupReminder'
+import { RemoteShiftsCard } from '@/features/tillCommands/RemoteShiftsCard'
 import { parseDashboardData, parseDashboardTires, type DashboardData as Analytics, type DashboardTireWorker } from '@/features/analytics/dashboardData'
 
 
@@ -130,7 +131,8 @@ export default function DashboardPage() {
     <Layout title="Статистика">
       {/* Period selector */}
       <div className="flex gap-2 mb-6 flex-wrap">
-        {(Object.keys(PERIOD_LABELS) as QuickPeriod[]).map((p) => (
+        {/* 21.11.2026: менеджер бачить продажі за день, без виручки за тиждень/місяць. */}
+        {(Object.keys(PERIOD_LABELS) as QuickPeriod[]).filter((p) => canSeeProfit || p === 'today').map((p) => (
           <button key={p} onClick={() => setPeriod(p)}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
               period === p ? 'bg-yellow-400 text-black' : 'bg-white border border-gray-200 text-gray-600 hover:border-gray-300'
@@ -163,13 +165,15 @@ export default function DashboardPage() {
       {canSeeProfit && <MorningBrief />}
       <ShiftReminder />
       {canSeeProfit && <ExternalBackupReminder />}
+      {/* 21.11.2026: у вебі власник бачить відкриті зміни каси й може закрити забуту. */}
+      {canSeeProfit && !desktopBridge() && <RemoteShiftsCard />}
       {loadError ? (
         <p role="alert" className="mb-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{loadError}</p>
       ) : <>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 md:gap-4 mb-6">
+      {canSeeProfit && <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 md:gap-4 mb-6">
         <div className="bg-indigo-50 border border-indigo-200 rounded-2xl p-4 shadow-sm"><div className="text-xs font-semibold text-indigo-700 uppercase tracking-wider">Товарів на складі</div><div className="mt-2 text-2xl font-bold text-indigo-950">{loading ? '—' : formatMoney(d?.inventory?.retail_value ?? 0)}</div><div className="text-xs text-indigo-700 mt-1">за ціною продажу</div></div>
         <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 shadow-sm"><div className="text-xs font-semibold text-slate-600 uppercase tracking-wider">Собівартість залишків</div><div className="mt-2 text-2xl font-bold text-slate-900">{loading ? '—' : formatMoney(d?.inventory?.purchase_value ?? 0)}</div><div className="text-xs text-slate-600 mt-1">закупівельна вартість</div></div>
-      </div>
+      </div>}
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4 mb-6 md:mb-8">
