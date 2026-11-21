@@ -109,4 +109,15 @@ describe('posted invoice marks waiting order items as arrived', () => {
     expect(orders.applyInvoiceArrival('inv-6').orders).toEqual([])
     expect(statuses(archived.id)).toEqual(['pending'])
   })
+
+  it('keeps a partly arrived notebook order «ordered» while its other lines still wait at the supplier', () => {
+    product('p-ball', 'CB0269', 'Опора шарова CTR CB0269')
+    const waiting = orders.saveOrder({ initial_status: 'ordered', comment: 'Часткове', items: [
+      { name: 'Шарова', sku: 'CB0269', qty: 1, sell_price: 10000, source_type: 'supplier', item_status: 'ordered' },
+      { name: 'Втулка', sku: '17006', qty: 2, sell_price: 5000, source_type: 'supplier', item_status: 'ordered' }] })
+    invoice('inv-8', 'posted', [['p-ball', 1]])
+    expect(orders.applyInvoiceArrival('inv-8').orders[0]).toMatchObject({ complete: false })
+    expect(orders.getOrder(waiting.id).status).toBe('ordered')
+    expect(statuses(waiting.id)).toEqual(['arrived', 'ordered'])
+  })
 })

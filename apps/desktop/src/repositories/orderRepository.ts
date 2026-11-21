@@ -111,7 +111,8 @@ export class LocalOrderRepository {
     }
     params.push(limit, offset)
     const rows = this.db.prepare(`
-      SELECT o.*, c.id AS customer_id_join, c.phone AS customer_phone,
+      SELECT o.*, EXISTS(SELECT 1 FROM app_meta m WHERE m.key = 'notebook-order:' || o.tenant_id || ':' || o.id) AS from_notebook,
+             c.id AS customer_id_join, c.phone AS customer_phone,
              c.full_name AS customer_full_name, c.card_barcode AS customer_card_barcode,
              COALESCE(c.bonus_balance, 0) AS customer_bonus_balance
       FROM customer_orders o
@@ -815,7 +816,8 @@ export class LocalOrderRepository {
     params.push(limit)
 
     const rows = this.db.prepare(`
-      SELECT o.*, c.id AS customer_id_join, c.phone AS customer_phone,
+      SELECT o.*, EXISTS(SELECT 1 FROM app_meta m WHERE m.key = 'notebook-order:' || o.tenant_id || ':' || o.id) AS from_notebook,
+             c.id AS customer_id_join, c.phone AS customer_phone,
              c.full_name AS customer_full_name, c.card_barcode AS customer_card_barcode,
              COALESCE(c.bonus_balance, 0) AS customer_bonus_balance
       FROM customer_orders o
@@ -830,7 +832,8 @@ export class LocalOrderRepository {
 
   getOrder(id: string, tenantId = DEFAULT_TENANT_ID): any | null {
     const row = this.db.prepare(`
-      SELECT o.*, c.id AS customer_id_join, c.phone AS customer_phone,
+      SELECT o.*, EXISTS(SELECT 1 FROM app_meta m WHERE m.key = 'notebook-order:' || o.tenant_id || ':' || o.id) AS from_notebook,
+             c.id AS customer_id_join, c.phone AS customer_phone,
              c.full_name AS customer_full_name, c.card_barcode AS customer_card_barcode,
              COALESCE(c.bonus_balance, 0) AS customer_bonus_balance
       FROM customer_orders o
@@ -1443,7 +1446,8 @@ export class LocalOrderRepository {
     `).all(tenantId, row.id) as any[]
     return {
       id: row.id,
-      from_notebook: this.isNotebookOrder(row.id, tenantId),
+      // Список бере позначку тим самим запитом (без окремого читання на кожне замовлення).
+      from_notebook: row.from_notebook !== undefined ? Number(row.from_notebook) === 1 : this.isNotebookOrder(row.id, tenantId),
       order_number: row.order_number,
       kp_number: row.kp_number,
       customer_id: row.customer_id,

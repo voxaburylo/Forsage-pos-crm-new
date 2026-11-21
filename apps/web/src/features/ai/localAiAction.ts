@@ -64,7 +64,8 @@ export function aiOrderPayload(payload: Record<string, any>, suppliers: Array<{ 
       return { name, sku: String(item.part_number ?? '').trim() || null, qty,
         sell_price: price(item.sell_price_uah), buy_price: price(item.buy_price_uah),
         supplier_id: supplierId(item.supplier),
-        source_type: 'supplier' as const, item_status: item.arrived === true ? 'arrived' as const : 'pending' as const }
+        source_type: 'supplier' as const, // Відкрите замовлення з блокнота вже замовлене в постачальника: позиція без галочки — «замовлено, чекаємо».
+        item_status: item.arrived === true ? 'arrived' as const : payload.is_done === true ? 'pending' as const : 'ordered' as const }
     }),
   }
   body.initial_status = notebookInitialStatus(payload)

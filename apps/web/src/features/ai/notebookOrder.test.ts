@@ -44,6 +44,13 @@ describe('notebook order → order in the program', () => {
     expect(order.comment).toBe('Клієнту подзвонили')
   })
 
+  it('marks waiting lines of an open notebook order as ordered at the supplier', () => {
+    const open = aiOrderPayload({ items: [item({ arrived: true }), item()] }, suppliers)
+    expect(open.items.map(row => row.item_status)).toEqual(['arrived', 'ordered'])
+    const done = aiOrderPayload({ is_done: true, items: [item({ arrived: true }), item()] }, suppliers)
+    expect(done.items.map(row => row.item_status)).toEqual(['arrived', 'pending'])
+  })
+
   it('rejects malformed marks instead of guessing', () => {
     expect(() => aiOrderPayload({ is_done: 'так', items: [item()] })).toThrow('Некоректна позначка')
     expect(() => aiOrderPayload({ items: [item({ supplier: 5 })] })).toThrow('постачальник')
