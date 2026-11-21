@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 const query = vi.hoisted(() => vi.fn())
 vi.mock('../../db/pg.js', () => ({ pool: { query } }))
-import { claimCommands, createCommand, createCommandSchema, finishCommand, readCommand } from '../tillCommandService.js'
+import { claimCommands, commandAllowedForRole, createCommand, createCommandSchema, finishCommand, readCommand } from '../tillCommandService.js'
 
 const id = (n: number) => `00000000-0000-4000-8000-00000000000${n}`
 const command = (changes: Record<string, unknown> = { retail_price: 27000 }, base: Record<string, unknown> = { retail_price: 24000 }) =>
@@ -56,5 +56,20 @@ describe('web write through the till', () => {
     query.mockResolvedValueOnce({ rowCount: 0 })
     await expect(finishCommand('t', id(4), id(5), { status: 'done', result: {} })).rejects.toMatchObject({ status: 404 })
     expect(query.mock.calls[0][0]).toMatch(/device_id = \$3 AND status = 'claimed'/)
+  })
+  it('closes a till shift from the web only for owner/admin with an explicit amount and reason', () => {
+    const close = (payload: Record<string, unknown>) => ({ operation_id: id(7), command: 'shift.close', payload })
+    const valid = { shift_id: id(8), cashier_id: id(9), actual_amount: 125050, comment: 'Закрито власником з вебу' }
+    expect(createCommandSchema.safeParse(close(valid)).success).toBe(true)
+    expect(createCommandSchema.safeParse({ operation_id: id(7), command: 'shift.list', payload: {} }).success).toBe(true)
+    expect(createCommandSchema.safeParse(close({ ...valid, actual_amount: -1 })).success).toBe(false)
+    expect(createCommandSchema.safeParse(close({ ...valid, actual_amount: 12.5 })).success).toBe(false)
+    expect(createCommandSchema.safeParse(close({ ...valid, comment: ' ' })).success).toBe(false)
+    expect(createCommandSchema.safeParse(close({ ...valid, tenant_id: id(3) })).success).toBe(false)
+    expect(createCommandSchema.safeParse({ operation_id: id(7), command: 'shift.list', payload: { all: true } }).success).toBe(false)
+    for (const role of ['owner', 'admin']) expect(commandAllowedForRole('shift.close', role)).toBe(true)
+    for (const role of ['manager', 'cashier', undefined]) expect(commandAllowedForRole('shift.close', role)).toBe(false)
+    expect(commandAllowedForRole('shift.list', 'manager')).toBe(false)
+    expect(commandAllowedForRole('product.update', 'manager')).toBe(true)
   })
 })

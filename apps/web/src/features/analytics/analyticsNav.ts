@@ -33,13 +33,14 @@ export const ANALYTICS_GROUPS: AnalyticsGroup[] = [
     { label: 'Боржники', to: '/analytics/sales?tab=debtors', roles: ADMIN },
   ] },
   { id: 'staff', label: 'Працівники', links: [
-    { label: 'По працівниках', to: '/analytics/control?tab=staff', roles: OFFICE },
+    // 21.11.2026: виручка по працівниках і порівняння періодів — доходи магазину, лише власник/адмін.
+    { label: 'По працівниках', to: '/analytics/control?tab=staff', roles: ADMIN },
     { label: 'Шиномонтаж', to: '/analytics/sales?tab=tire', roles: [...ADMIN, 'cashier'] },
     { label: 'Зарплата та виплати', to: '/analytics/payroll', roles: ADMIN },
     { label: 'Прибутковість', to: '/staff-analytics', roles: ADMIN },
   ] },
   { id: 'control', label: 'Контроль', links: [
-    { label: 'Порівняння періодів', to: '/analytics/control?tab=compare', roles: OFFICE },
+    { label: 'Порівняння періодів', to: '/analytics/control?tab=compare', roles: ADMIN },
     { label: 'Списання', to: '/analytics/sales?tab=writeoffs', roles: ADMIN },
   ] },
 ]

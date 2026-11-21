@@ -71,6 +71,25 @@ it('distinguishes disabled/wrong-user/auth failures from actual disconnection an
   await expect(client.loginRemote('phone', 'password')).rejects.toBeInstanceOf(LanUnavailableError)
 })
 
+it('lets the active owner, besides the coded employee, log in and work from the manager PC; other staff stay rejected', async () => {
+  const hubPort = await port(), owner: LanSession = { id: 'owner-1', tenant_id: 'shop', role: 'owner' }
+  const staff: Record<string, LanSession> = { [actor.id]: actor, [owner.id]: owner, cashier: { id: 'cashier', tenant_id: 'shop', role: 'cashier' } }
+  let profile: Record<string, unknown> = { ...owner, is_active: true }
+  const sessions: LanSession[] = []
+  const hub = new LocalNetworkCoordinator(root(), async (_channel, _args, session) => { sessions.push(session); return 'ok' }, id => staff[id] ?? null, { discovery: false, authenticate: async () => profile })
+  peers.push(hub); await hub.update({ mode: 'hub', port: hubPort, accessKey: code, allowedUserId: actor.id })
+  const client = new LocalNetworkCoordinator(root(), async () => null, () => null, { discovery: false }); peers.push(client)
+  await client.pairRemote({ hubAddress: `127.0.0.1:${hubPort}`, accessKey: code })
+  expect(await client.loginRemote('phone', 'password')).toMatchObject({ id: 'owner-1', role: 'owner' })
+  expect(await client.invoke('desktop:orders:list', [], owner)).toBe('ok')
+  expect(sessions).toEqual([owner])
+  profile = { ...staff.cashier, is_active: true }
+  await expect(client.loginRemote('phone', 'password')).rejects.toThrow('іншому працівнику')
+  await expect(client.invoke('desktop:orders:list', [], staff.cashier)).rejects.toThrow('іншому працівнику')
+  profile = { ...actor, is_active: true }
+  expect(await client.loginRemote('phone', 'password')).toMatchObject({ id: actor.id, role: 'manager' })
+})
+
 it('rejects public, credential-bearing and DNS candidates before any fetch or persist', async () => {
   const directory = root(), client = new LocalNetworkCoordinator(directory, async () => null, () => null, { discovery: false }); peers.push(client)
   for (const address of ['8.8.8.8:3210', 'example.com:3210', 'http://user:pass@192.168.1.2:3210', 'https://192.168.1.2:3210', 'http://192.168.1.2:3210/other']) {

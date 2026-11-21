@@ -296,9 +296,14 @@ export class LocalNetworkCoordinator {
 
   private currentHubSession(userId?: unknown, tenantId?: unknown): LanSession {
     const allowed = this.config.allowedUserId
-    if (!allowed || (userId !== undefined && userId !== allowed)) throw new Error('Цей код підключення видано іншому працівнику')
-    const session = this.resolveSession(allowed)
-    if (!session || session.id !== allowed || !session.tenant_id || !session.role || session.role === 'tire_worker') throw new Error('Працівник не знайдений або заблокований на головному ПК')
+    if (!allowed) throw new Error('Цей код підключення видано іншому працівнику')
+    // 21.11.2026 (прохання власника): з ПК менеджера, крім працівника, якому видано код,
+    // може входити й активний власник (його пароль так само перевіряє головний ПК).
+    const target = userId === undefined ? allowed : userId
+    if (typeof target !== 'string' || !target) throw new Error('Цей код підключення видано іншому працівнику')
+    const session = this.resolveSession(target)
+    if (target !== allowed && session?.role !== 'owner') throw new Error('Цей код підключення видано іншому працівнику')
+    if (!session || session.id !== target || !session.tenant_id || !session.role || session.role === 'tire_worker') throw new Error('Працівник не знайдений або заблокований на головному ПК')
     if (tenantId !== undefined && tenantId !== session.tenant_id) throw new Error('Невірний магазин підключення')
     return session
   }
@@ -320,7 +325,7 @@ export class LocalNetworkCoordinator {
     if (input.action === 'login') {
       if (!this.services.authenticate) throw new Error('Головний ПК не підтримує перший вхід без інтернету')
       if (typeof input.phone !== 'string' || !input.phone.trim() || input.phone.length > 64 || typeof input.password !== 'string' || !input.password || input.password.length > 1024) throw new Error('Вкажіть номер телефону та пароль')
-      this.currentHubSession()
+      if (!this.config.allowedUserId) throw new Error('Цей код підключення видано іншому працівнику')
       const profile = await this.services.authenticate(input.phone, input.password) as Partial<LanPublicProfile> | null
       const session = this.currentHubSession(profile?.id, profile?.tenant_id)
       if (!profile || profile.id !== session.id || profile.tenant_id !== session.tenant_id || profile.role !== session.role || profile.is_active !== true) throw new Error('Працівник не знайдений або заблокований на головному ПК')
@@ -528,11 +533,8 @@ export class LocalNetworkCoordinator {
         const channel = String(decoded.channel ?? '')
         if (!isLanProxyChannel(channel)) throw new Error('Цю команду не можна виконувати через мережу')
         const requestedUserId = String(decoded.user_id ?? '')
-        if (!requestedUserId || requestedUserId !== this.config.allowedUserId) {
-          throw new Error('Цей код підключення видано іншому працівнику')
-        }
-        const session = this.resolveSession(this.config.allowedUserId)
-        if (!session) throw new Error('Працівник не знайдений або заблокований на головному ПК')
+        if (!requestedUserId) throw new Error('Цей код підключення видано іншому працівнику')
+        const session = this.currentHubSession(requestedUserId)
         const result = await this.invokeRemote(channel, Array.isArray(decoded.args) ? decoded.args : [], session)
         response.writeHead(200).end(JSON.stringify(encodeTransport({ ok: true, result })))
       } catch (error) {

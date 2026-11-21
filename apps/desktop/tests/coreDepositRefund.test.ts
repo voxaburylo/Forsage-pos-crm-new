@@ -9,7 +9,7 @@ import { LocalBootstrapRepository } from '../src/repositories/bootstrapRepositor
 import { LocalCatalogRepository } from '../src/repositories/catalogRepository'
 import { LocalPosRepository } from '../src/repositories/posRepository'
 import { LocalSyncRepository } from '../src/repositories/syncRepository'
-import { isDesktopChannelAllowed } from '../src/security/desktopAuthorization'
+import { isDesktopChannelAllowed, isManagerSaleChannel } from '../src/security/desktopAuthorization'
 
 describe('core deposit refund through the local till', () => {
   let root = ''
@@ -115,6 +115,9 @@ describe('core deposit refund through the local till', () => {
 
   it('is a cashier action, like any other money leaving the drawer', () => {
     expect(isDesktopChannelAllowed('desktop:pos:refund-core-deposit', 'cashier')).toBe(true)
-    expect(isDesktopChannelAllowed('desktop:pos:refund-core-deposit', 'manager')).toBe(false)
+    // 21.11.2026: менеджера пускає роль, а дозвіл «Може продавати» перевіряє головний ПК (managerSaleAccess).
+    expect(isDesktopChannelAllowed('desktop:pos:refund-core-deposit', 'manager')).toBe(true)
+    expect(isManagerSaleChannel('desktop:pos:refund-core-deposit')).toBe(true)
+    expect(isDesktopChannelAllowed('desktop:pos:refund-core-deposit', 'storekeeper')).toBe(false)
   })
 })

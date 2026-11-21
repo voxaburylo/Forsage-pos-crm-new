@@ -6,7 +6,7 @@ import { canUseCloudBackground } from '@/lib/lanFirstRun'
 import { useAuthStore } from '@/stores/authStore'
 import { planTillProductUpdate, type TillProductUpdate } from '@/features/tillCommands/tillCommandModel'
 
-interface ClaimedCommand { id: string; operation_id: string; command: string; payload: unknown }
+interface ClaimedCommand { id: string; operation_id: string; command: string; payload: unknown; requested_by?: string }
 const POLL_MS = 5_000
 
 /**
@@ -22,6 +22,15 @@ export function useTillCommands(serverOnline: boolean) {
     let stopped = false, busy = false, deviceId = ''
     async function execute(command: ClaimedCommand): Promise<{ status: 'done' | 'failed'; result?: Record<string, unknown> | null; error?: string | null }> {
       try {
+        // 21.11.2026: зміни каси з вебу. Право дає власник/адмін, який поставив команду (каса перевіряє у своїй базі).
+        if (command.command === 'shift.list' || command.command === 'shift.close') {
+          const pos = bridge!.pos
+          if (!pos?.remoteShifts || !pos.remoteCloseShift) throw new Error('Оновіть програму на касі: вона ще не вміє закривати зміну з вебу.')
+          const requestedBy = String(command.requested_by ?? '')
+          if (command.command === 'shift.list') return { status: 'done', result: { shifts: await pos.remoteShifts(requestedBy) } }
+          const closed = await pos.remoteCloseShift(requestedBy, command.payload as { shift_id: string; cashier_id: string; actual_amount: number; comment: string })
+          return { status: 'done', result: { shift_id: closed.id } }
+        }
         if (command.command !== 'product.update') throw new Error('Невідома команда. Оновіть програму на касі.')
         const update = command.payload as TillProductUpdate
         const current = await bridge!.catalog.findById!(String(update?.product_id ?? ''))
