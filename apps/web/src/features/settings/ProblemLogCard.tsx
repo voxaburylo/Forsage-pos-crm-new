@@ -1,3 +1,4 @@
+import { isStaleProblem, problemDetail, problemTitle, STALE_PROBLEM_DAYS } from './problemLogView'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, ChevronDown, ClipboardList, Download, RefreshCw } from 'lucide-react'
 import { Button, Card, ConfirmDialog } from '@/components/ui'
@@ -28,6 +29,8 @@ function formatMoment(value: string): string {
 export function ProblemLogCard() {
   const [problems, setProblems] = useState<DesktopProblem[]>([])
   const [includeResolved, setIncludeResolved] = useState(false)
+  // 21.11.2026: записи, що не повторювались понад 14 днів, ховаємо за замовчуванням (вони лишаються в журналі).
+  const [includeStale, setIncludeStale] = useState(false)
   const [loading, setLoading] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [confirmClear, setConfirmClear] = useState(false)
@@ -48,6 +51,12 @@ export function ProblemLogCard() {
   }, [includeResolved])
 
   useEffect(() => { void load() }, [load])
+
+  const visibleProblems = useMemo(
+    () => includeStale ? problems : problems.filter((problem) => !isStaleProblem(problem.last_seen_at)),
+    [problems, includeStale],
+  )
+  const staleCount = problems.length - problems.filter((problem) => !isStaleProblem(problem.last_seen_at)).length
 
   const openCount = useMemo(
     () => problems.filter((problem) => !problem.resolved_at).length,
@@ -121,6 +130,15 @@ export function ProblemLogCard() {
           />
           Показати також закриті
         </label>
+        <label className="flex items-center gap-2 text-xs text-slate-600">
+          <input
+            type="checkbox"
+            className="h-4 w-4 rounded border-slate-300"
+            checked={includeStale}
+            onChange={(event) => setIncludeStale(event.target.checked)}
+          />
+          Показати старі (понад {STALE_PROBLEM_DAYS} днів без повторів{staleCount ? `: ${staleCount}` : ''})
+        </label>
         {openCount > 0 && (
           <Button type="button" variant="ghost" size="sm" onClick={() => setConfirmClear(true)}>
             Закрити всі
@@ -128,13 +146,13 @@ export function ProblemLogCard() {
         )}
       </div>
 
-      {problems.length === 0 ? (
+      {visibleProblems.length === 0 ? (
         <p className="rounded-lg bg-slate-50 px-3 py-4 text-center text-sm text-slate-500">
           {loading ? 'Завантаження…' : 'Проблем не зафіксовано.'}
         </p>
       ) : (
         <div className="divide-y divide-slate-100 rounded-lg border border-slate-200">
-          {problems.map((problem) => (
+          {visibleProblems.map((problem) => (
             <div key={problem.id} className="flex items-start justify-between gap-3 px-3 py-2">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
@@ -145,7 +163,7 @@ export function ProblemLogCard() {
                     />
                   )}
                   <p className={`text-sm font-medium ${problem.resolved_at ? 'text-slate-400 line-through' : 'text-slate-800'}`}>
-                    {problem.title}
+                    {problemTitle(problem.title)}
                   </p>
                   {problem.occurrences > 1 && (
                     <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-600">
@@ -153,8 +171,8 @@ export function ProblemLogCard() {
                     </span>
                   )}
                 </div>
-                {problem.detail && (
-                  <p className="mt-0.5 break-words text-xs text-slate-500">{problem.detail}</p>
+                {problemDetail(problem.detail) && (
+                  <p className="mt-0.5 break-words text-xs text-slate-500">{problemDetail(problem.detail)}</p>
                 )}
                 <p className="mt-0.5 text-xs text-slate-400">
                   {SOURCE_LABELS[problem.source] ?? problem.source} · {formatMoment(problem.last_seen_at)}

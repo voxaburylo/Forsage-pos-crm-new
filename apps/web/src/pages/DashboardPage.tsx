@@ -8,6 +8,7 @@ import { formatMoney } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { ShiftReminder } from '@/components/ShiftReminder'
+import { MorningBrief } from '@/components/MorningBrief'
 import { businessDateKey, businessDateRangeUtc } from '@/lib/businessDate'
 import { staffApi } from '@/features/staff/staffApi'
 import { ExternalBackupReminder } from '@/features/settings/ExternalBackupReminder'
@@ -159,6 +160,7 @@ export default function DashboardPage() {
         </span>
       </div>
 
+      {canSeeProfit && <MorningBrief />}
       <ShiftReminder />
       {canSeeProfit && <ExternalBackupReminder />}
       {loadError ? (
