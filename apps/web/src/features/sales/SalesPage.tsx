@@ -12,6 +12,7 @@ import type { LocalSaleRecord } from '@/lib/offlineDB'
 import { useLatestRequest } from '@/hooks/useLatestRequest'
 import { useAuthStore } from '@/stores/authStore'
 import { SaleDetailModal } from './SaleDetailModal'
+import { useWebDataRevision } from '@/hooks/useWebDataRevision'
 import { emptySaleHistoryView, saleHistoryLink, saleHistoryRequest, type SaleHistoryView } from './saleHistoryView'
 
 type SaleWithSync = Sale & { local_id?: string; server_id?: string | null; sync_status?: LocalSaleRecord['sync_status']; sync_error?: string | null }
@@ -85,6 +86,13 @@ export default function SalesPage() {
     return () => clearTimeout(timer)
   }, [load])
   useEffect(() => { setDetailId(null) }, [scopeKey])
+  // 21.11.2026: каса надіслала нові чеки — перша сторінка журналу оновлюється сама (інші сторінки не чіпаємо).
+  const dataRevision = useWebDataRevision()
+  const loadRef = useRef(load)
+  useEffect(() => { loadRef.current = load }, [load])
+  const pageRef = useRef(page)
+  useEffect(() => { pageRef.current = page }, [page])
+  useEffect(() => { if (dataRevision > 0 && pageRef.current === 1) void loadRef.current() }, [dataRevision])
 
   const columns = [
     { key: 'num', header: 'Чек', render: (s: SaleWithSync) => <button onClick={() => setDetailId(s.id)} className="font-mono text-xs text-yellow-700 hover:underline font-semibold">#{s.sale_number}</button> },
