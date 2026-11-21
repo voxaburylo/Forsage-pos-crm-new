@@ -7,7 +7,8 @@ import { useAuthStore } from '@/stores/authStore'
 const IDLE_INTERVAL_MS = 60_000
 const PENDING_INTERVAL_MS = 10_000
 const RETRY_MIN_MS = 15_000
-const RETRY_MAX_MS = 5 * 60_000
+// 21.11.2026: 5 хв після серії збоїв — задовго; продаж мав іти на сервер одразу, як зв'язок є.
+const RETRY_MAX_MS = 2 * 60_000
 const STARTUP_DELAY_MS = 1_500
 const IMMEDIATE_SYNC_DELAY_MS = 2_000
 

@@ -15,7 +15,7 @@ describe('локальна каса відправляє резервну коп
     expect(desktopSyncDelay(false, 0, true)).toBe(120_000)
     expect(desktopSyncDelay(true, 0, true)).toBe(10_000)
     expect(desktopSyncDelay(true, 1, false)).toBe(15_000)
-    expect(desktopSyncDelay(true, 50, false)).toBe(300_000)
+    expect(desktopSyncDelay(true, 50, false)).toBe(120_000)
   })
   it('повідомляє лише про відправлені локальні зміни', () => {
     expect(hasMeaningfulDesktopSyncChanges({
