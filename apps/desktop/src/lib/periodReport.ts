@@ -121,8 +121,10 @@ export function aggregatePeriod(data: PeriodSnapshot, from: string, to: string) 
     const row = day(refund.created_at); row.returns_total = sum(row.returns_total,refund.amount)
   }
   for (const payment of data.payments) {
-    if (!orders.has(payment.order_id) || !money(payment.amount) || !['cash','card','transfer','account'].includes(payment.method)) invalid()
+    if (!orders.has(payment.order_id) || !money(payment.amount) || !['cash','card','transfer','account','bonus'].includes(payment.method)) invalid()
     day(payment.created_at)
+    // Бонуси — гроші клієнта, але не надходження в касу; у чеку видачі вони вже входять у знижку.
+    if (payment.method === 'bonus') continue
     const kind = payment.method as 'cash' | 'card' | 'transfer' | 'account'
     byMethod[kind] = sum(byMethod[kind],payment.amount)
   }

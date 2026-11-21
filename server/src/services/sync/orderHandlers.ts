@@ -322,7 +322,8 @@ export async function applyOrderCanceled(
     if (order.status === 'canceled') return
 
     const payments = await client.query(
-      `SELECT COALESCE(SUM(amount), 0) AS paid_amount
+      `SELECT COALESCE(SUM(amount), 0) AS paid_amount,
+              COALESCE(SUM(amount) FILTER (WHERE method = 'bonus'), 0) AS bonus_amount
        FROM order_payments
        WHERE order_id = $1 AND tenant_id = $2`,
       [operation.aggregate_id, tenantId],
@@ -333,9 +334,35 @@ export async function applyOrderCanceled(
       Number(payments.rows[0]?.paid_amount ?? 0),
     )
     const timestamp = operation.applied_at ?? operation.created_at
+    // Рішення власника 20.11.2026: бонуси й передоплата — окремо. Оплачене бонусами повертається в бонуси.
+    const bonusPaid = Math.min(paidAmount, Math.max(0, Number(payments.rows[0]?.bonus_amount ?? 0)))
+    let bonusRefunded = 0
+    if (bonusPaid > 0) {
+      const customerId = String(order.customer_id ?? '')
+      if (!customerId) throw new AppError('SYNC_ORDER_CUSTOMER_REQUIRED_FOR_CREDIT', 'До оплаченого замовлення не прив’язаний клієнт', 422)
+      const refundId = isUuid(payload.bonus_refund_transaction_id) ? String(payload.bonus_refund_transaction_id) : randomUUID()
+      const existingRefund = await client.query('SELECT id FROM bonus_transactions WHERE id = $1 AND tenant_id = $2 LIMIT 1', [refundId, tenantId])
+      if (!existingRefund.rowCount) {
+        if (!operation.balance_mirrored) {
+          const updated = await client.query(
+            `UPDATE customers SET bonus_balance = COALESCE(bonus_balance, 0) + $3, updated_at = $4
+             WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL RETURNING id`,
+            [customerId, tenantId, bonusPaid, timestamp],
+          )
+          if (!updated.rowCount) throw new AppError('SYNC_ORDER_CUSTOMER_NOT_FOUND', 'Клієнта замовлення не знайдено', 404)
+        }
+        await client.query(
+          `INSERT INTO bonus_transactions (id, tenant_id, customer_id, amount, transaction_type, description, created_by, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, 'refund', $5, $6, $7, $7)`,
+          [refundId, tenantId, customerId, bonusPaid, `Повернення бонусів: скасування замовлення №${String(order.order_number ?? operation.aggregate_id)}`, userId, timestamp],
+        )
+      }
+      bonusRefunded = bonusPaid
+    }
+    const depositPaid = paidAmount - bonusPaid
     let customerBalance: number | null = null
     let creditedAmount = 0
-    if (paidAmount > 0) {
+    if (depositPaid > 0) {
       const customerId = String(order.customer_id ?? '')
       if (!customerId) {
         throw new AppError(
@@ -365,7 +392,7 @@ export async function applyOrderCanceled(
         if (!customerResult.rowCount) {
           throw new AppError('SYNC_ORDER_CUSTOMER_NOT_FOUND', 'Клієнта замовлення не знайдено', 404)
         }
-        customerBalance = Number(customerResult.rows[0].deposit_balance ?? 0) + paidAmount
+        customerBalance = Number(customerResult.rows[0].deposit_balance ?? 0) + depositPaid
         await client.query(
           `UPDATE customers
            SET deposit_balance = $3, updated_at = $4
@@ -378,12 +405,12 @@ export async function applyOrderCanceled(
              notes, created_by, created_at, updated_at
            ) VALUES ($1, $2, $3, $4, $5, 'account', $1, $6, $7, $8, $8)`,
           [
-            operation.aggregate_id, tenantId, customerId, paidAmount, customerBalance,
+            operation.aggregate_id, tenantId, customerId, depositPaid, customerBalance,
             `Скасування замовлення №${String(order.order_number ?? operation.aggregate_id)}`,
             userId, timestamp,
           ],
         )
-        creditedAmount = paidAmount
+        creditedAmount = depositPaid
       }
     }
 
@@ -417,7 +444,7 @@ export async function applyOrderCanceled(
       [
         operation.aggregate_id,
         userId,
-        JSON.stringify({ reason: payload.reason ?? null, credited_amount: creditedAmount, customer_balance: customerBalance, source: 'desktop_sync' }),
+        JSON.stringify({ reason: payload.reason ?? null, credited_amount: creditedAmount, bonus_refunded: bonusRefunded, customer_balance: customerBalance, source: 'desktop_sync' }),
         timestamp,
       ],
     )
@@ -429,7 +456,7 @@ export async function applyOrderPaymentAdded(tenantId: string, userId: string, o
   const orderId = String(payload.order_id ?? operation.aggregate_id)
   const paymentId = String(payload.payment_id ?? operation.operation_id)
   const amount = Number(payload.amount ?? 0)
-  const method = payload.method === 'card' || payload.method === 'transfer' || payload.method === 'account'
+  const method = payload.method === 'card' || payload.method === 'transfer' || payload.method === 'account' || payload.method === 'bonus'
     ? payload.method
     : 'cash'
   const shiftId = isUuid(payload.shift_id) ? payload.shift_id : null
@@ -528,14 +555,15 @@ export async function applyOrderCompleted(tenantId: string, userId: string, oper
        GROUP BY method`,
       [orderId, tenantId],
     )
-    const paymentTotals = { cash: 0, card: 0, transfer: 0 }
+    const paymentTotals = { cash: 0, card: 0, transfer: 0, bonus: 0 }
     for (const payment of paymentResult.rows) {
       const amount = Math.max(0, Math.round(Number(payment.amount ?? 0)))
-      if (payment.method === 'card') paymentTotals.card += amount
+      if (payment.method === 'bonus') paymentTotals.bonus += amount
+      else if (payment.method === 'card') paymentTotals.card += amount
       else if (payment.method === 'transfer' || payment.method === 'account') paymentTotals.transfer += amount
       else paymentTotals.cash += amount
     }
-    const authoritativePaid = paymentTotals.cash + paymentTotals.card + paymentTotals.transfer
+    const authoritativePaid = paymentTotals.cash + paymentTotals.card + paymentTotals.transfer + paymentTotals.bonus
     const amountDue = Math.max(0, Number(order.total_amount ?? 0) - Number(order.discount_amount ?? 0))
     if (authoritativePaid !== amountDue) {
       const code = authoritativePaid > amountDue ? 'SYNC_ORDER_OVERPAID' : 'SYNC_ORDER_INCOMPLETE_PAYMENT'
@@ -753,9 +781,12 @@ export async function applyOrderCompleted(tenantId: string, userId: string, oper
     const cashAmount = paymentTotals.cash
     const cardAmount = paymentTotals.card
     const transferAmount = paymentTotals.transfer
-    const discount = Math.max(0, Math.round(Number(order.discount_amount ?? payload.discount ?? 0)))
+    const orderDiscount = Math.max(0, Math.round(Number(order.discount_amount ?? payload.discount ?? 0)))
+    // Бонуси в чеку — як на касі: входять у знижку й окремо в bonuses_spent.
+    const bonusesSpent = paymentTotals.bonus
+    const discount = orderDiscount + bonusesSpent
     const total = Math.max(0, subtotal - discount)
-    if (total !== amountDue) {
+    if (Math.max(0, subtotal - orderDiscount) !== amountDue) {
       throw new AppError('SYNC_ORDER_TOTAL_CONFLICT', 'Сума позицій замовлення змінилася. Оновіть заказ і повторіть оплату.', 409)
     }
     const completedAt = payload.completed_at ?? operation.created_at
@@ -767,11 +798,11 @@ export async function applyOrderCompleted(tenantId: string, userId: string, oper
       `INSERT INTO sales (
         id, tenant_id, sale_number, customer_id, cashier_id, shift_id, status,
         subtotal, discount, total, payment_method, is_debt, notes, manager_id,
-        cash_amount, card_amount, transfer_amount, is_fiscal, completed_at, created_at, updated_at, pickup_cell
+        cash_amount, card_amount, transfer_amount, is_fiscal, completed_at, created_at, updated_at, pickup_cell, bonuses_spent
       ) VALUES (
         $1, $2, $3, $4, $5, $6, 'completed',
         $7, $8, $9, $10, false, $11, $12,
-        $13, $14, $15, $16, $17, $17, $18, $19
+        $13, $14, $15, $16, $17, $17, $18, $19, $20
       )`,
       [
         saleId,
@@ -793,6 +824,7 @@ export async function applyOrderCompleted(tenantId: string, userId: string, oper
         completedAt,
         appliedAt,
         payload.pickup_cell ?? order.pickup_cell ?? null,
+        bonusesSpent,
       ],
     )
 

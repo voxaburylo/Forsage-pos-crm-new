@@ -302,7 +302,8 @@ export class LocalPosShifts extends LocalPosFiscalGuards {
           addPayment(sale.payment_method, Number(sale.total ?? 0))
         }
       }
-      for (const payment of orderPayments) addPayment(payment.method, payment.amount)
+      // Бонуси — не гроші в касі: оплата замовлення бонусами не входить у виторг зміни.
+      for (const payment of orderPayments) if (payment.method !== 'bonus') addPayment(payment.method, payment.amount)
 
       const refunds = readShiftRefunds(this.db, tenantId, shift)
       const grossRevenue = settled.reduce((sum, sale) => cashSum(sum, cashAmount(sale.total)), 0)

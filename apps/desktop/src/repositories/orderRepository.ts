@@ -43,7 +43,7 @@ function canChangeOrderStatus(from: string, to: string): boolean {
 type LocalOrderItemState = { item_status: string; sell_price: number; qty: number; core_deposit_amount: number }
 
 
-type PaymentMethod = 'cash' | 'card' | 'transfer' | 'account'
+type PaymentMethod = 'cash' | 'card' | 'transfer' | 'account' | 'bonus'
 
 function isUnpricedOrder(order: any): boolean {
   if (!['lead', 'quoted', 'new'].includes(order.status) || num(order.total_amount) !== 0) return false
@@ -96,7 +96,8 @@ export class LocalOrderRepository {
     params.push(limit, offset)
     const rows = this.db.prepare(`
       SELECT o.*, c.id AS customer_id_join, c.phone AS customer_phone,
-             c.full_name AS customer_full_name, c.card_barcode AS customer_card_barcode
+             c.full_name AS customer_full_name, c.card_barcode AS customer_card_barcode,
+             COALESCE(c.bonus_balance, 0) AS customer_bonus_balance
       FROM customer_orders o
       LEFT JOIN customers c ON c.id = o.customer_id AND c.tenant_id = o.tenant_id
       WHERE o.tenant_id = ? AND o.deleted_at IS NULL ${statusSql} ${searchSql}
@@ -500,15 +501,19 @@ export class LocalOrderRepository {
     if (order.status === 'canceled') return order
 
     const ledger = this.db.prepare(`
-      SELECT COALESCE(SUM(amount), 0) AS paid
+      SELECT COALESCE(SUM(amount), 0) AS paid,
+             COALESCE(SUM(CASE WHEN method = 'bonus' THEN amount ELSE 0 END), 0) AS bonus
       FROM order_payments
       WHERE tenant_id = ? AND order_id = ? AND deleted_at IS NULL
-    `).get(tenantId, orderId) as { paid: number } | undefined
-    const paid = Math.max(num(order.total_paid), num(order.prepayment), num(ledger?.paid))
+    `).get(tenantId, orderId) as { paid: number; bonus: number } | undefined
+    const totalPaid = Math.max(num(order.total_paid), num(order.prepayment), num(ledger?.paid))
+    // Рішення власника 20.11.2026: бонуси й передоплата — окремо. Оплачене бонусами повертається в бонуси.
+    const bonusPaid = Math.min(totalPaid, Math.max(0, num(ledger?.bonus)))
+    const paid = totalPaid - bonusPaid
     if (paid > 0 && input.refund_prepayment) {
       throw new Error('Менеджер скасовує замовлення із зарахуванням оплати на рахунок клієнта. Фактичну видачу грошей потім проводить касир.')
     }
-    if (paid > 0 && !order.customer_id) {
+    if (totalPaid > 0 && !order.customer_id) {
       throw new Error('До оплаченого замовлення не прив’язаний клієнт. Спочатку виберіть клієнта в замовленні.')
     }
 
@@ -516,7 +521,31 @@ export class LocalOrderRepository {
     const reason = String(input.reason ?? '').trim()
     const priorComment = String(order.comment ?? '').trim()
     const comment = reason ? `${priorComment ? `${priorComment}\n` : ''}Скасування: ${reason}` : priorComment || null
+    const bonusRefundId = bonusPaid > 0 ? randomUUID() : null
+    let bonusBalance: number | null = null
     this.db.transaction(() => {
+      if (bonusPaid > 0 && order.customer_id && bonusRefundId) {
+        const customer = this.db.prepare(`
+          SELECT id, COALESCE(bonus_balance, 0) AS bonus_balance FROM customers
+          WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL LIMIT 1
+        `).get(order.customer_id, tenantId) as { id: string; bonus_balance: number } | undefined
+        if (!customer) throw new Error('Клієнта замовлення не знайдено')
+        bonusBalance = Number(customer.bonus_balance ?? 0) + bonusPaid
+        this.db.prepare(`
+          UPDATE customers SET bonus_balance = ?, dirty_at = ?, updated_at = ?
+          WHERE id = ? AND tenant_id = ?
+        `).run(bonusBalance, timestamp, timestamp, customer.id, tenantId)
+        this.db.prepare(`
+          INSERT INTO bonus_transactions (
+            id, tenant_id, customer_id, amount, transaction_type, source_sale_id,
+            description, created_by, dirty_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, 'refund', NULL, ?, ?, ?, ?, ?)
+        `).run(
+          bonusRefundId, tenantId, customer.id, bonusPaid,
+          `Повернення бонусів: скасування замовлення №${String(order.order_number ?? orderId)}`,
+          input.user_id ?? null, timestamp, timestamp, timestamp,
+        )
+      }
       let customerBalance: number | null = null
       if (paid > 0 && order.customer_id) {
         const existingCredit = this.db.prepare(`
@@ -585,6 +614,9 @@ export class LocalOrderRepository {
         reason: input.reason ?? null,
         credited_amount: paid,
         customer_balance: customerBalance,
+        bonus_refunded: bonusPaid,
+        bonus_refund_transaction_id: bonusRefundId,
+        bonus_balance: bonusBalance,
       }, timestamp)
     })
     return this.getOrder(orderId, tenantId)
@@ -645,7 +677,8 @@ export class LocalOrderRepository {
 
     const rows = this.db.prepare(`
       SELECT o.*, c.id AS customer_id_join, c.phone AS customer_phone,
-             c.full_name AS customer_full_name, c.card_barcode AS customer_card_barcode
+             c.full_name AS customer_full_name, c.card_barcode AS customer_card_barcode,
+             COALESCE(c.bonus_balance, 0) AS customer_bonus_balance
       FROM customer_orders o
       LEFT JOIN customers c ON c.id = o.customer_id AND c.tenant_id = o.tenant_id
       WHERE ${where}
@@ -659,7 +692,8 @@ export class LocalOrderRepository {
   getOrder(id: string, tenantId = DEFAULT_TENANT_ID): any | null {
     const row = this.db.prepare(`
       SELECT o.*, c.id AS customer_id_join, c.phone AS customer_phone,
-             c.full_name AS customer_full_name, c.card_barcode AS customer_card_barcode
+             c.full_name AS customer_full_name, c.card_barcode AS customer_card_barcode,
+             COALESCE(c.bonus_balance, 0) AS customer_bonus_balance
       FROM customer_orders o
       LEFT JOIN customers c ON c.id = o.customer_id AND c.tenant_id = o.tenant_id
       WHERE o.id = ? AND o.tenant_id = ? AND o.deleted_at IS NULL
@@ -722,7 +756,8 @@ export class LocalOrderRepository {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const amount = input.amount
     if (!Number.isSafeInteger(amount) || amount <= 0) throw new Error('Некоректна сума')
-    if (!['cash', 'card', 'transfer', 'account'].includes(input.method)) throw new Error('Невідомий спосіб оплати')
+    if (!['cash', 'card', 'transfer', 'account', 'bonus'].includes(input.method)) throw new Error('Невідомий спосіб оплати')
+    if (input.method === 'bonus' && input.is_fiscal) throw new Error('Оплата бонусами не фіскалізується. Оплату не записано.')
     if (input.is_fiscal) throw new Error('Фіскалізація передоплати замовлення ще не підтримується цим каналом. Фіскальний чек не створено; оплату не записано.')
     const order = this.getOrder(orderId, tenantId)
     if (!order) throw new Error('Замовлення не знайдено')
@@ -750,6 +785,7 @@ export class LocalOrderRepository {
     const canAcceptOpenDraftDeposit = isUnpricedOrder(order)
     if (!canAcceptOpenDraftDeposit && amount > remaining) throw new Error('Сума перевищує залишок до сплати')
     if (input.method === 'account' && !order.customer_id) throw new Error('Замовлення без клієнта — оплата з рахунку неможлива')
+    if (input.method === 'bonus' && !order.customer_id) throw new Error('Замовлення без клієнта — оплата бонусами неможлива')
 
     const shiftId = input.shift_id ?? null
     if (!shiftId) throw new Error('Спочатку відкрийте касову зміну')
@@ -764,6 +800,7 @@ export class LocalOrderRepository {
 
     const timestamp = this.nextTimestamp(tenantId, orderId)
     const accountTransactionId = input.method === 'account' ? paymentId : null
+    let bonusBalanceAfter: number | null = null
     const nextPaid = Math.max(num(order.total_paid), num(order.prepayment)) + amount
     if (!Number.isSafeInteger(nextPaid)) throw new Error('Сума оплат завелика')
     const nextStatus = !canAcceptOpenDraftDeposit && (order.status === 'lead' || order.status === 'quoted') && nextPaid > 0 ? 'new' : order.status
@@ -804,6 +841,33 @@ export class LocalOrderRepository {
         )
       }
 
+      // Рішення власника 20.11.2026: бонуси — гроші клієнта, ними можна внести передоплату замовлення.
+      if (input.method === 'bonus') {
+        const customer = this.db.prepare(`
+          SELECT id, COALESCE(bonus_balance, 0) AS bonus_balance
+          FROM customers
+          WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+          LIMIT 1
+        `).get(order.customer_id, tenantId) as { id: string; bonus_balance: number } | undefined
+        if (!customer) throw new Error('Клієнта не знайдено')
+        if (Number(customer.bonus_balance ?? 0) < amount) throw new Error('Недостатньо бонусів у клієнта')
+        bonusBalanceAfter = Number(customer.bonus_balance ?? 0) - amount
+        this.db.prepare(`
+          UPDATE customers SET bonus_balance = ?, dirty_at = ?, updated_at = ?
+          WHERE id = ? AND tenant_id = ?
+        `).run(bonusBalanceAfter, timestamp, timestamp, customer.id, tenantId)
+        this.db.prepare(`
+          INSERT INTO bonus_transactions (
+            id, tenant_id, customer_id, amount, transaction_type, source_sale_id,
+            description, created_by, dirty_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, 'spend', NULL, ?, ?, ?, ?, ?)
+        `).run(
+          paymentId, tenantId, customer.id, -amount,
+          input.notes ?? `Оплата замовлення #${order.order_number ?? order.id.slice(0, 8)} бонусами`,
+          input.user_id ?? null, timestamp, timestamp, timestamp,
+        )
+      }
+
       this.db.prepare(`
         INSERT INTO order_payments (
           id, tenant_id, order_id, amount, method, is_fiscal, shift_id, created_by,
@@ -838,6 +902,7 @@ export class LocalOrderRepository {
         created_at: timestamp,
         customer_id: order.customer_id ?? null,
         account_transaction_id: accountTransactionId,
+        bonus_balance_after: bonusBalanceAfter,
       }, timestamp)
     })
 
@@ -904,14 +969,15 @@ export class LocalOrderRepository {
     const timestamp = this.nextTimestamp(tenantId, orderId)
     const saleId = randomUUID()
     const orderPayments = this.listPayments(orderId, tenantId)
-    const paymentTotals = { cash: 0, card: 0, transfer: 0 }
+    const paymentTotals = { cash: 0, card: 0, transfer: 0, bonus: 0 }
     for (const payment of orderPayments) {
       const amount = Math.max(0, Math.round(num(payment.amount)))
-      if (payment.method === 'card') paymentTotals.card += amount
+      if (payment.method === 'bonus') paymentTotals.bonus += amount
+      else if (payment.method === 'card') paymentTotals.card += amount
       else if (payment.method === 'transfer' || payment.method === 'account') paymentTotals.transfer += amount
       else paymentTotals.cash += amount
     }
-    const listedPaid = paymentTotals.cash + paymentTotals.card + paymentTotals.transfer
+    const listedPaid = paymentTotals.cash + paymentTotals.card + paymentTotals.transfer + paymentTotals.bonus
     const legacyPaid = Math.max(0, Math.round(Math.max(num(order.total_paid), num(order.prepayment))) - listedPaid)
     if (legacyPaid > 0) {
       const legacyMethod = order.prepayment_method ?? input.payment_method
@@ -1010,7 +1076,9 @@ export class LocalOrderRepository {
         }
       })
 
-      const discount = Math.max(0, Math.round(num(order.discount_amount)))
+      // Бонуси в чеку — як на касі: входять у знижку, гроші — лише готівка/картка/переказ.
+      const bonusesSpent = paymentTotals.bonus
+      const discount = Math.max(0, Math.round(num(order.discount_amount))) + bonusesSpent
       const total = Math.max(0, subtotal - discount)
       const paidForOrder = paymentTotals.cash + paymentTotals.card + paymentTotals.transfer
       if (paidForOrder !== total) {
@@ -1148,6 +1216,7 @@ export class LocalOrderRepository {
         cash_amount: paymentTotals.cash,
         card_amount: paymentTotals.card,
         transfer_amount: paymentTotals.transfer,
+        bonuses_spent: bonusesSpent,
         debt_amount: 0,
         pickup_cell: order.pickup_cell ?? null,
         notes,
@@ -1169,6 +1238,7 @@ export class LocalOrderRepository {
           cash_amount: paymentTotals.cash,
           card_amount: paymentTotals.card,
           transfer_amount: paymentTotals.transfer,
+          bonuses_spent: bonusesSpent,
           debt_amount: 0,
           pickup_cell: order.pickup_cell ?? null,
           notes,
@@ -1256,6 +1326,7 @@ export class LocalOrderRepository {
         phone: row.customer_phone,
         full_name: row.customer_full_name,
         card_barcode: row.customer_card_barcode,
+        bonus_balance: num(row.customer_bonus_balance),
       } : null,
       items: items.map((item) => ({
         id: item.id,

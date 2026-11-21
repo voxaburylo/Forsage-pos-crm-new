@@ -16,6 +16,8 @@ type TestState = {
   cashOperations: Map<string, Record<string, unknown>>
   accountTransactions: Map<string, Record<string, unknown>>
   customerBalance: number
+  bonusBalance: number
+  bonusTransactions: Map<string, Record<string, unknown>>
   shiftOpen: boolean
 }
 
@@ -36,6 +38,8 @@ function createState(): TestState {
     cashOperations: new Map(),
     accountTransactions: new Map(),
     customerBalance: 8_000,
+    bonusBalance: 5_000,
+    bonusTransactions: new Map(),
     shiftOpen: true,
   }
 }
@@ -57,6 +61,17 @@ function installFakeTransaction(state: TestState) {
     }
     if (sql.startsWith('SELECT id, COALESCE(deposit_balance')) {
       return { rowCount: 1, rows: [{ id: state.order.customer_id, deposit_balance: state.customerBalance }] }
+    }
+    if (sql.startsWith('SELECT id, COALESCE(bonus_balance')) {
+      return { rowCount: 1, rows: [{ id: state.order.customer_id, bonus_balance: state.bonusBalance }] }
+    }
+    if (sql.startsWith('UPDATE customers SET bonus_balance')) {
+      state.bonusBalance = Number(params[2])
+      return { rowCount: 1, rows: [] }
+    }
+    if (sql.startsWith('INSERT INTO bonus_transactions')) {
+      state.bonusTransactions.set(String(params[0]), { id: params[0], amount: params[3] })
+      return { rowCount: 1, rows: [] }
     }
     if (sql.startsWith('UPDATE customers')) {
       state.customerBalance = Number(params[2])
@@ -185,6 +200,38 @@ describe('addOrderPayment idempotency', () => {
     expect(state.customerBalance).toBe(6_000)
     expect(state.accountTransactions.size).toBe(1)
     expect(state.cashOperations.size).toBe(0)
+    expect(state.payments.size).toBe(1)
+  })
+
+  // Рішення власника 20.11.2026: бонуси — гроші клієнта, ними можна внести передоплату замовлення.
+  it('takes a bonus payment from bonuses once, without cash or account movement', async () => {
+    const state = createState()
+    installFakeTransaction(state)
+    const input = { ...baseInput, method: 'bonus' as const, is_fiscal: true }
+    await addOrderPayment(input)
+    await addOrderPayment(input)
+    expect(state.bonusBalance).toBe(3_000)
+    expect(state.customerBalance).toBe(8_000)
+    expect([...state.bonusTransactions.values()]).toEqual([{ id: baseInput.payment_id, amount: -2_000 }])
+    expect(state.cashOperations.size).toBe(0)
+    expect(state.payments.get(baseInput.payment_id)).toMatchObject({ method: 'bonus', is_fiscal: false })
+  })
+
+  it('refuses a bonus payment above the bonus balance before recording anything', async () => {
+    const state = createState()
+    installFakeTransaction(state)
+    await expect(addOrderPayment({ ...baseInput, method: 'bonus' as const, amount: 5_001 })).rejects.toMatchObject({ code: 'INSUFFICIENT_BONUS' })
+    expect(state.bonusBalance).toBe(5_000)
+    expect(state.payments.size).toBe(0)
+  })
+
+  it('copies a bonus payment the till already applied to a mirrored balance', async () => {
+    const state = createState()
+    state.bonusBalance = 0
+    installFakeTransaction(state)
+    await addOrderPayment({ ...baseInput, method: 'bonus' as const, local_balance_mirrored: true })
+    expect(state.bonusBalance).toBe(0)
+    expect(state.bonusTransactions.size).toBe(1)
     expect(state.payments.size).toBe(1)
   })
 })

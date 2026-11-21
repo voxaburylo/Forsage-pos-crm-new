@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { runTransaction } from '../db/pg.js'
 import { AppError } from '../middleware/errorHandler.js'
 
-export type OrderPaymentMethod = 'cash' | 'card' | 'transfer' | 'account'
+export type OrderPaymentMethod = 'cash' | 'card' | 'transfer' | 'account' | 'bonus'
 
 export type AddOrderPaymentInput = {
   payment_id?: string
@@ -184,6 +184,42 @@ export async function addOrderPayment(input: AddOrderPaymentInput): Promise<AddO
       )
     }
 
+    // Рішення власника 20.11.2026: бонуси — гроші клієнта, ними можна внести передоплату замовлення.
+    if (input.method === 'bonus') {
+      if (!order.customer_id) {
+        throw new AppError('NO_CUSTOMER', 'Замовлення без клієнта — оплата бонусами неможлива', 400)
+      }
+      const customerResult = await client.query(
+        `SELECT id, COALESCE(bonus_balance, 0) AS bonus_balance
+         FROM customers
+         WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+         FOR UPDATE`,
+        [order.customer_id, input.tenant_id],
+      )
+      if (!customerResult.rowCount) {
+        throw new AppError('CUSTOMER_NOT_FOUND', 'Клієнта не знайдено', 404)
+      }
+      // Каса вже списала бонуси й надсилає знімок балансу — тоді баланс тут не змінюємо.
+      const bonusAfter = numeric(customerResult.rows[0].bonus_balance) - input.amount
+      if (!input.local_balance_mirrored) {
+        if (bonusAfter < 0) throw new AppError('INSUFFICIENT_BONUS', 'Недостатньо бонусів у клієнта', 400)
+        await client.query(
+          'UPDATE customers SET bonus_balance = $3, updated_at = $4 WHERE id = $1 AND tenant_id = $2',
+          [order.customer_id, input.tenant_id, bonusAfter, appliedAt],
+        )
+      }
+      await client.query(
+        `INSERT INTO bonus_transactions (
+           id, tenant_id, customer_id, amount, transaction_type, description, created_by, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, 'spend', $5, $6, $7, $8)`,
+        [
+          paymentId, input.tenant_id, order.customer_id, -input.amount,
+          paymentNote ?? `Оплата замовлення #${order.order_number ?? input.order_id.slice(0, 8)} бонусами`,
+          input.user_id, createdAt, appliedAt,
+        ],
+      )
+    }
+
     const paymentResult = await client.query(
       `INSERT INTO order_payments (
          id, tenant_id, order_id, amount, method, is_fiscal, shift_id,
@@ -196,7 +232,7 @@ export async function addOrderPayment(input: AddOrderPaymentInput): Promise<AddO
         input.order_id,
         input.amount,
         input.method,
-        input.method === 'account' ? false : input.is_fiscal,
+        input.method === 'account' || input.method === 'bonus' ? false : input.is_fiscal,
         shiftId,
         input.user_id,
         paymentNote,

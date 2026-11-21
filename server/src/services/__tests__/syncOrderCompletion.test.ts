@@ -37,3 +37,19 @@ describe('offline order completion sync regression', () => {
     expect(completionSource).toContain('SYNC_SALE_TENANT_CONFLICT')
   })
 })
+
+describe('order paid with bonuses (owner decision 20.11.2026)', () => {
+  const cancelSource = syncFunctionBody('applyOrderCanceled')
+  it('counts bonus payments toward the order and records them on the sale like a till sale', () => {
+    expect(completionSource).toContain("if (payment.method === 'bonus') paymentTotals.bonus += amount")
+    expect(completionSource).toContain('paymentTotals.cash + paymentTotals.card + paymentTotals.transfer + paymentTotals.bonus')
+    expect(completionSource).toContain('const discount = orderDiscount + bonusesSpent')
+    expect(completionSource).toContain('pickup_cell, bonuses_spent')
+  })
+  it('returns the bonus part to bonuses and only the rest to the prepayment account on cancel', () => {
+    expect(cancelSource).toContain("FILTER (WHERE method = 'bonus')")
+    expect(cancelSource).toContain("VALUES ($1, $2, $3, $4, 'refund'")
+    expect(cancelSource).toContain('const depositPaid = paidAmount - bonusPaid')
+    expect(cancelSource).toContain('if (!operation.balance_mirrored)')
+  })
+})
