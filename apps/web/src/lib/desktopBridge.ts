@@ -98,6 +98,16 @@ export interface DesktopRuntimeInfo {
   lan?: DesktopLanStatus | null
 }
 
+export interface NegativeStockRow {
+  id: string
+  sku: string | null
+  name: string
+  unit: string | null
+  qty_on_hand: number
+  last_sale_at: string | null
+  last_cashier: string | null
+}
+
 export interface DesktopProduct {
   cross_numbers_count?: number
   id: string
@@ -618,6 +628,7 @@ interface ForsageDesktopBridge {
     listCrossNumbers?: (productId: string) => Promise<Array<{ id: string; number: string; source: string }>>
     changeCrossNumbers?: (productId: string, change: { add?: string[]; removeId?: string; source?: string }) => Promise<Array<{ id: string; number: string; source: string }>>
     listAnalogs?: (productId: string, limit?: number) => Promise<DesktopProduct[]>
+    negativeStock?: () => Promise<NegativeStockRow[]>
     listPopular: (limit?: number) => Promise<DesktopProduct[]>
   }
   supplierCatalog?: {

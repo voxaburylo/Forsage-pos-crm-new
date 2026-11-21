@@ -29,6 +29,7 @@ const DailyReport          = lazyPage(() => import('@/features/reports/DailyRepo
 const PublicPriceListPage = lazyPage(() => import('@/features/priceLinks/PublicPriceListPage'))
 const ControlReportPage = lazyPage(() => import('@/features/analytics/ControlReportPage'))
 const PayrollPage          = lazyPage(() => import('@/features/analytics/PayrollPage'))
+const NegativeStockPage    = lazyPage(() => import('@/features/analytics/NegativeStockPage'))
 const AdminPage            = lazyPage(() => import('@/features/admin/AdminPage'))
 const SettingsPage         = lazyPage(() => import('@/features/settings/SettingsPage'))
 // CommissionRulesPage merged
@@ -209,6 +210,7 @@ function Workspace() {
           <Route path="/analytics/statistics" element={<ProtectedRoute roles={OFFICE_ROLES}><DashboardPage /></ProtectedRoute>} />
           <Route path="/analytics/sales"      element={<ProtectedRoute roles={REPORT_ROLES}><DailyReport /></ProtectedRoute>} />
           <Route path="/analytics/control"    element={<ProtectedRoute roles={OFFICE_ROLES}><ControlReportPage /></ProtectedRoute>} />
+          <Route path="/analytics/recount"    element={<ProtectedRoute roles={OFFICE_ROLES}><NegativeStockPage /></ProtectedRoute>} />
           <Route path="/analytics/payroll"    element={<ProtectedRoute roles={ADMIN_ROLES}><PayrollPage /></ProtectedRoute>} />
           <Route path="/dashboard"             element={<Navigate to="/analytics/statistics" replace />} />
           <Route path="/products"           element={<ProtectedRoute><ProductsPage /></ProtectedRoute>} />
