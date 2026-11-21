@@ -339,8 +339,14 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
     try { localStorage.removeItem(storageKey) } catch { /* ignore */ }
   }
 
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
+  // 21.11.2026: при відкритті чат «їхав» зверху вниз плавною анімацією. Перший раз — одразу внизу
+  // (до показу кадру), плавно — лише для нових повідомлень.
+  const initialScrollDone = useRef(false)
+  useLayoutEffect(() => {
+    const element = scrollRef.current
+    if (!element) return
+    element.scrollTo({ top: element.scrollHeight, behavior: initialScrollDone.current ? 'smooth' : 'auto' })
+    if (entries.length > 0) initialScrollDone.current = true
   }, [entries, sending])
 
   function attachTable(parsed: AiSupplyInput, name: string) {
