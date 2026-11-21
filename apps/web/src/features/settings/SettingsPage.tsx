@@ -22,6 +22,7 @@ import { ProblemLogCard } from './ProblemLogCard'
 import { ServerCopyStatusCard } from './ServerCopyStatusCard'
 import { FiscalSettingsCard } from './FiscalSettingsCard'
 import { LanSettingsCard } from './LanSettingsCard'
+import { SettingsFormOnly, SettingsSection, SettingsTabBar, SettingsTabsProvider } from './SettingsTabs'
 
 import { loadReceiptPrinterSettings, saveReceiptPrinterSettings } from '@/features/pos/receiptPrinterSettings'
 import { loadSellerRequisites, saveSellerRequisites, type SellerRequisites } from '@/features/orders/orderDocuments'
@@ -358,8 +359,11 @@ export default function SettingsPage() {
 
   return (
     <Layout title="Налаштування магазину">
+      <SettingsTabsProvider>
       <div className="max-w-2xl">
+        <SettingsTabBar />
         <form onSubmit={handleSubmit}>
+          <SettingsSection tab="shop" title="Основна інформація назва магазину адреса телефон чернова номенклатура">
           {/* ========== Основна інформація ========== */}
           <Card className="space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-gray-100">
@@ -398,7 +402,9 @@ export default function SettingsPage() {
               onChange={(e) => set('phone', e.target.value)}
               placeholder="+380671234567" />
           </Card>
+          </SettingsSection>
 
+          <SettingsSection tab="service" title="Локальна база на цьому ПК версія програми">
           {isDesktopRuntime() && (
             <Card className="mt-6 space-y-4 border-emerald-200 bg-emerald-50/50">
               <div className="flex items-start justify-between gap-4">
@@ -422,21 +428,37 @@ export default function SettingsPage() {
               </div>
             </Card>
           )}
+          </SettingsSection>
 
+          <SettingsSection tab="network" title="Копія на сервері синхронізація відправка">
           {isDesktopRuntime() && <ServerCopyStatusCard />}
+          </SettingsSection>
 
+          <SettingsSection tab="service" title="Журнал проблем помилки">
           {isDesktopRuntime() && <ProblemLogCard />}
+          </SettingsSection>
 
+          <SettingsSection tab="network" title="Резервні копії бази копія зміни хмара">
           {isDesktopRuntime() && <BackupSettingsCard />}
+          </SettingsSection>
 
+          <SettingsSection tab="network" title="Копії на флешку зовнішній диск">
           {isDesktopRuntime() && <ExternalBackupCard />}
+          </SettingsSection>
+          <SettingsSection tab="service" title="Відновлення з хмарної копії">
           {isDesktopRuntime() && <CloudRestoreCard />}
+          </SettingsSection>
 
+          <SettingsSection tab="network" title="Локальна мережа ПК менеджера брандмауер">
           {isDesktopRuntime() && <LanSettingsCard />}
+          </SettingsSection>
 
 
+          <SettingsSection tab="till" title="Фіскалізація ПРРО каса чек">
           {isDesktopRuntime() && <FiscalSettingsCard />}
+          </SettingsSection>
 
+          <SettingsSection tab="sales" title="Правила продажу знижка продаж у мінус друк чека принтер ширина чека telegram знижка працівника">
           {/* ========== Правила продажу ========== */}
           <Card className="mt-6 space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-gray-100">
@@ -575,7 +597,9 @@ export default function SettingsPage() {
               </p>
             </div>
           </Card>
+          </SettingsSection>
 
+          <SettingsSection tab="sales" title="Правила повернення борг ліміт боргу">
           {/* ========== Правила повернення ========== */}
           <Card className="mt-6 space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-gray-100">
@@ -611,7 +635,9 @@ export default function SettingsPage() {
               </p>
             </div>
           </Card>
+          </SettingsSection>
 
+          <SettingsSection tab="sales" title="Матриця націнок націнка округлення ціни">
           {/* ========== Матриця націнок ========== */}
           <Card className="mt-6 space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-gray-100">
@@ -744,7 +770,9 @@ export default function SettingsPage() {
               </div>
             </div>
           </Card>
+          </SettingsSection>
 
+          <SettingsSection tab="sales" title="Швидкі відсотки знижки">
           {/* ========== Швидкі відсотки ========== */}
           <Card className="mt-6 space-y-4">
             <div className="flex items-center justify-between pb-3 border-b border-gray-100">
@@ -784,7 +812,9 @@ export default function SettingsPage() {
               </div>
             )}
           </Card>
+          </SettingsSection>
 
+          <SettingsSection tab="till" title="Швидкі кнопки POS каса">
           {/* ========== Швидкі кнопки POS ========== */}
           <div id="pos-quick-settings" className="scroll-mt-6">
           <Card className="mt-6 space-y-4">
@@ -859,7 +889,9 @@ export default function SettingsPage() {
             )}
           </Card>
           </div>
+          </SettingsSection>
 
+          <SettingsSection tab="service" title="Декодер VIN інтеграція">
           {/* ========== Декодер VIN (інтеграція) ========== */}
           <Card className="mt-6 space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-gray-100">
@@ -880,16 +912,20 @@ export default function SettingsPage() {
               onChange={(e) => set('vin_decoder_api_key', e.target.value)}
               placeholder="лишіть порожнім, якщо не потрібен" />
           </Card>
+          </SettingsSection>
 
+          <SettingsFormOnly tabs={['shop', 'sales', 'till', 'service']}>
           {/* ========== Зберегти ========== */}
           <div className="mt-6">
             <Button type="submit" loading={saving} icon={<Save size={16} />}>
               Зберегти налаштування магазину
             </Button>
           </div>
+          </SettingsFormOnly>
 
         </form>
 
+        <SettingsSection tab="shop" title="Реквізити продавця ЄДРПОУ IBAN банк рахунки накладні">
         {/* ========== Реквізити продавця (для рахунків / накладних) ========== */}
         <Card className="mt-6 space-y-4">
           <div className="flex items-center gap-2 pb-3 border-b border-gray-100">
@@ -928,7 +964,9 @@ export default function SettingsPage() {
             </Button>
           </div>
         </Card>
+        </SettingsSection>
 
+        <SettingsSection tab="ai" title="ШІ-помічник Claude ключ Anthropic правила помічника пам'ять">
         {/* ========== Помічник АІ (Claude) ========== */}
         {/* Окремо від форми магазину: ключ шифрується й зберігається через власний ендпойнт. */}
         {!offlineMode && (
@@ -998,7 +1036,9 @@ export default function SettingsPage() {
           <AiRulesCard canEdit={currentRole === 'owner' || currentRole === 'admin'} />
         </Card>
         )}
+        </SettingsSection>
 
+        <SettingsSection tab="service" title="Небезпечна зона скидання даних">
         {/* ========== Небезпечна зона (Скидання всіх даних) ========== */}
         {!isDesktopRuntime() && (
         <Card className="mt-6 border-red-200 bg-red-50/50 space-y-4">
@@ -1017,6 +1057,7 @@ export default function SettingsPage() {
           </div>
         </Card>
         )}
+        </SettingsSection>
       </div>
 
       {/* Модальне вікно підтвердження повного скидання */}
@@ -1227,6 +1268,7 @@ export default function SettingsPage() {
           </div>
         )}
       </Modal>
+      </SettingsTabsProvider>
     </Layout>
   )
 }

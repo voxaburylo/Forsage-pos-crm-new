@@ -43,21 +43,35 @@ const NAV_GROUPS: NavGroup[] = [
     collapsible: false,
     items: [
       { to: '/pos',                 icon: <Zap size={18} />,             label: 'Каса (POS)' },
+      { to: '/sales',               icon: <ShoppingCart size={18} />,    label: 'Чеки та касові операції', roles: ['owner','admin','manager','cashier'] },
+    ],
+  },
+  // 21.11.2026 (план зручності, «меню»): було 10 пунктів уперемішку в «Основне». Тепер за роботою:
+  // каса — продаж, товари — усе про склад, клієнти — замовлення. Адреси сторінок не змінено.
+  {
+    title: 'Товари і склад',
+    collapsible: false,
+    items: [
+      { to: '/products',            icon: <Package size={18} />,         label: 'Товари' },
+      { to: '/suppliers/invoices',  icon: <PackagePlus size={18} />,     label: 'Поступлення товарів',  roles: ['owner','admin','manager','cashier','storekeeper'] },
+      { to: '/inventory',           icon: <Package size={18} />,         label: 'Інвентаризація',       roles: ['owner','admin','manager','storekeeper','cashier','sto_viewer'] },
+      { to: '/labels',              icon: <Tag size={18} />,             label: 'Друк етикеток',        roles: ['owner','admin'] },
+      { to: '/suppliers',           icon: <Truck size={18} />,           label: 'Постачальники',        roles: ['owner','admin','manager','storekeeper'] },
     ],
   },
   {
-        title: 'Основне',
+    title: 'Клієнти і замовлення',
     collapsible: false,
     items: [
-      { to: '/orders',              icon: <ClipboardList size={18} />,   label: 'Замовлення',           roles: ['owner','admin','manager'] },
-      { to: '/products',            icon: <Package size={18} />,         label: 'Товари' },
       { to: '/customers',           icon: <Users size={18} />,           label: 'Клієнти' },
+      { to: '/orders',              icon: <ClipboardList size={18} />,   label: 'Замовлення',           roles: ['owner','admin','manager'] },
       { to: '/inventory/picking',   icon: <ClipboardList size={18} />,   label: 'Збірка замовлень',     roles: ['owner','admin','manager','storekeeper'] },
-      { to: '/inventory',           icon: <Package size={18} />,         label: 'Інвентаризація',       roles: ['owner','admin','manager','storekeeper','cashier','sto_viewer'] },
-      { to: '/suppliers/invoices',  icon: <PackagePlus size={18} />,     label: 'Поступлення товарів',  roles: ['owner','admin','manager','cashier','storekeeper'] },
-      { to: '/labels',              icon: <Tag size={18} />,             label: 'Друк етикеток',        roles: ['owner','admin'] },
-      { to: '/suppliers',           icon: <Truck size={18} />,           label: 'Постачальники',        roles: ['owner','admin','manager','storekeeper'] },
-      { to: '/sales',               icon: <ShoppingCart size={18} />,    label: 'Чеки та касові операції', roles: ['owner','admin','manager','cashier'] },
+    ],
+  },
+  {
+    title: 'ШІ-помічник',
+    collapsible: false,
+    items: [
       { to: '/ai-assistant',        icon: <Sparkles size={18} />,        label: 'ШІ-помічник',          roles: AI_ASSISTANT_ROLES },
     ],
   },

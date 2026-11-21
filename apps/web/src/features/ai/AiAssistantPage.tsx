@@ -971,7 +971,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
                 </p>
               </div>
               {canConfigure ? (
-                <Button type="button" variant="secondary" onClick={() => navigate('/settings')} className="text-xs shrink-0">
+                <Button type="button" variant="secondary" onClick={() => navigate('/settings?tab=ai')} className="text-xs shrink-0">
                   <SettingsIcon size={14} className="mr-1" /> Налаштування
                 </Button>
               ) : (
