@@ -995,6 +995,43 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
     setItems((p) => p.map((row, idx) => idx === i ? { ...row, [key]: val } : row))
   }
 
+  // 22.11.2026 (етап 2 плану): скриншот кошика постачальника → позиції замовлення.
+  // Вставка Ctrl+V будь-де на бланку, перетягування файла або невелика кнопка біля списку позицій.
+  const [cartBusy, setCartBusy] = useState(false)
+  const cartBusyRef = useRef(false)
+  async function addCartScreenshot(file: File | null) {
+    if (!file || cartBusyRef.current || savingRef.current) return
+    cartBusyRef.current = true
+    setCartBusy(true)
+    try {
+      const { recognizeCartScreenshot } = await import('./orderCartScreenshot')
+      const { rows, skipped } = await recognizeCartScreenshot(file)
+      if (!rows.length) { toast.error('На скриншоті не знайдено позицій. Спробуйте чіткіший знімок кошика.'); return }
+      setItems((current) => [
+        ...current.filter((row) => row.name.trim() || row.sku.trim()),
+        ...rows.map((row) => ({ ...EMPTY_ITEM, local_key: crypto.randomUUID(), source_type: 'supplier' as const, ...row })),
+      ])
+      toast.success(`Додано ${rows.length} поз. зі скриншота${skipped ? `; пропущено без назви: ${skipped}` : ''}. Перевірте кількість і поставте ціни продажу.`)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося розпізнати скриншот')
+    } finally {
+      cartBusyRef.current = false
+      setCartBusy(false)
+    }
+  }
+  const addCartScreenshotRef = useRef(addCartScreenshot)
+  useEffect(() => { addCartScreenshotRef.current = addCartScreenshot })
+  useEffect(() => {
+    const onPaste = (event: ClipboardEvent) => {
+      const file = Array.from(event.clipboardData?.items ?? []).find((item) => item.kind === 'file' && item.type.startsWith('image/'))?.getAsFile()
+      if (!file) return // звичайний текст вставляється в поле як завжди
+      event.preventDefault()
+      void addCartScreenshotRef.current(file)
+    }
+    window.addEventListener('paste', onPaste)
+    return () => window.removeEventListener('paste', onPaste)
+  }, [])
+
   function addManualItemRow(name = '') {
     setItems((rows) => [...rows, { ...EMPTY_ITEM, local_key: crypto.randomUUID(), source_type: 'supplier', name }])
   }
@@ -1659,7 +1696,17 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
             <Card padding="none">
               <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
                 <h4 className="font-bold text-gray-800 text-sm">Позиції замовлення</h4>
-                <span className="text-xs text-gray-400">{items.filter((r) => r.name.trim()).length} шт</span>
+                <div className="flex items-center gap-3">
+                  <label title="Скриншот кошика постачальника: вставте (Ctrl+V), перетягніть сюди або виберіть файл"
+                    onDragOver={(event) => event.preventDefault()}
+                    onDrop={(event) => { event.preventDefault(); void addCartScreenshot(Array.from(event.dataTransfer.files).find((file) => file.type.startsWith('image/')) ?? null) }}
+                    className={`text-xs font-semibold ${cartBusy ? 'text-gray-400' : 'cursor-pointer text-blue-600 hover:text-blue-700'}`}>
+                    {cartBusy ? 'Розпізнаю скриншот…' : '📎 Скрин кошика'}
+                    <input type="file" accept="image/*" className="hidden" disabled={cartBusy}
+                      onChange={(event) => { const file = event.target.files?.[0] ?? null; event.target.value = ''; void addCartScreenshot(file) }} />
+                  </label>
+                  <span className="text-xs text-gray-400">{items.filter((r) => r.name.trim()).length} шт</span>
+                </div>
               </div>
               {items.length === 0 ? (
                 <p className="px-4 py-8 text-center text-sm text-gray-400">
