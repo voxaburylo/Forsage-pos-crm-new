@@ -1,6 +1,7 @@
 import { localAnalytics } from './repositories/localAnalytics'
 import path from 'node:path'
 import { pendingUnitSpellings, tidyUnitSpellings } from './repositories/catalogUnitTidy'
+import { isExpectedCommandFailure } from './diagnostics/expectedCommandFailure'
 import { RendererRecovery } from './rendererRecovery'
 import { deferQuitForMainWindow, NativeCloseController, requestUnloadScript } from './nativeClose'
 import { BlackBox } from './diagnostics/blackBox'
@@ -579,21 +580,6 @@ function validateTenantArguments(value: unknown, tenantId: string, depth = 0): v
     throw new Error('Операція належить іншому магазину')
   }
   for (const nested of Object.values(record)) validateTenantArguments(nested, tenantId, depth + 1)
-}
-
-/**
- * Звичайна відмова («вкажіть назву», «недостатньо прав») — не збій програми, а
- * робота перевірок. У журналі має лишатись те, що справді треба чинити.
- */
-const EXPECTED_COMMAND_FAILURES = [
-  'Недостатньо прав', 'Неприпустиме джерело', 'Сесія', 'вже існує',
-  'Вкажіть', 'Введіть', 'Оберіть', 'DESKTOP_SESSION', 'Невірний пароль',
-]
-
-function isExpectedCommandFailure(message: string): boolean {
-  // «Не пускає провести накладну» повторювалося без сліду: причину рядка пишемо завжди (лише код).
-  if (message.includes('RECEIVING_LINE:') || message.includes('RECEIVING_STEP:')) return false
-  return EXPECTED_COMMAND_FAILURES.some((marker) => message.includes(marker))
 }
 
 /**
