@@ -477,7 +477,7 @@ async function executeSaleTransaction(
       }
     }
 
-    // 4. Lock customer, apply expired bonuses and verify the usable balance.
+    // 4. Lock customer and verify the usable bonus balance.
     const bonusesSpent = input.bonuses_spent ?? 0
     let customerInfo: any | null = null
     let cashbackPct = 0
@@ -494,38 +494,7 @@ async function executeSaleTransaction(
       if (!custRes.rowCount) throw new AppError('CUSTOMER_NOT_FOUND', 'Клієнта не знайдено', 404)
       customerInfo = custRes.rows[0]
 
-      const expiryTotals = await client.query(
-        `SELECT
-           COALESCE(SUM(amount) FILTER (
-             WHERE transaction_type = 'earn' AND amount > 0
-               AND expires_at IS NOT NULL AND expires_at <= NOW()
-           ), 0)::bigint AS expired_earned,
-           COALESCE(-SUM(amount) FILTER (WHERE transaction_type = 'spend' AND amount < 0), 0)::bigint AS spent,
-           COALESCE(-SUM(amount) FILTER (WHERE transaction_type = 'manual' AND amount < 0), 0)::bigint AS manual_spent,
-           COALESCE(-SUM(amount) FILTER (WHERE transaction_type = 'expire' AND amount < 0), 0)::bigint AS already_expired
-         FROM bonus_transactions
-         WHERE customer_id = $1 AND tenant_id = $2`,
-        [input.customer_id, tenantId],
-      )
-      const expiry = expiryTotals.rows[0] ?? {}
-      const expiredAmount = Math.min(Number(customerInfo.bonus_balance ?? 0), Math.max(0,
-        Number(expiry.expired_earned ?? 0)
-        - Number(expiry.spent ?? 0)
-        - Number(expiry.manual_spent ?? 0)
-        - Number(expiry.already_expired ?? 0),
-      ))
-      if (expiredAmount > 0) {
-        customerInfo.bonus_balance = Number(customerInfo.bonus_balance ?? 0) - expiredAmount
-        await client.query(
-          'UPDATE customers SET bonus_balance = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
-          [customerInfo.bonus_balance, input.customer_id, tenantId],
-        )
-        await client.query(
-          `INSERT INTO bonus_transactions (tenant_id, customer_id, amount, transaction_type, description)
-           VALUES ($1, $2, $3, 'expire', 'Закінчився строк дії бонусів')`,
-          [tenantId, input.customer_id, -expiredAmount],
-        )
-      }
+      // Рішення власника 20.11.2026: бонуси не згорають — строк дії більше не застосовується.
       if (useBonusAtomic && bonusesSpent > Number(customerInfo.bonus_balance ?? 0)) {
         throw new AppError(
           'INSUFFICIENT_BONUS',
@@ -533,14 +502,8 @@ async function executeSaleTransaction(
           400,
         )
       }
+      // Рішення власника 20.11.2026: відсоток бонусів — особистий відсоток клієнта.
       cashbackPct = Number(customerInfo.discount_pct ?? 0)
-      if (customerInfo.price_tier_id) {
-        const tier = await client.query(
-          'SELECT COALESCE(discount_pct, 0) AS discount_pct FROM price_tiers WHERE id = $1 AND tenant_id = $2 LIMIT 1',
-          [customerInfo.price_tier_id, tenantId],
-        )
-        if (tier.rowCount) cashbackPct = Number(tier.rows[0].discount_pct ?? cashbackPct)
-      }
     }
 
     const total = Math.max(0, subtotal - input.discount)
@@ -661,21 +624,19 @@ async function executeSaleTransaction(
       const cashbackBase = Math.max(0,
         input.items.reduce((sum, item) => sum + item.unit_price * item.qty, 0) - input.discount,
       )
+      // input.discount уже містить списані бонуси, тож частина, оплачена бонусами, бонусів не дає.
       const cashback = Math.round(cashbackBase * cashbackPct / 100)
       if (cashback > 0) {
-        const balanceAfter = Number(customerInfo.deposit_balance ?? 0) + cashback
+        // Рішення власника 20.11.2026: накопичення — це БОНУСИ, окремо від передоплати (рахунку клієнта).
         await client.query(
-          'UPDATE customers SET deposit_balance = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
-          [balanceAfter, input.customer_id, tenantId],
+          'UPDATE customers SET bonus_balance = COALESCE(bonus_balance, 0) + $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
+          [cashback, input.customer_id, tenantId],
         )
         await client.query(
-          `INSERT INTO customer_deposit_transactions
-            (tenant_id, customer_id, amount, balance_after, method, sale_id, shift_id, notes, created_by)
-           VALUES ($1, $2, $3, $4, 'cashback', $5, $6, $7, $8)`,
-          [tenantId, input.customer_id, cashback, balanceAfter, sale.id, input.shift_id,
-            `Накопичення ${cashbackPct}% з чека #${sale.sale_number ?? ''}`, cashierId],
+          `INSERT INTO bonus_transactions (tenant_id, customer_id, amount, transaction_type, source_sale_id, description, created_by)
+           VALUES ($1, $2, $3, 'earn', $4, $5, $6)`,
+          [tenantId, input.customer_id, cashback, sale.id, `Бонуси ${cashbackPct}% з чека #${sale.sale_number ?? ''}`, cashierId],
         )
-        customerInfo.deposit_balance = balanceAfter
       }
     }
 
@@ -976,7 +937,7 @@ export async function createSale(
     const paymentTotal = discountedTotal + coreDepositTotal
 
     let { cashAmount, cardAmount, transferAmount, bonusesEarned } = calculateSaleAmounts(input, paymentTotal)
-    let bonusExpiresAt: string | null = null
+    const bonusExpiresAt: string | null = null
     cardChargeAmount = cardAmount
 
     const bonusesSpent = input.bonuses_spent ?? 0
@@ -986,28 +947,10 @@ export async function createSale(
     if (bonusesSpent > input.discount) {
       throw new AppError('INVALID_BONUS_DISCOUNT', 'Сума списання бонусів має входити до знижки чека', 400)
     }
-    if (useBonusAtomic && input.customer_id && (input.payment_method !== 'debt' || bonusesSpent > 0)) {
-      const { getSettings } = await import('./loyaltyService.js')
-      const loyaltySettings = await getSettings(tenantId)
-      if (bonusesSpent > 0) {
-        if (!loyaltySettings.is_enabled) {
-          throw new AppError('LOYALTY_DISABLED', 'Бонусна програма вимкнена', 400)
-        }
-        // The payment preview uses discounted goods BEFORE bonus redemption,
-        // excluding refundable core deposits. Enforce that same configured cap
-        // before touching the bank terminal; balance is checked under row lock.
-        const maxRedeem = Math.floor((discountedTotal + bonusesSpent) * (loyaltySettings.max_redeem_pct / 100))
-        if (bonusesSpent > maxRedeem) {
-          throw new AppError('BONUS_LIMIT_EXCEEDED', 'Сума бонусів перевищує дозволений максимум для цього чека', 400)
-        }
-      }
-      if (input.payment_method !== 'debt' && loyaltySettings.is_enabled && discountedTotal >= (loyaltySettings.min_purchase_kopecks ?? 0)) {
-        bonusesEarned = Math.round(discountedTotal * ((loyaltySettings.accrual_pct ?? 0) / 100))
-        bonusExpiresAt = loyaltySettings.expiry_days
-          ? new Date(Date.now() + Number(loyaltySettings.expiry_days) * 86400000).toISOString()
-          : null
-      }
-    }
+    // Рішення власника 20.11.2026: бонусами можна оплатити весь товар (без межі у відсотках і без
+    // вимикача групової програми); застава за сердечник бонусами не оплачується (вона не входить у знижку).
+    // Нарахування — лише особистий відсоток клієнта (див. крок «cashback»), групового нарахування немає.
+    bonusesEarned = 0
 
     const termResult = await processTerminalPayment(input, cardAmount, tenantId)
     bankAuthCode = termResult.bankAuthCode

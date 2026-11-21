@@ -1,0 +1,8 @@
+# Файли в репозиторії зберігаються з LF; Git сам перетворює переноси на Windows.
+* text=auto
+*.exe binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.zip binary
+*.db binary
