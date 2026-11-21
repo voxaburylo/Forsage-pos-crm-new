@@ -19,7 +19,7 @@ vi.mock('./searchService.js',()=>({searchProductsForPOS:vi.fn()}))
 vi.mock('./productService.js',()=>({getProduct:vi.fn(),createProduct:vi.fn(),updateProduct:vi.fn()}))
 vi.mock('./adminService.js',()=>({listCategories:vi.fn(),createCategory:vi.fn()}))
 vi.mock('./customerService.js',()=>({listCustomers:vi.fn(),updateCustomer:vi.fn()}))
-import { runChat, recognizeSupplyInvoicePhoto, testKey, saveAiConfig, getUsageSummary, recordAiUsage } from './aiService.js'
+import { chatEffort, runChat, recognizeSupplyInvoicePhoto, testKey, saveAiConfig, getUsageSummary, recordAiUsage } from './aiService.js'
 import { AI_TIME_LIMITS } from './aiExecutionBudget.js'
 import { logger } from '../lib/logger.js'
 const photo={mime_type:'image/png',data_base64:'fixture'}
@@ -298,4 +298,16 @@ describe('actual AI service budget wiring, synthetic Claude SDK and database onl
   await expect(runChat('shop','user',{message:'Перевір'})).rejects.toMatchObject({code:'AI_READ_LIMIT'})
   expect(mocks.create).toHaveBeenCalledOnce();expect(mocks.usage).not.toHaveBeenCalled()
  })
+})
+
+describe('chatEffort (21.11.2026: faster answers without losing quality)', () => {
+  it('answers short plain questions with low effort', () => {
+    expect(chatEffort({ message: 'скільки є фільтра 2108?' })).toBe('low')
+  })
+  it('keeps medium for files, photos, long or multi-line tasks', () => {
+    expect(chatEffort({ message: 'розбери', fileText: 'a;b' })).toBe('medium')
+    expect(chatEffort({ message: 'накладна', images: [{}] })).toBe('medium')
+    expect(chatEffort({ message: 'x'.repeat(161) })).toBe('medium')
+    expect(chatEffort({ message: 'перший\nдругий' })).toBe('medium')
+  })
 })

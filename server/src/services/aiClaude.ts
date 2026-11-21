@@ -187,6 +187,10 @@ export class ClaudeClient {
     review: (reply: string) => string | null
     /** Лічильник токенів наповнюється по ходу, щоб облік не губився при помилці посеред розмови. */
     usage: ClaudeUsage
+    /** Глибина міркувань: коротке питання без вкладень — low (швидше), решта — medium. */
+    effort?: 'low' | 'medium'
+    /** Хід роботи для екрана («Шукаю в каталозі…»), щоб власник не дивився хвилину в порожнечу. */
+    onProgress?: (event: { stage: 'tools'; tools: string[] } | { stage: 'answer' }) => void
   }): Promise<{ reply: string; finished: boolean }> {
     const messages: Anthropic.Beta.BetaMessageParam[] = []
     for (const turn of input.history) {
@@ -203,7 +207,10 @@ export class ClaudeClient {
         max_tokens: 32000,
         system: [{ type: 'text', text: input.system, cache_control: { type: 'ephemeral' } }],
         tools: input.tools,
-        output_config: { effort: 'medium' },
+        output_config: { effort: input.effort ?? 'medium' },
+        // 21.11.2026: кешуємо і зростаючу історію кроку інструментів — наступний крок не перечитує її
+        // за повною ціною і починає відповідати швидше.
+        cache_control: { type: 'ephemeral' },
         messages,
       })
       const current = ClaudeClient.usage(message)
@@ -217,11 +224,13 @@ export class ClaudeClient {
 
       const calls = message.content.filter((block): block is Anthropic.Beta.BetaToolUseBlock => block.type === 'tool_use')
       if (!calls.length) {
+        input.onProgress?.({ stage: 'answer' })
         const reply = ClaudeClient.text(message)
         const nudge = input.review(reply)
         if (nudge) { messages.push({ role: 'user', content: nudge }); continue }
         return { reply, finished: true }
       }
+      input.onProgress?.({ stage: 'tools', tools: calls.map(call => call.name) })
       const results = await input.handleCalls(calls.map(call => ({ name: call.name, args: (call.input ?? {}) as Record<string, unknown> })))
       messages.push({
         role: 'user',
