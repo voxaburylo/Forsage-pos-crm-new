@@ -3,7 +3,8 @@ import { z } from 'zod'
 const query = z.string().trim().min(1).max(200)
 const integer = (max: number, fallback: number) => z.number().finite().int().min(1).max(max).default(fallback)
 const schemas: Record<string, z.ZodTypeAny> = {
-  search_products: z.object({ query, limit: integer(15, 8) }).strict(),
+  // 21.11.2026: пакетна робота («усі масляні фільтри в наявності») — до 30 товарів і лише наявні.
+  search_products: z.object({ query, limit: integer(30, 8), in_stock_only: z.boolean().optional() }).strict(),
   search_customers: z.object({ query, limit: integer(20, 10) }).strict(),
   get_product: z.object({ product_id: z.string().uuid() }).strict(),
   list_categories: z.object({}).strict(),

@@ -19,7 +19,7 @@ vi.mock('./searchService.js',()=>({searchProductsForPOS:vi.fn()}))
 vi.mock('./productService.js',()=>({getProduct:vi.fn(),createProduct:vi.fn(),updateProduct:vi.fn()}))
 vi.mock('./adminService.js',()=>({listCategories:vi.fn(),createCategory:vi.fn()}))
 vi.mock('./customerService.js',()=>({listCustomers:vi.fn(),updateCustomer:vi.fn()}))
-import { chatEffort, runChat, recognizeSupplyInvoicePhoto, testKey, saveAiConfig, getUsageSummary, recordAiUsage } from './aiService.js'
+import { chatEffort, crossResearchPrompt, runChat, recognizeSupplyInvoicePhoto, testKey, saveAiConfig, getUsageSummary, recordAiUsage } from './aiService.js'
 import { AI_TIME_LIMITS } from './aiExecutionBudget.js'
 import { logger } from '../lib/logger.js'
 const photo={mime_type:'image/png',data_base64:'fixture'}
@@ -309,5 +309,16 @@ describe('chatEffort (21.11.2026: faster answers without losing quality)', () =>
     expect(chatEffort({ message: 'накладна', images: [{}] })).toBe('medium')
     expect(chatEffort({ message: 'x'.repeat(161) })).toBe('medium')
     expect(chatEffort({ message: 'перший\nдругий' })).toBe('medium')
+  })
+})
+
+describe('crossResearchPrompt (21.11.2026: аналоги, популярні в Україні)', () => {
+  it('asks for Ukraine-popular brands and OE numbers, with direct confirmation, and keeps the product lines', () => {
+    const prompt = crossResearchPrompt('- product_id p1: MANN HU819/1X; артикул HU819/1X; бренд MANN')
+    for (const brand of ['WIX', 'MAHLE', 'BOSCH', 'Blue Print', 'CTR', 'LEMFÖRDER']) expect(prompt).toContain(brand)
+    expect(prompt).toContain('avtopro.ua')
+    expect(prompt).toContain('OE')
+    expect(prompt).toContain('Не вгадуй')
+    expect(prompt).toContain('product_id p1')
   })
 })
