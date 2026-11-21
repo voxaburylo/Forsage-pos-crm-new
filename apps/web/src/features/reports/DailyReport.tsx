@@ -525,7 +525,7 @@ export default function DailyReport() {
   useEffect(() => {
     if (!urlTab || urlTab === 'tire' || !URL_TABS.includes(urlTab)) return
     setTab(urlTab === 'today' ? summaryPeriod : urlTab as Tab)
-  }, [urlTab]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [urlTab])
 
   const TABS = [
     { id: 'today',    label: 'Підсумки',   icon: <TrendingUp size={15} /> },
