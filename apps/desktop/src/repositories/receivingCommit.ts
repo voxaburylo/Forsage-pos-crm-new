@@ -37,6 +37,15 @@ const skuKey = (value: unknown) => clean(value).normalize('NFKC').toLocaleUpperC
 const nameKey = (value: unknown) => clean(value).normalize('NFKC').toLocaleLowerCase('uk-UA').replace(/\s+/g, ' ')
 const barcodeKey = (value: unknown) => clean(value).replace(/[\s\-._/]+/g, '')
 const fields = ['name', 'sku', 'barcode', 'category_id', 'storage_bin', 'retail_price', 'photo_url'] as const
+/** Зрозуміла причина конфлікту картки: яке поле, що в картці зараз і що в накладній. */
+export function receivingCardConflictMessage(field: string, current: unknown, desired: unknown): string {
+  const labels: Record<string, string> = { name: 'назва', sku: 'артикул', barcode: 'штрихкод', category_id: 'папка',
+    storage_bin: 'комірка', photo_url: 'фото', retail_price: 'ціна продажу' }
+  const show = (value: unknown) => value === null || value === undefined || value === '' ? 'порожньо' : String(value)
+  return `Картка товару змінилася, поки накладна була відкрита: ${labels[field] ?? field} в картці зараз «${show(current)}», `
+    + `у накладній «${show(desired)}». Виберіть товар у рядку ще раз, щоб звірити.`
+}
+
 function productFields(row: any): ReceivingProductBase {
   return { name: clean(row.name), sku: clean(row.sku), barcode: nullable(row.barcode),
     category_id: nullable(row.category_id), storage_bin: nullable(row.storage_bin),
@@ -189,7 +198,16 @@ export function commitReceiving(db: LocalDatabase, input: ReceivingCommitInput):
             lineFailure(i, 'Стара чернетка не містить версії картки. Повторно виберіть товар, звірте ціну та внесіть правки.')
           const patch: any = {}
           for (const field of fields) if (desired[field] !== base[field]) {
-            if (current[field] !== base[field] && current[field] !== desired[field]) lineFailure(i, 'Картка товару змінилася. Повторно виберіть товар і звірте правки.')
+            if (current[field] !== base[field] && current[field] !== desired[field]) {
+              // 21.11.2026: відмова «Картка товару змінилася» трапилась 37 разів — найчастіше через ціну,
+              // яку тим часом підняли в картці. Ціну розв'язуємо за правилом власника (ціни автоматично
+              // не знижуємо): лишається більша. Для інших полів — точна причина з обома значеннями.
+              if (field === 'retail_price') {
+                patch[field] = Math.max(Number(current[field] ?? 0), Number(desired[field] ?? 0))
+                continue
+              }
+              lineFailure(i, receivingCardConflictMessage(field, current[field], desired[field]))
+            }
             patch[field] = desired[field]
           }
           saved = Object.keys(patch).length ? catalog.saveProduct({ ...productInput(product), ...patch }) : product

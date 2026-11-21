@@ -341,7 +341,10 @@ export class LocalInventoryRepository {
     const product = input.product_id
       ? this.findProductById(input.product_id, tenantId)
       : this.findProductByCode(input.barcode ?? '', tenantId)
-    if (!product) throw new Error('Товар не знайдено')
+    // 21.11.2026: 101 така відмова в журналі без підказки, що робити. Кажемо, що саме не знайдено.
+    if (!product) throw new Error(input.product_id
+      ? 'Товар не знайдено: картку видалено.'
+      : `Товар не знайдено за кодом «${String(input.barcode ?? '').trim().slice(0, 64)}». Знайдіть товар пошуком за назвою і додайте цей штрихкод у картку.`)
 
     const timestamp = nowIso()
     let itemId = ''

@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { constants, closeSync, copyFileSync, existsSync, fsyncSync, openSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync, type StatementSync } from 'node:sqlite'
-import { LOCAL_MIGRATIONS } from './schema'
+import { LOCAL_MIGRATIONS, LOCAL_PERFORMANCE_INDEXES_SQL } from './schema'
 import { createVerifiedBackup } from './verifiedBackup'
 import { assertBackupContents } from './backupValidation'
 import { assertBackupSpace } from '../backup/backupSpace'
@@ -253,6 +253,7 @@ export class LocalDatabase {
           'INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)',
         ).run(migration.version, new Date().toISOString())
       }
+      this.database.exec(LOCAL_PERFORMANCE_INDEXES_SQL)
 
       this.database.exec('COMMIT')
     } catch (error) {
