@@ -59,6 +59,18 @@ describe('local till: nothing is sold below the purchase price', () => {
     expect(() => pos.checkout(sale(p.id, 0, 0, 400_000))).toThrow(/нижче закупівельної/)
     untouched(p.id)
   })
+  it('bonuses are the customer\'s money: they may pay the whole item, but a real discount still stops at cost', () => {
+    const p = part()
+    const customer = pos.saveCustomer({ phone: '0671112233', discount_pct: 0 }).data.id
+    db.prepare('UPDATE customers SET bonus_balance = 700000 WHERE id = ?').run(customer)
+    const paidByBonuses = { ...sale(p.id, 0, 650_000), customer_id: customer, bonuses_spent: 650_000 }
+    paidByBonuses.payments = [{ method: 'cash' as const, amount: 0 }]
+    expect(pos.getSale(pos.checkout(paidByBonuses).sale_id).total).toBe(0)
+    expect(pos.getCustomer(customer)).toMatchObject({ bonus_balance: 50_000 })
+    // Знижка 200 000 (нижче закупівлі) + бонуси 100 000 — відмова через знижку, а не через бонуси.
+    const mixed = { ...sale(p.id, 200_000, 100_000), customer_id: customer, bonuses_spent: 100_000 }
+    expect(() => pos.checkout(mixed)).toThrow(/нижче закупівельної/)
+  })
   it('does not limit products without a purchase price', () => {
     const p = part(10_000, 0)
     expect(pos.getSale(pos.checkout(sale(p.id, 9_000, 0, 10_000)).sale_id).total).toBe(1_000)

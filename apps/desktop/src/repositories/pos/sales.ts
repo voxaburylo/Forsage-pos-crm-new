@@ -733,10 +733,13 @@ export class LocalPosSales extends LocalPosCustomers {
       coreDepositTotal += lineCoreDeposit
       itemDiscountTotal += itemDiscount
     }
-    this.assertSaleNotBelowCost(goodsNet - money(input.discount ?? 0), goodsCost)
+    const bonusesSpent = money(input.bonuses_spent ?? 0)
+    // Рішення власника 21.11.2026 («зроби як краще»): бонуси — це гроші клієнта, зароблені на попередніх
+    // покупках, тому ними можна оплатити товар повністю. Правило «не нижче закупівлі» стосується лише
+    // справжньої знижки (input.discount містить і списані бонуси — їх віднімаємо).
+    this.assertSaleNotBelowCost(goodsNet - Math.max(0, money(input.discount ?? 0) - bonusesSpent), goodsCost)
 
     this.assertSaleStockAvailable(input.items, tenantId)
-    const bonusesSpent = money(input.bonuses_spent ?? 0)
     if (bonusesSpent > 0 && !input.customer_id) {
       throw new Error('Для списання бонусів виберіть клієнта')
     }
