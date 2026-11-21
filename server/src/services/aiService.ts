@@ -389,7 +389,9 @@ const toolDeclarations: FunctionDeclaration[] = [
         vin: { type: SchemaType.STRING, description: 'VIN (17 символів), якщо є' },
         plate: { type: SchemaType.STRING, description: 'Держномер авто (АА1234АА), якщо є' },
         comment: { type: SchemaType.STRING, description: 'Коментарі/пометки з зошита, які не є позиціями' },
-        is_done: { type: SchemaType.BOOLEAN, description: 'true, якщо замовлення ПЕРЕКРЕСЛЕНЕ (= виконане, одразу в архів)' },
+        is_done: { type: SchemaType.BOOLEAN, description: 'true, якщо замовлення ПЕРЕКРЕСЛЕНЕ (= видане клієнту, одразу в архів)' },
+        is_paid: { type: SchemaType.BOOLEAN, description: 'true, якщо біля замовлення написано «Оплачено» / «Оплочено»' },
+        customer_notified: { type: SchemaType.BOOLEAN, description: 'true, якщо ГАЛОЧКА стоїть біля НОМЕРА ТЕЛЕФОНУ (клієнту подзвонили, що замовлення прибуло)' },
         items: {
           type: SchemaType.ARRAY,
           description: 'Позиції замовлення (запчастини/роботи)',
@@ -402,6 +404,7 @@ const toolDeclarations: FunctionDeclaration[] = [
               sell_price_uah: { type: SchemaType.NUMBER, description: 'Ціна продажу, грн. Якщо не вказана — НЕ передавай' },
               buy_price_uah: { type: SchemaType.NUMBER, description: 'Закупівельна ціна, грн. Якщо не вказана — НЕ передавай (залишиться порожньою)' },
               arrived: { type: SchemaType.BOOLEAN, description: 'true, якщо навпроти позиції стоїть ГАЛОЧКА (= запчастина вже прибула)' },
+              supplier: { type: SchemaType.STRING, description: 'Постачальник позиції, якщо вказано в дужках біля неї: ELIT, TEX/ТЕХ тощо. Нерозбірливе «(1+1)» — це «ТЕХ».' },
               note: { type: SchemaType.STRING, description: 'Помітка біля позиції' },
             },
             required: ['name'],
@@ -602,7 +605,11 @@ const SYSTEM_PROMPT = `Ти — AI-помічник «Директор» для 
 ФОТО РУКОПИСНИХ ЗАМОВЛЕНЬ (зошит). Коли надіслано фото замовлення:
 - Уважно розпізнай УСІ замовлення на фото (їх може бути кілька — розділяй за лініями, відступами, іменами). Для КОЖНОГО виклич create_order.
 - З кожного замовлення витягни: імʼя клієнта, телефон (+380…), авто (марка/модель/рік), VIN (17 симв.), держномер, список запчастин з каталожними номерами, кількістю та цінами ПРОДАЖУ, коментарі/пометки.
-- ПЕРЕКРЕСЛЕНЕ замовлення (закреслено лініями/хрестом) → is_done=true (воно виконане, піде в архів).
+- ПЕРЕКРЕСЛЕНЕ замовлення (закреслено лініями/хрестом) → is_done=true (воно видане клієнту, піде в архів). НЕ перекреслене — відкрите: замовлено, чекаємо товар.
+- ГАЛОЧКА біля НОМЕРА ТЕЛЕФОНУ → customer_notified=true (клієнту подзвонили). Не плутай із галочкою біля запчастини.
+- Напис «Оплачено» / «Оплочено» над або біля замовлення → is_paid=true для цього замовлення.
+- У дужках біля позиції часто стоїть ПОСТАЧАЛЬНИК: (ELIT), (ТЕХ)/(TEX) → supplier позиції. Криво написане, схоже на «(1+1)», — це «ТЕХ». Постачальника НЕ дописуй у назву запчастини.
+- Число після «=» в кінці рядка — ЦІНА ПРОДАЖУ клієнту (sell_price_uah); «(x2)», «(x4)» — кількість. Окрема сума під замовленням — підсумок, не позиція.
 - ГАЛОЧКА (✓/V) навпроти запчастини → arrived=true для цієї позиції (вона вже прибула).
 - Закупівельної ціни в зошиті зазвичай НЕМАЄ — тоді НЕ передавай buy_price_uah (поле залишиться порожнім). НЕ вигадуй ціни.
 - Якщо щось розпізнано невпевнено (нерозбірливий почерк, обрізаний край) — додай відповідний ключ у uncertain (customer_name / customer_phone / car / vin / plate / items / prices / status), користувач перевірить підсвічені поля.
@@ -900,6 +907,7 @@ async function buildPendingAction(name: string, args: any, tenantId: string, bud
       'К-сть': String(it.qty ?? 1),
       'Ціна': it.sell_price_uah !== undefined && it.sell_price_uah !== null
         ? Number(it.sell_price_uah).toFixed(2) + ' грн' : '—',
+      'Постачальник': String(it.supplier ?? ''),
       'Прибула': it.arrived ? '✓' : '',
     }))
     const changes: PendingAction['changes'] = []
@@ -910,14 +918,18 @@ async function buildPendingAction(name: string, args: any, tenantId: string, bud
     if (args.vin) changes.push({ label: 'VIN', old: null, next: String(args.vin) })
     if (args.plate) changes.push({ label: 'Держномер', old: null, next: String(args.plate) })
     if (args.comment) changes.push({ label: 'Коментар', old: null, next: String(args.comment) })
-    changes.push({ label: 'Статус', old: null, next: args.is_done ? 'Виконане (в архів)' : 'Нове' })
+    const allArrived = rawItems.length > 0 && rawItems.every((it) => it?.arrived === true)
+    changes.push({ label: 'Статус', old: null, next: args.is_done ? 'Видане клієнту (в архів)'
+      : args.customer_notified && allArrived ? 'Клієнту подзвонили' : allArrived ? 'Прибуло' : 'Замовлено, чекаємо товар' })
+    if (args.is_paid) changes.push({ label: 'Оплата', old: null, next: 'Оплачено' })
+    if (args.customer_notified && !args.is_done && !allArrived) changes.push({ label: 'Дзвінок', old: null, next: 'Клієнту подзвонили' })
 
     const uncertain = Array.isArray(args?.uncertain) ? args.uncertain.map((u: any) => String(u)) : []
     return {
       id, tool: name,
       title: `Замовлення: ${args.customer_name ?? 'без клієнта'} (${rawItems.length} поз.)`,
       changes, count: rawItems.length,
-      columns: ['Позиція', 'Кат. номер', 'К-сть', 'Ціна', 'Прибула'], items,
+      columns: ['Позиція', 'Кат. номер', 'К-сть', 'Ціна', 'Постачальник', 'Прибула'], items,
       uncertain: uncertain.length ? uncertain : undefined,
       payload: { ...args },
     }

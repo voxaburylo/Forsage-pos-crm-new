@@ -103,7 +103,7 @@ try{
   await save(price).click();await waitSaved(price)
   assert.equal(await price.evaluate(()=>fixture.writes[0].body.items[0].sell_price),7500);await price.close()
   const vehicle=await setup('vehicle')
-  const photo=p=>p.locator('input[type=file]').setInputFiles({name:'vin.png',mimeType:'image/png',buffer:Buffer.from('mock photo')})
+  const photo=p=>p.locator('input[type=file][capture]').setInputFiles({name:'vin.png',mimeType:'image/png',buffer:Buffer.from('mock photo')})
   const decode=p=>p.getByRole('button',{name:/Декодувати/})
   await photo(vehicle);await vehicle.waitForFunction(()=>fixture.photoRequests.length===1)
   await vehicle.getByLabel('Модель',{exact:true}).fill('Manually corrected')

@@ -32,7 +32,10 @@ export async function applyOrderUpsert(tenantId: string, userId: string, operati
     const orderNumberValue = fromPayload('order_number', existing?.order_number ?? null)
     const orderNumber = Number.isFinite(Number(orderNumberValue)) ? Number(orderNumberValue) : null
     const requestedStatus = String(fromPayload('status', existing?.status ?? 'lead'))
-    if (!new Set(['lead', 'quoted', 'new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer', 'ready']).has(requestedStatus)) {
+    // 22.11.2026: замовлення, перенесене з блокнота, каса створює одразу «архівним» (перекреслене = видане до програми).
+    // Дозволено лише при СТВОРЕННІ: гроші нового замовлення нижче завжди нульові, чека немає.
+    const notebookArchive = !existing && requestedStatus === 'archived'
+    if (!notebookArchive && !new Set(['lead', 'quoted', 'new', 'in_progress', 'ordered', 'arrived', 'called', 'no_answer', 'ready']).has(requestedStatus)) {
       throw new AppError('SYNC_ORDER_STATUS_INVALID', 'Закриття замовлення виконується тільки окремою безпечною операцією', 409)
     }
     const exchangeSourceId = isUuid(fromPayload('exchange_source_order_id', existing?.exchange_source_order_id))
@@ -179,7 +182,16 @@ export async function applyOrderDeleted(tenantId: string, userId: string, operat
     )
     if (!order.rowCount) return
     const row = order.rows[0]
-    if (!['lead', 'quoted', 'new'].includes(String(row.status))
+    // Помилкове перенесення з блокнота каса може прибрати в будь-якому стані, поки не було грошей, чека й виданих позицій.
+    let notebookDelete = false
+    if (operation.payload?.from_notebook === true) {
+      const handed = await client.query(
+        `SELECT 1 FROM customer_order_items WHERE order_id = $1 AND tenant_id = $2 AND deleted_at IS NULL AND item_status IN ('handed', 'returned') LIMIT 1`,
+        [operation.aggregate_id, tenantId],
+      )
+      notebookDelete = !handed.rowCount
+    }
+    if (!(['lead', 'quoted', 'new'].includes(String(row.status)) || notebookDelete)
       || Number(row.prepayment ?? 0) !== 0
       || Number(row.total_paid ?? 0) !== 0
       || Number(row.payment_count ?? 0) !== 0

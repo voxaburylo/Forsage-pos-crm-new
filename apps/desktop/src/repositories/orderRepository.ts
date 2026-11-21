@@ -36,10 +36,26 @@ const ORDER_STATUS_TRANSITIONS: Record<string, string[]> = {
   no_answer: ['called', 'ready'],
 }
 
+/**
+ * 22.11.2026 (перенесення з блокнота): нове замовлення може одразу отримати стан із зошита —
+ * «замовлено, чекаємо», «прибуло», «клієнту подзвонили» або «видано» (перекреслене → архів).
+ * Лише при СТВОРЕННІ; гроші й залишки не зачіпаються: оплати приймає тільки каса.
+ */
+const notebookOrderKey = (tenantId: string, orderId: string) => `notebook-order:${tenantId}:${orderId}`
+const NOTEBOOK_INITIAL_STATUSES = new Set(['ordered', 'arrived', 'called', 'archived'])
+function initialOrderStatus(input: any): string {
+  if (input?.initial_status === undefined || input.initial_status === null) return 'lead'
+  if (!NOTEBOOK_INITIAL_STATUSES.has(String(input.initial_status))) throw new Error('Некоректний початковий стан замовлення')
+  return String(input.initial_status)
+}
+
 function canChangeOrderStatus(from: string, to: string): boolean {
   return from === to || (ORDER_STATUS_TRANSITIONS[from] ?? []).includes(to)
 }
 
+export interface OrderPartSuggestion { name: string; sku: string; buy_price: number; sell_price: number; supplier_id: string | null; supplier_name: string | null; last_used_at: string }
+export interface InvoiceArrivalOrder { order_id: string; order_number: number; customer_name: string | null; customer_phone: string | null; items: Array<{ name: string; qty: number }>; complete: boolean }
+export interface InvoiceArrivalShortage { order_number: number; name: string; needed: number; available: number }
 type LocalOrderItemState = { item_status: string; sell_price: number; qty: number; core_deposit_amount: number }
 
 
@@ -95,7 +111,8 @@ export class LocalOrderRepository {
     }
     params.push(limit, offset)
     const rows = this.db.prepare(`
-      SELECT o.*, c.id AS customer_id_join, c.phone AS customer_phone,
+      SELECT o.*, EXISTS(SELECT 1 FROM app_meta m WHERE m.key = 'notebook-order:' || o.tenant_id || ':' || o.id) AS from_notebook,
+             c.id AS customer_id_join, c.phone AS customer_phone,
              c.full_name AS customer_full_name, c.card_barcode AS customer_card_barcode,
              COALESCE(c.bonus_balance, 0) AS customer_bonus_balance
       FROM customer_orders o
@@ -254,8 +271,22 @@ export class LocalOrderRepository {
         + Math.round(num(item.core_deposit_amount) * qty)
     }, 0)
     assertOrderTotal(totalAmount)
+    // Та сама сторінка блокнота, сфотографована вдруге: той самий клієнт і ті самі позиції → дубль не створюємо.
+    if (!existing && input.initial_status !== undefined && input.initial_status !== null) {
+      const signature = (rows: any[]) => rows.filter(row => row.item_status !== 'canceled')
+        .map(row => [String(row.name ?? '').trim().toLowerCase(), num(row.qty), Math.round(num(row.sell_price))].join('|')).sort().join('\n')
+      const wanted = signature(items)
+      const candidates = this.db.prepare(`SELECT id, order_number FROM customer_orders
+        WHERE tenant_id = ? AND deleted_at IS NULL AND total_amount = ? AND COALESCE(customer_id, '') = ? AND COALESCE(comment, '') = ?`)
+        .all(tenantId, totalAmount, input.customer_id ?? '', input.comment ?? '') as Array<{ id: string; order_number: number }>
+      for (const candidate of candidates) {
+        const rows = this.db.prepare('SELECT name, qty, sell_price, item_status FROM customer_order_items WHERE order_id = ? AND tenant_id = ? AND deleted_at IS NULL').all(candidate.id, tenantId) as any[]
+        if (wanted && signature(rows) === wanted) throw new Error(`Таке замовлення вже є в програмі (№ ${candidate.order_number}). Дубль не створено.`)
+      }
+    }
     const orderNumber = existing?.order_number ?? this.nextOrderNumber(tenantId, timestamp)
-    const status = existing?.status ?? 'lead'
+    if (existing && input.initial_status !== undefined && input.initial_status !== null) throw new Error('Початковий стан задається лише при створенні замовлення')
+    const status = existing?.status ?? initialOrderStatus(input)
     // Payment totals are a ledger projection and may only be changed by POS operations.
     const totalPaid = existing?.total_paid ?? 0
     const prepayment = existing?.prepayment ?? 0
@@ -350,6 +381,10 @@ export class LocalOrderRepository {
         }
       }
 
+      if (!existing && status !== 'lead') {
+        this.db.prepare('INSERT OR IGNORE INTO app_meta(key, value_json, updated_at) VALUES (?, ?, ?)')
+          .run(notebookOrderKey(tenantId, id), JSON.stringify({ initial_status: status }), timestamp)
+      }
       const syncPayload = this.getOrder(id, tenantId)
       this.addOutbox(
         tenantId,
@@ -398,7 +433,11 @@ export class LocalOrderRepository {
       FROM order_payments
       WHERE tenant_id = ? AND order_id = ? AND deleted_at IS NULL
     `).get(tenantId, orderId) as { count: number; paid: number } | undefined
-    if (!['lead', 'quoted', 'new'].includes(String(order.status))
+    // Замовлення, перенесене з блокнота, одразу має стан «замовлено» / «архів». Помилкове перенесення
+    // треба мати змогу прибрати — поки по ньому не було грошей, чека й виданих позицій.
+    const fromNotebook = this.isNotebookOrder(orderId, tenantId)
+      && order.items.every((item: any) => !['handed', 'returned'].includes(String(item.item_status)))
+    if (!(['lead', 'quoted', 'new'].includes(String(order.status)) || fromNotebook)
       || num(order.prepayment) !== 0
       || num(order.total_paid) !== 0
       || num(ledger?.count) > 0
@@ -419,7 +458,7 @@ export class LocalOrderRepository {
         UPDATE stock_reserves SET released_at = ?, dirty_at = ?, updated_at = ?
         WHERE order_id = ? AND tenant_id = ? AND released_at IS NULL AND deleted_at IS NULL
       `).run(timestamp, timestamp, timestamp, orderId, tenantId)
-      this.addOutbox(tenantId, 'customer_order', orderId, 'order.deleted', { id: orderId }, timestamp)
+      this.addOutbox(tenantId, 'customer_order', orderId, 'order.deleted', fromNotebook ? { id: orderId, from_notebook: true } : { id: orderId }, timestamp)
     })
     return { success: true }
   }
@@ -651,6 +690,107 @@ export class LocalOrderRepository {
     })
     return { updated: uniqueIds.length }
   }
+  /**
+   * 22.11.2026 (етап 3 плану): довідник запчастин «під замовлення» — те, що вже замовляли клієнтам і чого
+   * немає на складі карткою. Окремої таблиці немає: довідник — це історія позицій замовлень без картки товару.
+   * Повертає останній запис для кожної пари «назва + артикул»: закупка, ціна продажу, постачальник.
+   */
+  suggestOrderParts(query: string, tenantId = DEFAULT_TENANT_ID, limit = 8): OrderPartSuggestion[] {
+    const needle = String(query ?? '').normalize('NFKC').trim().toLowerCase()
+    if (needle.length < 2 || needle.length > 80) return []
+    const compact = needle.replace(/[^\p{L}\p{N}]/gu, '')
+    // SQLite не вміє порівнювати кирилицю без урахування регістру, тому відбір — у коді, по останніх позиціях.
+    const rows = (this.db.prepare(`SELECT i.name, i.sku, i.buy_price, i.sell_price, i.supplier_id, s.name AS supplier_name, i.updated_at
+      FROM customer_order_items i
+      JOIN customer_orders o ON o.id = i.order_id AND o.tenant_id = i.tenant_id
+      LEFT JOIN suppliers s ON s.id = i.supplier_id AND s.tenant_id = i.tenant_id
+      WHERE i.tenant_id = ? AND i.deleted_at IS NULL AND o.deleted_at IS NULL AND i.product_id IS NULL
+        AND i.item_type <> 'service' AND i.item_status <> 'canceled' AND trim(i.name) <> ''
+      ORDER BY i.updated_at DESC LIMIT 5000`).all(tenantId) as Array<{ name: string; sku: string | null; buy_price: number; sell_price: number; supplier_id: string | null; supplier_name: string | null; updated_at: string }>)
+      .filter(row => {
+        const name = row.name.normalize('NFKC').toLowerCase(), sku = String(row.sku ?? '').normalize('NFKC').toLowerCase()
+        return name.includes(needle) || sku.includes(needle) || (compact.length >= 2 && sku.replace(/[^\p{L}\p{N}]/gu, '').includes(compact))
+      })
+    const seen = new Set<string>(), result: OrderPartSuggestion[] = []
+    for (const row of rows) {
+      const key = row.name.trim().toLowerCase() + '|' + String(row.sku ?? '').trim().toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      result.push({ name: row.name.trim(), sku: String(row.sku ?? '').trim(), buy_price: Math.round(num(row.buy_price)), sell_price: Math.round(num(row.sell_price)),
+        supplier_id: row.supplier_id, supplier_name: row.supplier_name, last_used_at: row.updated_at })
+      if (result.length >= Math.max(1, Math.min(20, limit))) break
+    }
+    return result
+  }
+
+  /**
+   * 22.11.2026 (етап 10 плану): проведена накладна сама відмічає «прибуло» в замовленнях, які чекають цей товар,
+   * і повертає список «кому подзвонити». Збіг лише точний: та сама картка товару або той самий артикул
+   * (артикул картки чи її крос-номер). Розподіл — за чергою замовлень; якщо товару менше, ніж чекають,
+   * позиція лишається «чекаємо» і потрапляє в «не вистачило». Повтор для тієї ж накладної нічого не змінює.
+   */
+  applyInvoiceArrival(invoiceId: string, tenantId = DEFAULT_TENANT_ID): { orders: InvoiceArrivalOrder[]; shortages: InvoiceArrivalShortage[]; already_applied: boolean } {
+    if (typeof invoiceId !== 'string' || !/^[a-zA-Z0-9-]{1,128}$/.test(invoiceId)) throw new Error('Некоректна накладна')
+    const key = `order-arrival:${tenantId}:${invoiceId}`
+    return this.db.transaction(() => {
+      const receipt = this.db.prepare('SELECT value_json FROM app_meta WHERE key = ?').get(key) as { value_json: string } | undefined
+      if (receipt) return { ...JSON.parse(receipt.value_json), already_applied: true }
+      const invoice = this.db.prepare('SELECT status FROM supply_invoices WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL').get(invoiceId, tenantId) as { status: string } | undefined
+      if (!invoice) throw new Error('Накладну не знайдено')
+      if (invoice.status !== 'posted') throw new Error('Прибуття в замовленнях відмічається лише після проведення накладної')
+      const skuKey = (value: unknown) => String(value ?? '').normalize('NFKC').toUpperCase().replace(/[^\p{L}\p{N}]/gu, '')
+      const received = this.db.prepare(`SELECT i.product_id, SUM(i.qty) AS qty, p.sku, p.name FROM supply_invoice_items i
+        JOIN products p ON p.id = i.product_id AND p.tenant_id = i.tenant_id
+        WHERE i.invoice_id = ? AND i.tenant_id = ? AND i.deleted_at IS NULL GROUP BY i.product_id`).all(invoiceId, tenantId) as Array<{ product_id: string; qty: number; sku: string; name: string }>
+      const left = new Map<string, number>(), productBySku = new Map<string, string | null>()
+      const remember = (code: string, productId: string) => { if (code.length >= 4) productBySku.set(code, productBySku.has(code) && productBySku.get(code) !== productId ? null : productId) }
+      for (const row of received) {
+        left.set(row.product_id, num(row.qty))
+        remember(skuKey(row.sku), row.product_id)
+        for (const cross of this.db.prepare('SELECT cross_number FROM product_cross_numbers WHERE product_id = ? AND tenant_id = ? AND deleted_at IS NULL').all(row.product_id, tenantId) as Array<{ cross_number: string }>) remember(skuKey(cross.cross_number), row.product_id)
+      }
+      const waiting = this.db.prepare(`SELECT i.id, i.order_id, i.name, i.sku, i.product_id, i.qty, o.order_number
+        FROM customer_order_items i JOIN customer_orders o ON o.id = i.order_id AND o.tenant_id = i.tenant_id
+        WHERE i.tenant_id = ? AND i.deleted_at IS NULL AND o.deleted_at IS NULL AND i.item_status IN ('pending', 'ordered')
+          AND i.item_type <> 'service' AND o.status NOT IN ('completed', 'canceled', 'archived')
+        ORDER BY o.created_at ASC, i.created_at ASC`).all(tenantId) as Array<{ id: string; order_id: string; name: string; sku: string | null; product_id: string | null; qty: number; order_number: number }>
+      const touched = new Map<string, Array<{ name: string; qty: number }>>(), shortages: InvoiceArrivalShortage[] = []
+      for (const item of waiting) {
+        const productId = item.product_id && left.has(item.product_id) ? item.product_id : productBySku.get(skuKey(item.sku)) ?? null
+        if (!productId) continue
+        const need = num(item.qty), available = left.get(productId) ?? 0
+        if (available < need) { shortages.push({ order_number: item.order_number, name: item.name, needed: need, available }); continue }
+        try {
+          // Окрема вкладена транзакція на позицію: якщо резерв неможливий (залишок пішов у мінус раніше),
+          // ця позиція лишається «чекаємо», а решта накладної відмічається як слід.
+          this.db.transaction(() => {
+        if (!item.product_id) {
+          // Товар тепер на складі: позиція отримує картку, щоб резерв і видача списали саме його.
+          const timestamp = this.nextTimestamp(tenantId, item.order_id)
+          this.db.prepare('UPDATE customer_order_items SET product_id = ?, dirty_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?').run(productId, timestamp, timestamp, item.id, tenantId)
+        }
+        this.updateOrderItemStatus(item.order_id, item.id, 'arrived', tenantId)
+          })
+        } catch {
+          shortages.push({ order_number: item.order_number, name: item.name, needed: need, available: 0 })
+          continue
+        }
+        left.set(productId, subtractStockQuantity(available, need))
+        touched.set(item.order_id, [...(touched.get(item.order_id) ?? []), { name: item.name, qty: need }])
+      }
+      const orders: InvoiceArrivalOrder[] = [...touched].map(([orderId, items]) => {
+        const order = this.getOrder(orderId, tenantId)
+        this.addOutbox(tenantId, 'customer_order', orderId, 'order.updated', order, this.nextTimestamp(tenantId, orderId))
+        const customer = order.customer_id ? this.db.prepare('SELECT full_name, phone FROM customers WHERE id = ? AND tenant_id = ?').get(order.customer_id, tenantId) as { full_name: string | null; phone: string | null } | undefined : undefined
+        return { order_id: orderId, order_number: order.order_number, customer_name: customer?.full_name ?? null, customer_phone: customer?.phone ?? null,
+          items, complete: order.status === 'ready' }
+      })
+      const result = { orders, shortages }
+      this.db.prepare('INSERT INTO app_meta(key, value_json, updated_at) VALUES (?, ?, ?)').run(key, JSON.stringify(result), nowIso())
+      return { ...result, already_applied: false }
+    })
+  }
+
   listReadyOrders(input: { tenant_id?: string; search?: string; customer_id?: string | null; limit?: number } = {}): any[] {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const search = String(input.search ?? '').trim().toLowerCase()
@@ -676,7 +816,8 @@ export class LocalOrderRepository {
     params.push(limit)
 
     const rows = this.db.prepare(`
-      SELECT o.*, c.id AS customer_id_join, c.phone AS customer_phone,
+      SELECT o.*, EXISTS(SELECT 1 FROM app_meta m WHERE m.key = 'notebook-order:' || o.tenant_id || ':' || o.id) AS from_notebook,
+             c.id AS customer_id_join, c.phone AS customer_phone,
              c.full_name AS customer_full_name, c.card_barcode AS customer_card_barcode,
              COALESCE(c.bonus_balance, 0) AS customer_bonus_balance
       FROM customer_orders o
@@ -691,7 +832,8 @@ export class LocalOrderRepository {
 
   getOrder(id: string, tenantId = DEFAULT_TENANT_ID): any | null {
     const row = this.db.prepare(`
-      SELECT o.*, c.id AS customer_id_join, c.phone AS customer_phone,
+      SELECT o.*, EXISTS(SELECT 1 FROM app_meta m WHERE m.key = 'notebook-order:' || o.tenant_id || ':' || o.id) AS from_notebook,
+             c.id AS customer_id_join, c.phone AS customer_phone,
              c.full_name AS customer_full_name, c.card_barcode AS customer_card_barcode,
              COALESCE(c.bonus_balance, 0) AS customer_bonus_balance
       FROM customer_orders o
@@ -1292,6 +1434,10 @@ export class LocalOrderRepository {
     return rows.map((row) => this.decorateOrder(row, tenantId, byOrder.get(row.id) ?? []))
   }
 
+  private isNotebookOrder(orderId: string, tenantId: string): boolean {
+    return Boolean(this.db.prepare('SELECT 1 FROM app_meta WHERE key = ?').get(notebookOrderKey(tenantId, orderId)))
+  }
+
   private decorateOrder(row: any, tenantId: string, loadedItems?: any[]): any {
     const items = loadedItems ?? this.db.prepare(`
       SELECT * FROM customer_order_items
@@ -1300,6 +1446,8 @@ export class LocalOrderRepository {
     `).all(tenantId, row.id) as any[]
     return {
       id: row.id,
+      // Список бере позначку тим самим запитом (без окремого читання на кожне замовлення).
+      from_notebook: row.from_notebook !== undefined ? Number(row.from_notebook) === 1 : this.isNotebookOrder(row.id, tenantId),
       order_number: row.order_number,
       kp_number: row.kp_number,
       customer_id: row.customer_id,

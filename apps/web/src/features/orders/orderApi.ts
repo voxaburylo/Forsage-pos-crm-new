@@ -27,6 +27,8 @@ export interface CustomerOrderItem {
 }
 
 export interface CustomerOrder {
+  /** 22.11.2026: перенесене з блокнота — його можна видалити, поки не було грошей і видачі. */
+  from_notebook?: boolean
   lan_sync?: { state: 'pending' | 'blocked' | 'cached'; message: string; local_id?: string; cached_at?: string; history_incomplete?: boolean }
   id: string
   order_number: number | null
@@ -74,6 +76,8 @@ export interface CreateOrderItemPayload {
 export interface CreateOrderPayload {
   operation_id?: string
   expected_updated_at?: string
+  /** 22.11.2026: стан із блокнота — лише при створенні (каса перевіряє перелік). */
+  initial_status?: 'ordered' | 'arrived' | 'called' | 'archived'
   customer_id?: string | null
   chat_id?: string | null
   vehicle_info?: { make?: string; model?: string; year?: number; vin?: string } | null

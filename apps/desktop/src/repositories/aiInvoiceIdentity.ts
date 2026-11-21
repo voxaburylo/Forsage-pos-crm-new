@@ -130,9 +130,67 @@ function measurementRange(token: string): boolean {
     && parts.every(part => /^\d+(?:[.,]\d+)?(?:в|v|b|вт|w|а|a|ач|ah|мм|mm|см|cm|л|l|мл|ml|т|t|атм|lm|лм|k|к|гр|g|кг|kg)?$/iu.test(part))
     && parts.some(part => /\d[\p{L}]/u.test(part))
 }
-const brandKey = (value: string) => {
+/**
+ * 22.11.2026 (етап 7 плану): один бренд у різних написаннях постачальників. Лише безспірні пари —
+ * та сама фабрика/марка; споріднені, але різні марки (наприклад SACHS і LEMFÖRDER) сюди не входять.
+ */
+const BRAND_SYNONYMS: Record<string, string> = {
+  БРТ: 'BRT', ССД: 'SSD',
+  WIXFILTRON: 'WIX', WIXFILTERS: 'WIX', WIXFILTER: 'WIX',
+  MANNFILTER: 'MANN', MANNHUMMEL: 'MANN',
+  KNECHT: 'MAHLE', MAHLEKNECHT: 'MAHLE', KNECHTMAHLE: 'MAHLE', MAHLEORIGINAL: 'MAHLE', MAHLEFILTER: 'MAHLE',
+  LEMFOERDER: 'LEMFORDER', LEMFÖRDER: 'LEMFORDER',
+  FEBIBILSTEIN: 'FEBI', VICTORREINZ: 'REINZ', VICTREINZ: 'REINZ',
+  KS: 'KOLBENSCHMIDT',
+  BOSCHAUTOMOTIVE: 'BOSCH', HENGSTFILTER: 'HENGST', ADLBLUEPRINT: 'BLUEPRINT',
+  CONTINENTALCONTITECH: 'CONTITECH', CONTINENTALCTAM: 'CONTITECH',
+  KAYABA: 'KYB', NGKSPARKPLUG: 'NGK', SWAGAUTOTEILE: 'SWAG', MEYLEAG: 'MEYLE',
+}
+export const brandKey = (value: string) => {
   const key = code(value)
-  return ({ БРТ:'BRT', ССД:'SSD' } as Record<string,string>)[key] ?? key
+  return BRAND_SYNONYMS[key] ?? key
+}
+
+/**
+ * Приставка бренду, яку постачальник ставить перед артикулом у своєму кошику й накладній:
+ * «MF HU719/7X», «WX WL7125», «GT 6PK1270», «VR 71-40854-00». Повертає артикул без приставки
+ * або '' — якщо це не схоже на приставку (решта має бути справжнім номером із цифрами).
+ */
+export function supplierPrefixedSku(rawSku: string): string {
+  // Решта — одне слово без пробілів: «EL 101 514» — це цілий номер із групами цифр, а не приставка.
+  const match = text(rawSku).match(/^(\p{L}{1,3})\s+(\S+)$/u)
+  if (!match) return ''
+  const rest = match[2]
+  if ((rest.match(/\d/g)?.length ?? 0) < 3 || code(rest).length < 5 || weakCode(rest)) return ''
+  return rest
+}
+
+/** Підтверджені власником артикули: «бренд|артикул» рядка накладної → картка (22.11.2026). */
+const confirmedSkuKey = (tenant: string) => 'ai-confirmed-sku:' + tenant
+const confirmedSkuToken = (brand: string, rawSku: string) => brandKey(brand) + '|' + code(rawSku)
+export function loadConfirmedSkus(db: Pick<LocalDatabase, 'prepare'>, tenant: string): Map<string, string> {
+  const row = db.prepare('SELECT value_json FROM app_meta WHERE key=?').get(confirmedSkuKey(tenant)) as { value_json: string } | undefined
+  let parsed: unknown = {}
+  try { parsed = JSON.parse(row?.value_json || '{}') } catch { /* пошкоджений запис — нічого не пам'ятаємо */ }
+  const result = new Map<string, string>()
+  if (parsed && typeof parsed === 'object') for (const [token, id] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof id === 'string' && id) result.set(token, id)
+  }
+  return result
+}
+/**
+ * Записується лише після проведення рядка, де власник САМ вибрав картку. Наступна накладна з тим самим
+ * брендом і артикулом зв'яжеться сама. Слабкі коди (номер рядка, «(12)») не запам'ятовуються.
+ */
+export function rememberConfirmedSku(db: Pick<LocalDatabase, 'prepare'>, tenant: string, productId: string, raw: Record<string, unknown>): void {
+  const rawSku = text(raw.sku ?? raw.article ?? raw.part_number ?? raw.oem_number)
+  if (!productId || weakCode(rawSku) || code(rawSku).length < 4 || !/\d/.test(rawSku)) return
+  const all = loadConfirmedSkus(db, tenant), token = confirmedSkuToken(invoiceBrand(raw), rawSku)
+  if (all.get(token) === productId) return
+  all.set(token, productId)
+  db.prepare(`INSERT INTO app_meta(key,value_json,updated_at) VALUES(?,?,?)
+    ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at`)
+    .run(confirmedSkuKey(tenant), JSON.stringify(Object.fromEntries(all)), new Date().toISOString())
 }
 // Line numbers / pack counts are not a product identity, even if an old import used them as SKU.
 function weakCode(value: unknown): boolean {
@@ -218,7 +276,7 @@ let cachedMatcher: { key: string; matcher: AiInvoiceMatcher } | null = null
 let matcherCacheEnabled = false
 export function enableAiInvoiceMatcherCache(enabled = true): void { matcherCacheEnabled = enabled; if (!enabled) cachedMatcher = null }
 export function aiInvoiceCatalogSignature(db: Pick<LocalDatabase, 'prepare'>, tenant: string): string {
-  return ['products', 'product_barcodes', 'product_aliases', 'brands'].map(table => {
+  return ['products', 'product_barcodes', 'product_aliases', 'brands', 'product_cross_numbers'].map(table => {
     const row = db.prepare(`SELECT count(*) AS n, max(updated_at) AS u FROM ${table} WHERE tenant_id = ?`).get(tenant) as { n: number; u: string | null }
     return row.n + ':' + (row.u ?? '')
   }).join('|') + '|' + tenant
@@ -229,7 +287,7 @@ function matcherFor(db: Pick<LocalDatabase, 'prepare'>, tenant: string): AiInvoi
   if (!matcherCacheEnabled) return new AiInvoiceMatcher(db, tenant)
   const key = aiInvoiceCatalogSignature(db, tenant)
   if (cachedMatcher?.key !== key) cachedMatcher = { key, matcher: new AiInvoiceMatcher(db, tenant) }
-  else cachedMatcher.matcher.unitEquivalences = loadUnitEquivalences(db, tenant)
+  else { cachedMatcher.matcher.unitEquivalences = loadUnitEquivalences(db, tenant); cachedMatcher.matcher.confirmedSkus = loadConfirmedSkus(db, tenant) }
   return cachedMatcher.matcher
 }
 
@@ -243,9 +301,13 @@ export class AiInvoiceMatcher {
   private archivedSkus = new Set<string>()
   private archivedLinks = new Map<string, Set<string>>()
   private tokens = new Map<string, Set<string>>()
+  /** Крос-номери карток: номер аналога → картки. Лише підказка зверху списку, не автозв'язок. */
+  private crosses = new Map<string, Set<string>>()
   unitEquivalences: Map<string, Set<string>>
+  confirmedSkus: Map<string, string>
   constructor(db: Pick<LocalDatabase, 'prepare'>, tenant: string) {
     this.unitEquivalences = loadUnitEquivalences(db, tenant)
+    this.confirmedSkus = loadConfirmedSkus(db, tenant)
     const products = db.prepare(`SELECT p.id,p.name,p.sku,p.barcode,p.unit,p.retail_price,p.purchase_price,p.category_id,p.storage_bin,p.photo_url,b.name AS brand FROM products p
       LEFT JOIN brands b ON b.id=p.brand_id AND b.tenant_id=p.tenant_id
       WHERE p.tenant_id=? AND p.deleted_at IS NULL AND p.is_active=1 AND p.is_service=0`).all(tenant) as unknown as AiInvoiceCandidate[]
@@ -260,6 +322,11 @@ export class AiInvoiceMatcher {
       if (words(row.alias).length >= 3 && !incompatible(row.alias, row.brand ?? '', this.products.get(row.product_id)!)) {
         this.index(this.names, identity(row.alias, row.brand), row.product_id)
       }
+    }
+    for (const row of db.prepare(`SELECT c.product_id,c.cross_number FROM product_cross_numbers c
+      WHERE c.tenant_id=? AND c.deleted_at IS NULL`).all(tenant) as Array<{ product_id: string; cross_number: string }>) {
+      const number = code(row.cross_number)
+      if (number.length >= 5 && this.products.has(row.product_id)) this.index(this.crosses, number, row.product_id)
     }
     const archived = db.prepare(`SELECT p.sku,p.name,p.specs_json,b.name AS brand FROM products p
       LEFT JOIN brands b ON b.id=p.brand_id AND b.tenant_id=p.tenant_id
@@ -303,6 +370,21 @@ export class AiInvoiceMatcher {
     const ids = new Set([...(this.barcodes.get(code(raw.barcode ?? raw.ean)) ?? []), ...skuIds])
     let reason = 'Точний штрихкод або артикул'
     if (!ids.size && sku && !weakCode(rawSku)) {
+      // Власник уже вибирав картку для цього бренду й артикула — зв'язуємо так само, якщо картка жива й сумісна.
+      const confirmed = this.products.get(this.confirmedSkus.get(confirmedSkuToken(brand, rawSku)) ?? '')
+      if (confirmed && !incompatible(source, brand, confirmed)) { ids.add(confirmed.id); reason = 'Цей артикул ви вже підтверджували для цієї картки' }
+    }
+    if (!ids.size && sku && !weakCode(rawSku)) {
+      // «MF HU719/7X» → «HU719/7X»: приставка бренду постачальника. Зв'язуємо лише з ОДНІЄЮ карткою,
+      // у якої той самий бренд (або бренд не вказано) і немає конфлікту характеристик.
+      const bare = supplierPrefixedSku(rawSku), bareCode = code(bare)
+      if (bareCode) {
+        const found = new Set<string>([...(this.skus.get(bareCode) ?? []), ...(partNumbers(bare).includes(bareCode) ? this.parts.get(bareCode) ?? [] : [])])
+        const fitting = [...found].filter(id => !incompatible(source, brand, this.products.get(id)!))
+        if (fitting.length === 1) { ids.add(fitting[0]); reason = 'Артикул без приставки постачальника збігається з однією карткою цього бренду' }
+      }
+    }
+    if (!ids.size && sku && !weakCode(rawSku)) {
       for (const id of this.archivedLinks.get(sku) ?? []) ids.add(id)
       if (ids.size) reason = 'Активна картка з тією ж повною назвою, що й стара картка цього артикула'
       if (!ids.size && partNumbers(text(raw.sku ?? raw.article ?? raw.part_number ?? raw.oem_number)).includes(sku)) {
@@ -330,6 +412,10 @@ export class AiInvoiceMatcher {
       return { ...result, status: 'review', reason: 'Код збігається, але бренд, фасування, в’язкість або сторона відрізняються — перевірте рядок', candidates: [product] }
     }
     let candidates = [...ids].map(id => this.products.get(id)!)
+    // Крос-номер — це аналог ІНШОГО бренду, тому сам не зв'язує: лише ставить картку першою в списку вибору.
+    const crossHits = !candidates.length && sku && !weakCode(rawSku)
+      ? [...new Set([...(this.crosses.get(sku) ?? []), ...(this.crosses.get(code(supplierPrefixedSku(rawSku))) ?? [])])].map(id => this.products.get(id)!).filter(Boolean).slice(0, 4)
+      : []
     if (!candidates.length) {
       const scores = new Map<string, number>()
       const terms = new Set(words(`${source} ${brand} ${raw.sku ?? raw.article ?? ''}`))
@@ -344,6 +430,10 @@ export class AiInvoiceMatcher {
       }
       candidates = [...scores].filter(([id, score]) => score >= 4 && !incompatible(source, brand, this.products.get(id)!))
         .sort((a,b) => b[1]-a[1] || a[0].localeCompare(b[0])).slice(0,8).map(([id]) => this.products.get(id)!)
+      if (crossHits.length) {
+        candidates = [...crossHits, ...candidates.filter(item => !crossHits.some(hit => hit.id === item.id))].slice(0, 8)
+        return { ...result, status: 'review', reason: 'Артикул є серед крос-номерів картки (аналог) — виберіть її або створіть новий товар', candidates }
+      }
     }
     if (candidates.length) return { ...result, status: 'review', reason: ids.size > 1 ? 'Коди або повна назва належать кільком карткам — виберіть товар' : 'Є схожі товари — перевірте, щоб не створити дубль', candidates }
     return result

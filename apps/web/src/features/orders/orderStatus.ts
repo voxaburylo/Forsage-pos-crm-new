@@ -17,8 +17,13 @@ export function canDeleteDraftOrder(order: {
   prepayment?: number | null
   total_paid?: number | null
   sale_id?: string | null
+  from_notebook?: boolean
+  items?: Array<{ item_status?: string | null }>
 }): boolean {
-  return DELETABLE_ORDER_STATUSES.has(order.status as CustomerOrderStatus)
+  // Помилкове перенесення з блокнота можна прибрати, поки по замовленню не було грошей і видачі.
+  const notebook = order.from_notebook === true
+    && (order.items ?? []).every(item => item.item_status !== 'handed' && item.item_status !== 'returned')
+  return (DELETABLE_ORDER_STATUSES.has(order.status as CustomerOrderStatus) || notebook)
     && Number(order.prepayment ?? 0) === 0
     && Number(order.total_paid ?? 0) === 0
     && !order.sale_id

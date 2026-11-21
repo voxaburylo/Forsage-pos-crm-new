@@ -254,6 +254,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     cancel: (id: string, input?: unknown) => ipcRenderer.invoke('desktop:orders:cancel', id, input),
     pendingItems: (supplierId: string, tenantId?: string) => ipcRenderer.invoke('desktop:orders:pending-items', supplierId, tenantId),
     bulkArrival: (itemIds: string[], tenantId?: string) => ipcRenderer.invoke('desktop:orders:bulk-arrival', itemIds, tenantId),
+    arrivalFromInvoice: (invoiceId: string) => ipcRenderer.invoke('desktop:orders:arrival-from-invoice', invoiceId),
+    suggestParts: (query: string) => ipcRenderer.invoke('desktop:orders:suggest-parts', query),
     get: (id: string, tenantId?: string) => ipcRenderer.invoke('desktop:orders:get', id, tenantId),
     listPayments: (orderId: string, tenantId?: string) => ipcRenderer.invoke('desktop:orders:list-payments', orderId, tenantId),
     listPaymentsByPeriod: (input?: unknown) => ipcRenderer.invoke('desktop:orders:list-payments-period', input),
