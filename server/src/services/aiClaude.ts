@@ -1,4 +1,14 @@
-import Anthropic from '@anthropic-ai/sdk'
+import type Anthropic from '@anthropic-ai/sdk'
+// 21.11.2026 (швидкість вебу): SDK Anthropic вантажився ~0,44 с при кожному холодному старті сервера,
+// хоча потрібен лише запитам до ШІ. Тепер вантажиться при першому запиті до ШІ.
+type AnthropicModule = typeof import('@anthropic-ai/sdk')
+let anthropicSdk: AnthropicModule | null = null
+let anthropicSdkLoading: Promise<AnthropicModule> | null = null
+export async function loadAnthropicSdk(): Promise<AnthropicModule> {
+  if (anthropicSdk) return anthropicSdk
+  anthropicSdkLoading ??= import('@anthropic-ai/sdk').then(module => { anthropicSdk = module; return module })
+  return anthropicSdkLoading
+}
 import { AppError } from '../middleware/errorHandler.js'
 import type { AiExecutionBudget } from './aiExecutionBudget.js'
 import { isAiBudgetError } from './aiExecutionBudget.js'
@@ -79,6 +89,9 @@ function imageBlock(image: ClaudeImage): Anthropic.Beta.BetaImageBlockParam | An
 /** Помилки Anthropic → зрозумілі повідомлення програми. Ключ і тексти запиту не логуються тут. */
 export function claudeAppError(error: unknown): AppError {
   if (error instanceof AppError) return error
+  // Помилка SDK можлива лише після його завантаження; інакше — загальна «тимчасово недоступний».
+  const Anthropic = anthropicSdk?.default
+  if (!Anthropic) return new AppError('AI_UPSTREAM_UNAVAILABLE', 'Claude тимчасово недоступний. Зачекайте кілька секунд і повторіть запит.', 503)
   if (error instanceof Anthropic.AuthenticationError || error instanceof Anthropic.PermissionDeniedError)
     return new AppError('AI_KEY_INVALID', 'Ключ Anthropic не підходить або не має доступу до моделі. Перевірте його в Налаштуваннях → ШІ.', 400)
   if (error instanceof Anthropic.RateLimitError)
@@ -92,16 +105,19 @@ export function claudeAppError(error: unknown): AppError {
 }
 
 export class ClaudeClient {
-  private client: Anthropic
+  private client: Anthropic | null
+  private apiKey: string
 
   constructor(apiKey: string, private model: ClaudeModel, client?: Anthropic) {
     // Повтори 429/5xx робить SDK; час обмежує наш бюджет виконання.
-    this.client = client ?? new Anthropic({ apiKey, maxRetries: 2 })
+    this.client = client ?? null
+    this.apiKey = apiKey
   }
 
   private async create(budget: AiExecutionBudget, body: Omit<Anthropic.Beta.MessageCreateParamsNonStreaming, 'model' | 'betas' | 'fallbacks'>) {
     try {
-      return await budget.run(signal => this.client.beta.messages.stream({
+      const client = this.client ??= new (await loadAnthropicSdk()).default({ apiKey: this.apiKey, maxRetries: 2 })
+      return await budget.run(signal => client.beta.messages.stream({
         ...body, model: this.model, betas: BETAS, fallbacks: 'default',
       }, { signal }).finalMessage())
     } catch (error) {

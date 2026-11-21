@@ -1,4 +1,8 @@
-﻿import { Queue, Worker } from 'bullmq'
+﻿// 21.11.2026 (швидкість вебу): bullmq вантажився ~0,3 с при кожному холодному старті функції Vercel,
+// хоча без REDIS_URL черги не використовуються взагалі. Тепер — лише коли черга справді потрібна.
+import type { Queue, Worker } from 'bullmq'
+let bullmqModule: Promise<typeof import('bullmq')> | null = null
+const loadBullmq = () => (bullmqModule ??= import('bullmq'))
 import { logger } from '../lib/logger.js'
 
 const QUEUE_NAMES = {
@@ -21,9 +25,10 @@ function getRedisOpts(): { host: string; port: number } {
 
 const queues = new Map<string, Queue>()
 
-function getQueue(name: string): Queue {
+async function getQueue(name: string): Promise<Queue> {
   getRedisOpts()
   if (!queues.has(name)) {
+    const { Queue } = await loadBullmq()
     const q = new Queue(name, {
       connection: getRedisOpts(),
       defaultJobOptions: {
@@ -47,7 +52,7 @@ async function enqueueImportJob(payload: {
   updateRetail: boolean
   tenantId?: string
 }): Promise<string> {
-  const queue = getQueue(QUEUE_NAMES.IMPORT)
+  const queue = await getQueue(QUEUE_NAMES.IMPORT)
   const job = await queue.add('confirm-import', payload, { priority: 5 })
   logger.info({ jobId: job.id, itemCount: payload.items.length }, 'Enqueued import job')
   return job.id!
@@ -59,7 +64,7 @@ async function enqueueOnecImportJob(payload: {
   mode: 'replace' | 'add'
   updatePrices: boolean
 }): Promise<string> {
-  const queue = getQueue(QUEUE_NAMES.ONEC_IMPORT)
+  const queue = await getQueue(QUEUE_NAMES.ONEC_IMPORT)
   const job = await queue.add('onec-import', payload, { priority: 5 })
   logger.info({ jobId: job.id, rowCount: payload.rows.length }, 'Enqueued 1C import job')
   return job.id!
@@ -72,7 +77,7 @@ async function getJobStatus(queueName: string, jobId: string, tenantId: string):
   result: any
   failedReason?: string
 } | null> {
-  const queue = getQueue(queueName)
+  const queue = await getQueue(queueName)
   const job = await queue.getJob(jobId)
   if (!job) return null
   if (job.data?.tenantId !== tenantId) return null
@@ -86,8 +91,9 @@ async function getJobStatus(queueName: string, jobId: string, tenantId: string):
   }
 }
 
-function createImportWorker(handler: (data: any) => Promise<any>): Worker {
+async function createImportWorker(handler: (data: any) => Promise<any>): Promise<Worker> {
   const connection = getRedisOpts()
+  const { Worker } = await loadBullmq()
   const worker = new Worker(QUEUE_NAMES.IMPORT, async (job) => {
     logger.info({ jobId: job.id, type: job.name }, 'Processing import job')
     return handler(job.data)
@@ -100,8 +106,9 @@ function createImportWorker(handler: (data: any) => Promise<any>): Worker {
   return worker
 }
 
-function createOnecImportWorker(handler: (data: any) => Promise<any>): Worker {
+async function createOnecImportWorker(handler: (data: any) => Promise<any>): Promise<Worker> {
   const connection = getRedisOpts()
+  const { Worker } = await loadBullmq()
   const worker = new Worker(QUEUE_NAMES.ONEC_IMPORT, async (job) => {
     logger.info({ jobId: job.id, type: job.name }, 'Processing 1C import job')
     return handler(job.data)
