@@ -74,6 +74,8 @@ export interface CreateOrderItemPayload {
 export interface CreateOrderPayload {
   operation_id?: string
   expected_updated_at?: string
+  /** 22.11.2026: стан із блокнота — лише при створенні (каса перевіряє перелік). */
+  initial_status?: 'ordered' | 'arrived' | 'called' | 'archived'
   customer_id?: string | null
   chat_id?: string | null
   vehicle_info?: { make?: string; model?: string; year?: number; vin?: string } | null

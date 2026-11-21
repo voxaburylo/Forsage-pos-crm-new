@@ -2,12 +2,46 @@ import { desktopBridge } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
 import { orderApi, type CreateOrderPayload } from '@/features/orders/orderApi'
 import { customerApi } from '@/features/customers/customerApi'
+import { supplierApi } from '@/features/suppliers/supplierApi'
 import { readSupplyNumber } from './aiSupplyNumber'
 import { assertAiOrderShape } from './aiOrderShape'
 import { assertAiWriteAllowed } from './aiWritePolicy'
 
-export function aiOrderPayload(payload: Record<string, any>): CreateOrderPayload {
+/** Назва постачальника для порівняння: «ELIT», «Еліт», «ТЕХ»/«TEX» — однаково. */
+export function supplierNameKey(value: unknown): string {
+  return String(value ?? '').normalize('NFKC').toUpperCase()
+    .replace(/[АВЕКМНОРСТХУІ]/g, c => ({ А:'A', В:'B', Е:'E', К:'K', М:'M', Н:'H', О:'O', Р:'P', С:'C', Т:'T', Х:'X', У:'Y', І:'I' }[c]!))
+    .replace(/[^A-ZА-ЯІЇЄҐ0-9]/g, '')
+}
+
+/**
+ * Стан замовлення з блокнота (рішення власника 21.11.2026): перекреслене — видане (архів);
+ * галочка біля телефону — клієнту подзвонили; усі позиції з галочкою — прибуло; інакше — замовлено, чекаємо.
+ */
+export function notebookInitialStatus(payload: Record<string, any>): NonNullable<CreateOrderPayload['initial_status']> {
+  if (payload.is_done === true) return 'archived'
+  const items = Array.isArray(payload.items) ? payload.items : []
+  const allArrived = items.length > 0 && items.every((item: any) => item?.arrived === true)
+  if (payload.customer_notified === true && allArrived) return 'called'
+  return allArrived ? 'arrived' : 'ordered'
+}
+
+export function aiOrderPayload(payload: Record<string, any>, suppliers: Array<{ id: string; name: string }> = []): CreateOrderPayload {
   assertAiOrderShape(payload)
+  const supplierIds = new Map<string, string | null>()
+  for (const supplier of suppliers) {
+    const key = supplierNameKey(supplier.name)
+    // Дві картки постачальника з однаковою назвою — не вгадуємо, лишаємо назву в коментарі.
+    if (key) supplierIds.set(key, supplierIds.has(key) ? null : supplier.id)
+  }
+  const unknownSuppliers = new Set<string>()
+  const supplierId = (raw: unknown): string | null => {
+    const name = String(raw ?? '').trim()
+    if (!name) return null
+    const id = supplierIds.get(supplierNameKey(name)) ?? null
+    if (!id) unknownSuppliers.add(name)
+    return id
+  }
   const price = (raw: unknown): number => {
     if (raw == null || raw === '') return 0
     try { return Math.round(readSupplyNumber(raw, 'price', 'Замовлення') * 100) }
@@ -29,9 +63,18 @@ export function aiOrderPayload(payload: Record<string, any>): CreateOrderPayload
       if (!name || !/^\d+(?:\.\d{1,3})?$/.test(qtyText) || !Number.isFinite(qty) || qty <= 0 || qty > 1_000_000) throw new Error('Перевірте назву та кількість кожної позиції')
       return { name, sku: String(item.part_number ?? '').trim() || null, qty,
         sell_price: price(item.sell_price_uah), buy_price: price(item.buy_price_uah),
+        supplier_id: supplierId(item.supplier),
         source_type: 'supplier' as const, item_status: item.arrived === true ? 'arrived' as const : 'pending' as const }
     }),
   }
+  body.initial_status = notebookInitialStatus(payload)
+  const notes = [
+    // Просто «Оплачено»: гроші отримано до переходу на програму, у касу сьогодні нічого не вноситься.
+    payload.is_paid === true ? 'Оплачено' : '',
+    payload.customer_notified === true && body.initial_status !== 'called' && body.initial_status !== 'archived' ? 'Клієнту подзвонили' : '',
+    unknownSuppliers.size ? 'Постачальник: ' + [...unknownSuppliers].join(', ') : '',
+  ].filter(Boolean)
+  if (notes.length) body.comment = [notes.join('. '), body.comment ?? ''].filter(Boolean).join('\n')
   for (const field of ['sell_price', 'buy_price'] as const) {
     const total = body.items.reduce((sum, item) => sum + Math.round(item.qty * (item[field] ?? 0)), 0)
     if (!Number.isSafeInteger(total) || total > 2_147_483_647) throw new Error('Сума замовлення завелика. Перевірте кількість і ціни.')
@@ -48,7 +91,10 @@ export async function applyLocalAiAction(tool: string, payload: Record<string, a
   const actor = identity()
   if (!actor) throw new Error('Увійдіть у програму перед підтвердженням замовлення')
   assertAiWriteAllowed(tool, useAuthStore.getState().session?.user.app_metadata?.role, true)
-  const body = aiOrderPayload(payload)
+  let suppliers: Array<{ id: string; name: string }> = []
+  try { suppliers = (await supplierApi.list({ per_page: 500 } as never)).data.map(supplier => ({ id: supplier.id, name: supplier.name })) }
+  catch { /* без довідника постачальників назва лишиться в коментарі замовлення */ }
+  const body = aiOrderPayload(payload, suppliers)
   if (operationId !== undefined) {
     if (!/^[a-zA-Z0-9-]{16,80}$/.test(operationId)) throw new Error('Некоректний номер операції замовлення')
     body.operation_id = operationId

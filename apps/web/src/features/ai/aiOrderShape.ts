@@ -10,11 +10,12 @@ export function assertAiOrderShape(payload: unknown): asserts payload is Record<
   }
   for(const key of ['customer_name','customer_phone','car_make','car_model','vin','plate','comment']) text(raw[key],key)
   number(raw.car_year,'рік')
+  for(const key of ['is_done','is_paid','customer_notified']) if(raw[key]!==undefined&&raw[key]!==null&&typeof raw[key]!=='boolean') throw new Error('Некоректна позначка замовлення «'+key+'».')
   if(raw.items===undefined||raw.items===null)return
   if(!Array.isArray(raw.items)||raw.items.length>2000)throw new Error('Некоректний список позицій замовлення. Жоден рядок не пропущено.')
   for(const [index,item] of raw.items.entries()){
     if(!item||typeof item!=='object'||Array.isArray(item))throw new Error('Некоректна позиція '+(index+1)+'. Жоден рядок не пропущено.')
-    text(item.name,'назва');text(item.part_number,'артикул')
+    text(item.name,'назва');text(item.part_number,'артикул');text(item.supplier,'постачальник')
     number(item.qty,'кількість');number(item.sell_price_uah,'ціна продажу');number(item.buy_price_uah,'ціна закупівлі')
     if(item.arrived!==undefined&&item.arrived!==null&&typeof item.arrived!=='boolean')throw new Error('Некоректний стан надходження позиції '+(index+1))
   }

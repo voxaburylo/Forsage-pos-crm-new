@@ -36,6 +36,18 @@ const ORDER_STATUS_TRANSITIONS: Record<string, string[]> = {
   no_answer: ['called', 'ready'],
 }
 
+/**
+ * 22.11.2026 (перенесення з блокнота): нове замовлення може одразу отримати стан із зошита —
+ * «замовлено, чекаємо», «прибуло», «клієнту подзвонили» або «видано» (перекреслене → архів).
+ * Лише при СТВОРЕННІ; гроші й залишки не зачіпаються: оплати приймає тільки каса.
+ */
+const NOTEBOOK_INITIAL_STATUSES = new Set(['ordered', 'arrived', 'called', 'archived'])
+function initialOrderStatus(input: any): string {
+  if (input?.initial_status === undefined || input.initial_status === null) return 'lead'
+  if (!NOTEBOOK_INITIAL_STATUSES.has(String(input.initial_status))) throw new Error('Некоректний початковий стан замовлення')
+  return String(input.initial_status)
+}
+
 function canChangeOrderStatus(from: string, to: string): boolean {
   return from === to || (ORDER_STATUS_TRANSITIONS[from] ?? []).includes(to)
 }
@@ -254,8 +266,22 @@ export class LocalOrderRepository {
         + Math.round(num(item.core_deposit_amount) * qty)
     }, 0)
     assertOrderTotal(totalAmount)
+    // Та сама сторінка блокнота, сфотографована вдруге: той самий клієнт і ті самі позиції → дубль не створюємо.
+    if (!existing && input.initial_status !== undefined && input.initial_status !== null) {
+      const signature = (rows: any[]) => rows.filter(row => row.item_status !== 'canceled')
+        .map(row => [String(row.name ?? '').trim().toLowerCase(), num(row.qty), Math.round(num(row.sell_price))].join('|')).sort().join('\n')
+      const wanted = signature(items)
+      const candidates = this.db.prepare(`SELECT id, order_number FROM customer_orders
+        WHERE tenant_id = ? AND deleted_at IS NULL AND total_amount = ? AND COALESCE(customer_id, '') = ? AND COALESCE(comment, '') = ?`)
+        .all(tenantId, totalAmount, input.customer_id ?? '', input.comment ?? '') as Array<{ id: string; order_number: number }>
+      for (const candidate of candidates) {
+        const rows = this.db.prepare('SELECT name, qty, sell_price, item_status FROM customer_order_items WHERE order_id = ? AND tenant_id = ? AND deleted_at IS NULL').all(candidate.id, tenantId) as any[]
+        if (wanted && signature(rows) === wanted) throw new Error(`Таке замовлення вже є в програмі (№ ${candidate.order_number}). Дубль не створено.`)
+      }
+    }
     const orderNumber = existing?.order_number ?? this.nextOrderNumber(tenantId, timestamp)
-    const status = existing?.status ?? 'lead'
+    if (existing && input.initial_status !== undefined && input.initial_status !== null) throw new Error('Початковий стан задається лише при створенні замовлення')
+    const status = existing?.status ?? initialOrderStatus(input)
     // Payment totals are a ledger projection and may only be changed by POS operations.
     const totalPaid = existing?.total_paid ?? 0
     const prepayment = existing?.prepayment ?? 0
