@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 const query = vi.hoisted(() => vi.fn())
 vi.mock('../../db/pg.js', () => ({ pool: { query } }))
-import { claimCommands, commandAllowedForRole, createCommand, createCommandSchema, finishCommand, readCommand } from '../tillCommandService.js'
+import { claimCommands, commandAllowedForRole, createCommand, createCommandSchema, finishCommand, listWaitingOrders, readCommand } from '../tillCommandService.js'
 
 const id = (n: number) => `00000000-0000-4000-8000-00000000000${n}`
 const command = (changes: Record<string, unknown> = { retail_price: 27000 }, base: Record<string, unknown> = { retail_price: 24000 }) =>
@@ -30,7 +30,7 @@ describe('web write through the till', () => {
     query.mockResolvedValueOnce({ rows: [{ seen_at: '2026-11-18T10:00:00Z', online: true }] })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [{ command: 'product.update', payload: { changes: { retail_price: 27000 }, base: { retail_price: 24000 }, product_id: id(2) }, status: 'done' }] })
-    await expect(createCommand('t', 'u', command())).resolves.toEqual({ operation_id: id(1), status: 'done' })
+    await expect(createCommand('t', 'u', command())).resolves.toEqual({ operation_id: id(1), status: 'done', till_online: true })
     query.mockResolvedValueOnce({ rows: [{ seen_at: '2026-11-18T10:00:00Z', online: true }] })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [{ command: 'product.update', payload: { product_id: id(2), base: { retail_price: 24000 }, changes: { retail_price: 1 } }, status: 'done' }] })
@@ -52,6 +52,33 @@ describe('web write through the till', () => {
     await expect(claimCommands('t', 'not-a-device')).rejects.toMatchObject({ status: 422 })
   })
 
+  it('queues an order while the till is offline, but never a card edit or a shift close', async () => {
+    const order = { operation_id: id(7), command: 'order.save' as const, payload: { customer_name: 'Іван', items: [{ name: 'Фільтр', qty: 1, sell_price: 10000 }] } }
+    query.mockResolvedValueOnce({ rows: [{ seen_at: '2026-11-18T10:00:00Z', online: false }] })
+      .mockResolvedValueOnce({ rows: [{ operation_id: id(7), status: 'pending' }] })
+    await expect(createCommand('t', 'u', order)).resolves.toEqual({ operation_id: id(7), status: 'pending', till_online: false })
+    query.mockReset()
+    query.mockResolvedValueOnce({ rows: [] })
+    await expect(createCommand('t', 'u', { operation_id: id(8), command: 'shift.list', payload: {} })).rejects.toMatchObject({ code: 'TILL_OFFLINE' })
+    expect(query).toHaveBeenCalledTimes(1)
+  })
+  it('keeps a queued order for 12 hours and everything else for 30 seconds', async () => {
+    query.mockResolvedValueOnce({ rowCount: 1 }).mockResolvedValueOnce({ rows: [] })
+    await claimCommands('t', id(4))
+    expect(query.mock.calls[1][0]).toContain("CASE WHEN command = 'order.save' THEN 43200 ELSE 30 END")
+    query.mockReset()
+    query.mockResolvedValueOnce({ rowCount: 0 }).mockResolvedValueOnce({ rows: [
+      { operation_id: id(7), created_at: '2026-11-22T05:00:00Z', payload: { customer_name: 'Іван', customer_phone: '0671234567', items: [{}, {}] } },
+      { operation_id: id(8), created_at: '2026-11-22T05:01:00Z', status: 'failed', error: 'Позиція 1: ціна нижча за закупівельну', payload: { customer_phone: '0671234567', items: [{}] } },
+    ] })
+    await expect(listWaitingOrders('t')).resolves.toEqual([
+      { operation_id: id(7), created_at: '2026-11-22T05:00:00.000Z', customer: 'Іван', items: 2, state: 'waiting', error: null },
+      // Відмова каси не зникає мовчки: її видно добу разом із причиною.
+      { operation_id: id(8), created_at: '2026-11-22T05:01:00.000Z', customer: '0671234567', items: 1, state: 'failed', error: 'Позиція 1: ціна нижча за закупівельну' },
+    ])
+    expect(query.mock.calls[0][0]).toMatch(/status = 'expired'[\s\S]*CASE WHEN command = 'order.save'/)
+    expect(query.mock.calls[1][1]).toEqual(['t', 'order.save'])
+  })
   it('accepts a result only from the device that claimed the command', async () => {
     query.mockResolvedValueOnce({ rowCount: 0 })
     await expect(finishCommand('t', id(4), id(5), { status: 'done', result: {} })).rejects.toMatchObject({ status: 404 })
@@ -87,7 +114,9 @@ describe('web write through the till', () => {
     // Гроші, стан і чужий магазин з вебу не приймаються взагалі.
     for (const extra of [{ prepayment: 1000 }, { status: 'completed' }, { tenant_id: id(3) }, { initial_status: 'archived' }])
       expect(createCommandSchema.safeParse(order({ ...valid, ...extra })).success).toBe(false)
-    expect(createCommandSchema.safeParse(order({ ...valid, items: [{ ...item, product_id: id(4) }] })).success).toBe(false)
+    expect(createCommandSchema.safeParse(order({ ...valid, items: [{ ...item, product_id: id(4) }] })).success).toBe(true)
+    expect(createCommandSchema.safeParse(order({ ...valid, items: [{ ...item, product_id: 'not-a-card' }] })).success).toBe(false)
+    expect(createCommandSchema.safeParse(order({ ...valid, items: [{ ...item, item_status: 'handed' }] })).success).toBe(false)
     for (const role of ['owner', 'admin', 'manager']) expect(commandAllowedForRole('order.save', role)).toBe(true)
   })
 })

@@ -6,7 +6,13 @@ import type { CreateOrderPayload } from '@/features/orders/orderApi'
  * тож подвійне натискання чи обрив зв'язку не дають двох замовлень. Грошей тут немає:
  * передоплата, оплата й видача — тільки на касі. Ціни — у копійках.
  */
-export interface TillOrderItem { name: string; sku?: string | null; qty: number; sell_price: number; buy_price?: number }
+export interface TillOrderItem {
+  name: string; sku?: string | null; qty: number; sell_price: number; buy_price?: number
+  /** Картка зі складу, вибрана у вебі. Каса бере назву, артикул і закупку зі СВОЄЇ картки, а не з вебу. */
+  product_id?: string | null
+}
+/** Картка товару на касі — лише те, що потрібно замовленню. */
+export interface TillOrderCard { id: string; name: string; sku: string; retail_price: number; purchase_price: number; is_active?: number | boolean; is_service?: number | boolean }
 export interface TillOrderPayload {
   customer_phone?: string | null
   customer_name?: string | null
@@ -88,14 +94,29 @@ export function checkTillOrder(raw: unknown): TillOrderPayload {
         if (!Number.isSafeInteger(value) || value < 0 || value > MAX_KOPECKS) throw new Error(`${place}: перевірте ${label}.`)
       // Жорстке правило власника: товар не відпускається нижче закупівельної ціни. Ціна 0 = «ще не знаємо».
       if (sell > 0 && buy > 0 && sell < buy) throw new Error(`${place}: ціна продажу нижча за закупку. Не збережено.`)
-      return { name: itemName, sku: clean(row.sku, 100) || null, qty, sell_price: sell, buy_price: buy }
+      const productId = clean(row.product_id, 36)
+      if (productId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(productId)) throw new Error(`${place}: товар зі складу вибрано неправильно. Виберіть його ще раз.`)
+      return { name: itemName, sku: clean(row.sku, 100) || null, qty, sell_price: sell, buy_price: buy, ...(productId ? { product_id: productId } : {}) }
     }),
   }
 }
 
 /** Бланк із вебу → звичайне створення замовлення на касі. Статус і гроші каса ставить сама (нове, без оплат). */
-export function tillOrderToCreate(payload: TillOrderPayload, customerId: string | null, operationId: string): CreateOrderPayload {
+export function tillOrderToCreate(payload: TillOrderPayload, customerId: string | null, operationId: string, cards: ReadonlyMap<string, TillOrderCard | null> = new Map()): CreateOrderPayload {
   const order = checkTillOrder(payload)
+  const items = order.items.map((item, index) => {
+    if (!item.product_id) return { name: item.name, sku: item.sku ?? null, qty: item.qty, sell_price: item.sell_price,
+      buy_price: item.buy_price ?? 0, source_type: 'supplier' as const }
+    // Товар зі складу: правда — картка на касі. Якщо її вже немає або ціна нижча за закупку — відмова, а не тиха підміна.
+    const place = `Позиція ${index + 1}`
+    const card = cards.get(item.product_id)
+    if (!card || card.is_active === false || card.is_active === 0) throw new Error(`${place}: товару «${item.name}» немає в базі каси (видалено або об’єднано). Оновіть сторінку й виберіть його знову.`)
+    if (card.is_service === true || card.is_service === 1) throw new Error(`${place}: «${card.name}» — це послуга. Послуги додають на касі.`)
+    const sell = item.sell_price > 0 ? item.sell_price : Number(card.retail_price)
+    if (sell < Number(card.purchase_price)) throw new Error(`${place}: ціна продажу «${card.name}» нижча за закупівельну. Не збережено.`)
+    return { name: card.name, sku: card.sku || null, product_id: card.id, qty: item.qty, sell_price: sell,
+      buy_price: Number(card.purchase_price), source_type: 'warehouse' as const }
+  })
   const notes = [
     order.author ? `Оформлено у вебі: ${order.author}` : 'Оформлено у вебі',
     !customerId && order.customer_name ? `Клієнт: ${order.customer_name}` : '',
@@ -107,7 +128,6 @@ export function tillOrderToCreate(payload: TillOrderPayload, customerId: string 
     customer_id: customerId,
     vehicle_info: { make: order.car_make ?? '', model: order.car_model ?? '', year: order.car_year ?? undefined, vin: order.vin ?? '' },
     comment: notes.join('\n'),
-    items: order.items.map(item => ({ name: item.name, sku: item.sku ?? null, qty: item.qty, sell_price: item.sell_price,
-      buy_price: item.buy_price ?? 0, source_type: 'supplier' as const })),
+    items,
   }
 }

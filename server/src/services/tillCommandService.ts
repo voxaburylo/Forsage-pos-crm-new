@@ -11,6 +11,14 @@ import { AppError } from '../middleware/errorHandler.js'
  */
 export const COMMAND_TTL_SECONDS = 30
 export const TILL_ONLINE_SECONDS = 20
+/**
+ * 22.11.2026 (етап 8): замовлення з вебу чекає касу на сервері до 12 годин — його можна оформити,
+ * коли каса не в мережі. Це безпечно лише для команд, які не залежать від стану бази каси
+ * і мають номер операції (повтор не дає дубля). Правка картки й зміни каси чекати не можуть.
+ */
+export const QUEUE_TTL_SECONDS = 12 * 60 * 60
+export const QUEUED_COMMAND = 'order.save'
+const TTL_SQL = `make_interval(secs => CASE WHEN command = '${QUEUED_COMMAND}' THEN ${QUEUE_TTL_SECONDS} ELSE ${COMMAND_TTL_SECONDS} END)`
 export const WEB_COMMAND_ROLES = ['owner', 'admin', 'manager'] as const
 export const TILL_ROLES = ['owner', 'admin', 'manager', 'cashier'] as const
 
@@ -52,6 +60,8 @@ const orderItem = z.object({
   qty: z.number().positive().max(1_000_000).refine(value => Math.round(value * 1000) === value * 1000, 'Кількість: не більше трьох знаків'),
   sell_price: money,
   buy_price: money.optional(),
+  /** Картка зі складу: каса сама бере з неї назву, артикул і закупку. */
+  product_id: z.string().uuid().optional(),
 }).strict().refine(item => !(item.sell_price > 0 && (item.buy_price ?? 0) > 0 && item.sell_price < (item.buy_price ?? 0)), 'Ціна продажу нижча за закупку')
 export const orderSavePayload = z.object({
   customer_phone: z.string().regex(/^[0-9]{10,12}$/).nullable().optional(),
@@ -95,7 +105,8 @@ export async function tillStatus(tenantId: string) {
 }
 
 export async function createCommand(tenantId: string, userId: string, input: z.infer<typeof createCommandSchema>) {
-  if (!(await tillStatus(tenantId)).online) throw new AppError('TILL_OFFLINE', 'Каса зараз не в мережі. Зміну можна внести лише тоді, коли програма на касі увімкнена й має інтернет.', 409)
+  const online = (await tillStatus(tenantId)).online
+  if (!online && input.command !== QUEUED_COMMAND) throw new AppError('TILL_OFFLINE', 'Каса зараз не в мережі. Зміну можна внести лише тоді, коли програма на касі увімкнена й має інтернет.', 409)
   const { rows } = await pool.query(
     `INSERT INTO till_commands (tenant_id, operation_id, command, payload, requested_by)
      VALUES ($1, $2, $3, $4::jsonb, $5)
@@ -103,13 +114,39 @@ export async function createCommand(tenantId: string, userId: string, input: z.i
      RETURNING operation_id, status`,
     [tenantId, input.operation_id, input.command, JSON.stringify(input.payload), userId],
   )
-  if (rows[0]) return { operation_id: rows[0].operation_id as string, status: rows[0].status as string }
+  if (rows[0]) return { operation_id: rows[0].operation_id as string, status: rows[0].status as string, till_online: online }
   // Повтор того самого запиту — та сама команда; інший вміст під тим самим номером — відмова.
   const existing = await pool.query('SELECT command, payload, status FROM till_commands WHERE tenant_id = $1 AND operation_id = $2', [tenantId, input.operation_id])
   const row = existing.rows[0]
   if (!row || row.command !== input.command || stable(row.payload) !== stable(input.payload))
     throw new AppError('CONFLICT', 'Номер операції вже використано для іншої зміни', 409)
-  return { operation_id: input.operation_id, status: row.status as string }
+  return { operation_id: input.operation_id, status: row.status as string, till_online: online }
+}
+
+/**
+ * Замовлення з вебу, які ще чекають касу, і ті, яким каса відмовила за останню добу.
+ * Людина надіслала бланк і пішла — відмова каси не має зникати мовчки. Прострочені тут же гасимо.
+ */
+export async function listWaitingOrders(tenantId: string) {
+  await pool.query(
+    `UPDATE till_commands SET status = 'expired', finished_at = now()
+      WHERE tenant_id = $1 AND status = 'pending' AND created_at <= now() - ${TTL_SQL}`,
+    [tenantId],
+  )
+  const { rows } = await pool.query(
+    `SELECT operation_id, payload, created_at, status, error FROM till_commands
+      WHERE tenant_id = $1 AND command = $2
+        AND (status IN ('pending', 'claimed') OR (status IN ('failed', 'expired') AND finished_at > now() - interval '24 hours'))
+      ORDER BY created_at LIMIT 50`,
+    [tenantId, QUEUED_COMMAND],
+  )
+  return rows.map(row => {
+    const payload = (row.payload ?? {}) as { customer_name?: string | null; customer_phone?: string | null; items?: unknown[] }
+    return { operation_id: row.operation_id as string, created_at: new Date(row.created_at).toISOString(),
+      customer: String(payload.customer_name || payload.customer_phone || ''), items: Array.isArray(payload.items) ? payload.items.length : 0,
+      state: row.status === 'failed' ? 'failed' as const : row.status === 'expired' ? 'expired' as const : 'waiting' as const,
+      error: row.status === 'failed' ? String(row.error ?? '') || null : null }
+  })
 }
 
 /** Стан команди для вебу. Незабрану вчасно команду тут же позначаємо простроченою — каса її вже не візьме. */
@@ -117,8 +154,8 @@ export async function readCommand(tenantId: string, operationId: string) {
   if (!z.string().uuid().safeParse(operationId).success) throw new AppError('NOT_FOUND', 'Команду не знайдено', 404)
   await pool.query(
     `UPDATE till_commands SET status = 'expired', finished_at = now()
-      WHERE tenant_id = $1 AND operation_id = $2 AND status = 'pending' AND created_at <= now() - make_interval(secs => $3)`,
-    [tenantId, operationId, COMMAND_TTL_SECONDS],
+      WHERE tenant_id = $1 AND operation_id = $2 AND status = 'pending' AND created_at <= now() - ${TTL_SQL}`,
+    [tenantId, operationId],
   )
   const { rows } = await pool.query(
     'SELECT operation_id, command, status, result, error, created_at, finished_at FROM till_commands WHERE tenant_id = $1 AND operation_id = $2',
@@ -141,10 +178,10 @@ export async function claimCommands(tenantId: string, deviceId: string) {
   const { rows } = await pool.query(
     `UPDATE till_commands SET status = 'claimed', device_id = $2, claimed_at = now()
       WHERE id IN (SELECT id FROM till_commands WHERE tenant_id = $1 AND status = 'pending'
-                     AND created_at > now() - make_interval(secs => $3)
+                     AND created_at > now() - ${TTL_SQL}
                    ORDER BY created_at LIMIT 5 FOR UPDATE SKIP LOCKED)
       RETURNING id, operation_id, command, payload, requested_by, created_at`,
-    [tenantId, deviceId, COMMAND_TTL_SECONDS],
+    [tenantId, deviceId],
   )
   return rows.map(row => ({ id: row.id as string, operation_id: row.operation_id as string, command: row.command as string,
     payload: row.payload, requested_by: row.requested_by as string, created_at: new Date(row.created_at).toISOString() }))

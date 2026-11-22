@@ -5,6 +5,7 @@ import { isDesktopAccessLocked } from '@/lib/desktopAccessState'
 import { canUseCloudBackground } from '@/lib/lanFirstRun'
 import { useAuthStore } from '@/stores/authStore'
 import { planTillProductUpdate, type TillProductUpdate } from '@/features/tillCommands/tillCommandModel'
+import type { TillOrderCard } from '@/features/tillCommands/tillOrderModel'
 
 interface ClaimedCommand { id: string; operation_id: string; command: string; payload: unknown; requested_by?: string }
 const POLL_MS = 5_000
@@ -37,9 +38,12 @@ export function useTillCommands(serverOnline: boolean) {
           const { checkTillOrder, tillOrderToCreate } = await import('@/features/tillCommands/tillOrderModel')
           const order = checkTillOrder(command.payload)
           const [{ customerApi }, { orderApi }] = await Promise.all([import('@/features/customers/customerApi'), import('@/features/orders/orderApi')])
-          let customerId: string | null = null
-          if (order.customer_phone) customerId = (await customerApi.quickCreate(order.customer_phone, order.customer_name ?? '')).data.id
-          const saved = await orderApi.create(tillOrderToCreate(order, customerId, command.operation_id))
+          const cards = new Map<string, TillOrderCard | null>()
+          for (const item of order.items) if (item.product_id && !cards.has(item.product_id)) cards.set(item.product_id, await bridge!.catalog.findById!(item.product_id))
+          // Спершу всі перевірки каси (картки, ціни) — і лише потім створюємо клієнта: відмова не лишає сліду в базі.
+          tillOrderToCreate(order, null, command.operation_id, cards)
+          const customerId = order.customer_phone ? (await customerApi.quickCreate(order.customer_phone, order.customer_name ?? '')).data.id : null
+          const saved = await orderApi.create(tillOrderToCreate(order, customerId, command.operation_id, cards))
           return { status: 'done', result: { order_id: saved.data.id, order_number: saved.data.order_number, total_amount: saved.data.total_amount } }
         }
         if (command.command !== 'product.update') throw new Error('Невідома команда. Оновіть програму на касі.')

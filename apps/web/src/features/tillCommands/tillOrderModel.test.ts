@@ -35,6 +35,22 @@ describe('order from the web through the till', () => {
     // Ціна ще невідома — дозволено: замовлення можна прорахувати на касі.
     expect(checkTillOrder({ ...base, items: [{ name: 'Фільтр', qty: 1, sell_price: 0 }] }).items[0].sell_price).toBe(0)
   })
+  it('takes a stock item from the till card, not from what the web sent', () => {
+    const card = { id: '11111111-2222-4333-8444-555555555555', name: 'Фільтр масляний W712', sku: 'W712', retail_price: 30000, purchase_price: 20000 }
+    const picked = { name: 'стара назва з вебу', sku: 'X', qty: 1, sell_price: 0, buy_price: 1, product_id: card.id }
+    const order = { customer_name: 'Іван', items: [picked] }
+    const body = tillOrderToCreate(order, null, 'op-1234567890abcdef', new Map([[card.id, card]]))
+    // Назва, артикул і закупка — з картки каси; ціна 0 з вебу означає «роздрібна з картки».
+    expect(body.items).toEqual([{ name: card.name, sku: 'W712', product_id: card.id, qty: 1, sell_price: 30000, buy_price: 20000, source_type: 'warehouse' }])
+    expect(tillOrderToCreate({ ...order, items: [{ ...picked, sell_price: 25000 }] }, null, 'op-1234567890abcdef', new Map([[card.id, card]])).items[0].sell_price).toBe(25000)
+    // Нижче закупки каси — відмова, навіть якщо веб цього не бачив.
+    expect(() => tillOrderToCreate({ ...order, items: [{ ...picked, sell_price: 19999 }] }, null, 'op-1234567890abcdef', new Map([[card.id, card]]))).toThrow(/нижча за закупівельну/)
+    // Картки немає, вона вимкнена або це послуга — відмова, а не тиха підміна на «під замовлення».
+    expect(() => tillOrderToCreate(order, null, 'op-1234567890abcdef', new Map())).toThrow(/немає в базі каси/)
+    expect(() => tillOrderToCreate(order, null, 'op-1234567890abcdef', new Map([[card.id, { ...card, is_active: 0 }]]))).toThrow(/немає в базі каси/)
+    expect(() => tillOrderToCreate(order, null, 'op-1234567890abcdef', new Map([[card.id, { ...card, is_service: 1 }]]))).toThrow(/послуга/)
+    expect(() => checkTillOrder({ ...order, items: [{ ...picked, product_id: 'not-a-card' }] })).toThrow(/вибрано неправильно/)
+  })
   it('becomes an ordinary till order: same operation id, no money, no status from the web', () => {
     const body = tillOrderToCreate({ ...base, author: 'Олена', comment: 'Терміново' } as never, 'customer-1', 'op-1234567890abcdef')
     expect(body.operation_id).toBe('op-1234567890abcdef')

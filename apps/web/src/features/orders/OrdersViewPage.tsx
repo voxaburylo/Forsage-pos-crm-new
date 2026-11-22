@@ -6,6 +6,7 @@ import { Badge, Card } from '@/components/ui'
 import { formatDate, formatDateTime, formatMoney } from '@/lib/utils'
 import { orderApi, type CustomerOrder } from './orderApi'
 import { formatOrderNo } from './orderActions'
+import { WaitingOrdersNote } from './WebOrderFormPage'
 import {
   ITEM_STATUS_LABEL, ORDER_STATUS_LABEL, ORDER_VIEW_GROUPS, filterOrders, orderDebt, orderGroup, orderPaymentState, pickupOverdue,
   type OrderViewGroup,
@@ -53,6 +54,7 @@ export default function OrdersViewPage() {
         className="mb-3 w-full rounded-xl bg-yellow-400 px-4 py-3 text-sm font-semibold text-gray-900 hover:bg-yellow-300 sm:w-auto">
         + Нове замовлення (через касу)
       </button>
+      <WaitingOrdersNote />
       <div className="mb-3 flex flex-wrap gap-2">
         {ORDER_VIEW_GROUPS.map(g => (
           <button key={g.id} type="button" onClick={() => setGroup(g.id)}
