@@ -909,14 +909,6 @@ export function isDesktopRuntime(): boolean {
   return typeof window !== 'undefined' && Boolean(window.forsageDesktop)
 }
 
-/**
- * 22.11.2026: дані йдуть у базу головного ПК — або це сама програма каси, або екран вебу, відкритий через головний ПК.
- * Для рішень «куди писати»; для всього, що стосується самого компʼютера (друк, мережа, вхід), — isDesktopRuntime().
- */
-export function writesToMainPc(): boolean {
-  return isDesktopRuntime() || remoteBridgeSlot() !== null
-}
-
 export function desktopBridge(): ForsageDesktopBridge | null {
   // 22.11.2026: у вебі екран, відкритий через головний ПК, отримує місток до нього (лише поки ПК на зв'язку).
   return typeof window !== 'undefined' ? window.forsageDesktop ?? (remoteBridgeSlot() as ForsageDesktopBridge | null) : null

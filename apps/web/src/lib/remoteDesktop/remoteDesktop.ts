@@ -1,7 +1,8 @@
 import { api } from '@/lib/api'
 import { decodeRpcValue, encodeRpcValue } from '@/lib/tillRpcCodec'
 import type { ForsageDesktopBridge } from '@/lib/desktopBridge'
-import { setRemoteInvoke, takeExposedBridge } from './electronShim'
+// Той самий перелік дій, що в програмі каси (preload): однакові назви й канали, екрани не дублюються.
+import { createDesktopApi } from '../../../../desktop/src/desktopApi'
 import { setRemoteBridgeSlot } from './slot'
 
 /**
@@ -13,19 +14,14 @@ let bridge: ForsageDesktopBridge | null = null
 let active = 0
 const publish = () => setRemoteBridgeSlot(active > 0 ? bridge : null)
 
-async function invokeTill(channel: string, args: unknown[]): Promise<unknown> {
+async function invokeTill(channel: string, ...args: unknown[]): Promise<unknown> {
   const { data } = await api.post<{ data: unknown }>('/api/v1/till-rpc', { channel, args: encodeRpcValue(args) },
     undefined, { silent: true, timeoutMs: 35_000 })
   return decodeRpcValue(data)
 }
 
 export async function loadRemoteBridge(): Promise<ForsageDesktopBridge> {
-  if (bridge) return bridge
-  setRemoteInvoke(invokeTill)
-  // Той самий preload, що в програмі каси: однакові назви дій і перевірки, екрани не дублюються.
-  await import('@desktop-preload')
-  bridge = takeExposedBridge() as ForsageDesktopBridge
-  if (!bridge) throw new Error('Не вдалося підготувати зв\'язок із головним ПК')
+  bridge ??= createDesktopApi({ invoke: invokeTill }) as unknown as ForsageDesktopBridge
   return bridge
 }
 
@@ -36,4 +32,3 @@ export function activateRemoteBridge(): () => void {
   let released = false
   return () => { if (!released) { released = true; active = Math.max(0, active - 1); publish() } }
 }
-

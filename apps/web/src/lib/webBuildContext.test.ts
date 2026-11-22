@@ -21,6 +21,8 @@ it('includes every desktop source imported by production web code in the deploym
     }
   }
   expect([...required].sort()).toEqual([
+    // 22.11.2026: перелік дій каси — веб виконує їх на головному ПК через сервер.
+    'apps/desktop/src/desktopApi.ts',
     'apps/desktop/src/lib/catalogLanguageSearch.ts',
     'apps/desktop/src/lib/catalogSearchQuery.ts',
   ])

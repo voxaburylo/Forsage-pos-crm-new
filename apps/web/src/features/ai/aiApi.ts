@@ -1,5 +1,5 @@
 import { api } from '@/lib/api'
-import { writesToMainPc } from '@/lib/desktopBridge'
+import { writesToMainPc } from '@/lib/mainPcData'
 import { applyLocalAiAction } from './localAiAction'
 import { aiRequestHistory } from './aiRequestHistory'
 

@@ -3,6 +3,8 @@
 apps/desktop/*
 !apps/desktop/src/
 apps/desktop/src/*
+# 22.11.2026: перелік дій каси — веб виконує їх на головному ПК через сервер.
+!apps/desktop/src/desktopApi.ts
 !apps/desktop/src/lib/
 apps/desktop/src/lib/*
 !apps/desktop/src/lib/catalogLanguageSearch.ts
