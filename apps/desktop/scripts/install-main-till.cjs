@@ -25,6 +25,27 @@ function runningForsage() {
   return out.split(/\r?\n/).filter(line => /forsage/i.test(line))
 }
 
+// 22.11.2026: фоновий режим каси. Фонову копію (без вікна) закриваємо так само, як закривається вона сама,
+// коли відкривають касу: просимо відпустити базу й чекаємо (не «вбиваємо» процес посеред запису).
+const ownerRoot = path.join(process.env.LOCALAPPDATA ?? '', 'Forsage')
+const backgroundTask = String.raw`\Forsage\TillBackground`
+let backgroundWasRunning = false
+try {
+  const owner = JSON.parse(require('node:fs').readFileSync(path.join(ownerRoot, 'till-owner.json'), 'utf8'))
+  let alive = false
+  try { process.kill(owner.pid, 0); alive = true } catch (error) { alive = error?.code === 'EPERM' }
+  if (owner.mode === 'background' && alive) {
+    backgroundWasRunning = true
+    require('node:fs').writeFileSync(path.join(ownerRoot, 'till-handoff.request'), JSON.stringify({ from: process.pid, at: new Date().toISOString(), reason: 'install' }))
+    const deadline = Date.now() + 120_000
+    while (Date.now() < deadline) {
+      try { process.kill(owner.pid, 0) } catch (error) { if (error?.code !== 'EPERM') break }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500)
+    }
+    console.log('background', 'released')
+  }
+} catch { /* фонового режиму немає */ }
+
 const running = runningForsage()
 if (running.length) {
   console.error('Каса відкрита — закрийте Forsage і повторіть. Процеси:\n' + running.join('\n'))
@@ -78,3 +99,9 @@ if (process.argv.includes('--autostart')) {
     { FORSAGE_LNK: startup, FORSAGE_APP: appExe, FORSAGE_DIR: folder.appDir })
   console.log('autostart', ps(linkScript + '$s.TargetPath', { FORSAGE_LNK: startup }))
 } else console.log('autostart', 'not requested (--autostart starts Forsage together with Windows)')
+
+// Фон працював до встановлення — запускаємо його знову вже з новою версією (якщо власник не відкриє касу раніше).
+if (backgroundWasRunning) {
+  try { execFileSync('schtasks.exe', ['/Run', '/TN', backgroundTask], { stdio: 'ignore', windowsHide: true }); console.log('background', 'restarted') }
+  catch { console.log('background', 'NOT restarted: task missing') }
+}
