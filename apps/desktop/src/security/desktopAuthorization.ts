@@ -37,6 +37,9 @@ export const PUBLIC_DESKTOP_CHANNELS = new Set([
   'desktop:auth:logout',
   'desktop:auth:remembered-status',
   'desktop:auth:restore',
+  // 22.11.2026: стан зв'язку головного ПК і сигнал «на сервері є робота» — потрібні й на екрані входу.
+  'desktop:link:status',
+  'desktop:link:wake',
   'desktop:lan:first-run-status',
   'desktop:lan:discover',
   'desktop:lan:pair',
@@ -144,6 +147,9 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
 ])
 
 const PREFIX_RULES: Array<[string, readonly DesktopRole[]]> = [
+  // 22.11.2026: ключ зв'язку головного ПК приносить власник чи адміністратор; «команди забрано» — будь-хто на зміні.
+  ['desktop:link:commands-taken', ['owner', 'admin', 'manager', 'cashier']],
+  ['desktop:link:', OWNER_ROLES],
   // 22.11.2026: каса виконує запит вебу від імені того працівника, що в вебі (його права перевіряються окремо).
   ['desktop:web-rpc:', ['owner', 'admin', 'manager', 'cashier']],
   // 22.11.2026: зміну PIN/пароля з вебу застосовує каса під будь-ким; право перевіряється за автором зміни.

@@ -37,6 +37,7 @@ import { priceLinksRouter, publicPriceRouter } from './routes/priceLinks.js'
 import { tillCommandsRouter } from './routes/tillCommands.js'
 import { tillRpcRouter } from './routes/tillRpc.js'
 import { tillLinkRouter } from './routes/tillLink.js'
+import { tillDeviceRouter } from './routes/tillDevice.js'
 import customerOrdersRouter from './routes/customerOrders.js'
 import customerGroupsRouter from './routes/customerGroups.js'
 import salaryRouter from './routes/salary.js'
@@ -112,6 +113,8 @@ app.use('/api/v1/import', express.json({ limit: '25mb' }))
 app.use('/api/v1/sync/push', express.json({ limit: '4mb' }))
 // 22.11.2026: веб через головний ПК — фото накладної/товару в запиті, великі списки у відповіді каси.
 app.use('/api/v1/till-rpc', express.json({ limit: '4mb' }))
+// Те саме, коли відповідь каси віддає сам головний ПК своїм ключем зв'язку.
+app.use('/api/v1/till-device', express.json({ limit: '4mb' }))
 app.use(express.json())
 
 // Глобальний rate limit: 300 запитів/хв (на IP)
@@ -193,6 +196,7 @@ app.use('/api/v1/price-links', priceLinksRouter)
 app.use('/api/v1/till-commands', tillCommandsRouter)
 app.use('/api/v1/till-rpc', tillRpcRouter)
 app.use('/api/v1/till-link', tillLinkRouter)
+app.use('/api/v1/till-device', tillDeviceRouter)
 app.use('/api/v1/public', publicPriceRouter)
 app.use('/api/v1/customer-orders', customerOrdersRouter)
 app.use('/api/v1/reserves', reservesRouter)

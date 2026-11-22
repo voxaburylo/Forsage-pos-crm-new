@@ -13,9 +13,17 @@ it('the main PC runs web requests like manager-PC requests, without session, pri
 
 it('a web request runs with the web employee rights through the manager-PC path, only on the main PC', () => {
   const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8')
-  const handler = main.slice(main.indexOf("handleDesktopIpc('desktop:web-rpc:execute'"), main.indexOf('// Етап 9: швидка зміна касира за PIN.'))
-  expect(handler).toContain("getStatus().mode === 'client'")
-  expect(handler).toContain('webRpcChannelAllowed(channel)')
-  expect(handler).toContain('resolveLanSession(userId)')
-  expect(handler).toContain('executeLanCommand(channel')
+  // 22.11.2026: одну й ту саму перевірку проходить запит і з вікна програми (сесія працівника),
+  // і з головного процесу, який тримає зв'язок ключем самого ПК (екран входу).
+  expect(main).toContain("handleDesktopIpc('desktop:web-rpc:execute', (_event, userId: string, channel: string, args: unknown[]) => executeWebRequest(userId, channel, args))")
+  expect(main).toContain('execute: executeWebRequest,')
+  const executor = main.slice(main.indexOf('async function executeWebRequest('), main.indexOf('let tillDeviceLinkError'))
+  expect(executor).toContain('if (!isMainTill())')
+  expect(executor).toContain('webRpcChannelAllowed(channel)')
+  expect(executor).toContain('resolveLanSession(userId)')
+  expect(executor).toContain("session.role === 'cashier'")
+  expect(executor).toContain('executeLanCommand(channel')
+  const mainTill = main.slice(main.indexOf('function isMainTill()'), main.indexOf('async function executeWebRequest('))
+  expect(mainTill).toContain("getStatus().mode !== 'client'")
+  expect(mainTill).toContain('hasLanIdentity(')
 })

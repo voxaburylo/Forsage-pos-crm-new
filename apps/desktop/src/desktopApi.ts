@@ -4,6 +4,13 @@ export interface DesktopInvoker { invoke(channel: string, ...args: unknown[]): P
 
 export function createDesktopApi(ipcRenderer: DesktopInvoker) {
   return {
+    /** 22.11.2026: зв'язок головного ПК із сервером власним ключем (працює й на екрані входу). */
+    link: {
+      status: () => ipcRenderer.invoke('desktop:link:status'),
+      wake: () => ipcRenderer.invoke('desktop:link:wake'),
+      register: (token: string) => ipcRenderer.invoke('desktop:link:register', token),
+      commandsTaken: () => ipcRenderer.invoke('desktop:link:commands-taken'),
+    },
     auth: {
       login: (phone: string, password: string) => ipcRenderer.invoke('desktop:auth:login', phone, password),
       loginByPassword: (password: string) => ipcRenderer.invoke('desktop:auth:login-password', password),

@@ -37,6 +37,33 @@ describe('the main PC asks the server rarely, and often only while the web is in
   })
 })
 
+// 22.11.2026, «головний ПК — тимчасовий сервер магазину»: зв'язок тримає сама програма ключем ПК.
+describe('the PC key: fetched by the owner once, then the web works through the PC without anyone signed in', () => {
+  const hook = readFileSync(new URL('./useTillLink.ts', import.meta.url), 'utf8')
+
+  it('only the owner or administrator on the main PC brings the key; nobody else can', () => {
+    expect(hook).toContain("LINK_KEY_ROLES: readonly string[] = ['owner', 'admin']")
+    expect(hook).toContain('status?.main_till && !status.registered && serverOnline && !offlineMode && user && LINK_KEY_ROLES.includes(role)')
+    expect(hook).toContain("'/api/v1/till-device/register'")
+  })
+
+  it('with the key the window only relays the wake signal and runs commands that need a staff session', () => {
+    const device = hook.slice(hook.indexOf('// 2. Ключ ПК'), hook.indexOf('// 3. Ключа ПК немає'))
+    expect(device).toContain("if (link.mode !== 'device'")
+    expect(device).toContain('deviceLink.wake()')
+    expect(device).toContain('claimTillCommands(')
+    expect(device).not.toContain('claimWebRequests(')
+    expect(device).not.toContain("'/api/v1/till-link/beat'")
+  })
+
+  it('without the key the previous way stays: the window keeps the link under the signed-in employee', () => {
+    const session = hook.slice(hook.indexOf('// 3. Ключа ПК немає'))
+    expect(session).toContain("if (link.mode !== 'session'")
+    expect(session).toContain('claimWebRequests(context)')
+    expect(session).toContain("'/api/v1/till-link/beat'")
+  })
+})
+
 describe('the answer of the main PC is never lost and the action is never sent twice', () => {
   const noSleep = async () => undefined
 

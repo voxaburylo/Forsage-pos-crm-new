@@ -142,6 +142,8 @@ export function isLanProxyChannel(channel: string): boolean {
     'desktop:auth:',
     'desktop:catalog:cleanup-',
     'desktop:lan:',
+    // Зв'язок із сервером власним ключем — лише про ЦЕЙ комп'ютер (головний ПК).
+    'desktop:link:',
     'desktop:orders:offline-status',
     'desktop:orders:discard-offline',
     'desktop:orders:retry-offline',

@@ -513,7 +513,24 @@ export interface DesktopFiscalReturnProcessResult {
   data: any
 }
 
+/** 22.11.2026: стан зв'язку головного ПК із сервером власним ключем (працює й на екрані входу). */
+export interface TillLinkStatus {
+  registered: boolean
+  rejected: boolean
+  tenant_id: string | null
+  /** На сервері чекають команди, які виконує вікно програми під сесією працівника. */
+  commands_pending: boolean
+  last_ok_at: string | null
+  main_till: boolean
+}
+
 export interface ForsageDesktopBridge {
+  link?: {
+    status: () => Promise<TillLinkStatus>
+    wake: () => Promise<TillLinkStatus>
+    register: (token: string) => Promise<TillLinkStatus>
+    commandsTaken: () => Promise<void>
+  }
   diagnostics?: {
     reportError: (kind: 'renderer-error' | 'renderer-rejection', message: string, stack: string) => void
     onAudioUnavailable?: (listener: () => void) => () => void

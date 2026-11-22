@@ -24,7 +24,7 @@ const RPC_POLL_SLOW_MS = 500
 const RPC_POLL_SLOW_AFTER_MS = 3_000
 /** Канали, які ніколи не йдуть із вебу: сесія, мережа, друк, фіскалізація, копії бази, журнал проблем ПК. */
 const WEB_DENIED_PREFIXES = [
-  'desktop:auth:', 'desktop:lan:', 'desktop:print:', 'desktop:fiscal:', 'desktop:sync:', 'desktop:bootstrap:',
+  'desktop:auth:', 'desktop:lan:', 'desktop:link:', 'desktop:print:', 'desktop:fiscal:', 'desktop:sync:', 'desktop:bootstrap:',
   'desktop:backup', 'desktop:problems:', 'desktop:web-rpc:', 'desktop:window:', 'desktop:get-runtime-info',
   'desktop:catalog:cleanup-', 'desktop:orders:offline-status', 'desktop:orders:discard-offline', 'desktop:orders:retry-offline',
   'desktop:diagnostic',
