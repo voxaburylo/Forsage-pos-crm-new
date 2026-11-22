@@ -293,10 +293,19 @@ export class LocalCatalogRepository {
     if (storedById && !storedById.deleted_at) {
       // Optional fields omitted by a partial editor are not requests to erase
       // prices, identifiers or photos. Explicit null/zero/false/[] still apply.
+      const snapshot = readProductCatalogSnapshot(this.db, storedById.id, tenantId) as LocalProductUpsert
+      const callerListsBarcodes = input.additional_barcodes !== undefined
       input = {
-        ...readProductCatalogSnapshot(this.db, storedById.id, tenantId),
+        ...snapshot,
         ...Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined)),
       } as LocalProductUpsert
+      // 22.11.2026: новий основний штрихкод не стирає попередній — той стає додатковим, щоб наклеєні етикетки
+      // й далі сканувались (17.11 проведення накладної так замінило коди 81 картки, зокрема 2005543129087).
+      // Стерти код можна лише явно: передати повний список штрихкодів (картка товару).
+      const previous = String(snapshot.barcode ?? '').trim()
+      if (!callerListsBarcodes && previous && previous !== String(input.barcode ?? '').trim()) {
+        input.additional_barcodes = [...new Set([...(input.additional_barcodes ?? []), previous])]
+      }
     }
 
     // Для накладної повторний код постачальника повинен прив'язатися до вже
