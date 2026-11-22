@@ -187,6 +187,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     saveServerPassword: (id: string, password: string) => ipcRenderer.invoke('desktop:staff:save-server-password', id, password),
     saleAccess: () => ipcRenderer.invoke('desktop:staff:sale-access'),
     setSaleAccess: (id: string, enabled: boolean) => ipcRenderer.invoke('desktop:staff:set-sale-access', id, enabled),
+    depositAccess: () => ipcRenderer.invoke('desktop:staff:deposit-access'),
+    setDepositAccess: (id: string, enabled: boolean) => ipcRenderer.invoke('desktop:staff:set-deposit-access', id, enabled),
     employeePricing: () => ipcRenderer.invoke('desktop:staff:employee-pricing'),
     setEmployeePricing: (id: string, value: unknown) => ipcRenderer.invoke('desktop:staff:set-employee-pricing', id, value),
     setPin: (userId: string, pin: string) => ipcRenderer.invoke('desktop:staff:set-pin', userId, pin),

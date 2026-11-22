@@ -81,8 +81,8 @@ import { createPortableReleaseSource, downloadPortableUpdate, launchPortableUpda
 import { LanOrderClient } from './lan/orderClient'
 import { isSpoolerGuardError, postflightPrinter, preflightPrinter } from './print/spoolerGuard'
 import { disposePrintWarmShell, prewarmPrintShell } from './print/printWarmShell'
-import { desktopTenantArgumentPositions, isDesktopChannelAllowed, isManagerSaleChannel, PUBLIC_DESKTOP_CHANNELS } from './security/desktopAuthorization'
-import { MANAGER_SALE_DENIED, managerCanSell, managerSaleAllowedIds, setManagerSaleAccess } from './security/managerSaleAccess'
+import { desktopTenantArgumentPositions, isDesktopChannelAllowed, isManagerDepositChannel, isManagerSaleChannel, PUBLIC_DESKTOP_CHANNELS } from './security/desktopAuthorization'
+import { MANAGER_DEPOSIT_ONLY, MANAGER_SALE_DENIED, managerCanSell, managerCanTakeDeposit, managerDepositAllowedIds, managerSaleAllowedIds, setManagerDepositAccess, setManagerSaleAccess } from './security/managerSaleAccess'
 import { employeePricing, setEmployeePricing } from './security/employeePricing'
 import { activeSession } from './security/activeSession'
 import { customerWritePayload } from './security/customerWritePolicy'
@@ -691,7 +691,9 @@ async function executeDesktopCommand(
     // перевіряє головний ПК; локально там лишається тільки ПРРО цього комп'ютера.
     if (session.role === 'manager' && isManagerSaleChannel(channel) && localNetwork?.getStatus().mode !== 'client'
       && !managerCanSell(requireLocalDatabase(), session.id)) {
-      throw new Error(MANAGER_SALE_DENIED)
+      // «Може приймати задаток» відкриває лише свою зміну й оплату замовлення; решта каси лишається закритою.
+      const depositOnly = managerCanTakeDeposit(requireLocalDatabase(), session.id)
+      if (!(depositOnly && isManagerDepositChannel(channel))) throw new Error(depositOnly ? MANAGER_DEPOSIT_ONLY : MANAGER_SALE_DENIED)
     }
     for (const argument of args) validateTenantArguments(argument, session.tenant_id)
     for (const position of desktopTenantArgumentPositions(channel)) {
@@ -1735,6 +1737,9 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:staff:sale-access', () => managerSaleAllowedIds(requireLocalDatabase()))
   handleDesktopIpc('desktop:staff:set-sale-access', (_event, id: string, enabled: boolean) =>
     setManagerSaleAccess(requireLocalDatabase(), id, enabled))
+  handleDesktopIpc('desktop:staff:deposit-access', () => managerDepositAllowedIds(requireLocalDatabase()))
+  handleDesktopIpc('desktop:staff:set-deposit-access', (_event, id: string, enabled: boolean) =>
+    setManagerDepositAccess(requireLocalDatabase(), id, enabled))
   handleDesktopIpc('desktop:staff:employee-pricing', () => employeePricing(requireLocalDatabase()))
   handleDesktopIpc('desktop:staff:set-employee-pricing', (_event, id: string, value: unknown) =>
     setEmployeePricing(requireLocalDatabase(), id, value))
