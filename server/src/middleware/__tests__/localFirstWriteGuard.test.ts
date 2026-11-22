@@ -58,12 +58,15 @@ describe('веб тільки дивиться, пише лише каса', () 
     expect(isWriteAllowed(req('POST', '/api/v1/till-commands/claim', 'desktop'))).toBe(true)
   })
 
-  it('веб може розпізнати фото накладної, але не застосувати дію ШІ й не змінити його налаштування', () => {
+  it('веб може говорити з помічником і розпізнати фото, але дію ШІ застосовує лише головний ПК', () => {
     // 22.11.2026 (етап 8): фото з телефона лише читається; рядки потім їдуть на касу командою.
     expect(isWriteAllowed(req('POST', '/api/v1/ai/supply-invoice-photo'))).toBe(true)
     expect(isWriteAllowed(req('POST', '/api/v1/ai/apply-action'))).toBe(false)
     expect(isWriteAllowed(req('POST', '/api/v1/ai/config'))).toBe(false)
-    expect(isWriteAllowed(req('POST', '/api/v1/ai/chat'))).toBe(false)
+    // 22.11.2026 (рішення власника «веб повний через головний ПК»): розмова лише читає; правила помічника — налаштування.
+    expect(isWriteAllowed(req('POST', '/api/v1/ai/chat'))).toBe(true)
+    expect(isWriteAllowed(req('POST', '/api/v1/ai/memory'))).toBe(true)
+    expect(isWriteAllowed(req('DELETE', '/api/v1/ai/memory/rule-1'))).toBe(true)
     expect(isWriteAllowed(req('POST', '/api/v1/ai/supply-invoice-photo/x'))).toBe(false)
   })
 

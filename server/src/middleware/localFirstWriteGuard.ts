@@ -55,6 +55,12 @@ const WEB_INVOICE_PHOTO_PATH = '/api/v1/ai/supply-invoice-photo'
  * Сервер лише передає його касі; виконує каса у своїй базі з правами працівника — точка запису одна.
  */
 const WEB_TILL_RPC_PATH = '/api/v1/till-rpc'
+/**
+ * 22.11.2026: ШІ-помічник у вебі. Розмова й пропозиції лише читають дані; застосувати дію (накладна, замовлення)
+ * веб може тільки через головний ПК. Правила помічника — налаштування, що не стосуються залишків і грошей.
+ */
+const WEB_AI_READ_PATHS = new Set(['/api/v1/ai/chat', '/api/v1/ai/catalog-review'])
+const WEB_AI_MEMORY_PATH = '/api/v1/ai/memory'
 
 export const DESKTOP_CLIENT_HEADER = 'x-forsage-client'
 export const DESKTOP_CLIENT_VALUE = 'desktop'
@@ -66,6 +72,8 @@ export function isWriteAllowed(req: Pick<Request, 'method' | 'path' | 'get'>): b
   if (req.method === 'POST' && (req.path === WEB_TILL_COMMAND_PATH || req.path === WEB_TILL_COMMAND_PATH + '/')) return true
   if (req.method === 'POST' && req.path === WEB_INVOICE_PHOTO_PATH) return true
   if (req.method === 'POST' && (req.path === WEB_TILL_RPC_PATH || req.path === WEB_TILL_RPC_PATH + '/')) return true
+  if (req.method === 'POST' && WEB_AI_READ_PATHS.has(req.path)) return true
+  if ((req.method === 'POST' && req.path === WEB_AI_MEMORY_PATH) || (req.method === 'DELETE' && req.path.startsWith(WEB_AI_MEMORY_PATH + '/'))) return true
   return req.get(DESKTOP_CLIENT_HEADER) === DESKTOP_CLIENT_VALUE
 }
 

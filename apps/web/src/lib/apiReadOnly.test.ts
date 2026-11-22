@@ -26,10 +26,13 @@ describe('web API is read-only', () => {
     expect(isWebReadOnlyRequest('/api/v1/till-commands/abc/result', 'POST')).toBe(true)
     expect(isWebReadOnlyRequest('/api/v1/till-commands', 'DELETE')).toBe(true)
   })
-  it('lets the web recognise an invoice photo, but not apply AI actions or change AI settings', () => {
+  it('lets the web talk to the assistant and recognise a photo, but AI actions go only through the main PC', () => {
     expect(isWebReadOnlyRequest('/api/v1/ai/supply-invoice-photo', 'POST')).toBe(false)
     expect(isWebReadOnlyRequest('/api/v1/ai/apply-action', 'POST')).toBe(true)
     expect(isWebReadOnlyRequest('/api/v1/ai/config', 'POST')).toBe(true)
-    expect(isWebReadOnlyRequest('/api/v1/ai/chat', 'POST')).toBe(true)
+    // 22.11.2026 (рішення власника «веб повний через головний ПК»): розмова лише читає; правила помічника — налаштування.
+    expect(isWebReadOnlyRequest('/api/v1/ai/chat', 'POST')).toBe(false)
+    expect(isWebReadOnlyRequest('/api/v1/ai/memory', 'POST')).toBe(false)
+    expect(isWebReadOnlyRequest('/api/v1/till-rpc', 'POST')).toBe(false)
   })
 })

@@ -32,7 +32,7 @@ import { readAiSupplyInput } from './readAiSupplyInput'
 import { AiClipboardTimeoutError, readAiClipboard } from './readAiClipboard'
 import { dataUrlToBlob, removeProcessingUploads, uploadProcessingBlob } from '@/lib/processingUploads'
 import { requestDesktopSync } from '@/features/products/productApi'
-import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
+import { desktopBridge, isDesktopRuntime, writesToMainPc } from '@/lib/desktopBridge'
 import { aiChatStorageKey, readAiChat, saveAiChat } from './aiChatStorage'
 import { aiRequestHistory } from './aiRequestHistory'
 import { isOrderPhotoRequest, isSupplyRecognitionRequest, SUPPLY_PHOTO_INSTRUCTION } from './aiPhotoIntent'
@@ -668,7 +668,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
     draftBusy.current = true; setApplyingId(action.id)
     const guard = () => {
       if (!isCurrentContext()) throw new Error('Обліковий запис змінився. Відкрийте помічник повторно.')
-      assertAiWriteAllowed(action.tool, useAuthStore.getState().session?.user.app_metadata?.role, isDesktopRuntime())
+      assertAiWriteAllowed(action.tool, useAuthStore.getState().session?.user.app_metadata?.role, writesToMainPc())
     }
     try {
       guard()
@@ -710,7 +710,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
       return checkpointSaved
     }
     try {
-      assertAiWriteAllowed(action.tool, useAuthStore.getState().session?.user.app_metadata?.role, isDesktopRuntime())
+      assertAiWriteAllowed(action.tool, useAuthStore.getState().session?.user.app_metadata?.role, writesToMainPc())
       if (action.tool === 'create_supply_invoice_bulk' || action.tool === 'create_order') {
         try {
           const reviewedAction = { ...action, payload: payloadOverride ?? action.payload }
@@ -1019,7 +1019,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
                   const state = applied[action.id]
                   const isOrder = action.tool === 'create_order'
                   const isInvoice = action.tool === 'create_supply_invoice_bulk'
-                  const supported = canApplyAiWrite(action.tool, role, isDesktopRuntime())
+                  const supported = canApplyAiWrite(action.tool, role, writesToMainPc())
                   const isBulk = !isOrder && !!(action.items && action.columns)
                   return (
                     <Card key={action.id} className="w-full border-blue-100 bg-blue-50/40 space-y-2">
