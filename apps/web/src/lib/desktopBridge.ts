@@ -529,6 +529,8 @@ interface ForsageDesktopBridge {
     restoreServerSession?: () => Promise<{access_token:string;refresh_token:string} | null>
   }
   getRuntimeInfo: () => Promise<DesktopRuntimeInfo>
+  /** 22.11.2026: повертає клавіатуру в поля після системного вікна confirm/alert. */
+  restoreInputFocus?: () => void
   lan?: {
     firstRunStatus?: () => Promise<DesktopLanFirstRunStatus>
     discover?: () => Promise<DesktopLanDiscoveredHub[]>

@@ -55,6 +55,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     restoreServerSession: () => ipcRenderer.invoke('desktop:auth:restore-server-session'),
   },
   getRuntimeInfo: () => ipcRenderer.invoke('desktop:get-runtime-info'),
+  /** Повернути клавіатуру в поля після системного вікна confirm/alert (нічого не передає, лише сигнал). */
+  restoreInputFocus: () => { try { electronIpcRenderer.send('desktop:window:restore-input-focus') } catch { /* не критично */ } },
   lan: {
     firstRunStatus: () => ipcRenderer.invoke('desktop:lan:first-run-status'),
     discover: () => ipcRenderer.invoke('desktop:lan:discover'),
