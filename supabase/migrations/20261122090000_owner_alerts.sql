@@ -27,8 +27,8 @@ INSERT INTO public.internal_job_keys (name, key)
 VALUES ('owner-alerts', replace(gen_random_uuid()::text || gen_random_uuid()::text, '-', ''))
 ON CONFLICT (name) DO NOTHING;
 
-CREATE EXTENSION IF NOT EXISTS pg_cron;
-CREATE EXTENSION IF NOT EXISTS pg_net;
+CREATE EXTENSION IF NOT EXISTS pg_cron WITH SCHEMA pg_catalog;
+CREATE EXTENSION IF NOT EXISTS pg_net WITH SCHEMA extensions;
 
 -- Повторне застосування не створює другого завдання.
 DO $$
