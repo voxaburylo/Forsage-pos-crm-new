@@ -32,7 +32,6 @@ describe('екрани змін не відкриваються у вебі', ()
     '/suppliers/invoices/:id/edit',
     '/receiving',
     '/inventory',
-    '/orders/new',
     '/orders/:id/edit',
     '/suppliers',
     '/suppliers/invoices',
@@ -50,6 +49,16 @@ describe('екрани змін не відкриваються у вебі', ()
       expect(route![0], `маршрут ${path} відкритий у вебі`).toContain('<TillOnly')
     })
   }
+
+  it('/orders/new у вебі — лише бланк, який іде командою на касу (етап 8, 22.11.2026)', () => {
+    const route = app.split('\n').filter(line => line.includes('<Route path="/orders/new"'))
+    expect(route).toHaveLength(1)
+    // Повна форма з грошима й складом — тільки на касі; у вебі окремий екран без запису на сервер.
+    expect(route[0]).toContain('<TillOrView till={<OrderFormPage />} view={<WebOrderFormPage />} />')
+    const form = readFileSync(new URL('../features/orders/WebOrderFormPage.tsx', import.meta.url), 'utf8')
+    expect(form).toContain("command: 'order.save'")
+    expect(form).not.toMatch(/orderApi|customerApi|prepayment/)
+  })
 
   const mustStayOpen = ['/analytics', '/sales', '/products', '/customers', '/reports', '/orders', '/orders/:id']
   for (const path of mustStayOpen) {
