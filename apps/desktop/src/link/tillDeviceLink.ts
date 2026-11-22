@@ -104,6 +104,15 @@ export class TillDeviceLink {
     return this.status()
   }
 
+  /**
+   * Дані, що живуть лише в хмарі (лист очікування, листування, пороги тривог…), для копії в базі каси.
+   * null — ключа ще немає або сервер зараз недоступний; це не помилка, наступна спроба буде пізніше.
+   */
+  async serverData(): Promise<unknown | null> {
+    if (!this.currentKey() || this.rejected || !this.deps.canRun() || !this.deps.apiUrl() || !this.deps.deviceId()) return null
+    try { return await this.post('/server-data', {}, 30_000) } catch (error) { this.deps.onError?.(error); return null }
+  }
+
   private currentKey() {
     if (this.key === undefined) { try { this.key = this.deps.readKey() } catch { this.key = null } }
     return this.key

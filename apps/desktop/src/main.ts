@@ -6,6 +6,7 @@ import { resolvePortableExecutable } from './updates/installedPortable'
 import { PinRoster } from './security/pinRoster'
 import { webRpcChannelAllowed } from './lan/webRpcChannels'
 import { TillDeviceLink } from './link/tillDeviceLink'
+import { serverDataDue, storeServerData } from './backup/serverDataCopy'
 import { isExpectedCommandFailure } from './diagnostics/expectedCommandFailure'
 import { RendererRecovery } from './rendererRecovery'
 import { deferQuitForMainWindow, NativeCloseController, requestUnloadScript } from './nativeClose'
@@ -1266,6 +1267,16 @@ app.whenReady().then(async () => {
   shiftBackups.start()
   // Зв'язок головного ПК із сервером власним ключем: веб працює через ПК і тоді, коли в програмі ніхто не увійшов.
   getTillDeviceLink().start()
+  // Раз на добу — копія даних, що живуть лише в хмарі, у власну базу: так вони є в кожній копії бази.
+  const copyServerData = async () => {
+    const db = localDatabase
+    if (!db || databaseMaintenance || !isMainTill() || !serverDataDue(db, new Date())) return
+    const data = await getTillDeviceLink().serverData()
+    if (!data || !localDatabase || databaseMaintenance) return
+    blackBox?.record('server-data-copy', storeServerData(localDatabase, data, new Date()))
+  }
+  setTimeout(() => { void copyServerData().catch(error => writeDesktopDiagnostic('server-data-copy-failed', error)) }, 3 * 60_000).unref()
+  setInterval(() => { void copyServerData().catch(error => writeDesktopDiagnostic('server-data-copy-failed', error)) }, 60 * 60_000).unref()
   // 20.11.2026: однакове написання одиниць у картках (шт/компл/…), один раз після оновлення; спершу копія бази.
   const unitTidyDb = localDatabase
   setTimeout(() => {
