@@ -60,6 +60,7 @@ const OrdersViewPage       = lazyPage(() => import('@/features/orders/OrdersView
 const NeedsActionPage      = lazyPage(() => import('@/features/orders/NeedsActionPage'))
 const OrderFormPage        = lazyPage(() => import('@/features/orders/OrderFormPage'))
 const WebOrderFormPage     = lazyPage(() => import('@/features/orders/WebOrderFormPage'))
+const WebOrderAppendPage   = lazyPage(() => import('@/features/orders/WebOrderAppendPage'))
 const WebInvoicePhotoPage  = lazyPage(() => import('@/features/suppliers/WebInvoicePhotoPage'))
 const OrderDetailPage      = lazyPage(() => import('@/features/orders/OrderDetailPage'))
 const QuickDraftPage       = lazyPage(() => import('@/features/quotes/QuickDraftPage'))
@@ -282,6 +283,7 @@ function Workspace() {
           <Route path="/chats" element={<TillOnly what="Замовлення"><ProtectedRoute roles={OFFICE_ROLES}><OrdersPage /></ProtectedRoute></TillOnly>} />
           <Route path="/orders"          element={<ProtectedRoute roles={OFFICE_ROLES}><TillOrView till={<OrdersPage />} view={<OrdersViewPage />} /></ProtectedRoute>} />
           <Route path="/orders/new"      element={<ProtectedRoute roles={OFFICE_ROLES}><TillOrView till={<OrderFormPage />} view={<WebOrderFormPage />} /></ProtectedRoute>} />
+          <Route path="/orders/:id/add"  element={<ProtectedRoute roles={OFFICE_ROLES}><TillOrView till={<OrderDetailPage />} view={<WebOrderAppendPage />} /></ProtectedRoute>} />
           <Route path="/orders/:id"      element={<ProtectedRoute roles={OFFICE_ROLES}><TillOrView till={<OrderDetailPage />} view={<OrdersViewPage />} /></ProtectedRoute>} />
           <Route path="/orders/:id/edit" element={<TillOnly what="Редагування замовлення"><ProtectedRoute roles={OFFICE_ROLES}><OrderFormPage /></ProtectedRoute></TillOnly>} />
 

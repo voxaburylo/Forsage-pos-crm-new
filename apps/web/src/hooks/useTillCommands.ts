@@ -46,6 +46,17 @@ export function useTillCommands(serverOnline: boolean) {
           const saved = await orderApi.create(tillOrderToCreate(order, customerId, command.operation_id, cards))
           return { status: 'done', result: { order_id: saved.data.id, order_number: saved.data.order_number, total_amount: saved.data.total_amount } }
         }
+        // 22.11.2026: дозамовлення з вебу — лише нові позиції й примітка до відкритого замовлення; решту каса лишає як є.
+        if (command.command === 'order.append') {
+          const { checkTillOrderAppend, tillOrderAppendToUpdate } = await import('@/features/tillCommands/tillOrderAppendModel')
+          const append = checkTillOrderAppend(command.payload)
+          const { orderApi } = await import('@/features/orders/orderApi')
+          const cards = new Map<string, TillOrderCard | null>()
+          for (const item of append.items) if (item.product_id && !cards.has(item.product_id)) cards.set(item.product_id, await bridge!.catalog.findById!(item.product_id))
+          const current = await orderApi.get(append.order_id).then(found => found.data, () => null)
+          const saved = await orderApi.update(append.order_id, tillOrderAppendToUpdate(append, current, command.operation_id, cards))
+          return { status: 'done', result: { order_id: saved.data.id, order_number: saved.data.order_number, total_amount: saved.data.total_amount, added: append.items.length } }
+        }
         // 22.11.2026: накладна з телефона. Каса лише кладе рядки у «вхідні» — нічого не проводить і карток не створює.
         if (command.command === 'invoice.draft') {
           const { PHONE_INVOICE_EVENT, storePhoneInvoice } = await import('@/features/tillCommands/phoneInvoiceModel')

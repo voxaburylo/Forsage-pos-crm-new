@@ -104,6 +104,17 @@ export const invoiceDraftPayload = z.object({
   rows: z.array(invoiceRow).min(1).max(INVOICE_DRAFT_MAX_ROWS),
 }).strict()
 
+/**
+ * 22.11.2026 (етап 8): дозамовлення з вебу — до наявного відкритого замовлення можна лише додати позиції й примітку.
+ * Команда не чекає в черзі (залежить від стану замовлення на касі) і не несе грошей, станів чи змін наявних рядків.
+ */
+export const orderAppendPayload = z.object({
+  order_id: z.string().uuid(),
+  author: text(120).nullable().optional(),
+  comment: text(500).nullable().optional(),
+  items: z.array(orderItem).min(1).max(60),
+}).strict()
+
 /** Скасування бланка з черги. Це не команда касі: сервер сам гасить бланк, якщо каса його ще не забрала. */
 export const CANCEL_COMMAND = 'order.cancel'
 export const CANCELED_IN_WEB = 'Скасовано у вебі'
@@ -112,6 +123,7 @@ export const createCommandSchema = z.discriminatedUnion('command', [
   z.object({ operation_id: z.string().uuid(), command: z.literal('order.cancel'), payload: z.object({ operation_id: z.string().uuid() }).strict() }).strict(),
   z.object({ operation_id: z.string().uuid(), command: z.literal('order.save'), payload: orderSavePayload }).strict(),
   z.object({ operation_id: z.string().uuid(), command: z.literal('invoice.draft'), payload: invoiceDraftPayload }).strict(),
+  z.object({ operation_id: z.string().uuid(), command: z.literal('order.append'), payload: orderAppendPayload }).strict(),
   z.object({ operation_id: z.string().uuid(), command: z.literal('product.update'), payload: productUpdatePayload }).strict(),
   z.object({ operation_id: z.string().uuid(), command: z.literal('shift.list'), payload: z.object({}).strict() }).strict(),
   z.object({ operation_id: z.string().uuid(), command: z.literal('shift.close'), payload: shiftClosePayload }).strict(),

@@ -31,7 +31,10 @@ f.uploads=0;f.removed=[];f.cart={actions:[{payload:{products:[{name:'Аморт�
 f.post=(url,body)=>{f.posts.push({url,body:structuredClone(body)});if(url==='/api/v1/ai/supply-invoice-photo')return Promise.resolve({data:f.cart});return Promise.resolve({data:{operation_id:body.operation_id,status:'pending',till_online:f.online}})};
 f.waiting=[{operation_id:'77777777-2222-4333-8444-555555555555',created_at:'2026-11-22T05:00:00Z',customer:'Марія',items:2,state:'waiting',error:null},{operation_id:'88888888-2222-4333-8444-555555555555',created_at:'2026-11-22T04:00:00Z',customer:'Олег',items:1,state:'failed',error:'Позиція 1: ціна нижча за закупівельну'}];
 f.get=url=>url.includes('/products/search')?Promise.resolve({data:f.found}):url.endsWith('/waiting')?Promise.resolve({data:f.waiting}):Promise.resolve({data:f.state});
-createRoot(document.getElementById('root')).render(React.createElement(React.Fragment,null,React.createElement(WaitingOrdersNote),React.createElement(WebOrderFormPage)));
+const append=location.search.includes('append');
+createRoot(document.getElementById('root')).render(append
+  ?React.createElement(WebOrderFormPage,{appendTo:{id:'33333333-2222-4333-8444-555555555555',title:'№ 57'}})
+  :React.createElement(React.Fragment,null,React.createElement(WaitingOrdersNote),React.createElement(WebOrderFormPage)));
 `
 const server = await createServer({ cacheDir: createSmokeCache(), configFile: false,
   root: path.join(root, 'apps/web'), logLevel: 'error', esbuild: { jsx: 'automatic' },
@@ -147,6 +150,30 @@ try {
   assert.equal(await page.getByLabel('Назва, позиція 3').count(), 0)
   assert.deepEqual(await page.evaluate(() => fixture.removed), ['ai/u1/cart-1.png'])
   console.log('PASS: a supplier cart screenshot fills the order rows; the selling price is left for a person')
+
+  // 8. Дозамовлення до відкритого замовлення: полів клієнта немає, на касу йде одна команда order.append лише з новими позиціями.
+  await page.goto(server.resolvedUrls.local[0]+'audit?append=1')
+  const add = page.getByRole('button', { name: 'Додати до замовлення (через касу)', exact: true })
+  await add.waitFor({ timeout: 15000 })
+  await page.getByRole('heading', { name: 'Додати до замовлення № 57' }).waitFor()
+  assert.equal(await page.getByLabel('Телефон клієнта').count(), 0)
+  await add.click()
+  await page.getByRole('alert').filter({ hasText: 'Додайте хоча б одну позицію' }).waitFor()
+  await page.getByLabel('Примітка для каси').fill('клієнт дозамовив')
+  await page.getByLabel('Назва, позиція 1').fill('Свічка запалювання')
+  await page.getByLabel('Кількість, позиція 1').fill('4')
+  await page.getByLabel('Ціна продажу, грн, позиція 1').fill('180')
+  await page.getByLabel('Закупка, грн, позиція 1').fill('120')
+  await page.evaluate(() => { fixture.state = { status: 'done', result: { order_number: 57, total_amount: 322000, added: 1 }, error: null } })
+  await add.click()
+  await page.getByText('Позиції додано до замовлення № 57', { exact: true }).waitFor({ timeout: 10000 })
+  await page.getByText('Нова сума замовлення: 3220.00 грн', { exact: false }).waitFor()
+  const appended = await page.evaluate(() => fixture.posts)
+  assert.equal(appended.length, 1)
+  assert.equal(appended[0].body.command, 'order.append')
+  assert.deepEqual(appended[0].body.payload, { order_id: '33333333-2222-4333-8444-555555555555', author: 'Олена', comment: 'клієнт дозамовив',
+    items: [{ name: 'Свічка запалювання', sku: null, qty: 4, sell_price: 18000, buy_price: 12000 }] })
+  console.log('PASS: adding to an open order sends exactly one order.append with only the new rows')
 
   const layout = await page.evaluate(() => ({ width: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }))
   assert.ok(layout.scroll <= layout.width, 'web order form must not scroll sideways on a phone')

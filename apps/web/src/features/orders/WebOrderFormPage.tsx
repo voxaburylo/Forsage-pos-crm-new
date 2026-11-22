@@ -9,6 +9,7 @@ import { formatMoney } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
 import { useTillOnline } from '@/features/tillCommands/TillEditModal'
 import { recognizeCartScreenshot } from './orderCartScreenshot'
+import { checkTillOrderAppend, type TillOrderAppendPayload } from '@/features/tillCommands/tillOrderAppendModel'
 import { checkTillOrder, readOrderMoney, readOrderQty, TILL_ORDER_MAX_ITEMS, type TillOrderPayload } from '@/features/tillCommands/tillOrderModel'
 
 type Row = { key: number; name: string; sku: string; qty: string; sell: string; buy: string; productId?: string; stock?: number }
@@ -34,6 +35,12 @@ export function webOrderFromForm(form: { phone: string; name: string; make: stri
       } catch (error) { throw new Error(`Позиція ${index + 1}: ${errorText(error)}`) }
     }),
   })
+}
+
+/** Дозамовлення з полів форми: лише нові позиції й примітка до наявного замовлення. */
+export function webOrderAppendFromForm(orderId: string, comment: string, rows: Row[], author: string): TillOrderAppendPayload {
+  const blank = webOrderFromForm({ phone: '', name: 'дозамовлення', make: '', model: '', year: '', vin: '', comment: '' }, rows, author)
+  return checkTillOrderAppend({ order_id: orderId, author, comment, items: blank.items })
 }
 
 type Waiting = { operation_id: string; created_at: string; customer: string; items: number; state?: 'waiting' | 'failed' | 'expired'; error?: string | null }
@@ -106,8 +113,9 @@ export function WaitingOrdersNote({ kind = 'order' }: { kind?: 'order' | 'invoic
  * Замовлення з телефона (веб) — етап 8. Бланк іде командою на касу; замовлення створює каса у своїй базі.
  * Грошей тут немає: передоплата й видача — на касі. Працює лише коли програма на касі в мережі.
  */
-export default function WebOrderFormPage() {
+export default function WebOrderFormPage({ appendTo }: { appendTo?: { id: string; title: string } } = {}) {
   const navigate = useNavigate()
+  const back = appendTo ? '/orders/' + appendTo.id : '/orders'
   const user = useAuthStore(state => state.session?.user)
   const till = useTillOnline(true)
   const [form, setForm] = useState({ phone: '', name: '', make: '', model: '', year: '', vin: '', comment: '' })
@@ -184,23 +192,31 @@ export default function WebOrderFormPage() {
   async function submit() {
     if (busy) return
     setMessage('')
-    let payload: TillOrderPayload
+    let payload: TillOrderPayload | TillOrderAppendPayload
+    const author = String(user?.user_metadata?.full_name ?? user?.user_metadata?.name ?? '').trim()
     try {
-      payload = webOrderFromForm(form, rows, String(user?.user_metadata?.full_name ?? user?.user_metadata?.name ?? '').trim())
+      payload = appendTo ? webOrderAppendFromForm(appendTo.id, form.comment, rows, author) : webOrderFromForm(form, rows, author)
     } catch (error) { setMessage(errorText(error)); return }
     const body = JSON.stringify(payload)
     if (operation.current?.body !== body) operation.current = { id: crypto.randomUUID(), body }
     const operationId = operation.current.id
     setBusy(true)
     try {
-      const sent = await api.post<{ data: { status: string; till_online?: boolean } }>('/api/v1/till-commands', { operation_id: operationId, command: 'order.save', payload }, undefined, { silent: true, timeoutMs: 15_000 })
+      const sent = await api.post<{ data: { status: string; till_online?: boolean } }>('/api/v1/till-commands', { operation_id: operationId, command: appendTo ? 'order.append' : 'order.save', payload }, undefined, { silent: true, timeoutMs: 15_000 })
       // Каса не в мережі: бланк лежить на сервері й чекає її до 12 годин. Чекати відповідь зараз немає сенсу.
       if (sent.data.status === 'pending' && sent.data.till_online === false) { setDone({ number: '', total, queued: true }); return }
       const outcome = await waitForTill(operationId)
       if (outcome.status === 'done') {
         const number = outcome.result?.order_number == null ? '' : String(outcome.result.order_number)
         setDone({ number, total: Number(outcome.result?.total_amount ?? total) })
-        toast.success('Замовлення створено на касі')
+        toast.success(appendTo ? 'Позиції додано на касі' : 'Замовлення створено на касі')
+        return
+      }
+      // Дозамовлення в черзі не чекає: якщо каса не відповіла, вона його вже не візьме (30 секунд).
+      if (appendTo && outcome.status !== 'failed') {
+        operation.current = null
+        setMessage(outcome.status === 'expired' ? 'Каса не забрала зміну за 30 секунд — нічого НЕ додано. Перевірте, що програма на касі працює, і надішліть ще раз.'
+          : 'Каса ще не відповіла. Відкрийте замовлення за хвилину: якщо позицій немає — надішліть ще раз.')
         return
       }
       // Відмова й прострочення означають, що каса нічого не записала: наступна спроба — нова операція.
@@ -213,6 +229,18 @@ export default function WebOrderFormPage() {
     } finally { setBusy(false) }
   }
 
+  if (done && appendTo) return (
+    <Layout title="Позиції додано" onBack={() => navigate(back)}>
+      <Card>
+        <div className="space-y-3 p-4 text-center">
+          <p className="text-lg font-semibold text-gray-900">Позиції додано до замовлення{done.number ? ` № ${done.number}` : ''}</p>
+          <p className="text-sm text-gray-600">Нова сума замовлення: {formatMoney(done.total)}. Доплату й видачу оформлюють на касі.</p>
+          <p className="text-xs text-gray-500">У перегляді тут зміни з’являться, коли каса передасть дані на сервер (зазвичай до хвилини).</p>
+          <Button className="w-full" onClick={() => navigate(back)}>До замовлення</Button>
+        </div>
+      </Card>
+    </Layout>
+  )
   if (done) return (
     <Layout title="Замовлення створено" onBack={() => navigate('/orders')}>
       <Card>
@@ -240,13 +268,18 @@ export default function WebOrderFormPage() {
   )
 
   return (
-    <Layout title="Нове замовлення" onBack={() => navigate('/orders')}>
+    <Layout title={appendTo ? `Додати до замовлення ${appendTo.title}` : 'Нове замовлення'} onBack={() => navigate(back)}>
       <div className="mx-auto max-w-2xl space-y-3">
         <p className={`rounded-lg px-3 py-2 text-sm ${till?.online ? 'bg-green-50 text-green-800' : 'bg-amber-50 text-amber-800'}`}>
-          {till?.online ? 'Каса в мережі. Замовлення створить програма на касі; гроші приймає тільки каса.'
-            : 'Каса не в мережі. Бланк можна надіслати зараз: він почекає на сервері до 12 годин, і каса створить замовлення, щойно з’явиться в мережі.'}
+          {appendTo
+            ? (till?.online ? 'Каса в мережі. Нові позиції додасть програма на касі; наявні позиції, оплати й стан замовлення не змінюються.'
+              : 'Каса не в мережі. Додати позиції можна лише тоді, коли програма на касі увімкнена й має інтернет.')
+            : till?.online ? 'Каса в мережі. Замовлення створить програма на касі; гроші приймає тільки каса.'
+              : 'Каса не в мережі. Бланк можна надіслати зараз: він почекає на сервері до 12 годин, і каса створить замовлення, щойно з’явиться в мережі.'}
         </p>
-        <Card>
+        {appendTo ? (
+          <Card><div className="p-4"><Input label="Примітка для каси" value={form.comment} disabled={busy} onChange={setField('comment')} /></div></Card>
+        ) : <Card>
           <div className="grid gap-3 p-4 sm:grid-cols-2">
             <Input label="Телефон клієнта" inputMode="tel" value={form.phone} disabled={busy} onChange={setField('phone')} placeholder="0671234567" />
             <Input label="Ім’я клієнта" value={form.name} disabled={busy} onChange={setField('name')} />
@@ -256,7 +289,7 @@ export default function WebOrderFormPage() {
             <Input label="VIN" value={form.vin} disabled={busy} onChange={setField('vin')} />
             <div className="sm:col-span-2"><Input label="Коментар" value={form.comment} disabled={busy} onChange={setField('comment')} /></div>
           </div>
-        </Card>
+        </Card>}
         {rows.map((row, index) => (
           <Card key={row.key}>
             <div className="space-y-2 p-4">
@@ -307,7 +340,7 @@ export default function WebOrderFormPage() {
         <p className="text-right text-sm text-gray-700">Разом: <span className="font-semibold">{totalKnown ? formatMoney(total) : 'перевірте кількість і ціни'}</span></p>
         {message && <p role="alert" className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">{message}</p>}
         <Button className="w-full" loading={busy} disabled={readingCart} onClick={submit}>
-          {busy ? 'Чекаю відповідь каси…' : till?.online ? 'Надіслати на касу' : 'Надіслати — каса забере пізніше'}
+          {busy ? 'Чекаю відповідь каси…' : appendTo ? 'Додати до замовлення (через касу)' : till?.online ? 'Надіслати на касу' : 'Надіслати — каса забере пізніше'}
         </Button>
       </div>
     </Layout>

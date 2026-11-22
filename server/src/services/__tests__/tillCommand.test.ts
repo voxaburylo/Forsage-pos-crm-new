@@ -90,6 +90,22 @@ describe('web write through the till', () => {
     ])
     expect(query.mock.calls[1][1]).toEqual(['t', 'invoice.draft', 'Скасовано у вебі'])
   })
+  it('lets the web add items to an existing order, but only while the till is online and with nothing but new rows', async () => {
+    const add = (payload: Record<string, unknown>) => ({ operation_id: id(7), command: 'order.append' as const, payload })
+    const items = [{ name: 'Фільтр', qty: 2, sell_price: 30000, buy_price: 20000 }]
+    expect(createCommandSchema.safeParse(add({ order_id: id(2), author: 'Олена', comment: 'дозамовив', items })).success).toBe(true)
+    expect(createCommandSchema.safeParse(add({ order_id: id(2), items: [] })).success).toBe(false)
+    expect(createCommandSchema.safeParse(add({ items })).success).toBe(false)
+    expect(createCommandSchema.safeParse(add({ order_id: id(2), items: [{ name: 'x', qty: 1, sell_price: 100, buy_price: 200 }] })).success).toBe(false)
+    // Гроші, стан і правка наявних рядків у команді неможливі.
+    for (const extra of [{ prepayment: 100 }, { status: 'completed' }, { customer_id: id(3) }, { remove: ['x'] }])
+      expect(createCommandSchema.safeParse(add({ order_id: id(2), items, ...extra })).success).toBe(false)
+    expect(createCommandSchema.safeParse(add({ order_id: id(2), items: [{ ...items[0], item_status: 'handed' }] })).success).toBe(false)
+    // У черзі не чекає: стан замовлення на касі за 12 годин зміниться.
+    query.mockResolvedValueOnce({ rows: [{ seen_at: '2026-11-18T10:00:00Z', online: false }] })
+    await expect(createCommand('t', 'u', add({ order_id: id(2), items }) as any)).rejects.toMatchObject({ status: 409, code: 'TILL_OFFLINE' })
+    expect(query).toHaveBeenCalledTimes(1)
+  })
   it('keeps a queued order for 12 hours and everything else for 30 seconds', async () => {
     query.mockResolvedValueOnce({ rowCount: 1 }).mockResolvedValueOnce({ rows: [] })
     await claimCommands('t', id(4))

@@ -56,7 +56,8 @@ describe('екрани змін не відкриваються у вебі', ()
     // Повна форма з грошима й складом — тільки на касі; у вебі окремий екран без запису на сервер.
     expect(route[0]).toContain('<TillOrView till={<OrderFormPage />} view={<WebOrderFormPage />} />')
     const form = readFileSync(new URL('../features/orders/WebOrderFormPage.tsx', import.meta.url), 'utf8')
-    expect(form).toContain("command: 'order.save'")
+    // Екран уміє рівно дві команди касі: новий бланк і дозамовлення до відкритого замовлення.
+    expect(form).toContain("command: appendTo ? 'order.append' : 'order.save'")
     expect(form).not.toMatch(/orderApi|customerApi|prepayment/)
   })
 
