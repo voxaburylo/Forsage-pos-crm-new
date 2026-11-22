@@ -11,8 +11,17 @@ const WEB_SESSION_PATHS = new Set([
   '/api/v1/auth/logout',
 ])
 
+/**
+ * Єдиний запис, дозволений з вебу: команда на касу. Вона нічого не змінює на сервері —
+ * зміну виконує програма на касі у своїй базі (або команда згорає за 30 с).
+ */
+const WEB_TILL_COMMAND_PATH = '/api/v1/till-commands'
+/** Розпізнавання фото накладної з телефона: лише читає фото; рядки далі їдуть на касу командою. */
+const WEB_INVOICE_PHOTO_PATH = '/api/v1/ai/supply-invoice-photo'
+
 export function isWebReadOnlyRequest(path: string, method: string | undefined): boolean {
   if (isDesktopRuntime() || SAFE_API_METHODS.has((method ?? 'GET').toUpperCase())) return false
+  if ((path === WEB_TILL_COMMAND_PATH || path === WEB_INVOICE_PHOTO_PATH) && (method ?? '').toUpperCase() === 'POST') return false
   // Вхід і відновлення сесії потрібні навіть у веб-перегляді. Решта записів
   // належать тільки локальній касі й сервер додатково їх відхиляє.
   return !WEB_SESSION_PATHS.has(path)

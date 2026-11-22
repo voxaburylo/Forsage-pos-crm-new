@@ -1,6 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useRef } from 'react'
 import { useDialogEscape } from '@/hooks/useDialogEscape'
-import { parseClosingSnapshot, parseCountedCash } from './shiftCashData'
+import { closeBlockReason, initialCountedCash, lastCloseCashKey, parseClosingSnapshot, parseCountedCash } from './shiftCashData'
 import { shiftApi } from './shiftApi'
 import type { ShiftReport } from '@/types/shift'
 import type { ExpectedCash } from './shiftApi'
@@ -64,6 +64,7 @@ export function ShiftCloseModal({
           const localReport = parseClosingSnapshot(value, shiftId, cashierId)
           setReport(localReport)
           setCashBreakdown(localReport.cash_breakdown)
+          setCashInput(initialCountedCash(localReport.cash_breakdown.expected_amount))
           setLoadedShiftId(shiftId)
         })
         .catch(() => { if (!cancelled) { setLoadError(true); toast.error('Помилка завантаження локальних даних зміни') } })
@@ -81,6 +82,7 @@ export function ShiftCloseModal({
         const snapshot = parseClosingSnapshot(reportRes.data, shiftId, cashierId)
         setReport(snapshot)
         setCashBreakdown(snapshot.cash_breakdown)
+        setCashInput(initialCountedCash(snapshot.cash_breakdown.expected_amount))
         setLoadedShiftId(shiftId)
       })
       .catch(() => { if (!cancelled) { setLoadError(true); toast.error('Помилка завантаження даних зміни') } })
@@ -110,6 +112,8 @@ export function ShiftCloseModal({
   const validCash = countedCash !== null && Number.isSafeInteger(cashReceived - (cashBreakdown?.expected_amount ?? 0))
   const canClose = !loading && !loadError && loadedShiftId === shiftId && report !== null && cashBreakdown !== null && validCash
   const expectedCash = cashBreakdown?.expected_amount ?? 0
+  const blockReason = closeBlockReason({ loading, loadError, ready: loadedShiftId === shiftId && report !== null && cashBreakdown !== null,
+    cashText: cashInput, pendingOfflineSales, offlineWeb: offline && !isDesktop })
   const variance     = validCash ? cashReceived - expectedCash : null
   const needsComment = isOwnerOrAdmin && variance !== null && Math.abs(variance) > VARIANCE_THRESHOLD
   const cashierAmountMismatch = !isOwnerOrAdmin && variance !== null && variance !== 0
@@ -157,7 +161,7 @@ export function ShiftCloseModal({
         }
       }
       // Залишок на кінець зміни = початок наступної (та сама каса) → підставимо при відкритті
-      try { localStorage.setItem('forsage_last_shift_close_cash', (cashReceived / 100).toFixed(2)) } catch { /* ignore */ }
+      try { localStorage.setItem(lastCloseCashKey(cashierId), (cashReceived / 100).toFixed(2)) } catch { /* ignore */ }
       toast.success(
         tireWorkersDue > 0
           ? 'Зміну закрито. Шиномонтажникам до виплати: ' + formatMoney(tireWorkersDue)
@@ -392,6 +396,7 @@ export function ShiftCloseModal({
             {closing ? 'Закриваємо...' : 'Закрити зміну'}
           </button>
         </div>
+        {!closing && blockReason && <p role="status" className="text-center text-sm text-amber-300">{blockReason}</p>}
       </div>
     </div>
   )

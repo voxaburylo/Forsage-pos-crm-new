@@ -153,8 +153,9 @@ interface POSState {
 
   // Налаштування «Знижка для працівників»: діє, коли в чек обрано клієнта
   // з телефоном активного працівника.
-  employeeDiscount: { pct: number; phones: string[] }
-  setEmployeeDiscount: (pct: number, staffPhones: Array<string | null | undefined>) => void
+  employeeDiscount: EmployeeDiscountPolicy
+  /** `personal` — особисті ціни з карток працівників: телефон → відсоток (100 = за закупкою). */
+  setEmployeeDiscount: (pct: number, staffPhones: Array<string | null | undefined>, personal?: Array<{ phone?: string | null; pct: number }>) => void
 
   // Менеджер для комісійних (глобальний на всю зміну)
   managerId: string | null
@@ -188,10 +189,15 @@ interface POSState {
   }) => boolean
 }
 
-function employeePctFor(customer: POSCustomer | null | undefined, policy: { pct: number; phones: string[] }): number {
-  if (!customer || !(policy.pct > 0)) return 0
+export interface EmployeeDiscountPolicy { pct: number; phones: string[]; personal?: Record<string, number> }
+/** Знижка працівника: особиста з картки (рішення власника 22.11.2026) має перевагу над загальною з налаштувань. */
+export function employeePctFor(customer: Pick<POSCustomer, 'phone'> | null | undefined, policy: EmployeeDiscountPolicy): number {
+  if (!customer) return 0
   const key = posPhoneKey(customer.phone)
-  return key && policy.phones.includes(key) ? policy.pct : 0
+  if (!key) return 0
+  const personal = policy.personal?.[key]
+  if (personal !== undefined) return personal
+  return policy.pct > 0 && policy.phones.includes(key) ? policy.pct : 0
 }
 
 function updateTabInStore(set: any, get: any, tabId: string, updates: Partial<ReceiptTab>) {
@@ -249,10 +255,15 @@ export const usePOSStore = create<POSState>((set, get) => {
     },
     roundUnitPrice: (price) => roundPOSUnitPrice(price, get().priceRounding),
     employeeDiscount: { pct: 0, phones: [] },
-    setEmployeeDiscount: (pct, staffPhones) => {
+    setEmployeeDiscount: (pct, staffPhones, personalPrices = []) => {
       const safePct = Number.isFinite(pct) ? Math.max(0, Math.min(100, pct)) : 0
       const phones = [...new Set(staffPhones.map(posPhoneKey).filter(Boolean))]
-      set({ employeeDiscount: { pct: safePct, phones } })
+      const personal: Record<string, number> = {}
+      for (const entry of personalPrices) {
+        const key = posPhoneKey(entry.phone)
+        if (key && Number.isFinite(entry.pct)) personal[key] = Math.max(0, Math.min(100, entry.pct))
+      }
+      set({ employeeDiscount: { pct: safePct, phones, personal } })
     },
     setManagerId: (id) => set({ managerId: id }),
 
@@ -423,7 +434,7 @@ export const usePOSStore = create<POSState>((set, get) => {
       const previousCustomer = get().getActiveTab()?.customer
       const employeePct = employeePctFor(customer, get().employeeDiscount)
       if (customer && employeePct > customer.tierDiscountPct) {
-        customer = { ...customer, tierDiscountPct: employeePct, tierName: 'Працівник' }
+        customer = { ...customer, tierDiscountPct: employeePct, tierName: employeePct >= 100 ? 'Працівник: за закупкою' : 'Працівник' }
       }
       updateTabInStore(set, get, activeTabId, {
         customer,

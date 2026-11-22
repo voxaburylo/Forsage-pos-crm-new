@@ -1,0 +1,348 @@
+import { useEffect, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { Camera, Plus, Trash2 } from 'lucide-react'
+import { Layout } from '@/components/Layout'
+import { Button, Card, Input } from '@/components/ui'
+import { toast } from '@/components/ui/Toast'
+import { api } from '@/lib/api'
+import { formatMoney } from '@/lib/utils'
+import { useAuthStore } from '@/stores/authStore'
+import { useTillOnline } from '@/features/tillCommands/TillEditModal'
+import { recognizeCartScreenshot } from './orderCartScreenshot'
+import { checkTillOrderAppend, type TillOrderAppendPayload } from '@/features/tillCommands/tillOrderAppendModel'
+import { checkTillOrder, readOrderMoney, readOrderQty, TILL_ORDER_MAX_ITEMS, type TillOrderPayload } from '@/features/tillCommands/tillOrderModel'
+
+type Row = { key: number; name: string; sku: string; qty: string; sell: string; buy: string; productId?: string; stock?: number }
+type Found = { id: string; name: string; sku: string; retail_price: number; qty_on_hand: number }
+type CommandState = { status: 'pending' | 'claimed' | 'done' | 'failed' | 'expired'; result: Record<string, unknown> | null; error: string | null }
+const WAIT_MS = 20_000
+const emptyRow = (key: number): Row => ({ key, name: '', sku: '', qty: '1', sell: '', buy: '' })
+const errorText = (error: unknown) => (error as { message?: string })?.message || 'Не вдалося передати замовлення на касу'
+
+/** Бланк із полів форми. Порожні рядки (без назви й артикула) пропускаються; помилка називає позицію. */
+export function webOrderFromForm(form: { phone: string; name: string; make: string; model: string; year: string; vin: string; comment: string }, rows: Row[], author: string): TillOrderPayload {
+  const filled = rows.filter(row => row.name.trim() || row.sku.trim())
+  const year = form.year.trim()
+  if (year && !/^\d{4}$/.test(year)) throw new Error('Перевірте рік автомобіля: чотири цифри.')
+  return checkTillOrder({
+    customer_phone: form.phone, customer_name: form.name, car_make: form.make, car_model: form.model,
+    car_year: year ? Number(year) : null, vin: form.vin, comment: form.comment, author,
+    items: filled.map((row, index) => {
+      try {
+        return { name: row.name, sku: row.sku, qty: readOrderQty(row.qty), sell_price: readOrderMoney(row.sell, 'Ціна продажу'),
+          // Для товару зі складу закупку бере каса зі своєї картки; з вебу її не передаємо.
+          ...(row.productId ? { product_id: row.productId } : { buy_price: readOrderMoney(row.buy, 'Закупка') }) }
+      } catch (error) { throw new Error(`Позиція ${index + 1}: ${errorText(error)}`) }
+    }),
+  })
+}
+
+/** Дозамовлення з полів форми: лише нові позиції й примітка до наявного замовлення. */
+export function webOrderAppendFromForm(orderId: string, comment: string, rows: Row[], author: string): TillOrderAppendPayload {
+  const blank = webOrderFromForm({ phone: '', name: 'дозамовлення', make: '', model: '', year: '', vin: '', comment: '' }, rows, author)
+  return checkTillOrderAppend({ order_id: orderId, author, comment, items: blank.items })
+}
+
+type Waiting = { operation_id: string; created_at: string; customer: string; items: number; state?: 'waiting' | 'failed' | 'expired'; error?: string | null }
+
+/** Бланки з вебу, які ще чекають касу: щоб було видно, що вони не загубилися. Порожньо — нічого не показуємо. */
+export function WaitingOrdersNote({ kind = 'order' }: { kind?: 'order' | 'invoice' } = {}) {
+  const invoice = kind === 'invoice', noName = invoice ? 'Накладна' : 'Без імені'
+  const [waiting, setWaiting] = useState<Waiting[] | null>(null)
+  const [canceling, setCanceling] = useState('')
+  const [reload, setReload] = useState(0)
+  useEffect(() => {
+    let stopped = false
+    const load = () => api.get<{ data: Waiting[] }>('/api/v1/till-commands/waiting' + (invoice ? '?kind=invoice' : ''), { silent: true, timeoutMs: 10_000 })
+      .then(res => { if (!stopped) setWaiting(Array.isArray(res.data) ? res.data : []) }).catch(() => { if (!stopped) setWaiting(null) })
+    void load()
+    const timer = window.setInterval(load, 20_000)
+    return () => { stopped = true; window.clearInterval(timer) }
+  }, [reload, invoice])
+  // Скасувати можна лише бланк, який каса ще не забрала: сервер відмовить, якщо вона встигла.
+  async function cancel(order: Waiting) {
+    if (canceling) return
+    setCanceling(order.operation_id)
+    try {
+      await api.post('/api/v1/till-commands', { operation_id: crypto.randomUUID(), command: 'order.cancel', payload: { operation_id: order.operation_id } }, undefined, { silent: true, timeoutMs: 15_000 })
+      toast.success(invoice ? 'Накладну скасовано. На касу вона не потрапить.' : 'Бланк скасовано. Каса його не створить.')
+    } catch (error) {
+      toast.error(errorText(error))
+    } finally { setCanceling(''); setReload(value => value + 1) }
+  }
+  if (!waiting?.length) return null
+  const time = (value: string) => new Date(value).toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' })
+  const queued = waiting.filter(order => order.state !== 'failed' && order.state !== 'expired')
+  const refused = waiting.filter(order => order.state === 'failed' || order.state === 'expired')
+  return (
+    <div className="mb-3 space-y-2">
+      {queued.length > 0 && (
+        <div className="rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <p className="font-semibold">Чекають касу: {queued.length}</p>
+          <ul className="mt-1 space-y-0.5 text-xs">
+            {queued.map(order => (
+              <li key={order.operation_id} className="flex items-center justify-between gap-2">
+                <span>{order.customer || noName} · {invoice ? 'рядків' : 'позицій'}: {order.items} · надіслано {time(order.created_at)}</span>
+                <button type="button" disabled={Boolean(canceling)} onClick={() => { void cancel(order) }}
+                  aria-label={`Скасувати бланк: ${order.customer || noName}`} className="shrink-0 rounded px-2 py-1 font-semibold text-red-700 underline disabled:opacity-50">
+                  {canceling === order.operation_id ? 'Скасовую…' : 'Скасувати'}
+                </button>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-1 text-xs">{invoice ? 'Каса покладе ці накладні в «Поступлення товарів → З телефона», щойно програма на ній буде в мережі.' : 'Каса створить ці замовлення, щойно програма на ній буде в мережі.'}</p>
+        </div>
+      )}
+      {refused.length > 0 && (
+        <div role="alert" className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-900">
+          <p className="font-semibold">{invoice ? 'Не дійшло до каси' : 'Не створено'}: {refused.length}</p>
+          <ul className="mt-1 space-y-0.5 text-xs">
+            {refused.map(order => (
+              <li key={order.operation_id}>{order.customer || noName} · надіслано {time(order.created_at)} — {order.state === 'expired'
+                ? 'каса не забрала за 12 годин' : (order.error || 'каса відмовила')}</li>
+            ))}
+          </ul>
+          <p className="mt-1 text-xs">{invoice ? 'Ці накладні треба надіслати ще раз.' : 'Ці бланки треба оформити ще раз.'} Запис зникне звідси за добу.</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Замовлення з телефона (веб) — етап 8. Бланк іде командою на касу; замовлення створює каса у своїй базі.
+ * Грошей тут немає: передоплата й видача — на касі. Працює лише коли програма на касі в мережі.
+ */
+export default function WebOrderFormPage({ appendTo }: { appendTo?: { id: string; title: string } } = {}) {
+  const navigate = useNavigate()
+  const back = appendTo ? '/orders/' + appendTo.id : '/orders'
+  const user = useAuthStore(state => state.session?.user)
+  const till = useTillOnline(true)
+  const [form, setForm] = useState({ phone: '', name: '', make: '', model: '', year: '', vin: '', comment: '' })
+  const [rows, setRows] = useState<Row[]>([emptyRow(1)])
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+  const [done, setDone] = useState<{ number: string; total: number; queued?: boolean } | null>(null)
+  const nextKey = useRef(2)
+  // Той самий номер операції при повторі тієї самої відправки: подвійне натискання не дасть двох замовлень.
+  const operation = useRef<{ id: string; body: string } | null>(null)
+
+  const setField = (key: keyof typeof form) => (event: { target: { value: string } }) => setForm(prev => ({ ...prev, [key]: event.target.value }))
+  // Зміна назви чи артикула вручну відв’язує рядок від картки складу: інакше каса записала б інший товар, ніж бачить людина.
+  const setRow = (key: number, field: 'name' | 'sku' | 'qty' | 'sell' | 'buy', value: string) => setRows(prev => prev.map(row => row.key !== key ? row
+    : field === 'name' || field === 'sku' ? { ...row, [field]: value, productId: undefined, stock: undefined } : { ...row, [field]: value }))
+  const [search, setSearch] = useState<{ key: number; state: 'loading' | 'ready' | 'error'; found: Found[] } | null>(null)
+  const searchRun = useRef(0)
+  async function findInStock(row: Row) {
+    const query = (row.sku.trim() || row.name.trim())
+    if (query.length < 2) { setMessage('Введіть назву або артикул (хоча б 2 символи), потім натисніть «Знайти на складі».'); return }
+    const run = ++searchRun.current
+    setSearch({ key: row.key, state: 'loading', found: [] })
+    try {
+      const { data } = await api.get<{ data: Found[] }>(`/api/v1/products/search?q=${encodeURIComponent(query)}&limit=8`, { silent: true, timeoutMs: 10_000 })
+      if (run === searchRun.current) setSearch({ key: row.key, state: 'ready', found: Array.isArray(data) ? data : [] })
+    } catch { if (run === searchRun.current) setSearch({ key: row.key, state: 'error', found: [] }) }
+  }
+  const pick = (key: number, product: Found) => {
+    setRows(prev => prev.map(row => row.key === key ? { ...row, name: product.name, sku: product.sku ?? '', sell: (Number(product.retail_price) / 100).toFixed(2), buy: '',
+      productId: product.id, stock: Number(product.qty_on_hand) } : row))
+    setSearch(null)
+  }
+
+  // Скриншот кошика постачальника (або фото списку): помічник переносить рядки, ціну продажу ставить людина.
+  const cartInput = useRef<HTMLInputElement>(null)
+  const [readingCart, setReadingCart] = useState(false)
+  const [cartNote, setCartNote] = useState('')
+  async function readCart(list: FileList | null) {
+    const file = list?.[0]
+    if (cartInput.current) cartInput.current.value = ''
+    if (!file || busy || readingCart) return
+    setMessage(''); setCartNote(''); setReadingCart(true)
+    try {
+      const found = await recognizeCartScreenshot(file)
+      if (!found.rows.length) { setMessage('На зображенні не знайдено позицій. Спробуйте чіткіший скриншот або впишіть позиції вручну.'); return }
+      // Порожні рядки бланка замінюємо розпізнаними; заповнені людиною лишаються.
+      const kept = rows.filter(row => row.name.trim() || row.sku.trim())
+      const room = TILL_ORDER_MAX_ITEMS - kept.length
+      const added = found.rows.slice(0, room).map(row => ({ key: nextKey.current++, name: row.name, sku: row.sku, qty: row.qty, sell: '', buy: row.buy_price === '0' ? '' : row.buy_price }))
+      setRows([...kept, ...added])
+      const left = found.rows.length - added.length
+      setCartNote(`Додано позицій: ${added.length}.${found.skipped ? ` Без назви пропущено: ${found.skipped}.` : ''}${left > 0 ? ` Не вмістилось: ${left} (у бланку до ${TILL_ORDER_MAX_ITEMS} позицій).` : ''} Ціну продажу впишіть самі; кількість і закупку звірте.`)
+    } catch (error) {
+      setMessage((error as { message?: string })?.message || 'Не вдалося розпізнати зображення. Позиції можна вписати вручну.')
+    } finally { setReadingCart(false) }
+  }
+
+  let total = 0, totalKnown = true
+  for (const row of rows) {
+    if (!row.name.trim() && !row.sku.trim()) continue
+    try { total += Math.round(readOrderQty(row.qty) * readOrderMoney(row.sell, 'Ціна продажу')) } catch { totalKnown = false }
+  }
+
+  async function waitForTill(operationId: string): Promise<CommandState> {
+    const until = Date.now() + WAIT_MS
+    while (Date.now() < until) {
+      await new Promise(resolve => setTimeout(resolve, 1500))
+      const { data } = await api.get<{ data: CommandState }>(`/api/v1/till-commands/${operationId}`, { silent: true, timeoutMs: 10_000 })
+      if (data.status === 'done' || data.status === 'failed' || data.status === 'expired') return data
+    }
+    return { status: 'claimed', result: null, error: null }
+  }
+
+  async function submit() {
+    if (busy) return
+    setMessage('')
+    let payload: TillOrderPayload | TillOrderAppendPayload
+    const author = String(user?.user_metadata?.full_name ?? user?.user_metadata?.name ?? '').trim()
+    try {
+      payload = appendTo ? webOrderAppendFromForm(appendTo.id, form.comment, rows, author) : webOrderFromForm(form, rows, author)
+    } catch (error) { setMessage(errorText(error)); return }
+    const body = JSON.stringify(payload)
+    if (operation.current?.body !== body) operation.current = { id: crypto.randomUUID(), body }
+    const operationId = operation.current.id
+    setBusy(true)
+    try {
+      const sent = await api.post<{ data: { status: string; till_online?: boolean } }>('/api/v1/till-commands', { operation_id: operationId, command: appendTo ? 'order.append' : 'order.save', payload }, undefined, { silent: true, timeoutMs: 15_000 })
+      // Каса не в мережі: бланк лежить на сервері й чекає її до 12 годин. Чекати відповідь зараз немає сенсу.
+      if (sent.data.status === 'pending' && sent.data.till_online === false) { setDone({ number: '', total, queued: true }); return }
+      const outcome = await waitForTill(operationId)
+      if (outcome.status === 'done') {
+        const number = outcome.result?.order_number == null ? '' : String(outcome.result.order_number)
+        setDone({ number, total: Number(outcome.result?.total_amount ?? total) })
+        toast.success(appendTo ? 'Позиції додано на касі' : 'Замовлення створено на касі')
+        return
+      }
+      // Дозамовлення в черзі не чекає: якщо каса не відповіла, вона його вже не візьме (30 секунд).
+      if (appendTo && outcome.status !== 'failed') {
+        operation.current = null
+        setMessage(outcome.status === 'expired' ? 'Каса не забрала зміну за 30 секунд — нічого НЕ додано. Перевірте, що програма на касі працює, і надішліть ще раз.'
+          : 'Каса ще не відповіла. Відкрийте замовлення за хвилину: якщо позицій немає — надішліть ще раз.')
+        return
+      }
+      // Відмова й прострочення означають, що каса нічого не записала: наступна спроба — нова операція.
+      if (outcome.status === 'failed') { operation.current = null; setMessage(outcome.error || 'Каса відмовила. Замовлення не створено.'); return }
+      if (outcome.status === 'expired') { operation.current = null; setMessage('Каса не забрала замовлення за 12 годин — його НЕ створено. Надішліть ще раз.'); return }
+      // Каса ще не забрала або ще виконує: бланк не губиться — він чекає на сервері, дубля повтор не дасть.
+      setDone({ number: '', total, queued: true })
+    } catch (error) {
+      setMessage(errorText(error))
+    } finally { setBusy(false) }
+  }
+
+  if (done && appendTo) return (
+    <Layout title="Позиції додано" onBack={() => navigate(back)}>
+      <Card>
+        <div className="space-y-3 p-4 text-center">
+          <p className="text-lg font-semibold text-gray-900">Позиції додано до замовлення{done.number ? ` № ${done.number}` : ''}</p>
+          <p className="text-sm text-gray-600">Нова сума замовлення: {formatMoney(done.total)}. Доплату й видачу оформлюють на касі.</p>
+          <p className="text-xs text-gray-500">У перегляді тут зміни з’являться, коли каса передасть дані на сервер (зазвичай до хвилини).</p>
+          <Button className="w-full" onClick={() => navigate(back)}>До замовлення</Button>
+        </div>
+      </Card>
+    </Layout>
+  )
+  if (done) return (
+    <Layout title="Замовлення створено" onBack={() => navigate('/orders')}>
+      <Card>
+        <div className="space-y-3 p-4 text-center">
+          {done.queued ? (
+            <>
+              <p className="text-lg font-semibold text-gray-900">Замовлення чекає касу</p>
+              <p className="text-sm text-gray-600">Бланк збережено на сервері. Програма на касі забере його сама, щойно буде в мережі (чекаємо до 12 годин), і створить замовлення.</p>
+              <p className="text-xs text-gray-500">Поки каса його не створила, у списку замовлень його немає — він видно в рядку «Чекають касу».</p>
+            </>
+          ) : (
+            <>
+              <p className="text-lg font-semibold text-gray-900">Замовлення{done.number ? ` № ${done.number}` : ''} створено на касі</p>
+              <p className="text-sm text-gray-600">Сума: {formatMoney(done.total)}. Передоплату й видачу оформлюють на касі.</p>
+              <p className="text-xs text-gray-500">У списку тут воно з’явиться, коли каса передасть дані на сервер (зазвичай до хвилини).</p>
+            </>
+          )}
+          <div className="flex gap-2">
+            <Button className="flex-1" onClick={() => { operation.current = null; setDone(null); setRows([emptyRow(nextKey.current++)]); setForm({ phone: '', name: '', make: '', model: '', year: '', vin: '', comment: '' }) }}>Ще одне</Button>
+            <Button className="flex-1" variant="secondary" onClick={() => navigate('/orders')}>До списку</Button>
+          </div>
+        </div>
+      </Card>
+    </Layout>
+  )
+
+  return (
+    <Layout title={appendTo ? `Додати до замовлення ${appendTo.title}` : 'Нове замовлення'} onBack={() => navigate(back)}>
+      <div className="mx-auto max-w-2xl space-y-3">
+        <p className={`rounded-lg px-3 py-2 text-sm ${till?.online ? 'bg-green-50 text-green-800' : 'bg-amber-50 text-amber-800'}`}>
+          {appendTo
+            ? (till?.online ? 'Каса в мережі. Нові позиції додасть програма на касі; наявні позиції, оплати й стан замовлення не змінюються.'
+              : 'Каса не в мережі. Додати позиції можна лише тоді, коли програма на касі увімкнена й має інтернет.')
+            : till?.online ? 'Каса в мережі. Замовлення створить програма на касі; гроші приймає тільки каса.'
+              : 'Каса не в мережі. Бланк можна надіслати зараз: він почекає на сервері до 12 годин, і каса створить замовлення, щойно з’явиться в мережі.'}
+        </p>
+        {appendTo ? (
+          <Card><div className="p-4"><Input label="Примітка для каси" value={form.comment} disabled={busy} onChange={setField('comment')} /></div></Card>
+        ) : <Card>
+          <div className="grid gap-3 p-4 sm:grid-cols-2">
+            <Input label="Телефон клієнта" inputMode="tel" value={form.phone} disabled={busy} onChange={setField('phone')} placeholder="0671234567" />
+            <Input label="Ім’я клієнта" value={form.name} disabled={busy} onChange={setField('name')} />
+            <Input label="Марка авто" value={form.make} disabled={busy} onChange={setField('make')} />
+            <Input label="Модель" value={form.model} disabled={busy} onChange={setField('model')} />
+            <Input label="Рік" inputMode="numeric" value={form.year} disabled={busy} onChange={setField('year')} />
+            <Input label="VIN" value={form.vin} disabled={busy} onChange={setField('vin')} />
+            <div className="sm:col-span-2"><Input label="Коментар" value={form.comment} disabled={busy} onChange={setField('comment')} /></div>
+          </div>
+        </Card>}
+        {rows.map((row, index) => (
+          <Card key={row.key}>
+            <div className="space-y-2 p-4">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-semibold text-gray-700">Позиція {index + 1}</span>
+                {rows.length > 1 && (
+                  <button type="button" aria-label={`Прибрати позицію ${index + 1}`} disabled={busy} className="p-2 text-gray-400 hover:text-red-600"
+                    onClick={() => setRows(prev => prev.filter(item => item.key !== row.key))}><Trash2 size={18} /></button>
+                )}
+              </div>
+              <Input id={`order-row-${row.key}-name`} aria-label={`Назва, позиція ${index + 1}`} label="Назва" value={row.name} disabled={busy} onChange={event => setRow(row.key, 'name', event.target.value)} />
+              {row.productId
+                ? <p className="text-xs text-green-700">Товар зі складу{Number.isFinite(row.stock) ? ` · залишок за копією: ${row.stock}` : ''}. Назву, артикул і закупку каса візьме зі своєї картки.</p>
+                : <button type="button" disabled={busy} onClick={() => { void findInStock(row) }} className="text-sm font-medium text-blue-700 underline">Знайти на складі</button>}
+              {search?.key === row.key && (
+                <div className="rounded-lg border border-gray-200 bg-gray-50 p-2 text-sm">
+                  {search.state === 'loading' && <p className="text-gray-500">Шукаю…</p>}
+                  {search.state === 'error' && <p role="alert" className="text-amber-800">Пошук не вдався. Позицію можна залишити вписаною вручну.</p>}
+                  {search.state === 'ready' && !search.found.length && <p className="text-gray-500">На складі не знайдено. Позиція піде як «під замовлення».</p>}
+                  {search.found.map(product => (
+                    <button key={product.id} type="button" onClick={() => pick(row.key, product)} className="block w-full rounded px-2 py-2 text-left hover:bg-white">
+                      <span className="font-medium text-gray-900">{product.name}</span>
+                      <span className="block text-xs text-gray-500">{product.sku} · {formatMoney(Number(product.retail_price))} · залишок {Number(product.qty_on_hand)}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <Input id={`order-row-${row.key}-sku`} aria-label={`Артикул, позиція ${index + 1}`} label="Артикул" value={row.sku} disabled={busy} onChange={event => setRow(row.key, 'sku', event.target.value)} />
+                <Input id={`order-row-${row.key}-qty`} aria-label={`Кількість, позиція ${index + 1}`} label="Кількість" inputMode="decimal" value={row.qty} disabled={busy} onChange={event => setRow(row.key, 'qty', event.target.value)} />
+                <Input id={`order-row-${row.key}-sell`} aria-label={`Ціна продажу, грн, позиція ${index + 1}`} label="Ціна продажу, грн" inputMode="decimal" value={row.sell} disabled={busy} onChange={event => setRow(row.key, 'sell', event.target.value)} />
+                {!row.productId && <Input id={`order-row-${row.key}-buy`} aria-label={`Закупка, грн, позиція ${index + 1}`} label="Закупка, грн" inputMode="decimal" value={row.buy} disabled={busy} onChange={event => setRow(row.key, 'buy', event.target.value)} />}
+              </div>
+            </div>
+          </Card>
+        ))}
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" disabled={busy || readingCart || rows.length >= TILL_ORDER_MAX_ITEMS} onClick={() => setRows(prev => [...prev, emptyRow(nextKey.current++)])}>
+            <Plus size={16} className="mr-1 inline" />Додати позицію
+          </Button>
+          <input ref={cartInput} type="file" accept="image/*" className="hidden" aria-label="Скриншот кошика постачальника" onChange={event => { void readCart(event.target.files) }} />
+          <Button variant="secondary" loading={readingCart} disabled={busy || readingCart} onClick={() => cartInput.current?.click()}>
+            <Camera size={16} className="mr-1 inline" />{readingCart ? 'Розпізнаю…' : 'Зі скриншота кошика'}
+          </Button>
+        </div>
+        {cartNote && <p className="rounded-lg bg-blue-50 px-3 py-2 text-sm text-blue-900">{cartNote}</p>}
+        <p className="text-xs text-gray-500">Скриншот кошика на сайті постачальника або фото списку: розпізнавання платне (ключ помічника) і триває до трьох хвилин.</p>
+        <p className="text-right text-sm text-gray-700">Разом: <span className="font-semibold">{totalKnown ? formatMoney(total) : 'перевірте кількість і ціни'}</span></p>
+        {message && <p role="alert" className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">{message}</p>}
+        <Button className="w-full" loading={busy} disabled={readingCart} onClick={submit}>
+          {busy ? 'Чекаю відповідь каси…' : appendTo ? 'Додати до замовлення (через касу)' : till?.online ? 'Надіслати на касу' : 'Надіслати — каса забере пізніше'}
+        </Button>
+      </div>
+    </Layout>
+  )
+}

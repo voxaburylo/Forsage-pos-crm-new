@@ -55,6 +55,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     restoreServerSession: () => ipcRenderer.invoke('desktop:auth:restore-server-session'),
   },
   getRuntimeInfo: () => ipcRenderer.invoke('desktop:get-runtime-info'),
+  /** Повернути клавіатуру в поля після системного вікна confirm/alert (нічого не передає, лише сигнал). */
+  restoreInputFocus: () => { try { electronIpcRenderer.send('desktop:window:restore-input-focus') } catch { /* не критично */ } },
   lan: {
     firstRunStatus: () => ipcRenderer.invoke('desktop:lan:first-run-status'),
     discover: () => ipcRenderer.invoke('desktop:lan:discover'),
@@ -185,6 +187,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     saveServerPassword: (id: string, password: string) => ipcRenderer.invoke('desktop:staff:save-server-password', id, password),
     saleAccess: () => ipcRenderer.invoke('desktop:staff:sale-access'),
     setSaleAccess: (id: string, enabled: boolean) => ipcRenderer.invoke('desktop:staff:set-sale-access', id, enabled),
+    employeePricing: () => ipcRenderer.invoke('desktop:staff:employee-pricing'),
+    setEmployeePricing: (id: string, value: unknown) => ipcRenderer.invoke('desktop:staff:set-employee-pricing', id, value),
     setPin: (userId: string, pin: string) => ipcRenderer.invoke('desktop:staff:set-pin', userId, pin),
     verifyPin: (userId: string, pin: string) => ipcRenderer.invoke('desktop:staff:verify-pin', userId, pin),
     listCommissionRules: () => ipcRenderer.invoke('desktop:staff:list-commission-rules'),

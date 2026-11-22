@@ -59,6 +59,9 @@ const OrdersPage           = lazyPage(() => import('@/features/orders/OrdersPage
 const OrdersViewPage       = lazyPage(() => import('@/features/orders/OrdersViewPage'))
 const NeedsActionPage      = lazyPage(() => import('@/features/orders/NeedsActionPage'))
 const OrderFormPage        = lazyPage(() => import('@/features/orders/OrderFormPage'))
+const WebOrderFormPage     = lazyPage(() => import('@/features/orders/WebOrderFormPage'))
+const WebOrderAppendPage   = lazyPage(() => import('@/features/orders/WebOrderAppendPage'))
+const WebInvoicePhotoPage  = lazyPage(() => import('@/features/suppliers/WebInvoicePhotoPage'))
 const OrderDetailPage      = lazyPage(() => import('@/features/orders/OrderDetailPage'))
 const QuickDraftPage       = lazyPage(() => import('@/features/quotes/QuickDraftPage'))
 const CashflowPage         = lazyPage(() => import('@/features/cashflow/CashflowPage'))
@@ -246,6 +249,8 @@ function Workspace() {
           <Route path="/suppliers/:id/edit" element={<TillOnly what="Редагування постачальника"><ProtectedRoute roles={OFFICE_ROLES}><SupplierFormPage /></ProtectedRoute></TillOnly>} />
           <Route path="/receiving" element={<TillOnly what="Приймання товару"><ProtectedRoute roles={RECEIVING_ROLES}><Navigate to="/suppliers/invoices" replace /></ProtectedRoute></TillOnly>} />
           <Route path="/receiving/ai" element={<TillOnly what="Приймання товару"><ProtectedRoute roles={RECEIVING_ROLES}><AiAssistantPage invoiceOnly /></ProtectedRoute></TillOnly>} />
+          {/* 22.11.2026 (етап 8): накладна з телефона — фото й рядки їдуть командою на касу; на касі це звичайний список накладних. */}
+          <Route path="/invoice-photo" element={<ProtectedRoute roles={OFFICE_ROLES}><TillOrView till={<Navigate to="/suppliers/invoices" replace />} view={<WebInvoicePhotoPage />} /></ProtectedRoute>} />
           <Route path="/suppliers/invoices" element={<TillOnly what="Прихідні накладні"><ProtectedRoute roles={RECEIVING_ROLES}><InvoicesPage /></ProtectedRoute></TillOnly>} />
           <Route path="/suppliers/pos" element={<TillOnly what="Замовлення постачальникам"><ProtectedRoute roles={OFFICE_ROLES}><SupplierPOsPage /></ProtectedRoute></TillOnly>} />
           <Route path="/suppliers/invoices/new" element={<TillOnly what="Прихідна накладна"><ProtectedRoute roles={RECEIVING_ROLES}><InvoiceFormPage /></ProtectedRoute></TillOnly>} />
@@ -277,7 +282,8 @@ function Workspace() {
           {/* Чат-боти — окремий розділ (той самий компонент у режимі chatMode) */}
           <Route path="/chats" element={<TillOnly what="Замовлення"><ProtectedRoute roles={OFFICE_ROLES}><OrdersPage /></ProtectedRoute></TillOnly>} />
           <Route path="/orders"          element={<ProtectedRoute roles={OFFICE_ROLES}><TillOrView till={<OrdersPage />} view={<OrdersViewPage />} /></ProtectedRoute>} />
-          <Route path="/orders/new"      element={<TillOnly what="Створення замовлення"><ProtectedRoute roles={OFFICE_ROLES}><OrderFormPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/orders/new"      element={<ProtectedRoute roles={OFFICE_ROLES}><TillOrView till={<OrderFormPage />} view={<WebOrderFormPage />} /></ProtectedRoute>} />
+          <Route path="/orders/:id/add"  element={<ProtectedRoute roles={OFFICE_ROLES}><TillOrView till={<OrderDetailPage />} view={<WebOrderAppendPage />} /></ProtectedRoute>} />
           <Route path="/orders/:id"      element={<ProtectedRoute roles={OFFICE_ROLES}><TillOrView till={<OrderDetailPage />} view={<OrdersViewPage />} /></ProtectedRoute>} />
           <Route path="/orders/:id/edit" element={<TillOnly what="Редагування замовлення"><ProtectedRoute roles={OFFICE_ROLES}><OrderFormPage /></ProtectedRoute></TillOnly>} />
 

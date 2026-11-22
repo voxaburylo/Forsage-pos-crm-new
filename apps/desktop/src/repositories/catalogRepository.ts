@@ -157,6 +157,12 @@ function productSearchTokens(raw: string): string[] {
   return [...tokens]
 }
 
+/** Однолітерні слова запиту («ж», «б» із «ж/б»). Для артикулів не застосовується. */
+function productSearchShortWords(raw: string): string[] {
+  if (articleSearchTerms(raw).length) return []
+  return [...new Set(normalizeSearchText(raw).split(' ').filter(word => word.length === 1))]
+}
+
 function compactLookupCode(raw: string): string {
   return raw.replace(/[\s\-._/]+/g, '').trim()
 }
@@ -1019,9 +1025,13 @@ export class LocalCatalogRepository {
         indexedClauses.push(`(${languageGroups.map(group => `(${group.map(() => 'p.search_text LIKE ?').join(' OR ')})`).join(' AND ')})`)
         indexedParams.push(...languageGroups.flat().map(token => `%${token}%`))
       }
-      if (tokens.length > 1) {
-        indexedClauses.push(`(${tokens.map(() => 'p.search_text LIKE ?').join(' AND ')})`)
-        indexedParams.push(...tokens.map(token => `%${token}%`))
+      // 22.11.2026 («фанта ж/б» не знаходило «Фанта-Оранж 0,33 ж/б»): однолітерні слова запиту раніше відкидались,
+      // і запит з одним довгим словом лишався без пошуку по словах. Тепер довгі слова шукаємо як частину тексту,
+      // а однолітерні — лише як окреме слово, щоб «о» не збігалося з кожною назвою.
+      const shortWords = productSearchShortWords(raw)
+      if (tokens.length > 1 || (tokens.length === 1 && shortWords.length > 0)) {
+        indexedClauses.push(`(${[...tokens.map(() => 'p.search_text LIKE ?'), ...shortWords.map(() => "(' ' || p.search_text || ' ') LIKE ?")].join(' AND ')})`)
+        indexedParams.push(...tokens.map(token => `%${token}%`), ...shortWords.map(word => `% ${word} %`))
       }
       const searchClauses = [
         ...indexedClauses,

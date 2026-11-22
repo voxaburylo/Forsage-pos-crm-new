@@ -10,6 +10,7 @@ import { Layout } from '@/components/Layout'
 import { Button, Badge, Card, Table } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney, formatDate } from '@/lib/utils'
+import { PhoneInvoicesNote } from './PhoneInvoicesNote'
 
 const STATUS_BADGE: Record<string, 'yellow' | 'green' | 'red'> = {
   draft: 'yellow', posted: 'green', cancelled: 'red',
@@ -135,6 +136,7 @@ export default function InvoicesPage() {
         </div>
       }
     >
+      <PhoneInvoicesNote onOpen={open} />
       <div className="mb-4">
         <input aria-label="Знайти накладні за товаром" type="search" value={searchInput} maxLength={200}
           onChange={event => setSearchInput(event.target.value)} placeholder="Назва товару, штрихкод або артикул"

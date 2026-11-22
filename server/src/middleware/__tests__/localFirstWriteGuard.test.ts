@@ -48,6 +48,25 @@ describe('веб тільки дивиться, пише лише каса', () 
     }
   })
 
+  it('веб може передати команду на касу, але забрати її й відповісти може лише каса', () => {
+    // 22.11.2026: без цього правка картки й закриття зміни з вебу відхилялись ще до маршруту.
+    expect(isWriteAllowed(req('POST', '/api/v1/till-commands'))).toBe(true)
+    expect(isWriteAllowed(req('POST', '/api/v1/till-commands/'))).toBe(true)
+    expect(isWriteAllowed(req('POST', '/api/v1/till-commands/claim'))).toBe(false)
+    expect(isWriteAllowed(req('POST', '/api/v1/till-commands/abc/result'))).toBe(false)
+    expect(isWriteAllowed(req('DELETE', '/api/v1/till-commands'))).toBe(false)
+    expect(isWriteAllowed(req('POST', '/api/v1/till-commands/claim', 'desktop'))).toBe(true)
+  })
+
+  it('веб може розпізнати фото накладної, але не застосувати дію ШІ й не змінити його налаштування', () => {
+    // 22.11.2026 (етап 8): фото з телефона лише читається; рядки потім їдуть на касу командою.
+    expect(isWriteAllowed(req('POST', '/api/v1/ai/supply-invoice-photo'))).toBe(true)
+    expect(isWriteAllowed(req('POST', '/api/v1/ai/apply-action'))).toBe(false)
+    expect(isWriteAllowed(req('POST', '/api/v1/ai/config'))).toBe(false)
+    expect(isWriteAllowed(req('POST', '/api/v1/ai/chat'))).toBe(false)
+    expect(isWriteAllowed(req('POST', '/api/v1/ai/supply-invoice-photo/x'))).toBe(false)
+  })
+
   it('черга синхронізації приймається лише від каси', () => {
     expect(isWriteAllowed(req('POST', '/api/v1/sync/push'))).toBe(false)
     expect(isWriteAllowed(req('POST', '/api/v1/sync/bootstrap'))).toBe(false)

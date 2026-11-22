@@ -23,6 +23,8 @@ interface NavItem {
   icon: React.ReactNode
   label: string
   roles?: string[]
+  /** Лише у веб-версії: на касі для цього є повний робочий екран. */
+  webOnly?: boolean
 }
 
 interface NavGroup {
@@ -54,6 +56,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: '/products',            icon: <Package size={18} />,         label: 'Товари' },
       { to: '/suppliers/invoices',  icon: <PackagePlus size={18} />,     label: 'Поступлення товарів',  roles: ['owner','admin','manager','cashier','storekeeper'] },
+      { to: '/invoice-photo',       icon: <PackagePlus size={18} />,     label: 'Накладна з телефона',  roles: ['owner','admin','manager'], webOnly: true },
       { to: '/inventory',           icon: <Package size={18} />,         label: 'Інвентаризація',       roles: ['owner','admin','manager','storekeeper','cashier','sto_viewer'] },
       { to: '/labels',              icon: <Tag size={18} />,             label: 'Друк етикеток',        roles: ['owner','admin'] },
       { to: '/suppliers',           icon: <Truck size={18} />,           label: 'Постачальники',        roles: ['owner','admin','manager','storekeeper'] },
@@ -166,7 +169,7 @@ function NavSection({
   const location = useLocation()
 
   const visibleItems = group.items.filter(
-    (item) => navigationAllowed(item.to, isDesktopRuntime()) && (!item.roles || item.roles.includes(role)),
+    (item) => navigationAllowed(item.to, isDesktopRuntime()) && !(item.webOnly && isDesktopRuntime()) && (!item.roles || item.roles.includes(role)),
   )
 
   const isGroupActive = visibleItems.some((item) => location.pathname.startsWith(item.to))

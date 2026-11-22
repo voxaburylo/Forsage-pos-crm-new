@@ -11,6 +11,18 @@ import { AppError } from '../middleware/errorHandler.js'
  */
 export const COMMAND_TTL_SECONDS = 30
 export const TILL_ONLINE_SECONDS = 20
+/**
+ * 22.11.2026 (етап 8): замовлення з вебу чекає касу на сервері до 12 годин — його можна оформити,
+ * коли каса не в мережі. Це безпечно лише для команд, які не залежать від стану бази каси
+ * і мають номер операції (повтор не дає дубля). Правка картки й зміни каси чекати не можуть.
+ */
+export const QUEUE_TTL_SECONDS = 12 * 60 * 60
+export const QUEUED_COMMAND = 'order.save'
+/** 22.11.2026: накладна з телефона теж чекає касу — вона лише лягає у «вхідні» каси й нічого не проводить. */
+export const INVOICE_DRAFT_COMMAND = 'invoice.draft'
+export const QUEUED_COMMANDS: readonly string[] = [QUEUED_COMMAND, INVOICE_DRAFT_COMMAND]
+const isQueued = (command: string) => QUEUED_COMMANDS.includes(command)
+const TTL_SQL = `make_interval(secs => CASE WHEN command IN ('${QUEUED_COMMAND}', '${INVOICE_DRAFT_COMMAND}') THEN ${QUEUE_TTL_SECONDS} ELSE ${COMMAND_TTL_SECONDS} END)`
 export const WEB_COMMAND_ROLES = ['owner', 'admin', 'manager'] as const
 export const TILL_ROLES = ['owner', 'admin', 'manager', 'cashier'] as const
 
@@ -42,7 +54,76 @@ export const shiftClosePayload = z.object({
   comment: z.string().trim().min(3).max(300),
 }).strict()
 
+/**
+ * 22.11.2026: замовлення з вебу (телефон). Каса створює його у своїй базі; грошей у команді немає.
+ * Ціни в копійках; ціна продажу не нижча за закупку (жорстке правило власника), 0 = «ще не знаємо».
+ */
+const orderItem = z.object({
+  name: text(300).min(1),
+  sku: text(100).nullable().optional(),
+  qty: z.number().positive().max(1_000_000).refine(value => Math.round(value * 1000) === value * 1000, 'Кількість: не більше трьох знаків'),
+  sell_price: money,
+  buy_price: money.optional(),
+  /** Картка зі складу: каса сама бере з неї назву, артикул і закупку. */
+  product_id: z.string().uuid().optional(),
+}).strict().refine(item => !(item.sell_price > 0 && (item.buy_price ?? 0) > 0 && item.sell_price < (item.buy_price ?? 0)), 'Ціна продажу нижча за закупку')
+export const orderSavePayload = z.object({
+  customer_phone: z.string().regex(/^[0-9]{10,12}$/).nullable().optional(),
+  customer_name: text(120).nullable().optional(),
+  car_make: text(60).nullable().optional(),
+  car_model: text(60).nullable().optional(),
+  car_year: z.number().int().min(1886).max(2100).nullable().optional(),
+  vin: z.string().regex(/^[A-HJ-NPR-Z0-9]{17}$/).nullable().optional(),
+  comment: text(1000).nullable().optional(),
+  author: text(120).nullable().optional(),
+  items: z.array(orderItem).min(1).max(60),
+}).strict().refine(order => Boolean(order.customer_phone || order.customer_name), 'Потрібен телефон або ім’я клієнта')
+
+/**
+ * 22.11.2026 (етап 8): накладна, сфотографована телефоном. Команда нічого не проводить і не створює карток:
+ * каса кладе рядки у «вхідні», а людина на касі відкриває їх звичайною чернеткою приходу, перевіряє й проводить.
+ * Ціни тут у гривнях, як у розпізнаванні; нечитана кількість чи ціна лишається відсутньою — каса підсвітить рядок.
+ */
+const invoiceRow = z.object({
+  name: text(300).min(1),
+  source_name: text(300).optional(),
+  sku: text(100).optional(),
+  barcode: text(64).optional(),
+  brand_name: text(120).optional(),
+  category_name: text(120).optional(),
+  unit: text(20).optional(),
+  qty: z.number().positive().max(1_000_000).optional(),
+  purchase_price_uah: z.number().min(0).max(10_000_000).optional(),
+})
+export const INVOICE_DRAFT_MAX_ROWS = 300
+export const invoiceDraftPayload = z.object({
+  supplier_name: text(200).nullable().optional(),
+  invoice_number: text(60).nullable().optional(),
+  notes: text(500).nullable().optional(),
+  author: text(120).nullable().optional(),
+  rows: z.array(invoiceRow).min(1).max(INVOICE_DRAFT_MAX_ROWS),
+}).strict()
+
+/**
+ * 22.11.2026 (етап 8): дозамовлення з вебу — до наявного відкритого замовлення можна лише додати позиції й примітку.
+ * Команда не чекає в черзі (залежить від стану замовлення на касі) і не несе грошей, станів чи змін наявних рядків.
+ */
+export const orderAppendPayload = z.object({
+  order_id: z.string().uuid(),
+  author: text(120).nullable().optional(),
+  comment: text(500).nullable().optional(),
+  items: z.array(orderItem).min(1).max(60),
+}).strict()
+
+/** Скасування бланка з черги. Це не команда касі: сервер сам гасить бланк, якщо каса його ще не забрала. */
+export const CANCEL_COMMAND = 'order.cancel'
+export const CANCELED_IN_WEB = 'Скасовано у вебі'
+
 export const createCommandSchema = z.discriminatedUnion('command', [
+  z.object({ operation_id: z.string().uuid(), command: z.literal('order.cancel'), payload: z.object({ operation_id: z.string().uuid() }).strict() }).strict(),
+  z.object({ operation_id: z.string().uuid(), command: z.literal('order.save'), payload: orderSavePayload }).strict(),
+  z.object({ operation_id: z.string().uuid(), command: z.literal('invoice.draft'), payload: invoiceDraftPayload }).strict(),
+  z.object({ operation_id: z.string().uuid(), command: z.literal('order.append'), payload: orderAppendPayload }).strict(),
   z.object({ operation_id: z.string().uuid(), command: z.literal('product.update'), payload: productUpdatePayload }).strict(),
   z.object({ operation_id: z.string().uuid(), command: z.literal('shift.list'), payload: z.object({}).strict() }).strict(),
   z.object({ operation_id: z.string().uuid(), command: z.literal('shift.close'), payload: shiftClosePayload }).strict(),
@@ -70,8 +151,24 @@ export async function tillStatus(tenantId: string) {
   return { online: Boolean(rows[0]?.online), seen_at: rows[0] ? new Date(rows[0].seen_at).toISOString() : null }
 }
 
+/**
+ * Скасувати бланк замовлення, який ще чекає касу. Атомарно: або бланк погашено, або каса вже його забрала —
+ * тоді відмова, і людина знає, що замовлення створюється (скасувати його можна вже на касі).
+ */
+export async function cancelQueuedOrder(tenantId: string, operationId: string) {
+  const { rowCount } = await pool.query(
+    `UPDATE till_commands SET status = 'failed', error = $4, finished_at = now()
+      WHERE tenant_id = $1 AND operation_id = $2 AND command = ANY($3::text[]) AND status = 'pending'`,
+    [tenantId, operationId, [...QUEUED_COMMANDS], CANCELED_IN_WEB],
+  )
+  if (!rowCount) throw new AppError('CONFLICT', 'Каса вже забрала цей бланк або його вже немає в черзі. Якщо він уже на касі — приберіть його там.', 409)
+  return { operation_id: operationId, status: 'canceled' }
+}
+
 export async function createCommand(tenantId: string, userId: string, input: z.infer<typeof createCommandSchema>) {
-  if (!(await tillStatus(tenantId)).online) throw new AppError('TILL_OFFLINE', 'Каса зараз не в мережі. Зміну можна внести лише тоді, коли програма на касі увімкнена й має інтернет.', 409)
+  if (input.command === CANCEL_COMMAND) return cancelQueuedOrder(tenantId, input.payload.operation_id)
+  const online = (await tillStatus(tenantId)).online
+  if (!online && !isQueued(input.command)) throw new AppError('TILL_OFFLINE', 'Каса зараз не в мережі. Зміну можна внести лише тоді, коли програма на касі увімкнена й має інтернет.', 409)
   const { rows } = await pool.query(
     `INSERT INTO till_commands (tenant_id, operation_id, command, payload, requested_by)
      VALUES ($1, $2, $3, $4::jsonb, $5)
@@ -79,13 +176,46 @@ export async function createCommand(tenantId: string, userId: string, input: z.i
      RETURNING operation_id, status`,
     [tenantId, input.operation_id, input.command, JSON.stringify(input.payload), userId],
   )
-  if (rows[0]) return { operation_id: rows[0].operation_id as string, status: rows[0].status as string }
+  if (rows[0]) return { operation_id: rows[0].operation_id as string, status: rows[0].status as string, till_online: online }
   // Повтор того самого запиту — та сама команда; інший вміст під тим самим номером — відмова.
   const existing = await pool.query('SELECT command, payload, status FROM till_commands WHERE tenant_id = $1 AND operation_id = $2', [tenantId, input.operation_id])
   const row = existing.rows[0]
   if (!row || row.command !== input.command || stable(row.payload) !== stable(input.payload))
     throw new AppError('CONFLICT', 'Номер операції вже використано для іншої зміни', 409)
-  return { operation_id: input.operation_id, status: row.status as string }
+  return { operation_id: input.operation_id, status: row.status as string, till_online: online }
+}
+
+/**
+ * Замовлення з вебу, які ще чекають касу, і ті, яким каса відмовила за останню добу.
+ * Людина надіслала бланк і пішла — відмова каси не має зникати мовчки. Прострочені тут же гасимо.
+ */
+export async function listWaitingOrders(tenantId: string, command: string = QUEUED_COMMAND) {
+  await pool.query(
+    `UPDATE till_commands SET status = 'expired', finished_at = now()
+      WHERE tenant_id = $1 AND status = 'pending' AND created_at <= now() - ${TTL_SQL}`,
+    [tenantId],
+  )
+  const { rows } = await pool.query(
+    `SELECT operation_id, payload, created_at, status, error FROM till_commands
+      WHERE tenant_id = $1 AND command = $2
+        AND (status IN ('pending', 'claimed') OR (status IN ('failed', 'expired') AND finished_at > now() - interval '24 hours'
+             AND error IS DISTINCT FROM $3))
+      ORDER BY created_at LIMIT 50`,
+    [tenantId, command, CANCELED_IN_WEB],
+  )
+  return rows.map(row => {
+    const payload = (row.payload ?? {}) as { customer_name?: string | null; customer_phone?: string | null; items?: unknown[]
+      supplier_name?: string | null; invoice_number?: string | null; rows?: unknown[] }
+    // Для накладної підпис — постачальник і номер; для замовлення — клієнт.
+    const label = command === INVOICE_DRAFT_COMMAND
+      ? [payload.supplier_name, payload.invoice_number ? '№ ' + payload.invoice_number : ''].filter(Boolean).join(' ')
+      : String(payload.customer_name || payload.customer_phone || '')
+    const lines = command === INVOICE_DRAFT_COMMAND ? payload.rows : payload.items
+    return { operation_id: row.operation_id as string, created_at: new Date(row.created_at).toISOString(),
+      customer: label, items: Array.isArray(lines) ? lines.length : 0,
+      state: row.status === 'failed' ? 'failed' as const : row.status === 'expired' ? 'expired' as const : 'waiting' as const,
+      error: row.status === 'failed' ? String(row.error ?? '') || null : null }
+  })
 }
 
 /** Стан команди для вебу. Незабрану вчасно команду тут же позначаємо простроченою — каса її вже не візьме. */
@@ -93,8 +223,8 @@ export async function readCommand(tenantId: string, operationId: string) {
   if (!z.string().uuid().safeParse(operationId).success) throw new AppError('NOT_FOUND', 'Команду не знайдено', 404)
   await pool.query(
     `UPDATE till_commands SET status = 'expired', finished_at = now()
-      WHERE tenant_id = $1 AND operation_id = $2 AND status = 'pending' AND created_at <= now() - make_interval(secs => $3)`,
-    [tenantId, operationId, COMMAND_TTL_SECONDS],
+      WHERE tenant_id = $1 AND operation_id = $2 AND status = 'pending' AND created_at <= now() - ${TTL_SQL}`,
+    [tenantId, operationId],
   )
   const { rows } = await pool.query(
     'SELECT operation_id, command, status, result, error, created_at, finished_at FROM till_commands WHERE tenant_id = $1 AND operation_id = $2',
@@ -117,10 +247,10 @@ export async function claimCommands(tenantId: string, deviceId: string) {
   const { rows } = await pool.query(
     `UPDATE till_commands SET status = 'claimed', device_id = $2, claimed_at = now()
       WHERE id IN (SELECT id FROM till_commands WHERE tenant_id = $1 AND status = 'pending'
-                     AND created_at > now() - make_interval(secs => $3)
+                     AND created_at > now() - ${TTL_SQL}
                    ORDER BY created_at LIMIT 5 FOR UPDATE SKIP LOCKED)
       RETURNING id, operation_id, command, payload, requested_by, created_at`,
-    [tenantId, deviceId, COMMAND_TTL_SECONDS],
+    [tenantId, deviceId],
   )
   return rows.map(row => ({ id: row.id as string, operation_id: row.operation_id as string, command: row.command as string,
     payload: row.payload, requested_by: row.requested_by as string, created_at: new Date(row.created_at).toISOString() }))

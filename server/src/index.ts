@@ -23,6 +23,7 @@ import loyaltyRouter from './routes/loyalty.js'
 import pricingRouter from './routes/pricing.js'
 import cashOperationsRouter from './routes/cashOperations.js'
 import telegramRouter from './routes/telegram.js'
+import telegramWebhookRouter from './routes/telegramWebhook.js'
 import customerCarsRouter from './routes/customerCars.js'
 import chatsRouter from './routes/chats.js'
 import channelsRouter from './routes/channels.js'
@@ -173,6 +174,7 @@ app.use('/api/v1/audit', auditRouter)
 app.use('/api/v1/loyalty', loyaltyRouter)
 app.use('/api/v1/pricing', pricingRouter)
 app.use('/api/v1/cash-operations', cashOperationsRouter)
+app.use('/api/v1/telegram/webhook', telegramWebhookRouter)
 app.use('/api/v1/telegram', telegramRouter)
 app.use('/api/v1/customer-cars', customerCarsRouter)
 app.use('/api/v1/chats', chatsRouter)

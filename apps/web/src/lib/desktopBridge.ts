@@ -529,6 +529,8 @@ interface ForsageDesktopBridge {
     restoreServerSession?: () => Promise<{access_token:string;refresh_token:string} | null>
   }
   getRuntimeInfo: () => Promise<DesktopRuntimeInfo>
+  /** 22.11.2026: повертає клавіатуру в поля після системного вікна confirm/alert. */
+  restoreInputFocus?: () => void
   lan?: {
     firstRunStatus?: () => Promise<DesktopLanFirstRunStatus>
     discover?: () => Promise<DesktopLanDiscoveredHub[]>
@@ -661,6 +663,9 @@ interface ForsageDesktopBridge {
     /** 21.11.2026: менеджери, яким власник дозволив продавати (лише головний ПК). */
     saleAccess?: () => Promise<string[]>
     setSaleAccess?: (id: string, enabled: boolean) => Promise<string[]>
+    /** 22.11.2026: особиста ціна працівника — відсоток або «за закупкою» (лише головний ПК). */
+    employeePricing?: () => Promise<Record<string, { mode: 'pct'; pct: number } | { mode: 'cost' }>>
+    setEmployeePricing?: (id: string, value: { mode: 'pct'; pct: number } | { mode: 'cost' } | null) => Promise<Record<string, { mode: 'pct'; pct: number } | { mode: 'cost' }>>
     setPin: (userId: string, pin: string) => Promise<{ success: true }>
     verifyPin: (userId: string, pin: string) => Promise<{ valid: boolean; error?: string }>
     listCommissionRules: () => Promise<any[]>

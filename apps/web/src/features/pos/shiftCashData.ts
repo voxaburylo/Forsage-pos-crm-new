@@ -43,6 +43,27 @@ export function parseClosingSnapshot(value: unknown, shiftId: string, cashierId:
   return value as ShiftReport & { cash_breakdown: ExpectedCash }
 }
 
+/** Коли готівки в зміні не було, рахувати нічого: поле одразу «0», а не порожнє із сірим «0.00». */
+export function initialCountedCash(expectedAmount: number): string {
+  return expectedAmount === 0 ? '0' : ''
+}
+
+/** Чому кнопка «Закрити зміну» неактивна — людськими словами; null, коли закрити можна. */
+export function closeBlockReason(state: { loading: boolean; loadError: boolean; ready: boolean; cashText: string; pendingOfflineSales: number; offlineWeb: boolean }): string | null {
+  if (state.loadError) return 'Дані зміни не завантажено. Закрийте вікно й відкрийте знову.'
+  if (state.loading || !state.ready) return 'Завантажую дані зміни…'
+  if (state.offlineWeb) return 'Немає інтернету: закриття зміни недоступне.'
+  if (state.pendingOfflineSales > 0) return 'Спершу мають відправитися чеки з черги: ' + state.pendingOfflineSales + '.'
+  if (state.cashText.trim() === '') return 'Введіть суму готівки в касі. Якщо готівки немає — введіть 0.'
+  if (parseCountedCash(state.cashText) === null) return 'Суму введено неправильно. Приклад: 1250 або 1250.50'
+  return null
+}
+
+/** Залишок із закриття підставляється при відкритті лише тому самому працівнику: зміни особисті. */
+export function lastCloseCashKey(cashierId: string): string {
+  return 'forsage_last_shift_close_cash:' + cashierId
+}
+
 export function parseCountedCash(value: string): number | null {
   const text = value.trim()
   if (!/^\d+(?:[.,]\d{1,2})?$/.test(text)) return null

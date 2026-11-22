@@ -18,4 +18,18 @@ describe('web API is read-only', () => {
     expect(isWebReadOnlyRequest('/api/v1/sync/push', 'POST')).toBe(true)
     expect(isWebReadOnlyRequest('/api/v1/auth/set-pin', 'POST')).toBe(true)
   })
+
+  it('lets the web hand a command to the till, and nothing else on that route', () => {
+    // 22.11.2026: без цього «Змінити через касу» і закриття зміни з вебу не доходили до сервера взагалі.
+    expect(isWebReadOnlyRequest('/api/v1/till-commands', 'POST')).toBe(false)
+    expect(isWebReadOnlyRequest('/api/v1/till-commands/claim', 'POST')).toBe(true)
+    expect(isWebReadOnlyRequest('/api/v1/till-commands/abc/result', 'POST')).toBe(true)
+    expect(isWebReadOnlyRequest('/api/v1/till-commands', 'DELETE')).toBe(true)
+  })
+  it('lets the web recognise an invoice photo, but not apply AI actions or change AI settings', () => {
+    expect(isWebReadOnlyRequest('/api/v1/ai/supply-invoice-photo', 'POST')).toBe(false)
+    expect(isWebReadOnlyRequest('/api/v1/ai/apply-action', 'POST')).toBe(true)
+    expect(isWebReadOnlyRequest('/api/v1/ai/config', 'POST')).toBe(true)
+    expect(isWebReadOnlyRequest('/api/v1/ai/chat', 'POST')).toBe(true)
+  })
 })

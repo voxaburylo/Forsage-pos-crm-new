@@ -6,6 +6,7 @@ import { Badge, Card } from '@/components/ui'
 import { formatDate, formatDateTime, formatMoney } from '@/lib/utils'
 import { orderApi, type CustomerOrder } from './orderApi'
 import { formatOrderNo } from './orderActions'
+import { WaitingOrdersNote } from './WebOrderFormPage'
 import {
   ITEM_STATUS_LABEL, ORDER_STATUS_LABEL, ORDER_VIEW_GROUPS, filterOrders, orderDebt, orderGroup, orderPaymentState, pickupOverdue,
   type OrderViewGroup,
@@ -48,6 +49,12 @@ export default function OrdersViewPage() {
   return (
     <Layout title="Замовлення клієнтів">
       <ReadOnlyNote />
+      {/* 22.11.2026 (етап 8): замовлення з телефона — бланк іде на касу, створює його каса. */}
+      <button type="button" onClick={() => navigate('/orders/new')}
+        className="mb-3 w-full rounded-xl bg-yellow-400 px-4 py-3 text-sm font-semibold text-gray-900 hover:bg-yellow-300 sm:w-auto">
+        + Нове замовлення (через касу)
+      </button>
+      <WaitingOrdersNote />
       <div className="mb-3 flex flex-wrap gap-2">
         {ORDER_VIEW_GROUPS.map(g => (
           <button key={g.id} type="button" onClick={() => setGroup(g.id)}
@@ -113,6 +120,7 @@ function OrderRow({ order, onOpen }: { order: CustomerOrder; onOpen: () => void 
 }
 
 function OrderView({ id, onBack }: { id: string; onBack: () => void }) {
+  const navigate = useNavigate()
   const [order, setOrder] = useState<CustomerOrder | null>(null)
   const [payments, setPayments] = useState<any[]>([])
   const [error, setError] = useState('')
@@ -156,6 +164,13 @@ function OrderView({ id, onBack }: { id: string; onBack: () => void }) {
               </div>
             ))}
           </Card>
+          {/* 22.11.2026 (етап 8): до відкритого замовлення з телефона можна додати позиції — додає каса. */}
+          {orderGroup(order.status) !== 'done' && !order.sale_id && (
+            <button type="button" onClick={() => navigate('/orders/' + order.id + '/add')}
+              className="w-full rounded-xl bg-yellow-400 px-4 py-3 text-sm font-semibold text-gray-900 hover:bg-yellow-300">
+              + Додати позиції (через касу)
+            </button>
+          )}
           <Card className="space-y-1 text-sm">
             <p className="flex justify-between"><span className="text-gray-500">Сума</span><b>{formatMoney(order.total_amount)}</b></p>
             {order.discount_amount > 0 && <p className="flex justify-between"><span className="text-gray-500">Знижка</span><span>{formatMoney(order.discount_amount)}</span></p>}

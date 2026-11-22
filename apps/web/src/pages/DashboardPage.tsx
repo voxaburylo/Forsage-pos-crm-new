@@ -34,6 +34,12 @@ function getRange(period: Period, selectedDate: string): { startDate: string; en
 
 const PERIOD_LABELS: Record<QuickPeriod, string> = { today: 'Сьогодні', week: '7 днів', month: 'Цей місяць' }
 
+/** Людська причина відмови (текст програми українською); технічні й порожні повідомлення не показуємо. */
+export function dashboardFailureReason(error: unknown): string {
+  const message = error instanceof Error ? error.message.trim() : ''
+  return message && /[а-яіїєґ]/i.test(message) && message.length <= 300 ? ' Причина: ' + message : ''
+}
+
 export default function DashboardPage() {
   const navigate = useNavigate()
   // Прибуток — тільки власнику/адміну; менеджер бачить виторг і чеки
@@ -110,7 +116,9 @@ export default function DashboardPage() {
             ? 'Оновіть локальну програму. Ця версія не може сформувати повну статистику.'
             : error instanceof Error && /INCOMPLETE_DASHBOARD|Дані статистики неповні/.test(error.message)
               ? 'Дані статистики за цей період неповні або неузгоджені. Суми не показано. Потрібна перевірка чеків і повернень.'
-            : 'Не вдалося завантажити статистику. Суми не показано, щоб не видати неповні дані за нулі. Відкрийте розділ повторно.')
+            // 22.11.2026: на ПК менеджера статистика приходить з головного ПК — причину відмови показуємо, а не ховаємо.
+            : 'Не вдалося завантажити статистику. Суми не показано, щоб не видати неповні дані за нулі. Відкрийте розділ повторно.'
+              + dashboardFailureReason(error))
         }
       } finally {
         if (isCurrent()) setLoading(false)

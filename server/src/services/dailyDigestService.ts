@@ -141,9 +141,14 @@ export async function sendOwnerDigest(tenantId: string, date?: string): Promise<
   return ok
 }
 
-// Планувальник: щовечора о 21:00 за Києвом, один раз на день
-export function startDailyDigestScheduler() {
-  const tick = async () => {
+/**
+ * Один прохід вечірнього звіту: після 21:00 за Києвом, один раз на день на магазин.
+ * 22.11.2026: на Vercel власного планувальника немає — цей прохід викликає зовнішній (разом із тривогами).
+ */
+export async function runDailyDigestTick(): Promise<void> {
+  return digestTick()
+}
+const digestTick = async () => {
     try {
       if (kyivHour() < 21) return
       const today = kyivToday()
@@ -160,7 +165,11 @@ export function startDailyDigestScheduler() {
     } catch (e: any) {
       logger.warn({ err: e?.message }, '[digest] scheduler tick failed')
     }
-  }
+}
+
+// Планувальник довгоживучого сервера: щовечора о 21:00 за Києвом, один раз на день
+export function startDailyDigestScheduler() {
+  const tick = digestTick
   setInterval(tick, 10 * 60 * 1000) // кожні 10 хв
   setTimeout(tick, 30 * 1000)       // і невдовзі після старту сервера
   logger.info('Daily owner digest scheduler started (21:00 Kyiv)')

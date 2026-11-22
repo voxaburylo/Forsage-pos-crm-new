@@ -5,6 +5,7 @@ import { isDesktopAccessLocked } from '@/lib/desktopAccessState'
 import { canUseCloudBackground } from '@/lib/lanFirstRun'
 import { useAuthStore } from '@/stores/authStore'
 import { planTillProductUpdate, type TillProductUpdate } from '@/features/tillCommands/tillCommandModel'
+import type { TillOrderCard } from '@/features/tillCommands/tillOrderModel'
 
 interface ClaimedCommand { id: string; operation_id: string; command: string; payload: unknown; requested_by?: string }
 const POLL_MS = 5_000
@@ -30,6 +31,38 @@ export function useTillCommands(serverOnline: boolean) {
           if (command.command === 'shift.list') return { status: 'done', result: { shifts: await pos.remoteShifts(requestedBy) } }
           const closed = await pos.remoteCloseShift(requestedBy, command.payload as { shift_id: string; cashier_id: string; actual_amount: number; comment: string })
           return { status: 'done', result: { shift_id: closed.id } }
+        }
+        // 22.11.2026: замовлення з вебу. Каса перевіряє бланк ще раз і створює його під номером операції команди:
+        // повтор тієї самої команди повертає те саме замовлення, дубля не буде.
+        if (command.command === 'order.save') {
+          const { checkTillOrder, tillOrderToCreate } = await import('@/features/tillCommands/tillOrderModel')
+          const order = checkTillOrder(command.payload)
+          const [{ customerApi }, { orderApi }] = await Promise.all([import('@/features/customers/customerApi'), import('@/features/orders/orderApi')])
+          const cards = new Map<string, TillOrderCard | null>()
+          for (const item of order.items) if (item.product_id && !cards.has(item.product_id)) cards.set(item.product_id, await bridge!.catalog.findById!(item.product_id))
+          // Спершу всі перевірки каси (картки, ціни) — і лише потім створюємо клієнта: відмова не лишає сліду в базі.
+          tillOrderToCreate(order, null, command.operation_id, cards)
+          const customerId = order.customer_phone ? (await customerApi.quickCreate(order.customer_phone, order.customer_name ?? '')).data.id : null
+          const saved = await orderApi.create(tillOrderToCreate(order, customerId, command.operation_id, cards))
+          return { status: 'done', result: { order_id: saved.data.id, order_number: saved.data.order_number, total_amount: saved.data.total_amount } }
+        }
+        // 22.11.2026: дозамовлення з вебу — лише нові позиції й примітка до відкритого замовлення; решту каса лишає як є.
+        if (command.command === 'order.append') {
+          const { checkTillOrderAppend, tillOrderAppendToUpdate } = await import('@/features/tillCommands/tillOrderAppendModel')
+          const append = checkTillOrderAppend(command.payload)
+          const { orderApi } = await import('@/features/orders/orderApi')
+          const cards = new Map<string, TillOrderCard | null>()
+          for (const item of append.items) if (item.product_id && !cards.has(item.product_id)) cards.set(item.product_id, await bridge!.catalog.findById!(item.product_id))
+          const current = await orderApi.get(append.order_id).then(found => found.data, () => null)
+          const saved = await orderApi.update(append.order_id, tillOrderAppendToUpdate(append, current, command.operation_id, cards))
+          return { status: 'done', result: { order_id: saved.data.id, order_number: saved.data.order_number, total_amount: saved.data.total_amount, added: append.items.length } }
+        }
+        // 22.11.2026: накладна з телефона. Каса лише кладе рядки у «вхідні» — нічого не проводить і карток не створює.
+        if (command.command === 'invoice.draft') {
+          const { PHONE_INVOICE_EVENT, storePhoneInvoice } = await import('@/features/tillCommands/phoneInvoiceModel')
+          const stored = storePhoneInvoice(command.operation_id, command.payload)
+          window.dispatchEvent(new Event(PHONE_INVOICE_EVENT))
+          return { status: 'done', result: { rows: stored.rows } }
         }
         if (command.command !== 'product.update') throw new Error('Невідома команда. Оновіть програму на касі.')
         const update = command.payload as TillProductUpdate

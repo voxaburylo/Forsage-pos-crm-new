@@ -10,6 +10,7 @@ import { formatMoney } from '@/lib/utils'
 import { toast } from '@/components/ui/Toast'
 import { adminApi } from '@/features/admin/adminApi'
 import { posLineCost, posLineGross } from './posMoney'
+import { CustomerOrdersChip } from './CustomerOrdersChip'
 
 interface Props {
   onPay: () => void
@@ -402,8 +403,10 @@ export function ReceiptPanel({ onPay, onSelectCustomer, onEditCustomer, customer
               <span className="text-yellow-600 text-[10px]">
                 {store.customer.loyaltyMode === 'cashback'
                   ? 'Накопичення на рахунок · без знижки в чеку'
-                  : `${store.customer.tierName ?? 'Персональна знижка'}: ${store.customer.tierDiscountPct}%`}
+                  : store.customer.tierDiscountPct >= 100 && store.customer.tierName ? `${store.customer.tierName} (без націнки)`
+                    : `${store.customer.tierName ?? 'Персональна знижка'}: ${store.customer.tierDiscountPct}%`}
               </span>
+              <CustomerOrdersChip customerId={store.customer.id} phone={store.customer.phone ?? null} debtBalance={Number(store.customer.debtBalance) || 0} />
             </div>
             <button
               onClick={onSelectCustomer}

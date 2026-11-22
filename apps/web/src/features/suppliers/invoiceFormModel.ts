@@ -478,6 +478,20 @@ export function makeDraftItem(overrides: Partial<LineItem> = {}): LineItem {
   }
 }
 
+/**
+ * 22.11.2026 (етап 3 плану замовлень): запчастина з довідника «раніше замовляли» → новий рядок накладної,
+ * щоб не набирати картку вручну. Назва за правилом власника — «Назва + артикул» (товар знаходиться пошуком).
+ * Закупка — остання із замовлення (її перевіряють за накладною); ціна продажу — лише якщо не нижча за закупку.
+ */
+export function orderedPartToInvoiceItem(part: { name: string; sku: string; buy_price: number; sell_price: number }): Partial<LineItem> {
+  const name = String(part.name ?? '').trim(), sku = String(part.sku ?? '').trim()
+  const key = (value: string) => value.normalize('NFKC').toLocaleLowerCase('uk-UA').replace(/[^\p{L}\p{N}]/gu, '')
+  const buy = Number.isSafeInteger(part.buy_price) && part.buy_price > 0 ? part.buy_price : 0
+  const sell = Number.isSafeInteger(part.sell_price) && part.sell_price > 0 && part.sell_price >= buy ? part.sell_price : 0
+  return { product_name: sku && !key(name).includes(key(sku)) ? (name + ' ' + sku).trim() : name, sku,
+    qty: 1, purchase_price: buy, retail_price: sell, total: buy, is_new: true }
+}
+
 export function roundRetailBySettings(retail: number, settings: any): number {
   if (!Number.isFinite(retail) || retail <= 0) return 0
   // Сітка націнки не повинна давати копійки. Якщо в налаштуваннях увімкнено

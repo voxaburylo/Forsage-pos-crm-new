@@ -83,6 +83,7 @@ import { isSpoolerGuardError, postflightPrinter, preflightPrinter } from './prin
 import { disposePrintWarmShell, prewarmPrintShell } from './print/printWarmShell'
 import { desktopTenantArgumentPositions, isDesktopChannelAllowed, isManagerSaleChannel, PUBLIC_DESKTOP_CHANNELS } from './security/desktopAuthorization'
 import { MANAGER_SALE_DENIED, managerCanSell, managerSaleAllowedIds, setManagerSaleAccess } from './security/managerSaleAccess'
+import { employeePricing, setEmployeePricing } from './security/employeePricing'
 import { activeSession } from './security/activeSession'
 import { customerWritePayload } from './security/customerWritePolicy'
 
@@ -1091,6 +1092,23 @@ app.whenReady().then(async () => {
   powerMonitor.on('suspend', () => blackBox?.record('system-suspend'))
   powerMonitor.on('resume', () => blackBox?.record('system-resume'))
   let rendererBudgetAt = 0, rendererBudget = 0
+  // 22.11.2026: після системного вікна «Ви впевнені?» (confirm/alert) вікно каси на Windows лишається активним,
+  // але клавіатура в поля більше не потрапляє, доки людина не перемкнеться на іншу програму й назад.
+  // Робимо це перемикання самі: зняти фокус з вікна й повернути його разом із вмістом сторінки.
+  let focusRepairAt = 0
+  ipcMain.on('desktop:window:restore-input-focus', (event) => {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender.id !== mainWindow.webContents.id) return
+    if (Date.now() - focusRepairAt < 150) return
+    focusRepairAt = Date.now()
+    try {
+      if (!mainWindow.isMinimized() && mainWindow.isVisible()) {
+        mainWindow.blur()
+        mainWindow.focus()
+        mainWindow.webContents.focus()
+        blackBox?.record('input-focus-restored')
+      }
+    } catch { /* повернення фокуса не має ламати роботу каси */ }
+  })
   ipcMain.on('desktop:diagnostic-event', (event, payload: unknown) => {
     if (!mainWindow || event.sender.id !== mainWindow.webContents.id || !payload || typeof payload !== 'object') return
     if (Date.now() - rendererBudgetAt > 1000) { rendererBudgetAt = Date.now(); rendererBudget = 0 }
@@ -1476,9 +1494,11 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:catalog:generate-barcode', () =>
     requireLocalCatalog().generateBarcodeOnly(),
   )
-  handleDesktopIpc('desktop:catalog:list-staff', () =>
-    requireLocalCatalog().listStaff(),
-  )
+  // 22.11.2026: каса отримує разом зі списком працівників їхню особисту ціну (відсоток або «за закупкою»).
+  handleDesktopIpc('desktop:catalog:list-staff', () => {
+    const prices = employeePricing(requireLocalDatabase())
+    return requireLocalCatalog().listStaff().map((user: any) => ({ ...user, employee_price: prices[user.id] ?? null }))
+  })
   handleDesktopIpc('desktop:catalog:get-settings', () =>
     requireLocalCatalog().getSettings(),
   )
@@ -1715,6 +1735,9 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:staff:sale-access', () => managerSaleAllowedIds(requireLocalDatabase()))
   handleDesktopIpc('desktop:staff:set-sale-access', (_event, id: string, enabled: boolean) =>
     setManagerSaleAccess(requireLocalDatabase(), id, enabled))
+  handleDesktopIpc('desktop:staff:employee-pricing', () => employeePricing(requireLocalDatabase()))
+  handleDesktopIpc('desktop:staff:set-employee-pricing', (_event, id: string, value: unknown) =>
+    setEmployeePricing(requireLocalDatabase(), id, value))
   handleDesktopIpc('desktop:staff:save-server-password', (_event, id: string, password: string) =>
     requireLocalStaff().saveServerPassword(id, password))
   handleDesktopIpc('desktop:staff:set-pin', (_event, userId: string, pin: string) => requireLocalStaff().setPin(userId, pin))
