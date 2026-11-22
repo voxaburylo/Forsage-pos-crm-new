@@ -70,7 +70,8 @@ export class TillDeviceLink {
 
   status(): TillDeviceLinkStatus {
     const key = this.currentKey()
-    return { registered: Boolean(key) && !this.rejected, rejected: this.rejected, tenant_id: key?.tenant_id ?? null,
+    // Без адреси сервера (пробна збірка) ключ нічого не дає — тоді зв'язок лишається за вікном програми.
+    return { registered: Boolean(key) && !this.rejected && Boolean(this.deps.apiUrl()), rejected: this.rejected, tenant_id: key?.tenant_id ?? null,
       commands_pending: this.commandsPending, last_ok_at: this.lastOkAt === null ? null : new Date(this.lastOkAt).toISOString() }
   }
 

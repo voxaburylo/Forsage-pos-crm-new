@@ -125,6 +125,8 @@ describe('the main PC keeps its own link to the server', () => {
       h.link.stop()
     }
     expect(harness({}, null).link.status()).toMatchObject({ registered: false, tenant_id: null })
+    // Збірка без адреси сервера: ключ є, але зв'язку немає — «підключено» не показуємо.
+    expect(harness({ apiUrl: () => null }).link.status()).toMatchObject({ registered: false, rejected: false })
   })
 
   it('a key the server rejects is not hammered; a new key from the owner restores the link', async () => {

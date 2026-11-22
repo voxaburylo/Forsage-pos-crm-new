@@ -8,18 +8,21 @@ permissions:
 concurrency:
   group: verify-${{ github.ref }}
   cancel-in-progress: true
+env:
+  VITE_SUPABASE_URL: https://example.supabase.co
+  VITE_SUPABASE_ANON_KEY: test-anon-key
+  VITE_API_URL: https://example.test
+  SUPABASE_URL: https://example.supabase.co
+  SUPABASE_SERVICE_KEY: test-service-key-not-a-secret
+  JWT_SECRET: test-only-not-production
+# 22.11.2026: один послідовний ланцюжок ішов 22–31 хв (з них «pnpm verify» — 21 хв), і про падіння
+# дізнавались через ~27 хв. Те саме тепер іде паралельно: веб, каса, сервер (дві половини) і смоки.
+# Склад перевірок не змінено: typecheck + lint + усі тести = колишній «pnpm verify»; смоки — ті самі кроки.
+# Підсумкове завдання «verify» зелене лише тоді, коли зелені всі частини.
 jobs:
-  verify:
+  web:
     runs-on: windows-latest
-    # Allow for serial SQLite/PGlite and native/UI probes on slower hosted runners.
-    timeout-minutes: 45
-    env:
-      VITE_SUPABASE_URL: https://example.supabase.co
-      VITE_SUPABASE_ANON_KEY: test-anon-key
-      VITE_API_URL: https://example.test
-      SUPABASE_URL: https://example.supabase.co
-      SUPABASE_SERVICE_KEY: test-service-key-not-a-secret
-      JWT_SECRET: test-only-not-production
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -30,7 +33,63 @@ jobs:
           node-version: '24'
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm verify
+      - run: pnpm --filter=web typecheck
+      - run: pnpm --filter=web lint
+      - run: pnpm --filter=web test
+
+  desktop:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.0.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter=desktop typecheck
+      - run: pnpm --filter=desktop test
+
+  server:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.0.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter=server typecheck
+        if: matrix.shard == 1
+      - run: pnpm typecheck:api
+        if: matrix.shard == 1
+      - run: pnpm --filter=server exec vitest run --shard=${{ matrix.shard }}/2
+
+  smokes:
+    runs-on: windows-latest
+    # Allow for serial SQLite/PGlite and native/UI probes on slower hosted runners.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.0.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm --filter web build
         env:
@@ -109,3 +168,16 @@ jobs:
       - run: pnpm --filter desktop exec electron scripts/print-render-smoke.cjs --software
       - run: node apps/web/scripts/receipt-layout-ui-smoke.mjs
       - run: node apps/desktop/scripts/portable-lifecycle-smoke.cjs
+
+  verify:
+    if: always()
+    needs: [web, desktop, server, smokes]
+    runs-on: ubuntu-latest
+    steps:
+      - name: All parts passed
+        run: |
+          echo "web=${{ needs.web.result }} desktop=${{ needs.desktop.result }} server=${{ needs.server.result }} smokes=${{ needs.smokes.result }}"
+          test "${{ needs.web.result }}" = success
+          test "${{ needs.desktop.result }}" = success
+          test "${{ needs.server.result }}" = success
+          test "${{ needs.smokes.result }}" = success

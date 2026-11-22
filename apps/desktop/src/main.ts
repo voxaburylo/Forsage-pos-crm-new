@@ -1763,8 +1763,10 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:web-rpc:execute', (_event, userId: string, channel: string, args: unknown[]) => executeWebRequest(userId, channel, args))
   // 22.11.2026, «головний ПК — тимчасовий сервер магазину»: зв'язок із сервером власним ключем ПК (tillDeviceLink).
   // Стан і сигнал доступні й на екрані входу: вони нічого не змінюють і не відкривають даних.
-  handleDesktopIpc('desktop:link:status', () => ({ ...getTillDeviceLink().status(), main_till: isMainTill() }))
-  handleDesktopIpc('desktop:link:wake', async () => ({ ...(await getTillDeviceLink().wake()), main_till: isMainTill() }))
+  // main_till = це головний ПК і в збірці відома адреса сервера: лише тоді вікно програми просить для ПК ключ.
+  const linkPossible = () => { try { return isMainTill() && Boolean(requireTrustedAuthConfig().apiUrl) } catch { return false } }
+  handleDesktopIpc('desktop:link:status', () => ({ ...getTillDeviceLink().status(), main_till: linkPossible() }))
+  handleDesktopIpc('desktop:link:wake', async () => ({ ...(await getTillDeviceLink().wake()), main_till: linkPossible() }))
   handleDesktopIpc('desktop:link:commands-taken', () => { getTillDeviceLink().commandsTaken() })
   // Ключ видає сервер власнику чи адміністратору; сюди його приносить вікно програми одразу після видачі.
   handleDesktopIpc('desktop:link:register', (_event, token: string) => {
