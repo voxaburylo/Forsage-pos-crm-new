@@ -4,7 +4,7 @@ import { AiInvoiceLineMatch } from './AiInvoiceLineMatch'
 import { useAiInvoiceMatching } from './useAiInvoiceMatching'
 import { bindInvoiceCandidate, invoiceMatchProblems, type InvoiceCandidate } from './aiInvoiceMatching'
 import type { InvoiceFundSource, InvoiceImportField, InvoiceImportMapping, InvoicePaymentMethod, LineItem, SupplierPaymentFundSource, SupplyInvoiceDraftData, SupplyInvoiceLocalDraft } from './invoiceFormModel'
-import { EMPTY_INVOICE_IMPORT_MAPPING, InvoiceImportMatchError, INVOICE_IMPORT_FIELDS, supplyInvoiceDraftKey, cleanImportCell, clearSupplyInvoiceDraft, draftFromServerInvoice, duplicateProductMessage, findExactProductForQuery, guessInvoiceImport, hasSupplyInvoiceDraftContent, invoiceItemsToLineItems, isDuplicateProductError, kopecksForForm, loadSupplyInvoiceDraft, makeDraftItem, makeLineKey, newestSupplyInvoiceDraft, normalizeBarcodeValue, normalizeExactInvoiceProductName, normalizeInvoiceUnit, normalizeSkuValue, parseDecimalInput, parseMoneyToKopecks, persistSupplyInvoiceDraft, retailFromLocalGrid } from './invoiceFormModel'
+import { orderedPartToInvoiceItem, EMPTY_INVOICE_IMPORT_MAPPING, InvoiceImportMatchError, INVOICE_IMPORT_FIELDS, supplyInvoiceDraftKey, cleanImportCell, clearSupplyInvoiceDraft, draftFromServerInvoice, duplicateProductMessage, findExactProductForQuery, guessInvoiceImport, hasSupplyInvoiceDraftContent, invoiceItemsToLineItems, isDuplicateProductError, kopecksForForm, loadSupplyInvoiceDraft, makeDraftItem, makeLineKey, newestSupplyInvoiceDraft, normalizeBarcodeValue, normalizeExactInvoiceProductName, normalizeInvoiceUnit, normalizeSkuValue, parseDecimalInput, parseMoneyToKopecks, persistSupplyInvoiceDraft, retailFromLocalGrid } from './invoiceFormModel'
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useViewNavigation } from '@/hooks/useViewNavigation'
@@ -33,6 +33,7 @@ import { desktopBridge, desktopProductToProduct } from '@/lib/desktopBridge'
 import { resolveCachedInvoiceProduct } from './invoiceProductCache'
 import { captureInvoiceQuantities, nextInvoiceItems } from './invoiceQuantityGuard'
 import { focusInvoiceLine } from './invoiceLineFocus'
+import { OrderPartSuggestions } from '@/features/orders/OrderPartSuggestions'
 import { assertInvoiceSource, buildCheckedInvoiceImport, prepareInvoiceClipboard, rememberInvoiceLayout, restoredInvoiceLayout, supplyRowsForInvoicePreview, supplyRowsToInvoiceItems } from './invoiceImportInput'
 import { readAiSupplyInput } from '@/features/ai/readAiSupplyInput'
 import { isSupplyCoverSheet } from '@/features/ai/aiSupplyImport'
@@ -1504,6 +1505,8 @@ export default function InvoiceFormPage() {
               <div className="space-y-2">
                 <Input value={productSearch} onChange={(e) => setProductSearch(e.target.value)} onKeyDown={handleProductSearchKeyDown} placeholder="Знайти існуючий товар за назвою, артикулом або штрихкодом..." className="w-full" />
                 <p className="text-xs text-gray-400">Enter додає лише однозначний точний збіг. ↓ — вибрати зі списку; новий товар — «+ Новий рядок».</p>
+                {/* Запчастина, яку вже замовляли клієнтам без картки: «Додати» створює новий рядок із назвою, артикулом і цінами. */}
+                <OrderPartSuggestions query={productSearch} onPick={part => addDraftItem(orderedPartToInvoiceItem(part), 'qty')} />
               </div>
             )}
 
