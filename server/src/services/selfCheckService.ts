@@ -139,7 +139,16 @@ export async function runSelfCheckIfDue(app: unknown, now: Date = new Date()): P
       [shop.tenant_id],
     )
     if (!owner.rows[0]) continue
-    const result = await runSelfCheck(app, { id: String(owner.rows[0].id), email: String(owner.rows[0].email ?? ''), tenant_id: String(shop.tenant_id) })
+    let result: SelfCheckResult
+    try {
+      result = await runSelfCheck(app, { id: String(owner.rows[0].id), email: String(owner.rows[0].email ?? ''), tenant_id: String(shop.tenant_id) })
+    } catch (error) {
+      // Сама перевірка не запустилась (наприклад, середовище не дало слухати внутрішню адресу) — це має бути видно, а не мовчати.
+      const text = error instanceof Error ? error.message : String(error)
+      logger.error({ err: text }, '[self-check] could not run')
+      await pool.query('UPDATE server_self_check SET result = $1::jsonb WHERE id = 1', [JSON.stringify({ error: text.slice(0, 500) })])
+      return { ran: false }
+    }
     results.push({ tenant_id: String(shop.tenant_id), ...result })
     if (result.failures.length) {
       logger.error({ tenantId: shop.tenant_id, failures: result.failures }, '[self-check] pages answer with an internal error')
