@@ -8,6 +8,8 @@ import {
 } from '../validators/adminSchema.js'
 import * as adminService from '../services/adminService.js'
 import { connectOwnerBot } from '../services/ownerBotConnect.js'
+import { DEFAULT_OWNER_ALERTS, readOwnerAlertSettings } from '../services/ownerAlertService.js'
+import { pool } from '../db/pg.js'
 import { queueStaffSecret } from '../services/tillCommandService.js'
 import { hashSecret } from '../lib/secretHash.js'
 import { DESKTOP_CLIENT_HEADER, DESKTOP_CLIENT_VALUE } from '../middleware/localFirstWriteGuard.js'
@@ -183,6 +185,22 @@ settingsRouter.get('/', async (req, res, next) => {
 // Етап 11 (22.11.2026): підключити бота власника — Telegram приноситиме його команди на сервер.
 settingsRouter.post('/telegram-connect', requireRole('owner', 'admin'), async (req, res, next) => {
   try { res.json({ data: await connectOwnerBot(req.get('host')) }) } catch (err) { next(err) }
+})
+
+// Етап 11 (22.11.2026): пороги тривог власнику. Живуть лише на сервері (у касі їх немає) — змінювати можна й із вебу.
+settingsRouter.get('/owner-alerts', requireRole('owner', 'admin'), async (req, res, next) => {
+  try {
+    const { rows } = await pool.query('SELECT owner_alerts FROM shop_settings WHERE tenant_id = $1', [req.user!.tenant_id])
+    res.json({ data: { settings: readOwnerAlertSettings(rows[0]?.owner_alerts), defaults: DEFAULT_OWNER_ALERTS } })
+  } catch (err) { next(err) }
+})
+settingsRouter.put('/owner-alerts', requireRole('owner', 'admin'), async (req, res, next) => {
+  try {
+    const settings = readOwnerAlertSettings(req.body)
+    const { rowCount } = await pool.query('UPDATE shop_settings SET owner_alerts = $2::jsonb WHERE tenant_id = $1', [req.user!.tenant_id, JSON.stringify(settings)])
+    if (!rowCount) throw new AppError('NOT_FOUND', 'Налаштування магазину ще не створено', 404)
+    res.json({ data: { settings } })
+  } catch (err) { next(err) }
 })
 
 settingsRouter.put('/', requireRole('owner', 'admin'), async (req, res, next) => {

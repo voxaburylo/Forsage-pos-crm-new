@@ -65,7 +65,7 @@ const WEB_AI_MEMORY_PATH = '/api/v1/ai/memory'
  * 22.11.2026 (рішення власника: «зміна тієї інформації, яка не вплине на залишки»): дані, що живуть лише на сервері —
  * у базі каси їх немає взагалі, тож задвоїтись нема чому: лист очікування, сповіщення та їх шаблони, канали, чати.
  */
-const SERVER_ONLY_DATA_PREFIXES = ['/api/v1/waitlist/', '/api/v1/notifications/', '/api/v1/channels', '/api/v1/chats/']
+const SERVER_ONLY_DATA_PREFIXES = ['/api/v1/waitlist/', '/api/v1/notifications/', '/api/v1/channels', '/api/v1/chats/', '/api/v1/settings/owner-alerts']
 
 export function isStaffSecretChange(method: string, path: string): boolean {
   return (method === 'POST' && path === '/api/v1/auth/set-pin') || (method === 'PUT' && /^\/api\/v1\/admin\/users\/[0-9a-f-]{36}\/password$/.test(path))
