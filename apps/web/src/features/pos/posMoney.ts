@@ -11,7 +11,10 @@ export function posLineCost(item: { qty: number; purchasePrice?: number }): numb
 
 export function posLineAmounts(item: { unitPrice: number; qty: number; discount: number; discountPct?: number; purchasePrice?: number }) {
   const gross = posLineGross(item.unitPrice, item.qty)
-  const requested = item.discountPct !== undefined && Number.isFinite(item.discountPct)
+  // 22.11.2026: 100 % — це «працівнику за закупкою». Коли закупівельна ціна рядка невідома (послуга, стара картка),
+  // така знижка зробила б його безкоштовним, тому на цей рядок вона не діє зовсім.
+  const atCostWithoutCost = item.discountPct !== undefined && item.discountPct >= 100 && posLineCost(item) <= 0
+  const requested = atCostWithoutCost ? 0 : item.discountPct !== undefined && Number.isFinite(item.discountPct)
     ? Math.round(gross * Math.max(0, Math.min(100, item.discountPct)) / 100)
     : Math.round(Number.isFinite(item.discount) ? item.discount : 0)
   // Правило магазину: товар не відпускається нижче закупівельної ціни, тому

@@ -28,7 +28,31 @@ describe('shop rule: nothing is sold below the purchase price', () => {
   it('scales the floor with quantity and ignores an unknown purchase price', () => {
     expect(posLineAmounts({ ...part, qty: 3, discountPct: 50 })).toEqual({ discount: 450_000, total: 1_500_000 })
     expect(posLineCost({ qty: 2 })).toBe(0)
-    expect(posLineAmounts({ unitPrice: 10_000, qty: 1, discount: 0, discountPct: 100 })).toEqual({ discount: 10_000, total: 0 })
+    expect(posLineAmounts({ unitPrice: 10_000, qty: 1, discount: 0, discountPct: 90 })).toEqual({ discount: 9_000, total: 1_000 })
+    // 22.11.2026: 100 % = «працівнику за закупкою». Без відомої закупки рядок не стає безкоштовним — знижка на нього не діє.
+    expect(posLineAmounts({ unitPrice: 10_000, qty: 1, discount: 0, discountPct: 100 })).toEqual({ discount: 0, total: 10_000 })
+    // Ручна знижка сумою лишається можливою.
+    expect(posLineAmounts({ unitPrice: 10_000, qty: 1, discount: 10_000 })).toEqual({ discount: 10_000, total: 0 })
+  })
+  it('gives an employee the personal price from the staff card: own percent or the purchase price (owner decision 22.11.2026)', () => {
+    const service = { productId: 'svc', sku: 'S-1', name: 'Шиномонтаж', unit: 'посл', qty: 1, unitPrice: 40_000, discount: 0, qtyOnHand: 0 }
+    // Загальна знижка 10 %; у Олени своя 20 %, Петро купує за закупкою, у Івана особистої немає.
+    store.getState().setEmployeeDiscount(10, ['0671112233', '0672223344', '0673334455'], [{ phone: '0671112233', pct: 20 }, { phone: '+380672223344', pct: 100 }])
+    const buy = (phone: string) => {
+      store.getState().replaceOpenReceipts([])
+      store.getState().setCustomer({ ...customer, phone })
+      store.getState().setAutomaticDiscountPct(0)
+      store.getState().addItem(part)
+      store.getState().addItem(service)
+      return store.getState().items.map(item => item.total)
+    }
+    expect(buy('067 111 22 33')).toEqual([520_000, 32_000])
+    // За закупкою: товар — рівно закупівельна ціна, послуга без закупки — повна ціна, а не безкоштовно.
+    expect(buy('067 222 33 44')).toEqual([500_000, 40_000])
+    expect(store.getState().customer?.tierName).toBe('Працівник: за закупкою')
+    expect(buy('067 333 44 55')).toEqual([585_000, 36_000])
+    // Сторонній клієнт нічого не отримує.
+    expect(buy('050 000 00 00')).toEqual([650_000, 40_000])
   })
   it('applies the floor to the customer discount and to a manual discount in the basket', () => {
     store.getState().setCustomer({ ...customer, tierDiscountPct: 30 })

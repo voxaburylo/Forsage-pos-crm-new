@@ -214,12 +214,15 @@ export default function POSPage() {
   const effectiveOnline = desktopRuntime || serverOnline
   const { pendingCount, syncing, incrementPending, syncPendingSales } = useOfflineSync(serverOnline)
   const [employeeDiscountPct, setEmployeeDiscountPct] = useState(0)
-  const [staffUsers, setStaffUsers]     = useState<Array<{ id: string; full_name: string; role: string; is_active?: boolean; phone?: string | null }>>([])
+  const [staffUsers, setStaffUsers]     = useState<Array<{ id: string; full_name: string; role: string; is_active?: boolean; phone?: string | null; employee_price?: { mode: 'pct'; pct: number } | { mode: 'cost' } | null }>>([])
   const setEmployeeDiscount = usePOSStore((state) => state.setEmployeeDiscount)
   // «Знижка для працівників» діє сама, коли в чек обрано клієнта з телефоном
   // активного працівника; окремої кнопки в касі немає.
   useEffect(() => {
-    setEmployeeDiscount(employeeDiscountPct, staffUsers.filter((user) => user.is_active !== false).map((user) => user.phone))
+    const active = staffUsers.filter((user) => user.is_active !== false)
+    // Особиста ціна з картки працівника: відсоток або «за закупкою» (100 % — чек сам зупиняє знижку на закупівельній ціні).
+    const personal = active.filter((user) => user.employee_price).map((user) => ({ phone: user.phone, pct: user.employee_price!.mode === 'cost' ? 100 : user.employee_price!.pct }))
+    setEmployeeDiscount(employeeDiscountPct, active.map((user) => user.phone), personal)
   }, [employeeDiscountPct, staffUsers, setEmployeeDiscount])
   const tireWorkers = useMemo(() => staffUsers.filter((user) => user.role === 'tire_worker' && user.is_active !== false), [staffUsers])
   const session = useAuthStore((s) => s.session)

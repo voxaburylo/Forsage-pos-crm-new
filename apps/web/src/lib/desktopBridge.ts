@@ -661,6 +661,9 @@ interface ForsageDesktopBridge {
     /** 21.11.2026: менеджери, яким власник дозволив продавати (лише головний ПК). */
     saleAccess?: () => Promise<string[]>
     setSaleAccess?: (id: string, enabled: boolean) => Promise<string[]>
+    /** 22.11.2026: особиста ціна працівника — відсоток або «за закупкою» (лише головний ПК). */
+    employeePricing?: () => Promise<Record<string, { mode: 'pct'; pct: number } | { mode: 'cost' }>>
+    setEmployeePricing?: (id: string, value: { mode: 'pct'; pct: number } | { mode: 'cost' } | null) => Promise<Record<string, { mode: 'pct'; pct: number } | { mode: 'cost' }>>
     setPin: (userId: string, pin: string) => Promise<{ success: true }>
     verifyPin: (userId: string, pin: string) => Promise<{ valid: boolean; error?: string }>
     listCommissionRules: () => Promise<any[]>

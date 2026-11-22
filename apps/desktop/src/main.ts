@@ -83,6 +83,7 @@ import { isSpoolerGuardError, postflightPrinter, preflightPrinter } from './prin
 import { disposePrintWarmShell, prewarmPrintShell } from './print/printWarmShell'
 import { desktopTenantArgumentPositions, isDesktopChannelAllowed, isManagerSaleChannel, PUBLIC_DESKTOP_CHANNELS } from './security/desktopAuthorization'
 import { MANAGER_SALE_DENIED, managerCanSell, managerSaleAllowedIds, setManagerSaleAccess } from './security/managerSaleAccess'
+import { employeePricing, setEmployeePricing } from './security/employeePricing'
 import { activeSession } from './security/activeSession'
 import { customerWritePayload } from './security/customerWritePolicy'
 
@@ -1476,9 +1477,11 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:catalog:generate-barcode', () =>
     requireLocalCatalog().generateBarcodeOnly(),
   )
-  handleDesktopIpc('desktop:catalog:list-staff', () =>
-    requireLocalCatalog().listStaff(),
-  )
+  // 22.11.2026: каса отримує разом зі списком працівників їхню особисту ціну (відсоток або «за закупкою»).
+  handleDesktopIpc('desktop:catalog:list-staff', () => {
+    const prices = employeePricing(requireLocalDatabase())
+    return requireLocalCatalog().listStaff().map((user: any) => ({ ...user, employee_price: prices[user.id] ?? null }))
+  })
   handleDesktopIpc('desktop:catalog:get-settings', () =>
     requireLocalCatalog().getSettings(),
   )
@@ -1715,6 +1718,9 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:staff:sale-access', () => managerSaleAllowedIds(requireLocalDatabase()))
   handleDesktopIpc('desktop:staff:set-sale-access', (_event, id: string, enabled: boolean) =>
     setManagerSaleAccess(requireLocalDatabase(), id, enabled))
+  handleDesktopIpc('desktop:staff:employee-pricing', () => employeePricing(requireLocalDatabase()))
+  handleDesktopIpc('desktop:staff:set-employee-pricing', (_event, id: string, value: unknown) =>
+    setEmployeePricing(requireLocalDatabase(), id, value))
   handleDesktopIpc('desktop:staff:save-server-password', (_event, id: string, password: string) =>
     requireLocalStaff().saveServerPassword(id, password))
   handleDesktopIpc('desktop:staff:set-pin', (_event, userId: string, pin: string) => requireLocalStaff().setPin(userId, pin))
