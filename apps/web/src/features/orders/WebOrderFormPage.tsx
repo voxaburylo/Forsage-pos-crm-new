@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Trash2 } from 'lucide-react'
+import { Camera, Plus, Trash2 } from 'lucide-react'
 import { Layout } from '@/components/Layout'
 import { Button, Card, Input } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
@@ -8,6 +8,7 @@ import { api } from '@/lib/api'
 import { formatMoney } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
 import { useTillOnline } from '@/features/tillCommands/TillEditModal'
+import { recognizeCartScreenshot } from './orderCartScreenshot'
 import { checkTillOrder, readOrderMoney, readOrderQty, TILL_ORDER_MAX_ITEMS, type TillOrderPayload } from '@/features/tillCommands/tillOrderModel'
 
 type Row = { key: number; name: string; sku: string; qty: string; sell: string; buy: string; productId?: string; stock?: number }
@@ -140,6 +141,30 @@ export default function WebOrderFormPage() {
     setSearch(null)
   }
 
+  // Скриншот кошика постачальника (або фото списку): помічник переносить рядки, ціну продажу ставить людина.
+  const cartInput = useRef<HTMLInputElement>(null)
+  const [readingCart, setReadingCart] = useState(false)
+  const [cartNote, setCartNote] = useState('')
+  async function readCart(list: FileList | null) {
+    const file = list?.[0]
+    if (cartInput.current) cartInput.current.value = ''
+    if (!file || busy || readingCart) return
+    setMessage(''); setCartNote(''); setReadingCart(true)
+    try {
+      const found = await recognizeCartScreenshot(file)
+      if (!found.rows.length) { setMessage('На зображенні не знайдено позицій. Спробуйте чіткіший скриншот або впишіть позиції вручну.'); return }
+      // Порожні рядки бланка замінюємо розпізнаними; заповнені людиною лишаються.
+      const kept = rows.filter(row => row.name.trim() || row.sku.trim())
+      const room = TILL_ORDER_MAX_ITEMS - kept.length
+      const added = found.rows.slice(0, room).map(row => ({ key: nextKey.current++, name: row.name, sku: row.sku, qty: row.qty, sell: '', buy: row.buy_price === '0' ? '' : row.buy_price }))
+      setRows([...kept, ...added])
+      const left = found.rows.length - added.length
+      setCartNote(`Додано позицій: ${added.length}.${found.skipped ? ` Без назви пропущено: ${found.skipped}.` : ''}${left > 0 ? ` Не вмістилось: ${left} (у бланку до ${TILL_ORDER_MAX_ITEMS} позицій).` : ''} Ціну продажу впишіть самі; кількість і закупку звірте.`)
+    } catch (error) {
+      setMessage((error as { message?: string })?.message || 'Не вдалося розпізнати зображення. Позиції можна вписати вручну.')
+    } finally { setReadingCart(false) }
+  }
+
   let total = 0, totalKnown = true
   for (const row of rows) {
     if (!row.name.trim() && !row.sku.trim()) continue
@@ -268,12 +293,20 @@ export default function WebOrderFormPage() {
             </div>
           </Card>
         ))}
-        <Button variant="secondary" disabled={busy || rows.length >= TILL_ORDER_MAX_ITEMS} onClick={() => setRows(prev => [...prev, emptyRow(nextKey.current++)])}>
-          <Plus size={16} className="mr-1 inline" />Додати позицію
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" disabled={busy || readingCart || rows.length >= TILL_ORDER_MAX_ITEMS} onClick={() => setRows(prev => [...prev, emptyRow(nextKey.current++)])}>
+            <Plus size={16} className="mr-1 inline" />Додати позицію
+          </Button>
+          <input ref={cartInput} type="file" accept="image/*" className="hidden" aria-label="Скриншот кошика постачальника" onChange={event => { void readCart(event.target.files) }} />
+          <Button variant="secondary" loading={readingCart} disabled={busy || readingCart} onClick={() => cartInput.current?.click()}>
+            <Camera size={16} className="mr-1 inline" />{readingCart ? 'Розпізнаю…' : 'Зі скриншота кошика'}
+          </Button>
+        </div>
+        {cartNote && <p className="rounded-lg bg-blue-50 px-3 py-2 text-sm text-blue-900">{cartNote}</p>}
+        <p className="text-xs text-gray-500">Скриншот кошика на сайті постачальника або фото списку: розпізнавання платне (ключ помічника) і триває до трьох хвилин.</p>
         <p className="text-right text-sm text-gray-700">Разом: <span className="font-semibold">{totalKnown ? formatMoney(total) : 'перевірте кількість і ціни'}</span></p>
         {message && <p role="alert" className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">{message}</p>}
-        <Button className="w-full" loading={busy} onClick={submit}>
+        <Button className="w-full" loading={busy} disabled={readingCart} onClick={submit}>
           {busy ? 'Чекаю відповідь каси…' : till?.online ? 'Надіслати на касу' : 'Надіслати — каса забере пізніше'}
         </Button>
       </div>

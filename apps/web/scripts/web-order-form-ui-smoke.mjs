@@ -16,6 +16,8 @@ const mocks = {
   '@/components/Layout': "export const Layout=({children,title})=><main><h1>{title}</h1>{children}</main>",
   '@/components/ui/Toast': 'export const toast={success:m=>window.fixture.toasts.push(m),error:m=>window.fixture.toasts.push(m),warning:m=>window.fixture.toasts.push(m)};export const ToastContainer=()=>null',
   '@/features/tillCommands/TillEditModal': 'import {useState,useEffect} from "react";export const useTillOnline=()=>{const [s,set]=useState({online:window.fixture.online,seen_at:null});useEffect(()=>{window.fixture.setOnline=v=>set({online:v,seen_at:null})},[]);return s}',
+  '@/lib/processingUploads': "export const dataUrlToBlob=()=>new Blob(['x'],{type:'image/png'});export const uploadProcessingBlob=async()=>({path:'ai/u1/cart-'+(++window.fixture.uploads)+'.png',mimeType:'image/png'});export const removeProcessingUploads=async paths=>{window.fixture.removed.push(...paths)}",
+  '@/lib/prepareImage': "export const prepareImageDataUrl=async()=>'data:image/png;base64,eA=='",
   'react-router-dom': 'export const useNavigate=()=>to=>window.fixture.navigated.push(to)',
 }
 const entry = `
@@ -25,7 +27,8 @@ import WebOrderFormPage, {WaitingOrdersNote} from '/src/features/orders/WebOrder
 import '/src/index.css';
 const f=window.fixture={online:true,posts:[],toasts:[],navigated:[],state:{status:'done',result:{order_number:57,total_amount:250000},error:null},
   found:[{id:'11111111-2222-4333-8444-555555555555',name:'Фільтр масляний W712',sku:'W712',retail_price:30000,qty_on_hand:4}]};
-f.post=(url,body)=>{f.posts.push({url,body:structuredClone(body)});return Promise.resolve({data:{operation_id:body.operation_id,status:'pending',till_online:f.online}})};
+f.uploads=0;f.removed=[];f.cart={actions:[{payload:{products:[{name:'Амортизатор передній',sku:'333114',brand_name:'KYB',qty:2,purchase_price_uah:1450.5},{name:'Пильовик',article:'PK-12'},{sku:'БЕЗ-НАЗВИ'}]}}]};
+f.post=(url,body)=>{f.posts.push({url,body:structuredClone(body)});if(url==='/api/v1/ai/supply-invoice-photo')return Promise.resolve({data:f.cart});return Promise.resolve({data:{operation_id:body.operation_id,status:'pending',till_online:f.online}})};
 f.waiting=[{operation_id:'77777777-2222-4333-8444-555555555555',created_at:'2026-11-22T05:00:00Z',customer:'Марія',items:2,state:'waiting',error:null},{operation_id:'88888888-2222-4333-8444-555555555555',created_at:'2026-11-22T04:00:00Z',customer:'Олег',items:1,state:'failed',error:'Позиція 1: ціна нижча за закупівельну'}];
 f.get=url=>url.includes('/products/search')?Promise.resolve({data:f.found}):url.endsWith('/waiting')?Promise.resolve({data:f.waiting}):Promise.resolve({data:f.state});
 createRoot(document.getElementById('root')).render(React.createElement(React.Fragment,null,React.createElement(WaitingOrdersNote),React.createElement(WebOrderFormPage)));
@@ -129,6 +132,21 @@ try {
   assert.equal(cancel.body.command, 'order.cancel')
   assert.deepEqual(cancel.body.payload, { operation_id: '77777777-2222-4333-8444-555555555555' })
   console.log('PASS: a refusal is shown with its reason; a waiting order is cancelled by one order.cancel')
+
+  // 7. Скриншот кошика: рядки лягають у бланк, ціну продажу не вигадано, фото прибрано з тимчасового сховища.
+  await page.getByRole('button', { name: 'Ще одне', exact: true }).click()
+  await page.getByLabel('Скриншот кошика постачальника').setInputFiles({ name: 'cart.png', mimeType: 'image/png', buffer: Buffer.from('fake-cart') })
+  await page.getByText('Додано позицій: 2. Без назви пропущено: 1.', { exact: false }).waitFor()
+  assert.equal(await page.getByLabel('Назва, позиція 1').inputValue(), 'Амортизатор передній KYB')
+  assert.equal(await page.getByLabel('Артикул, позиція 1').inputValue(), '333114')
+  assert.equal(await page.getByLabel('Кількість, позиція 1').inputValue(), '2')
+  assert.equal(await page.getByLabel('Закупка, грн, позиція 1').inputValue(), '1450.5')
+  assert.equal(await page.getByLabel('Ціна продажу, грн, позиція 1').inputValue(), '')
+  assert.equal(await page.getByLabel('Назва, позиція 2').inputValue(), 'Пильовик')
+  assert.equal(await page.getByLabel('Закупка, грн, позиція 2').inputValue(), '')
+  assert.equal(await page.getByLabel('Назва, позиція 3').count(), 0)
+  assert.deepEqual(await page.evaluate(() => fixture.removed), ['ai/u1/cart-1.png'])
+  console.log('PASS: a supplier cart screenshot fills the order rows; the selling price is left for a person')
 
   const layout = await page.evaluate(() => ({ width: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }))
   assert.ok(layout.scroll <= layout.width, 'web order form must not scroll sideways on a phone')
