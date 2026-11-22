@@ -21,13 +21,14 @@ const mocks = {
 const entry = `
 import React from 'react';
 import {createRoot} from 'react-dom/client';
-import WebOrderFormPage from '/src/features/orders/WebOrderFormPage.tsx';
+import WebOrderFormPage, {WaitingOrdersNote} from '/src/features/orders/WebOrderFormPage.tsx';
 import '/src/index.css';
 const f=window.fixture={online:true,posts:[],toasts:[],navigated:[],state:{status:'done',result:{order_number:57,total_amount:250000},error:null},
   found:[{id:'11111111-2222-4333-8444-555555555555',name:'Фільтр масляний W712',sku:'W712',retail_price:30000,qty_on_hand:4}]};
 f.post=(url,body)=>{f.posts.push({url,body:structuredClone(body)});return Promise.resolve({data:{operation_id:body.operation_id,status:'pending',till_online:f.online}})};
-f.get=url=>url.includes('/products/search')?Promise.resolve({data:f.found}):Promise.resolve({data:f.state});
-createRoot(document.getElementById('root')).render(React.createElement(WebOrderFormPage));
+f.waiting=[{operation_id:'77777777-2222-4333-8444-555555555555',created_at:'2026-11-22T05:00:00Z',customer:'Марія',items:2,state:'waiting',error:null},{operation_id:'88888888-2222-4333-8444-555555555555',created_at:'2026-11-22T04:00:00Z',customer:'Олег',items:1,state:'failed',error:'Позиція 1: ціна нижча за закупівельну'}];
+f.get=url=>url.includes('/products/search')?Promise.resolve({data:f.found}):url.endsWith('/waiting')?Promise.resolve({data:f.waiting}):Promise.resolve({data:f.state});
+createRoot(document.getElementById('root')).render(React.createElement(React.Fragment,null,React.createElement(WaitingOrdersNote),React.createElement(WebOrderFormPage)));
 `
 const server = await createServer({ cacheDir: createSmokeCache(), configFile: false,
   root: path.join(root, 'apps/web'), logLevel: 'error', esbuild: { jsx: 'automatic' },
@@ -118,6 +119,16 @@ try {
   await page.getByText('Замовлення чекає касу', { exact: true }).waitFor()
   assert.equal(await page.evaluate(() => fixture.posts.length), 2)
   console.log('PASS: with the till offline the order is queued and the screen says so')
+
+  // 6. Черга: відмову каси видно з причиною; бланк, який ще чекає, можна скасувати однією командою.
+  await page.getByRole('alert').filter({ hasText: 'Олег' }).filter({ hasText: 'ціна нижча за закупівельну' }).waitFor()
+  await page.evaluate(() => { fixture.waiting = fixture.waiting.slice(1) })
+  await page.getByRole('button', { name: 'Скасувати бланк: Марія', exact: true }).click()
+  await page.getByRole('button', { name: 'Скасувати бланк: Марія', exact: true }).waitFor({ state: 'detached' })
+  const cancel = (await page.evaluate(() => fixture.posts)).at(-1)
+  assert.equal(cancel.body.command, 'order.cancel')
+  assert.deepEqual(cancel.body.payload, { operation_id: '77777777-2222-4333-8444-555555555555' })
+  console.log('PASS: a refusal is shown with its reason; a waiting order is cancelled by one order.cancel')
 
   const layout = await page.evaluate(() => ({ width: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }))
   assert.ok(layout.scroll <= layout.width, 'web order form must not scroll sideways on a phone')

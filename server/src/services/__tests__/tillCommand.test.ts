@@ -77,7 +77,22 @@ describe('web write through the till', () => {
       { operation_id: id(8), created_at: '2026-11-22T05:01:00.000Z', customer: '0671234567', items: 1, state: 'failed', error: 'Позиція 1: ціна нижча за закупівельну' },
     ])
     expect(query.mock.calls[0][0]).toMatch(/status = 'expired'[\s\S]*CASE WHEN command = 'order.save'/)
-    expect(query.mock.calls[1][1]).toEqual(['t', 'order.save'])
+    expect(query.mock.calls[1][1]).toEqual(['t', 'order.save', 'Скасовано у вебі'])
+  })
+  it('cancels a queued order only while the till has not taken it, and inserts no command for that', async () => {
+    const cancel = { operation_id: id(1), command: 'order.cancel' as const, payload: { operation_id: id(7) } }
+    expect(createCommandSchema.safeParse(cancel).success).toBe(true)
+    expect(createCommandSchema.safeParse({ ...cancel, payload: { operation_id: id(7), force: true } }).success).toBe(false)
+    query.mockResolvedValueOnce({ rowCount: 1 })
+    await expect(createCommand('t', 'u', cancel)).resolves.toEqual({ operation_id: id(7), status: 'canceled' })
+    expect(query).toHaveBeenCalledTimes(1)
+    expect(query.mock.calls[0][0]).toMatch(/UPDATE till_commands SET status = 'failed'[\s\S]*command = \$3 AND status = 'pending'/)
+    expect(query.mock.calls[0][1]).toEqual(['t', id(7), 'order.save', 'Скасовано у вебі'])
+    // Каса вже забрала бланк: скасувати з вебу не можна, і про це сказано прямо.
+    query.mockReset()
+    query.mockResolvedValueOnce({ rowCount: 0 })
+    await expect(createCommand('t', 'u', cancel)).rejects.toMatchObject({ status: 409, code: 'CONFLICT' })
+    for (const role of ['owner', 'admin', 'manager']) expect(commandAllowedForRole('order.cancel', role)).toBe(true)
   })
   it('accepts a result only from the device that claimed the command', async () => {
     query.mockResolvedValueOnce({ rowCount: 0 })

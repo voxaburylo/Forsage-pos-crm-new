@@ -75,7 +75,12 @@ export const orderSavePayload = z.object({
   items: z.array(orderItem).min(1).max(60),
 }).strict().refine(order => Boolean(order.customer_phone || order.customer_name), 'Потрібен телефон або ім’я клієнта')
 
+/** Скасування бланка з черги. Це не команда касі: сервер сам гасить бланк, якщо каса його ще не забрала. */
+export const CANCEL_COMMAND = 'order.cancel'
+export const CANCELED_IN_WEB = 'Скасовано у вебі'
+
 export const createCommandSchema = z.discriminatedUnion('command', [
+  z.object({ operation_id: z.string().uuid(), command: z.literal('order.cancel'), payload: z.object({ operation_id: z.string().uuid() }).strict() }).strict(),
   z.object({ operation_id: z.string().uuid(), command: z.literal('order.save'), payload: orderSavePayload }).strict(),
   z.object({ operation_id: z.string().uuid(), command: z.literal('product.update'), payload: productUpdatePayload }).strict(),
   z.object({ operation_id: z.string().uuid(), command: z.literal('shift.list'), payload: z.object({}).strict() }).strict(),
@@ -104,7 +109,22 @@ export async function tillStatus(tenantId: string) {
   return { online: Boolean(rows[0]?.online), seen_at: rows[0] ? new Date(rows[0].seen_at).toISOString() : null }
 }
 
+/**
+ * Скасувати бланк замовлення, який ще чекає касу. Атомарно: або бланк погашено, або каса вже його забрала —
+ * тоді відмова, і людина знає, що замовлення створюється (скасувати його можна вже на касі).
+ */
+export async function cancelQueuedOrder(tenantId: string, operationId: string) {
+  const { rowCount } = await pool.query(
+    `UPDATE till_commands SET status = 'failed', error = $4, finished_at = now()
+      WHERE tenant_id = $1 AND operation_id = $2 AND command = $3 AND status = 'pending'`,
+    [tenantId, operationId, QUEUED_COMMAND, CANCELED_IN_WEB],
+  )
+  if (!rowCount) throw new AppError('CONFLICT', 'Каса вже забрала цей бланк або його вже немає в черзі. Якщо замовлення створилося — скасуйте його на касі.', 409)
+  return { operation_id: operationId, status: 'canceled' }
+}
+
 export async function createCommand(tenantId: string, userId: string, input: z.infer<typeof createCommandSchema>) {
+  if (input.command === CANCEL_COMMAND) return cancelQueuedOrder(tenantId, input.payload.operation_id)
   const online = (await tillStatus(tenantId)).online
   if (!online && input.command !== QUEUED_COMMAND) throw new AppError('TILL_OFFLINE', 'Каса зараз не в мережі. Зміну можна внести лише тоді, коли програма на касі увімкнена й має інтернет.', 409)
   const { rows } = await pool.query(
@@ -136,9 +156,10 @@ export async function listWaitingOrders(tenantId: string) {
   const { rows } = await pool.query(
     `SELECT operation_id, payload, created_at, status, error FROM till_commands
       WHERE tenant_id = $1 AND command = $2
-        AND (status IN ('pending', 'claimed') OR (status IN ('failed', 'expired') AND finished_at > now() - interval '24 hours'))
+        AND (status IN ('pending', 'claimed') OR (status IN ('failed', 'expired') AND finished_at > now() - interval '24 hours'
+             AND error IS DISTINCT FROM $3))
       ORDER BY created_at LIMIT 50`,
-    [tenantId, QUEUED_COMMAND],
+    [tenantId, QUEUED_COMMAND, CANCELED_IN_WEB],
   )
   return rows.map(row => {
     const payload = (row.payload ?? {}) as { customer_name?: string | null; customer_phone?: string | null; items?: unknown[] }
