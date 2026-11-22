@@ -48,6 +48,16 @@ describe('веб тільки дивиться, пише лише каса', () 
     }
   })
 
+  it('веб може передати команду на касу, але забрати її й відповісти може лише каса', () => {
+    // 22.11.2026: без цього правка картки й закриття зміни з вебу відхилялись ще до маршруту.
+    expect(isWriteAllowed(req('POST', '/api/v1/till-commands'))).toBe(true)
+    expect(isWriteAllowed(req('POST', '/api/v1/till-commands/'))).toBe(true)
+    expect(isWriteAllowed(req('POST', '/api/v1/till-commands/claim'))).toBe(false)
+    expect(isWriteAllowed(req('POST', '/api/v1/till-commands/abc/result'))).toBe(false)
+    expect(isWriteAllowed(req('DELETE', '/api/v1/till-commands'))).toBe(false)
+    expect(isWriteAllowed(req('POST', '/api/v1/till-commands/claim', 'desktop'))).toBe(true)
+  })
+
   it('черга синхронізації приймається лише від каси', () => {
     expect(isWriteAllowed(req('POST', '/api/v1/sync/push'))).toBe(false)
     expect(isWriteAllowed(req('POST', '/api/v1/sync/bootstrap'))).toBe(false)

@@ -29,6 +29,7 @@ import { SuspendModal } from './SuspendModal'
 import { SuspendedListModal } from './SuspendedListModal'
 
 import { shiftApi } from './shiftApi'
+import { lastCloseCashKey } from './shiftCashData'
 import { usePOSStore, type POSCustomer } from '@/stores/posStore'
 import type { Customer } from '@/types/customer'
 import type { Sale } from '@/types/sale'
@@ -63,7 +64,6 @@ function posCustomerFromCustomer(c: Customer): POSCustomer {
     riskProfile: c.risk_profile ?? 'low',
   }
 }
-const LAST_CLOSE_CASH_KEY = 'forsage_last_shift_close_cash'
 const POS_READ_TIMEOUT_MS = 10_000
 const POS_ACTIVE_ORDER_STATUSES = 'lead,quoted,new,in_progress,ordered,arrived,called,no_answer,ready'
 
@@ -75,7 +75,10 @@ function isShiftAlreadyOpenError(error: unknown) {
 
 function OpenShiftScreen({ onOpened, onBack }: { onOpened: (shift?: Shift) => void; onBack: () => void }) {
   // Підставляємо залишок із закриття попередньої зміни (та сама каса)
-  const [cash, setCash]       = useState(() => localStorage.getItem(LAST_CLOSE_CASH_KEY) ?? '')
+  const [cash, setCash]       = useState(() => {
+    // Лише власний залишок із минулого закриття: чужа сума (каса іншого працівника) не підставляється.
+    try { return localStorage.getItem(lastCloseCashKey(useAuthStore.getState().session?.user?.id ?? '')) ?? '' } catch { return '' }
+  })
   const [loading, setLoading] = useState(false)
   const parsedCash = cash.trim() === '' ? 0 : Number(cash)
   const cashValid = Number.isFinite(parsedCash) && parsedCash >= 0

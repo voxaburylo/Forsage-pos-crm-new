@@ -11,8 +11,15 @@ const WEB_SESSION_PATHS = new Set([
   '/api/v1/auth/logout',
 ])
 
+/**
+ * Єдиний запис, дозволений з вебу: команда на касу. Вона нічого не змінює на сервері —
+ * зміну виконує програма на касі у своїй базі (або команда згорає за 30 с).
+ */
+const WEB_TILL_COMMAND_PATH = '/api/v1/till-commands'
+
 export function isWebReadOnlyRequest(path: string, method: string | undefined): boolean {
   if (isDesktopRuntime() || SAFE_API_METHODS.has((method ?? 'GET').toUpperCase())) return false
+  if (path === WEB_TILL_COMMAND_PATH && (method ?? '').toUpperCase() === 'POST') return false
   // Вхід і відновлення сесії потрібні навіть у веб-перегляді. Решта записів
   // належать тільки локальній касі й сервер додатково їх відхиляє.
   return !WEB_SESSION_PATHS.has(path)

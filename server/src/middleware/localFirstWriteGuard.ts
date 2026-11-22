@@ -39,6 +39,13 @@ const ALWAYS_WRITABLE = [
   '/api/v1/jobs/',        // те саме
 ]
 
+/**
+ * Команда на касу з вебу (правка картки, закриття забутої зміни). Це не запис у дані магазину:
+ * сервер лише кладе доручення, а виконує його програма на касі у своїй базі — точка запису лишається одна.
+ * Дозволено рівно створення команди; «забрати» й «відповісти» робить тільки каса (заголовок нижче).
+ */
+const WEB_TILL_COMMAND_PATH = '/api/v1/till-commands'
+
 export const DESKTOP_CLIENT_HEADER = 'x-forsage-client'
 export const DESKTOP_CLIENT_VALUE = 'desktop'
 
@@ -46,6 +53,7 @@ export function isWriteAllowed(req: Pick<Request, 'method' | 'path' | 'get'>): b
   if (SAFE_METHODS.has(req.method)) return true
   if (WEB_SESSION_PATHS.has(req.path)) return true
   if (ALWAYS_WRITABLE.some((prefix) => req.path.startsWith(prefix))) return true
+  if (req.method === 'POST' && (req.path === WEB_TILL_COMMAND_PATH || req.path === WEB_TILL_COMMAND_PATH + '/')) return true
   return req.get(DESKTOP_CLIENT_HEADER) === DESKTOP_CLIENT_VALUE
 }
 

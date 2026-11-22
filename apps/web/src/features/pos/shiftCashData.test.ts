@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseClosingSnapshot, parseCountedCash, parseExpectedCash } from './shiftCashData'
+import { closeBlockReason, initialCountedCash, lastCloseCashKey, parseClosingSnapshot, parseCountedCash, parseExpectedCash } from './shiftCashData'
 
 function sample(): any { return {
   shift: { id: 'shift', cashier_id: 'cashier', status: 'open', opening_cash: 1000 },
@@ -50,4 +50,24 @@ describe('counted cash input', () => {
     expect(parseCountedCash(text as string)).toBe(amount)
   })
   it.each(['',' ','-1','1.234','1e3','1abc','Infinity','90071992547409.92','1,2,3'])('rejects %s', text => expect(parseCountedCash(text)).toBeNull())
+})
+describe('closing a shift without cash (owner report 22.11.2026)', () => {
+  const ok = { loading: false, loadError: false, ready: true, cashText: '0', pendingOfflineSales: 0, offlineWeb: false }
+  it('fills zero only when no cash is expected, so the grey 0.00 hint is never mistaken for an entered sum', () => {
+    expect(initialCountedCash(0)).toBe('0')
+    expect(initialCountedCash(12650)).toBe('')
+    expect(initialCountedCash(-500)).toBe('')
+  })
+  it('says in words why the close button is disabled', () => {
+    expect(closeBlockReason(ok)).toBeNull()
+    expect(closeBlockReason({ ...ok, cashText: ' ' })).toContain('введіть 0')
+    expect(closeBlockReason({ ...ok, cashText: '12abc' })).toContain('неправильно')
+    expect(closeBlockReason({ ...ok, pendingOfflineSales: 2 })).toContain('2')
+    expect(closeBlockReason({ ...ok, ready: false })).toContain('Завантажую')
+    expect(closeBlockReason({ ...ok, loadError: true })).toContain('не завантажено')
+    expect(closeBlockReason({ ...ok, offlineWeb: true })).toContain('інтернету')
+  })
+  it('keeps the carried-over cash personal: another employee never sees this sum', () => {
+    expect(lastCloseCashKey('owner-1')).not.toBe(lastCloseCashKey('cashier-2'))
+  })
 })
