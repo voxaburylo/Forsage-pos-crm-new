@@ -18,10 +18,12 @@ const WEB_SESSION_PATHS = new Set([
 const WEB_TILL_COMMAND_PATH = '/api/v1/till-commands'
 /** Розпізнавання фото накладної з телефона: лише читає фото; рядки далі їдуть на касу командою. */
 const WEB_INVOICE_PHOTO_PATH = '/api/v1/ai/supply-invoice-photo'
+/** 22.11.2026: запит вебу до головного ПК — виконує каса у своїй базі. */
+const WEB_TILL_RPC_PATH = '/api/v1/till-rpc'
 
 export function isWebReadOnlyRequest(path: string, method: string | undefined): boolean {
   if (isDesktopRuntime() || SAFE_API_METHODS.has((method ?? 'GET').toUpperCase())) return false
-  if ((path === WEB_TILL_COMMAND_PATH || path === WEB_INVOICE_PHOTO_PATH) && (method ?? '').toUpperCase() === 'POST') return false
+  if ((path === WEB_TILL_COMMAND_PATH || path === WEB_INVOICE_PHOTO_PATH || path === WEB_TILL_RPC_PATH) && (method ?? '').toUpperCase() === 'POST') return false
   // Вхід і відновлення сесії потрібні навіть у веб-перегляді. Решта записів
   // належать тільки локальній касі й сервер додатково їх відхиляє.
   return !WEB_SESSION_PATHS.has(path)

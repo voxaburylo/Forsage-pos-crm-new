@@ -50,6 +50,11 @@ const WEB_TILL_COMMAND_PATH = '/api/v1/till-commands'
  * він лише читає фото й повертає рядки; далі вони їдуть на касу командою. Витрати ШІ рахуються як завжди.
  */
 const WEB_INVOICE_PHOTO_PATH = '/api/v1/ai/supply-invoice-photo'
+/**
+ * 22.11.2026 (рішення власника «веб повний, але тільки через головний ПК»): запит вебу до головного ПК.
+ * Сервер лише передає його касі; виконує каса у своїй базі з правами працівника — точка запису одна.
+ */
+const WEB_TILL_RPC_PATH = '/api/v1/till-rpc'
 
 export const DESKTOP_CLIENT_HEADER = 'x-forsage-client'
 export const DESKTOP_CLIENT_VALUE = 'desktop'
@@ -60,6 +65,7 @@ export function isWriteAllowed(req: Pick<Request, 'method' | 'path' | 'get'>): b
   if (ALWAYS_WRITABLE.some((prefix) => req.path.startsWith(prefix))) return true
   if (req.method === 'POST' && (req.path === WEB_TILL_COMMAND_PATH || req.path === WEB_TILL_COMMAND_PATH + '/')) return true
   if (req.method === 'POST' && req.path === WEB_INVOICE_PHOTO_PATH) return true
+  if (req.method === 'POST' && (req.path === WEB_TILL_RPC_PATH || req.path === WEB_TILL_RPC_PATH + '/')) return true
   return req.get(DESKTOP_CLIENT_HEADER) === DESKTOP_CLIENT_VALUE
 }
 

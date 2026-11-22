@@ -61,6 +61,9 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      // 22.11.2026: preload програми каси у вебі — виклики йдуть через сервер на головний ПК (src/lib/remoteDesktop).
+      '@desktop-preload': path.resolve(__dirname, '../desktop/src/preload.ts'),
+      electron: path.resolve(__dirname, './src/lib/remoteDesktop/electronShim.ts'),
     },
   },
   server: {

@@ -228,11 +228,11 @@ function Workspace() {
           <Route path="/customers/:id"       element={<ProtectedRoute><CustomerDetailPage /></ProtectedRoute>} />
           <Route path="/customers/:id/edit"  element={<TillOnly what="Редагування клієнта"><ProtectedRoute roles={CUSTOMER_CARD_EDITOR_ROLES}><CanonicalCard kind="customers" /></ProtectedRoute></TillOnly>} />
 
-          <Route path="/pos"      element={<TillOnly what="Каса"><ProtectedRoute><POSPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/pos"      element={<TillOnly what="Каса" remote={false}><ProtectedRoute><POSPage /></ProtectedRoute></TillOnly>} />
           <Route path="/sales"     element={<ProtectedRoute><SalesPage /></ProtectedRoute>} />
-          <Route path="/returns"  element={<TillOnly what="Повернення"><ProtectedRoute><ReturnForm /></ProtectedRoute></TillOnly>} />
-          <Route path="/cashflow" element={<TillOnly what="Рух коштів"><ProtectedRoute><CashflowPage /></ProtectedRoute></TillOnly>} />
-          <Route path="/shifts" element={<TillOnly what="Зміни"><ProtectedRoute roles={['owner', 'admin']}><OpenShiftsPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/returns"  element={<TillOnly what="Повернення" remote={false}><ProtectedRoute><ReturnForm /></ProtectedRoute></TillOnly>} />
+          <Route path="/cashflow" element={<TillOnly what="Рух коштів" remote={false}><ProtectedRoute><CashflowPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/shifts" element={<TillOnly what="Зміни" remote={false}><ProtectedRoute roles={['owner', 'admin']}><OpenShiftsPage /></ProtectedRoute></TillOnly>} />
           <Route path="/reports"  element={<Navigate to="/analytics/sales" replace />} />
           <Route path="/abc"        element={<ProtectedRoute roles={ADMIN_ROLES}><ABCAnalysis /></ProtectedRoute>} />
           <Route path="/waitlist"   element={<TillOnly what="Очікування товару"><ProtectedRoute roles={OFFICE_ROLES}><WaitlistPage /></ProtectedRoute></TillOnly>} />
@@ -261,13 +261,13 @@ function Workspace() {
           
           <Route path="/internal"       element={<TillOnly what="Внутрішнє споживання"><ProtectedRoute roles={OFFICE_ROLES}><InternalConsumptionsPage /></ProtectedRoute></TillOnly>} />
           <Route path="/settings/channels" element={<TillOnly what="Канали"><ProtectedRoute roles={ADMIN_ROLES}><SettingsChannels /></ProtectedRoute></TillOnly>} />
-          <Route path="/labels"  element={<TillOnly what="Дизайнер етикеток"><ProtectedRoute roles={ADMIN_ROLES}><LabelDesigner /></ProtectedRoute></TillOnly>} />
+          <Route path="/labels"  element={<TillOnly what="Дизайнер етикеток" remote={false}><ProtectedRoute roles={ADMIN_ROLES}><LabelDesigner /></ProtectedRoute></TillOnly>} />
           <Route path="/auto-purchase"   element={<TillOnly what="Автозакупівля"><ProtectedRoute roles={OFFICE_ROLES}><AutoPurchasePage /></ProtectedRoute></TillOnly>} />
           <Route path="/audit"           element={<TillOnly what="Журнал аудиту"><ProtectedRoute roles={ADMIN_ROLES}><AuditLogPage /></ProtectedRoute></TillOnly>} />
           <Route path="/settings/templates" element={<TillOnly what="Шаблони"><ProtectedRoute roles={ADMIN_ROLES}><TemplateEditor /></ProtectedRoute></TillOnly>} />
           <Route path="/notifications"  element={<TillOnly what="Сповіщення"><ProtectedRoute roles={OFFICE_ROLES}><InboxPage /></ProtectedRoute></TillOnly>} />
           <Route path="/ai-agent" element={<TillOnly what="AI-агент"><ProtectedRoute roles={ADMIN_ROLES}><CatalogAgentPage /></ProtectedRoute></TillOnly>} />
-          <Route path="/admin/catalog-cleanup" element={<TillOnly what="Очищення номенклатури"><ProtectedRoute roles={ADMIN_ROLES}><CatalogCleanupPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/admin/catalog-cleanup" element={<TillOnly what="Очищення номенклатури" remote={false}><ProtectedRoute roles={ADMIN_ROLES}><CatalogCleanupPage /></ProtectedRoute></TillOnly>} />
           <Route path="/ai-assistant"   element={<TillOnly what="ШІ-помічник"><ProtectedRoute roles={AI_ASSISTANT_ROLES}><AiAssistantPage /></ProtectedRoute></TillOnly>} />
 
           <Route path="/inventory"               element={<TillOnly what="Ревізія"><ProtectedRoute roles={INVENTORY_COUNTER_ROLES}><InventoryPage /></ProtectedRoute></TillOnly>} />

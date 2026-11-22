@@ -1,3 +1,4 @@
+import { remoteBridgeSlot } from './remoteDesktop/slot'
 import type { Product } from '@/types/product'
 import type { Shift } from '@/types/shift'
 import type { Sale } from '@/types/sale'
@@ -512,7 +513,7 @@ export interface DesktopFiscalReturnProcessResult {
   data: any
 }
 
-interface ForsageDesktopBridge {
+export interface ForsageDesktopBridge {
   diagnostics?: {
     reportError: (kind: 'renderer-error' | 'renderer-rejection', message: string, stack: string) => void
     onAudioUnavailable?: (listener: () => void) => () => void
@@ -523,6 +524,8 @@ interface ForsageDesktopBridge {
     loginByPassword?: (password: string) => Promise<{ id: string; tenant_id: string; full_name: string; role: string; phone: string; email: string; is_active: boolean; created_at?: string }>
     /** Етап 9: хто сьогодні вже входив паролем на цьому ПК і має PIN. */
     pinRoster?: () => Promise<Array<{ id: string; full_name: string; role: string }>>
+    /** 22.11.2026: головний ПК виконує запит вебу від імені його працівника. */
+    executeWebRequest?: (userId: string, channel: string, args: unknown[]) => Promise<unknown>
     loginByPin?: (userId: string, pin: string) => Promise<{ id: string; tenant_id: string; full_name: string; role: string; phone: string; email: string; is_active: boolean; created_at?: string }>
     loginOnline: (phone: string, password: string) => Promise<{ user: { id: string; tenant_id: string; full_name: string; role: string; phone: string; email: string; is_active: boolean; created_at?: string }; access_token: string; refresh_token: string; expires_in: number }>
     logout: () => Promise<{ success: true }>
@@ -907,7 +910,8 @@ export function isDesktopRuntime(): boolean {
 }
 
 export function desktopBridge(): ForsageDesktopBridge | null {
-  return typeof window !== 'undefined' ? window.forsageDesktop ?? null : null
+  // 22.11.2026: у вебі екран, відкритий через головний ПК, отримує місток до нього (лише поки ПК на зв'язку).
+  return typeof window !== 'undefined' ? window.forsageDesktop ?? (remoteBridgeSlot() as ForsageDesktopBridge | null) : null
 }
 
 function parseDesktopSpecs(product: DesktopProduct): Record<string, string> | null {

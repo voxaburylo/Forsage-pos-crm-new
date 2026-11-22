@@ -4,6 +4,7 @@ import { pendingUnitSpellings, tidyUnitSpellings } from './repositories/catalogU
 import { pendingErasedBarcodes, restoreErasedBarcodes } from './repositories/restoreErasedBarcodes'
 import { resolvePortableExecutable } from './updates/installedPortable'
 import { PinRoster } from './security/pinRoster'
+import { webRpcChannelAllowed } from './lan/webRpcChannels'
 import { isExpectedCommandFailure } from './diagnostics/expectedCommandFailure'
 import { RendererRecovery } from './rendererRecovery'
 import { deferQuitForMainWindow, NativeCloseController, requestUnloadScript } from './nativeClose'
@@ -1698,6 +1699,16 @@ app.whenReady().then(async () => {
     if (generation !== desktopLoginGeneration) throw new Error('Спробу входу скасовано')
     completeDesktopLogin(user)
     return user
+  })
+  // 22.11.2026, рішення власника «веб повний, але тільки через головний ПК»: запит вебу виконується тут, у базі
+  // головного ПК, тим самим шляхом і з правами того самого працівника, що й команда з ПК менеджера.
+  handleDesktopIpc('desktop:web-rpc:execute', async (_event, userId: string, channel: string, args: unknown[]) => {
+    if (localNetwork?.getStatus().mode === 'client' || hasLanIdentity(requireLocalDatabase())) throw new Error('Запити вебу виконує лише головний ПК')
+    if (typeof channel !== 'string' || !webRpcChannelAllowed(channel)) throw new Error('Ця дія доступна лише на самій касі')
+    const session = typeof userId === 'string' ? resolveLanSession(userId) : null
+    if (!session) throw new Error('Працівника не знайдено або доступ до програми вимкнено')
+    if (session.role === 'cashier' || session.role === 'tire_worker') throw new Error('Касир працює лише на касі')
+    return executeLanCommand(channel, Array.isArray(args) ? args : [], session)
   })
   // Етап 9: швидка зміна касира за PIN. Лише ті, хто сьогодні вже входив паролем на цьому ПК.
   handleDesktopIpc('desktop:auth:pin-roster', () => {

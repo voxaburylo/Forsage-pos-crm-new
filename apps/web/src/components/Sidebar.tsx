@@ -1,5 +1,5 @@
 import { isDesktopAccessLocked } from '@/lib/desktopAccessState'
-import { navigationAllowed } from '@/lib/navigationAccess'
+import { WEB_VIA_MAIN_PC_ROUTES, navigationAllowed } from '@/lib/navigationAccess'
 import { useState, useEffect, useRef } from 'react'
 import { toast } from '@/components/ui/Toast'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
@@ -169,7 +169,9 @@ function NavSection({
   const location = useLocation()
 
   const visibleItems = group.items.filter(
-    (item) => navigationAllowed(item.to, isDesktopRuntime()) && !(item.webOnly && isDesktopRuntime()) && (!item.roles || item.roles.includes(role)),
+    (item) => navigationAllowed(item.to, isDesktopRuntime()) && !(item.webOnly && isDesktopRuntime()) && (!item.roles || item.roles.includes(role))
+      // 22.11.2026: через головний ПК із вебу працюють лише власник, адміністратор і менеджер.
+      && (isDesktopRuntime() || !WEB_VIA_MAIN_PC_ROUTES.has(item.to) || ['owner', 'admin', 'manager'].includes(role)),
   )
 
   const isGroupActive = visibleItems.some((item) => location.pathname.startsWith(item.to))
