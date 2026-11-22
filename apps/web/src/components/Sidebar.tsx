@@ -18,6 +18,7 @@ import { createReadPoller } from '@/lib/readPoller'
 import { AI_ASSISTANT_ROLES } from '@/features/ai/aiAccess'
 import { confirmUnsavedDeparture } from '@/hooks/useUnsavedChanges'
 import { BrandLogo } from '@/components/BrandLogo'
+import { BuildBadge } from '@/components/BuildBadge'
 
 interface NavItem {
   to: string
@@ -306,7 +307,7 @@ export function Sidebar({ isOpen = false, onClose = () => {} }: SidebarProps) {
           <BrandLogo size={32} />
           <div>
             <div className="font-bold text-gray-900 text-sm leading-tight">Форсаж</div>
-            <div className="text-xs text-gray-400 leading-tight">CRM / ERP</div>
+            <BuildBadge />
           </div>
         </div>
         <button

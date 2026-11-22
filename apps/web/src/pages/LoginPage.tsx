@@ -10,6 +10,7 @@ import { API_BASE_URL } from '@/lib/apiBaseUrl'
 import { LanFirstRun } from '@/features/lan/LanFirstRun'
 import { PinQuickLogin } from './PinQuickLogin'
 import { BrandLogo } from '@/components/BrandLogo'
+import { BuildBadge } from '@/components/BuildBadge'
 const PHONE_REGEX = /^\+?380\d{9}$/
 function normalizePhone(value: string): string {
   const digits = value.replace(/\D/g, '')
@@ -124,6 +125,7 @@ function LoginForm({ onUnlocked }: { onUnlocked?: () => void }) {
           <div className="mb-3 flex justify-center"><BrandLogo size={56} /></div>
           <h1 className="text-2xl font-bold text-gray-900">Форсаж CRM</h1>
           <p className="text-gray-400 text-sm mt-1">Вхід до системи</p>
+          <BuildBadge className="mt-1" />
         </div>
         {!restoring && passwordOnlyAvailable && !onUnlocked && (
           <PinQuickLogin onSignedIn={session => {
