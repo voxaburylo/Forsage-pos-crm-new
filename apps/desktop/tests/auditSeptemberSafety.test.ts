@@ -69,7 +69,7 @@ describe('September audit financial boundaries and order search', () => {
   it('supports old unpriced drafts promoted to new but blocks priced/discounted overpayment', () => {
     const old = orders.saveOrder({ status: 'new', items: [] })
     db.prepare("UPDATE customer_orders SET status='new' WHERE id=?").run(old.id)
-    pay(old.id); expect(pay(old.id).order.total_paid).toBe(2000)
+    pay(old.id); expect(pay(old.id, { confirm_repeat: true }).order.total_paid).toBe(2000)
     const priced = orders.saveOrder({ status: 'lead', items: [{ name: 'Фільтр', source_type: 'supplier', qty: 1, sell_price: 1000 }] })
     pay(priced.id)
     expect(() => pay(priced.id)).toThrow('перевищує')
