@@ -4,7 +4,7 @@ import { adminApi } from '@/features/admin/adminApi'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { durableLocalRequest } from '@/lib/durableLocalRequest'
 import { useAuthStore } from '@/stores/authStore'
-import { isDesktopRuntime } from '@/lib/desktopBridge'
+import { writesToMainPc } from '@/lib/mainPcData'
 import { Modal, Button } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 
@@ -104,7 +104,8 @@ export function BulkEditModal({ open, productIds, onClose, onUpdated }: Props) {
 
     setSaving(true)
     try {
-      if (isDesktopRuntime()) await updateLocalProducts(productIds, updates)
+      // 22.11.2026: у вебі, відкритому через головний ПК, масова зміна теж іде в базу каси (а не на сервер, який її відхиляє).
+      if (writesToMainPc()) await updateLocalProducts(productIds, updates)
       else await api.post('/api/v1/products/bulk-update', { product_ids: productIds, updates })
       toast.success(`Оновлено ${productIds.length} товарів`)
       onUpdated()
