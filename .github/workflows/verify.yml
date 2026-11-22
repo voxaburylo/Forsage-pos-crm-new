@@ -168,6 +168,7 @@ jobs:
       - run: pnpm --filter desktop exec electron scripts/print-render-smoke.cjs --software
       - run: node apps/web/scripts/receipt-layout-ui-smoke.mjs
       - run: node apps/desktop/scripts/portable-lifecycle-smoke.cjs
+      - run: node apps/desktop/scripts/background-mode-smoke.cjs
 
   verify:
     if: always()

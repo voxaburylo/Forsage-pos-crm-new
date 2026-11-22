@@ -96,7 +96,8 @@ import { BACKGROUND_TASK, clearHandoff, decideStart, handoffRequested, isBackgro
 import { spawn } from 'node:child_process'
 
 // Keep the existing encryption profile stable across package/product renames.
-app.setPath('userData', path.join(app.getPath('appData'), 'desktop'))
+// Перевірки (смоки) запускають справжню програму поруч із робочою касою — їм окремий профіль; у зібраній програмі цього немає.
+app.setPath('userData', !app.isPackaged && process.env.FORSAGE_TEST_USER_DATA ? process.env.FORSAGE_TEST_USER_DATA : path.join(app.getPath('appData'), 'desktop'))
 // This business UI/thermal rasterizer does not require 3D acceleration.
 // Avoid the hardware-driver path on Windows, including remote desktop sessions.
 if (process.platform === 'win32') app.disableHardwareAcceleration()
