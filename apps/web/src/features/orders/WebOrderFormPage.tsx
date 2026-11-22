@@ -38,25 +38,26 @@ export function webOrderFromForm(form: { phone: string; name: string; make: stri
 type Waiting = { operation_id: string; created_at: string; customer: string; items: number; state?: 'waiting' | 'failed' | 'expired'; error?: string | null }
 
 /** Бланки з вебу, які ще чекають касу: щоб було видно, що вони не загубилися. Порожньо — нічого не показуємо. */
-export function WaitingOrdersNote() {
+export function WaitingOrdersNote({ kind = 'order' }: { kind?: 'order' | 'invoice' } = {}) {
+  const invoice = kind === 'invoice', noName = invoice ? 'Накладна' : 'Без імені'
   const [waiting, setWaiting] = useState<Waiting[] | null>(null)
   const [canceling, setCanceling] = useState('')
   const [reload, setReload] = useState(0)
   useEffect(() => {
     let stopped = false
-    const load = () => api.get<{ data: Waiting[] }>('/api/v1/till-commands/waiting', { silent: true, timeoutMs: 10_000 })
+    const load = () => api.get<{ data: Waiting[] }>('/api/v1/till-commands/waiting' + (invoice ? '?kind=invoice' : ''), { silent: true, timeoutMs: 10_000 })
       .then(res => { if (!stopped) setWaiting(Array.isArray(res.data) ? res.data : []) }).catch(() => { if (!stopped) setWaiting(null) })
     void load()
     const timer = window.setInterval(load, 20_000)
     return () => { stopped = true; window.clearInterval(timer) }
-  }, [reload])
+  }, [reload, invoice])
   // Скасувати можна лише бланк, який каса ще не забрала: сервер відмовить, якщо вона встигла.
   async function cancel(order: Waiting) {
     if (canceling) return
     setCanceling(order.operation_id)
     try {
       await api.post('/api/v1/till-commands', { operation_id: crypto.randomUUID(), command: 'order.cancel', payload: { operation_id: order.operation_id } }, undefined, { silent: true, timeoutMs: 15_000 })
-      toast.success('Бланк скасовано. Каса його не створить.')
+      toast.success(invoice ? 'Накладну скасовано. На касу вона не потрапить.' : 'Бланк скасовано. Каса його не створить.')
     } catch (error) {
       toast.error(errorText(error))
     } finally { setCanceling(''); setReload(value => value + 1) }
@@ -73,27 +74,27 @@ export function WaitingOrdersNote() {
           <ul className="mt-1 space-y-0.5 text-xs">
             {queued.map(order => (
               <li key={order.operation_id} className="flex items-center justify-between gap-2">
-                <span>{order.customer || 'Без імені'} · позицій: {order.items} · надіслано {time(order.created_at)}</span>
+                <span>{order.customer || noName} · {invoice ? 'рядків' : 'позицій'}: {order.items} · надіслано {time(order.created_at)}</span>
                 <button type="button" disabled={Boolean(canceling)} onClick={() => { void cancel(order) }}
-                  aria-label={`Скасувати бланк: ${order.customer || 'без імені'}`} className="shrink-0 rounded px-2 py-1 font-semibold text-red-700 underline disabled:opacity-50">
+                  aria-label={`Скасувати бланк: ${order.customer || noName}`} className="shrink-0 rounded px-2 py-1 font-semibold text-red-700 underline disabled:opacity-50">
                   {canceling === order.operation_id ? 'Скасовую…' : 'Скасувати'}
                 </button>
               </li>
             ))}
           </ul>
-          <p className="mt-1 text-xs">Каса створить ці замовлення, щойно програма на ній буде в мережі.</p>
+          <p className="mt-1 text-xs">{invoice ? 'Каса покладе ці накладні в «Поступлення товарів → З телефона», щойно програма на ній буде в мережі.' : 'Каса створить ці замовлення, щойно програма на ній буде в мережі.'}</p>
         </div>
       )}
       {refused.length > 0 && (
         <div role="alert" className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-900">
-          <p className="font-semibold">Не створено: {refused.length}</p>
+          <p className="font-semibold">{invoice ? 'Не дійшло до каси' : 'Не створено'}: {refused.length}</p>
           <ul className="mt-1 space-y-0.5 text-xs">
             {refused.map(order => (
-              <li key={order.operation_id}>{order.customer || 'Без імені'} · надіслано {time(order.created_at)} — {order.state === 'expired'
+              <li key={order.operation_id}>{order.customer || noName} · надіслано {time(order.created_at)} — {order.state === 'expired'
                 ? 'каса не забрала за 12 годин' : (order.error || 'каса відмовила')}</li>
             ))}
           </ul>
-          <p className="mt-1 text-xs">Ці бланки треба оформити ще раз. Запис зникне звідси за добу.</p>
+          <p className="mt-1 text-xs">{invoice ? 'Ці накладні треба надіслати ще раз.' : 'Ці бланки треба оформити ще раз.'} Запис зникне звідси за добу.</p>
         </div>
       )}
     </div>

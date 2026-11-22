@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
 import {
-  TILL_ROLES, WEB_COMMAND_ROLES, claimCommands, commandAllowedForRole, commandResultSchema, createCommand, createCommandSchema, finishCommand, listWaitingOrders, readCommand, tillStatus,
+  INVOICE_DRAFT_COMMAND, TILL_ROLES, WEB_COMMAND_ROLES, claimCommands, commandAllowedForRole, commandResultSchema, createCommand, createCommandSchema, finishCommand, listWaitingOrders, readCommand, tillStatus,
 } from '../services/tillCommandService.js'
 
 /** Запис із вебу через касу: веб ставить команду, каса її забирає й виконує у своїй базі. */
@@ -17,7 +17,8 @@ tillCommandsRouter.get('/status', requireRole(...WEB_COMMAND_ROLES), async (req,
 tillCommandsRouter.get('/waiting', requireRole(...WEB_COMMAND_ROLES), async (req, res, next) => {
   try {
     res.setHeader('Cache-Control', 'no-store')
-    res.json({ data: await listWaitingOrders(req.user!.tenant_id) })
+    // ?kind=invoice — накладні з телефона; без параметра — замовлення.
+    res.json({ data: await listWaitingOrders(req.user!.tenant_id, req.query.kind === 'invoice' ? INVOICE_DRAFT_COMMAND : undefined) })
   } catch (err) { next(err) }
 })
 

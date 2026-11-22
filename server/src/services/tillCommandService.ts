@@ -18,7 +18,11 @@ export const TILL_ONLINE_SECONDS = 20
  */
 export const QUEUE_TTL_SECONDS = 12 * 60 * 60
 export const QUEUED_COMMAND = 'order.save'
-const TTL_SQL = `make_interval(secs => CASE WHEN command = '${QUEUED_COMMAND}' THEN ${QUEUE_TTL_SECONDS} ELSE ${COMMAND_TTL_SECONDS} END)`
+/** 22.11.2026: накладна з телефона теж чекає касу — вона лише лягає у «вхідні» каси й нічого не проводить. */
+export const INVOICE_DRAFT_COMMAND = 'invoice.draft'
+export const QUEUED_COMMANDS: readonly string[] = [QUEUED_COMMAND, INVOICE_DRAFT_COMMAND]
+const isQueued = (command: string) => QUEUED_COMMANDS.includes(command)
+const TTL_SQL = `make_interval(secs => CASE WHEN command IN ('${QUEUED_COMMAND}', '${INVOICE_DRAFT_COMMAND}') THEN ${QUEUE_TTL_SECONDS} ELSE ${COMMAND_TTL_SECONDS} END)`
 export const WEB_COMMAND_ROLES = ['owner', 'admin', 'manager'] as const
 export const TILL_ROLES = ['owner', 'admin', 'manager', 'cashier'] as const
 
@@ -75,6 +79,31 @@ export const orderSavePayload = z.object({
   items: z.array(orderItem).min(1).max(60),
 }).strict().refine(order => Boolean(order.customer_phone || order.customer_name), 'Потрібен телефон або ім’я клієнта')
 
+/**
+ * 22.11.2026 (етап 8): накладна, сфотографована телефоном. Команда нічого не проводить і не створює карток:
+ * каса кладе рядки у «вхідні», а людина на касі відкриває їх звичайною чернеткою приходу, перевіряє й проводить.
+ * Ціни тут у гривнях, як у розпізнаванні; нечитана кількість чи ціна лишається відсутньою — каса підсвітить рядок.
+ */
+const invoiceRow = z.object({
+  name: text(300).min(1),
+  source_name: text(300).optional(),
+  sku: text(100).optional(),
+  barcode: text(64).optional(),
+  brand_name: text(120).optional(),
+  category_name: text(120).optional(),
+  unit: text(20).optional(),
+  qty: z.number().positive().max(1_000_000).optional(),
+  purchase_price_uah: z.number().min(0).max(10_000_000).optional(),
+})
+export const INVOICE_DRAFT_MAX_ROWS = 300
+export const invoiceDraftPayload = z.object({
+  supplier_name: text(200).nullable().optional(),
+  invoice_number: text(60).nullable().optional(),
+  notes: text(500).nullable().optional(),
+  author: text(120).nullable().optional(),
+  rows: z.array(invoiceRow).min(1).max(INVOICE_DRAFT_MAX_ROWS),
+}).strict()
+
 /** Скасування бланка з черги. Це не команда касі: сервер сам гасить бланк, якщо каса його ще не забрала. */
 export const CANCEL_COMMAND = 'order.cancel'
 export const CANCELED_IN_WEB = 'Скасовано у вебі'
@@ -82,6 +111,7 @@ export const CANCELED_IN_WEB = 'Скасовано у вебі'
 export const createCommandSchema = z.discriminatedUnion('command', [
   z.object({ operation_id: z.string().uuid(), command: z.literal('order.cancel'), payload: z.object({ operation_id: z.string().uuid() }).strict() }).strict(),
   z.object({ operation_id: z.string().uuid(), command: z.literal('order.save'), payload: orderSavePayload }).strict(),
+  z.object({ operation_id: z.string().uuid(), command: z.literal('invoice.draft'), payload: invoiceDraftPayload }).strict(),
   z.object({ operation_id: z.string().uuid(), command: z.literal('product.update'), payload: productUpdatePayload }).strict(),
   z.object({ operation_id: z.string().uuid(), command: z.literal('shift.list'), payload: z.object({}).strict() }).strict(),
   z.object({ operation_id: z.string().uuid(), command: z.literal('shift.close'), payload: shiftClosePayload }).strict(),
@@ -116,17 +146,17 @@ export async function tillStatus(tenantId: string) {
 export async function cancelQueuedOrder(tenantId: string, operationId: string) {
   const { rowCount } = await pool.query(
     `UPDATE till_commands SET status = 'failed', error = $4, finished_at = now()
-      WHERE tenant_id = $1 AND operation_id = $2 AND command = $3 AND status = 'pending'`,
-    [tenantId, operationId, QUEUED_COMMAND, CANCELED_IN_WEB],
+      WHERE tenant_id = $1 AND operation_id = $2 AND command = ANY($3::text[]) AND status = 'pending'`,
+    [tenantId, operationId, [...QUEUED_COMMANDS], CANCELED_IN_WEB],
   )
-  if (!rowCount) throw new AppError('CONFLICT', 'Каса вже забрала цей бланк або його вже немає в черзі. Якщо замовлення створилося — скасуйте його на касі.', 409)
+  if (!rowCount) throw new AppError('CONFLICT', 'Каса вже забрала цей бланк або його вже немає в черзі. Якщо він уже на касі — приберіть його там.', 409)
   return { operation_id: operationId, status: 'canceled' }
 }
 
 export async function createCommand(tenantId: string, userId: string, input: z.infer<typeof createCommandSchema>) {
   if (input.command === CANCEL_COMMAND) return cancelQueuedOrder(tenantId, input.payload.operation_id)
   const online = (await tillStatus(tenantId)).online
-  if (!online && input.command !== QUEUED_COMMAND) throw new AppError('TILL_OFFLINE', 'Каса зараз не в мережі. Зміну можна внести лише тоді, коли програма на касі увімкнена й має інтернет.', 409)
+  if (!online && !isQueued(input.command)) throw new AppError('TILL_OFFLINE', 'Каса зараз не в мережі. Зміну можна внести лише тоді, коли програма на касі увімкнена й має інтернет.', 409)
   const { rows } = await pool.query(
     `INSERT INTO till_commands (tenant_id, operation_id, command, payload, requested_by)
      VALUES ($1, $2, $3, $4::jsonb, $5)
@@ -147,7 +177,7 @@ export async function createCommand(tenantId: string, userId: string, input: z.i
  * Замовлення з вебу, які ще чекають касу, і ті, яким каса відмовила за останню добу.
  * Людина надіслала бланк і пішла — відмова каси не має зникати мовчки. Прострочені тут же гасимо.
  */
-export async function listWaitingOrders(tenantId: string) {
+export async function listWaitingOrders(tenantId: string, command: string = QUEUED_COMMAND) {
   await pool.query(
     `UPDATE till_commands SET status = 'expired', finished_at = now()
       WHERE tenant_id = $1 AND status = 'pending' AND created_at <= now() - ${TTL_SQL}`,
@@ -159,12 +189,18 @@ export async function listWaitingOrders(tenantId: string) {
         AND (status IN ('pending', 'claimed') OR (status IN ('failed', 'expired') AND finished_at > now() - interval '24 hours'
              AND error IS DISTINCT FROM $3))
       ORDER BY created_at LIMIT 50`,
-    [tenantId, QUEUED_COMMAND, CANCELED_IN_WEB],
+    [tenantId, command, CANCELED_IN_WEB],
   )
   return rows.map(row => {
-    const payload = (row.payload ?? {}) as { customer_name?: string | null; customer_phone?: string | null; items?: unknown[] }
+    const payload = (row.payload ?? {}) as { customer_name?: string | null; customer_phone?: string | null; items?: unknown[]
+      supplier_name?: string | null; invoice_number?: string | null; rows?: unknown[] }
+    // Для накладної підпис — постачальник і номер; для замовлення — клієнт.
+    const label = command === INVOICE_DRAFT_COMMAND
+      ? [payload.supplier_name, payload.invoice_number ? '№ ' + payload.invoice_number : ''].filter(Boolean).join(' ')
+      : String(payload.customer_name || payload.customer_phone || '')
+    const lines = command === INVOICE_DRAFT_COMMAND ? payload.rows : payload.items
     return { operation_id: row.operation_id as string, created_at: new Date(row.created_at).toISOString(),
-      customer: String(payload.customer_name || payload.customer_phone || ''), items: Array.isArray(payload.items) ? payload.items.length : 0,
+      customer: label, items: Array.isArray(lines) ? lines.length : 0,
       state: row.status === 'failed' ? 'failed' as const : row.status === 'expired' ? 'expired' as const : 'waiting' as const,
       error: row.status === 'failed' ? String(row.error ?? '') || null : null }
   })

@@ -45,6 +45,11 @@ const ALWAYS_WRITABLE = [
  * Дозволено рівно створення команди; «забрати» й «відповісти» робить тільки каса (заголовок нижче).
  */
 const WEB_TILL_COMMAND_PATH = '/api/v1/till-commands'
+/**
+ * 22.11.2026 (етап 8): розпізнавання фото накладної з телефона. Запит нічого не пише в дані магазину —
+ * він лише читає фото й повертає рядки; далі вони їдуть на касу командою. Витрати ШІ рахуються як завжди.
+ */
+const WEB_INVOICE_PHOTO_PATH = '/api/v1/ai/supply-invoice-photo'
 
 export const DESKTOP_CLIENT_HEADER = 'x-forsage-client'
 export const DESKTOP_CLIENT_VALUE = 'desktop'
@@ -54,6 +59,7 @@ export function isWriteAllowed(req: Pick<Request, 'method' | 'path' | 'get'>): b
   if (WEB_SESSION_PATHS.has(req.path)) return true
   if (ALWAYS_WRITABLE.some((prefix) => req.path.startsWith(prefix))) return true
   if (req.method === 'POST' && (req.path === WEB_TILL_COMMAND_PATH || req.path === WEB_TILL_COMMAND_PATH + '/')) return true
+  if (req.method === 'POST' && req.path === WEB_INVOICE_PHOTO_PATH) return true
   return req.get(DESKTOP_CLIENT_HEADER) === DESKTOP_CLIENT_VALUE
 }
 

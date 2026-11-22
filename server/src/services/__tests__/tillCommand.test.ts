@@ -62,10 +62,38 @@ describe('web write through the till', () => {
     await expect(createCommand('t', 'u', { operation_id: id(8), command: 'shift.list', payload: {} })).rejects.toMatchObject({ code: 'TILL_OFFLINE' })
     expect(query).toHaveBeenCalledTimes(1)
   })
+  it('takes an invoice photographed by phone as rows for the till inbox, never as a posting', async () => {
+    const draft = (payload: Record<string, unknown>) => ({ operation_id: id(7), command: 'invoice.draft' as const, payload })
+    const rows = [{ name: 'Фільтр масляний', sku: 'W712/75', qty: 2, purchase_price_uah: 120.5, brand_name: 'MANN', secret: 'x' }]
+    const parsed = createCommandSchema.safeParse(draft({ supplier_name: 'Vitol', invoice_number: '36214', rows }))
+    expect(parsed.success).toBe(true)
+    // Зайві поля рядка відкидаються; нечитана кількість чи ціна може бути відсутня — каса підсвітить рядок.
+    expect((parsed as any).data.payload.rows[0]).toEqual({ name: 'Фільтр масляний', sku: 'W712/75', qty: 2, purchase_price_uah: 120.5, brand_name: 'MANN' })
+    expect(createCommandSchema.safeParse(draft({ rows: [{ name: 'Без ціни' }] })).success).toBe(true)
+    expect(createCommandSchema.safeParse(draft({ rows: [] })).success).toBe(false)
+    expect(createCommandSchema.safeParse(draft({ rows: [{ name: '', qty: 1 }] })).success).toBe(false)
+    expect(createCommandSchema.safeParse(draft({ rows: [{ name: 'Товар', qty: -1 }] })).success).toBe(false)
+    expect(createCommandSchema.safeParse(draft({ rows: Array.from({ length: 301 }, () => ({ name: 'Товар' })) })).success).toBe(false)
+    // Грошей і проведення в команді немає.
+    expect(createCommandSchema.safeParse(draft({ rows, paid_amount: 100 })).success).toBe(false)
+    expect(createCommandSchema.safeParse(draft({ rows, post: true })).success).toBe(false)
+    // Каса не в мережі — накладна чекає в черзі, як і замовлення.
+    query.mockResolvedValueOnce({ rows: [{ seen_at: '2026-11-18T10:00:00Z', online: false }] })
+      .mockResolvedValueOnce({ rows: [{ operation_id: id(7), status: 'pending' }] })
+    await expect(createCommand('t', 'u', (parsed as any).data)).resolves.toEqual({ operation_id: id(7), status: 'pending', till_online: false })
+    query.mockReset()
+    query.mockResolvedValueOnce({ rowCount: 0 }).mockResolvedValueOnce({ rows: [
+      { operation_id: id(7), created_at: '2026-11-22T05:00:00Z', payload: { supplier_name: 'Vitol', invoice_number: '36214', rows: [{}, {}, {}] } },
+    ] })
+    await expect(listWaitingOrders('t', 'invoice.draft')).resolves.toEqual([
+      { operation_id: id(7), created_at: '2026-11-22T05:00:00.000Z', customer: 'Vitol № 36214', items: 3, state: 'waiting', error: null },
+    ])
+    expect(query.mock.calls[1][1]).toEqual(['t', 'invoice.draft', 'Скасовано у вебі'])
+  })
   it('keeps a queued order for 12 hours and everything else for 30 seconds', async () => {
     query.mockResolvedValueOnce({ rowCount: 1 }).mockResolvedValueOnce({ rows: [] })
     await claimCommands('t', id(4))
-    expect(query.mock.calls[1][0]).toContain("CASE WHEN command = 'order.save' THEN 43200 ELSE 30 END")
+    expect(query.mock.calls[1][0]).toContain("CASE WHEN command IN ('order.save', 'invoice.draft') THEN 43200 ELSE 30 END")
     query.mockReset()
     query.mockResolvedValueOnce({ rowCount: 0 }).mockResolvedValueOnce({ rows: [
       { operation_id: id(7), created_at: '2026-11-22T05:00:00Z', payload: { customer_name: 'Іван', customer_phone: '0671234567', items: [{}, {}] } },
@@ -76,7 +104,7 @@ describe('web write through the till', () => {
       // Відмова каси не зникає мовчки: її видно добу разом із причиною.
       { operation_id: id(8), created_at: '2026-11-22T05:01:00.000Z', customer: '0671234567', items: 1, state: 'failed', error: 'Позиція 1: ціна нижча за закупівельну' },
     ])
-    expect(query.mock.calls[0][0]).toMatch(/status = 'expired'[\s\S]*CASE WHEN command = 'order.save'/)
+    expect(query.mock.calls[0][0]).toContain("CASE WHEN command IN ('order.save', 'invoice.draft')")
     expect(query.mock.calls[1][1]).toEqual(['t', 'order.save', 'Скасовано у вебі'])
   })
   it('cancels a queued order only while the till has not taken it, and inserts no command for that', async () => {
@@ -86,8 +114,10 @@ describe('web write through the till', () => {
     query.mockResolvedValueOnce({ rowCount: 1 })
     await expect(createCommand('t', 'u', cancel)).resolves.toEqual({ operation_id: id(7), status: 'canceled' })
     expect(query).toHaveBeenCalledTimes(1)
-    expect(query.mock.calls[0][0]).toMatch(/UPDATE till_commands SET status = 'failed'[\s\S]*command = \$3 AND status = 'pending'/)
-    expect(query.mock.calls[0][1]).toEqual(['t', id(7), 'order.save', 'Скасовано у вебі'])
+    expect(query.mock.calls[0][0]).toContain("UPDATE till_commands SET status = 'failed'")
+    expect(query.mock.calls[0][0]).toContain("command = ANY($3::text[]) AND status = 'pending'")
+    // Скасувати можна лише те, що чекає в черзі: замовлення або накладну з телефона.
+    expect(query.mock.calls[0][1]).toEqual(['t', id(7), ['order.save', 'invoice.draft'], 'Скасовано у вебі'])
     // Каса вже забрала бланк: скасувати з вебу не можна, і про це сказано прямо.
     query.mockReset()
     query.mockResolvedValueOnce({ rowCount: 0 })
