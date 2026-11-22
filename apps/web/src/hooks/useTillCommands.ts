@@ -31,6 +31,17 @@ export function useTillCommands(serverOnline: boolean) {
           const closed = await pos.remoteCloseShift(requestedBy, command.payload as { shift_id: string; cashier_id: string; actual_amount: number; comment: string })
           return { status: 'done', result: { shift_id: closed.id } }
         }
+        // 22.11.2026: замовлення з вебу. Каса перевіряє бланк ще раз і створює його під номером операції команди:
+        // повтор тієї самої команди повертає те саме замовлення, дубля не буде.
+        if (command.command === 'order.save') {
+          const { checkTillOrder, tillOrderToCreate } = await import('@/features/tillCommands/tillOrderModel')
+          const order = checkTillOrder(command.payload)
+          const [{ customerApi }, { orderApi }] = await Promise.all([import('@/features/customers/customerApi'), import('@/features/orders/orderApi')])
+          let customerId: string | null = null
+          if (order.customer_phone) customerId = (await customerApi.quickCreate(order.customer_phone, order.customer_name ?? '')).data.id
+          const saved = await orderApi.create(tillOrderToCreate(order, customerId, command.operation_id))
+          return { status: 'done', result: { order_id: saved.data.id, order_number: saved.data.order_number, total_amount: saved.data.total_amount } }
+        }
         if (command.command !== 'product.update') throw new Error('Невідома команда. Оновіть програму на касі.')
         const update = command.payload as TillProductUpdate
         const current = await bridge!.catalog.findById!(String(update?.product_id ?? ''))

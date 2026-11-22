@@ -72,4 +72,22 @@ describe('web write through the till', () => {
     expect(commandAllowedForRole('shift.list', 'manager')).toBe(false)
     expect(commandAllowedForRole('product.update', 'manager')).toBe(true)
   })
+  it('accepts an order from the web without money and never below the purchase price', () => {
+    const order = (payload: Record<string, unknown>) => ({ operation_id: id(7), command: 'order.save', payload })
+    const item = { name: 'Колодки передні', sku: 'GDB1330', qty: 1, sell_price: 125000, buy_price: 90000 }
+    const valid = { customer_phone: '0671234567', customer_name: 'Іван', car_make: 'Skoda', car_year: 2015, items: [item] }
+    expect(createCommandSchema.safeParse(order(valid)).success).toBe(true)
+    expect(createCommandSchema.safeParse(order({ customer_name: 'Без телефону', items: [{ name: 'Фільтр', qty: 2, sell_price: 0 }] })).success).toBe(true)
+    expect(createCommandSchema.safeParse(order({ ...valid, items: [] })).success).toBe(false)
+    expect(createCommandSchema.safeParse(order({ ...valid, items: [{ ...item, sell_price: 80000 }] })).success).toBe(false)
+    expect(createCommandSchema.safeParse(order({ ...valid, items: [{ ...item, qty: 0 }] })).success).toBe(false)
+    expect(createCommandSchema.safeParse(order({ ...valid, items: [{ ...item, qty: 1.2345 }] })).success).toBe(false)
+    expect(createCommandSchema.safeParse(order({ items: [item] })).success).toBe(false)
+    expect(createCommandSchema.safeParse(order({ ...valid, customer_phone: '067-123' })).success).toBe(false)
+    // Гроші, стан і чужий магазин з вебу не приймаються взагалі.
+    for (const extra of [{ prepayment: 1000 }, { status: 'completed' }, { tenant_id: id(3) }, { initial_status: 'archived' }])
+      expect(createCommandSchema.safeParse(order({ ...valid, ...extra })).success).toBe(false)
+    expect(createCommandSchema.safeParse(order({ ...valid, items: [{ ...item, product_id: id(4) }] })).success).toBe(false)
+    for (const role of ['owner', 'admin', 'manager']) expect(commandAllowedForRole('order.save', role)).toBe(true)
+  })
 })

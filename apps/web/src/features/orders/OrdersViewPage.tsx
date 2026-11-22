@@ -48,6 +48,11 @@ export default function OrdersViewPage() {
   return (
     <Layout title="Замовлення клієнтів">
       <ReadOnlyNote />
+      {/* 22.11.2026 (етап 8): замовлення з телефона — бланк іде на касу, створює його каса. */}
+      <button type="button" onClick={() => navigate('/orders/new')}
+        className="mb-3 w-full rounded-xl bg-yellow-400 px-4 py-3 text-sm font-semibold text-gray-900 hover:bg-yellow-300 sm:w-auto">
+        + Нове замовлення (через касу)
+      </button>
       <div className="mb-3 flex flex-wrap gap-2">
         {ORDER_VIEW_GROUPS.map(g => (
           <button key={g.id} type="button" onClick={() => setGroup(g.id)}

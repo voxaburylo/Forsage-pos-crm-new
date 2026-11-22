@@ -42,7 +42,31 @@ export const shiftClosePayload = z.object({
   comment: z.string().trim().min(3).max(300),
 }).strict()
 
+/**
+ * 22.11.2026: замовлення з вебу (телефон). Каса створює його у своїй базі; грошей у команді немає.
+ * Ціни в копійках; ціна продажу не нижча за закупку (жорстке правило власника), 0 = «ще не знаємо».
+ */
+const orderItem = z.object({
+  name: text(300).min(1),
+  sku: text(100).nullable().optional(),
+  qty: z.number().positive().max(1_000_000).refine(value => Math.round(value * 1000) === value * 1000, 'Кількість: не більше трьох знаків'),
+  sell_price: money,
+  buy_price: money.optional(),
+}).strict().refine(item => !(item.sell_price > 0 && (item.buy_price ?? 0) > 0 && item.sell_price < (item.buy_price ?? 0)), 'Ціна продажу нижча за закупку')
+export const orderSavePayload = z.object({
+  customer_phone: z.string().regex(/^[0-9]{10,12}$/).nullable().optional(),
+  customer_name: text(120).nullable().optional(),
+  car_make: text(60).nullable().optional(),
+  car_model: text(60).nullable().optional(),
+  car_year: z.number().int().min(1886).max(2100).nullable().optional(),
+  vin: z.string().regex(/^[A-HJ-NPR-Z0-9]{17}$/).nullable().optional(),
+  comment: text(1000).nullable().optional(),
+  author: text(120).nullable().optional(),
+  items: z.array(orderItem).min(1).max(60),
+}).strict().refine(order => Boolean(order.customer_phone || order.customer_name), 'Потрібен телефон або ім’я клієнта')
+
 export const createCommandSchema = z.discriminatedUnion('command', [
+  z.object({ operation_id: z.string().uuid(), command: z.literal('order.save'), payload: orderSavePayload }).strict(),
   z.object({ operation_id: z.string().uuid(), command: z.literal('product.update'), payload: productUpdatePayload }).strict(),
   z.object({ operation_id: z.string().uuid(), command: z.literal('shift.list'), payload: z.object({}).strict() }).strict(),
   z.object({ operation_id: z.string().uuid(), command: z.literal('shift.close'), payload: shiftClosePayload }).strict(),
