@@ -9,7 +9,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
 const require = createRequire(path.join(root, 'apps/web/package.json'))
 const { createServer, transformWithEsbuild } = await import(pathToFileURL(require.resolve('vite')).href)
 const mocks = {
-  '@/lib/auth': 'export const signIn=window.fixture.signIn,restoreDesktopSession=window.fixture.restore;export const signOut=window.fixture.signOut;export const canSignInByPassword=async()=>false,signInByPassword=async()=>{throw new Error("not in fixture")};',
+  '@/lib/auth': 'export const signIn=window.fixture.signIn,restoreDesktopSession=window.fixture.restore;export const signOut=window.fixture.signOut;export const canSignInByPassword=async()=>false,signInByPassword=async()=>{throw new Error("not in fixture")};export const readPinRoster=async()=>[],signInByPin=async()=>{throw new Error("not in fixture")};',
   '@/lib/desktopBridge': 'export const isDesktopRuntime=()=>true;export const desktopBridge=()=>window.fixture.bridge',
   '@/lib/apiBaseUrl': 'export const API_BASE_URL="http://unused.invalid"',
   '@/stores/authStore': 'export const useAuthStore={getState:()=>({setSession(){},session:{user:{phone:"+380671111111"}}})}',
