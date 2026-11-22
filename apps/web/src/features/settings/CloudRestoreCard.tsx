@@ -5,7 +5,7 @@ import { toast } from '@/components/ui/Toast'
 import { api } from '@/lib/api'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
-import { backupAgeDays, usableCloudBackups, type CloudBackupItem } from './cloudRestoreModel'
+import { backupAgeDays, cloudBackupFormat, usableCloudBackups, type CloudBackupItem } from './cloudRestoreModel'
 
 const formatMoment = (value: string) => new Date(value).toLocaleString('uk-UA')
 const formatSize = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(1)} МБ`
@@ -38,10 +38,10 @@ export function CloudRestoreCard() {
     const bridge = desktopBridge()
     if (!bridge?.fetchCloudBackup || !bridge.restoreBackup) throw new Error('Ця версія програми не вміє відновлювати з хмари. Оновіть програму.')
     const { data } = await api.post<{ data: { url: string } }>('/api/v1/backups/download', {
-      device_id: item.device_id, id: item.id, sha256: item.sha256, size_bytes: item.size_bytes,
+      device_id: item.device_id, id: item.id, sha256: item.sha256, size_bytes: item.size_bytes, format: cloudBackupFormat(item),
     }, undefined, { silent: true, timeoutMs: 60_000 })
     const fetched = await bridge.fetchCloudBackup({
-      url: data.url, tenant_id: tenantId, device_id: item.device_id, id: item.id, sha256: item.sha256, size_bytes: item.size_bytes,
+      url: data.url, tenant_id: tenantId, device_id: item.device_id, id: item.id, sha256: item.sha256, size_bytes: item.size_bytes, format: cloudBackupFormat(item),
     })
     toast.success('Копію завантажено й перевірено. Відновлюю…')
     // Після успіху програма перезапускається сама — відповіді можемо не дочекатись.

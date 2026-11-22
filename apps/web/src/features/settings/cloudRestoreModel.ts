@@ -6,6 +6,14 @@ export interface CloudBackupItem {
   id: string
   sha256: string
   size_bytes: number
+  /** Формат архіву; у старих копій і в старого сервера його немає — це gz. */
+  format?: 'gz' | 'zst'
+}
+
+/** Формат архіву копії: із поля сервера, а якщо його немає — з імені файлу (….db.gz / ….db.zst). */
+export function cloudBackupFormat(item: Pick<CloudBackupItem, 'name' | 'format'>): 'gz' | 'zst' {
+  if (item.format === 'zst' || item.format === 'gz') return item.format
+  return /.zst$/i.test(String(item.name)) ? 'zst' : 'gz'
 }
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i

@@ -556,7 +556,7 @@ export interface ForsageDesktopBridge {
   }
   backupNow: () => Promise<string>
   shiftBackups?: {
-    pending: () => Promise<Array<{ id: string; tenant_id: string; device_id: string; closed_at: string; captured_at: string; sha256: string; size_bytes: number }>>
+    pending: () => Promise<Array<{ id: string; tenant_id: string; device_id: string; closed_at: string; captured_at: string; sha256: string; size_bytes: number; format?: 'gz' | 'zst' }>>
     status: () => Promise<Array<{ id: string; closed_at: string; captured_at: string | null; export_directory: string | null; local_ready?: boolean; exports_ready?: boolean; local_error: string | null; cloud_error: string | null; cloud_completed_at: string | null }>>
     upload: (id: string, url: string) => Promise<{ ok: true }>
     confirmed: (id: string, sha: string) => Promise<void>
@@ -566,7 +566,7 @@ export interface ForsageDesktopBridge {
   /** Ставить копію на місце й перезапускає програму — відповіді можна не чекати. */
   restoreBackup?: (fileName: string) => Promise<DesktopDatabaseBackup>
   /** Аварійне відновлення: скачати перевірену хмарну копію у папку копій цього ПК (заміна бази — restoreBackup). */
-  fetchCloudBackup?: (request: { url: string; tenant_id: string; device_id: string; id: string; sha256: string; size_bytes: number }) => Promise<{ fileName: string; sizeBytes: number }>
+  fetchCloudBackup?: (request: { url: string; tenant_id: string; device_id: string; id: string; sha256: string; size_bytes: number; format?: 'gz' | 'zst' }) => Promise<{ fileName: string; sizeBytes: number }>
   /** Друга копія на флешці / зовнішньому диску. */
   externalBackup?: {
     status: () => Promise<ExternalBackupStatus>

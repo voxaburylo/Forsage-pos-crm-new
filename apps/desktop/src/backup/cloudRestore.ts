@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { createReadStream, createWriteStream, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from 'node:fs'
-import { createGunzip } from 'node:zlib'
+import { createArchiveDecompressor, isArchiveFormat, type ArchiveFormat } from './archiveFormat'
 import { Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
@@ -24,6 +24,14 @@ export interface CloudBackupRequest {
   id: string
   sha256: string
   size_bytes: number
+  /** Формат архіву; у копій, зроблених до 22.11.2026, його немає — це gz. */
+  format?: ArchiveFormat
+}
+
+function formatOf(request: Pick<CloudBackupRequest, 'format'>): ArchiveFormat {
+  if (request.format === undefined) return 'gz'
+  if (!isArchiveFormat(request.format)) throw new Error('Некоректні параметри копії')
+  return request.format
 }
 
 /** Підписана адреса має вести рівно на цей файл у приватному сховищі нашого сервера. */
@@ -35,7 +43,7 @@ export function assertCloudBackupUrl(request: CloudBackupRequest, trustedOrigin:
   let url: URL
   try { url = new URL(request.url) } catch { throw new Error('Неприпустима адреса копії') }
   const expectedPath = '/storage/v1/object/sign/' + CLOUD_BACKUP_BUCKET + '/'
-    + [request.tenant_id, request.device_id, request.id + '-' + request.sha256 + '.db.gz'].map(encodeURIComponent).join('/')
+    + [request.tenant_id, request.device_id, request.id + '-' + request.sha256 + '.db.' + formatOf(request)].map(encodeURIComponent).join('/')
   if (url.protocol !== 'https:' || url.origin !== new URL(trustedOrigin).origin || decodeURI(url.pathname) !== decodeURI(expectedPath))
     throw new Error('Неприпустима адреса копії')
   return url
@@ -76,7 +84,8 @@ export async function fetchCloudBackup(request: CloudBackupRequest, options: Fet
   const finalPath = path.join(options.backupsDir, fileName)
   if (existsSync(finalPath)) return { fileName, filePath: finalPath, sizeBytes: statSync(finalPath).size }
 
-  const archivePath = finalPath + '.gz.partial'
+  const format = formatOf(request)
+  const archivePath = finalPath + '.' + format + '.partial'
   const dbPath = finalPath + '.partial'
   try {
     const response = await (options.fetchImpl ?? fetch)(url, { redirect: 'error', signal: AbortSignal.timeout(300_000) } as RequestInit)
@@ -92,7 +101,7 @@ export async function fetchCloudBackup(request: CloudBackupRequest, options: Fet
 
     await pipeline(
       createReadStream(archivePath),
-      createGunzip(),
+      createArchiveDecompressor(format),
       new SizeLimit(MAX_RESTORED_DB_BYTES, 'Розпакована база неприпустимо велика'),
       createWriteStream(dbPath, { flags: 'wx' }),
     )

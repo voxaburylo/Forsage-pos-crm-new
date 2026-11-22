@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { pool } from '../db/pg.js'
 import { db } from '../db/supabase.js'
 import { logger } from '../lib/logger.js'
-import { BACKUP_BUCKET } from './backupPolicy.js'
+import { BACKUP_BUCKET, VERIFIED_BACKUP_NAME } from './backupPolicy.js'
 
 /**
  * Тривоги власнику в Telegram (етап 11 плану, рішення власника 22.11.2026: «усі»).
@@ -153,7 +153,7 @@ async function lastVerifiedBackup(tenantId: string): Promise<string | null | und
       const files = await db.storage.from(BACKUP_BUCKET).list(tenantId + '/' + device.name, { limit: 20, sortBy: { column: 'created_at', order: 'desc' } })
       if (files.error) return undefined
       for (const file of files.data ?? []) {
-        if (!/\.db\.gz\.json$/i.test(file.name) || !file.created_at) continue
+        if (!VERIFIED_BACKUP_NAME.test(file.name) || !file.created_at) continue
         if (!newest || file.created_at > newest) newest = file.created_at
       }
     }

@@ -3,15 +3,21 @@ import { createHash } from 'node:crypto'
 import { db } from '../db/supabase.js'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
-import { BACKUP_BUCKET, MAX_BACKUP_BYTES, backupDescriptor } from '../services/backupPolicy.js'
+import { BACKUP_BUCKET, BACKUP_MIME_TYPES, MAX_BACKUP_BYTES, VERIFIED_BACKUP_NAME, backupDescriptor, backupFormatOfName, backupsToKeep, hasArchiveMagic } from '../services/backupPolicy.js'
 
 const router = Router()
 router.use(requireAuth)
 async function privateBucket() {
   let result = await db.storage.getBucket(BACKUP_BUCKET)
   if (result.error) {
-    await db.storage.createBucket(BACKUP_BUCKET, { public: false, fileSizeLimit: MAX_BACKUP_BYTES, allowedMimeTypes: ['application/gzip','application/json'] })
+    await db.storage.createBucket(BACKUP_BUCKET, { public: false, fileSizeLimit: MAX_BACKUP_BYTES, allowedMimeTypes: BACKUP_MIME_TYPES })
     result = await db.storage.getBucket(BACKUP_BUCKET)
+  }
+  // 22.11.2026: нові копії стиснені Zstandard. Сховище, створене раніше, приймало лише gzip — дозволяємо й новий тип.
+  const allowed = (result.data as { allowed_mime_types?: string[] | null } | null)?.allowed_mime_types
+  if (result.data && !result.data.public && Array.isArray(allowed) && BACKUP_MIME_TYPES.some(type => !allowed.includes(type))) {
+    const updated = await db.storage.updateBucket(BACKUP_BUCKET, { public: false, fileSizeLimit: MAX_BACKUP_BYTES, allowedMimeTypes: BACKUP_MIME_TYPES })
+    if (updated.error) throw new AppError('BACKUP_STORAGE_UNAVAILABLE', 'Не вдалося підготувати сховище до нового формату копій', 503)
   }
   if (result.error || !result.data) throw new AppError('BACKUP_STORAGE_UNAVAILABLE', 'Сховище резервних копій недоступне', 503)
   if (result.data.public) throw new AppError('BACKUP_BUCKET_PUBLIC', 'Зупинено резервування: сховище має бути приватним', 503)
@@ -39,17 +45,18 @@ router.post('/verify', requireRole('owner','admin','cashier'), async (req,res,ne
     const { data,error } = await db.storage.from(BACKUP_BUCKET).download(item.path)
     if (error || !data || data.size !== item.size_bytes) throw new AppError('BACKUP_INCOMPLETE','Резервна копія завантажена не повністю',422)
     const bytes = Buffer.from(await data.arrayBuffer())
-    if (bytes[0] !== 0x1f || bytes[1] !== 0x8b || createHash('sha256').update(bytes).digest('hex') !== item.sha256)
+    if (!hasArchiveMagic(bytes, item.format) || createHash('sha256').update(bytes).digest('hex') !== item.sha256)
       throw new AppError('BACKUP_CHECKSUM','Контрольна сума резервної копії не збігається',422)
     const manifest = { ...item, verified_at: new Date().toISOString(), closed_at: String(req.body.closed_at ?? ''), captured_at: String(req.body.captured_at ?? '') }
     const saved = await db.storage.from(BACKUP_BUCKET).upload(item.path+'.json', JSON.stringify(manifest), { contentType:'application/json',upsert:true })
     if (saved.error) throw new AppError('BACKUP_MANIFEST','Не вдалося підтвердити копію',503)
-    // Only this device's verified shift copies; retain seven, newest first.
+    // Лише перевірені копії цього пристрою. Лишаємо 7 днів + 4 тижні + 6 місяців (backupsToKeep), решту прибираємо.
     const folder = item.tenant_id+'/'+item.device_id
     const listed = await db.storage.from(BACKUP_BUCKET).list(folder, { limit:1000,sortBy:{column:'created_at',order:'desc'} })
-    const verified = (listed.data ?? []).filter(file => /^[a-f0-9-]{36}-[a-f0-9]{64}\.db\.gz\.json$/i.test(file.name))
-    if (!listed.error && verified.length > 7) {
-      const obsolete = verified.slice(7).filter(file=>folder+'/'+file.name !== item.path+'.json')
+    const verified = (listed.data ?? []).filter(file => VERIFIED_BACKUP_NAME.test(file.name))
+    if (!listed.error) {
+      const keep = backupsToKeep(verified)
+      const obsolete = verified.filter(file => !keep.has(file.name) && folder+'/'+file.name !== item.path+'.json')
       if (obsolete.length) await db.storage.from(BACKUP_BUCKET).remove(obsolete.flatMap(file=>[folder+'/'+file.name,folder+'/'+file.name.slice(0,-5)]))
     }
     res.json({ data: { sha256: item.sha256 } })
@@ -66,10 +73,10 @@ router.get('/', requireRole('owner','admin'), async(req,res,next)=>{
       const files=await db.storage.from(BACKUP_BUCKET).list(req.user!.tenant_id+'/'+device.name,{limit:1000})
       if(files.error) throw files.error
       const sizes = new Map((files.data ?? []).map(file => [file.name, Number((file as any).metadata?.size) || 0]))
-      for(const file of files.data ?? []) if(/^[a-f0-9-]{36}-[a-f0-9]{64}\.db\.gz\.json$/i.test(file.name)) {
+      for(const file of files.data ?? []) if(VERIFIED_BACKUP_NAME.test(file.name)) {
         const name = file.name.slice(0,-5)
-        // Усе, що потрібно для аварійного відновлення: id, контрольна сума й розмір архіву.
-        result.push({device_id:device.name,name,created_at:file.created_at,id:name.slice(0,36),sha256:name.slice(37,101),size_bytes:sizes.get(name) ?? 0})
+        // Усе, що потрібно для аварійного відновлення: id, контрольна сума, розмір і формат архіву.
+        result.push({device_id:device.name,name,created_at:file.created_at,id:name.slice(0,36),sha256:name.slice(37,101),size_bytes:sizes.get(name) ?? 0,format:backupFormatOfName(name)})
       }
     }
     res.json({data:result})
