@@ -1269,7 +1269,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
                 type="button"
                 className="flex-1"
                 loading={applyingId === modalAction.id}
-                disabled={!canApplyAiWrite(modalAction.tool, role, isDesktopRuntime()) || sending || (!!applyingId && applyingId !== modalAction.id)}
+                disabled={!canApplyAiWrite(modalAction.tool, role, writesToMainPc()) || sending || (!!applyingId && applyingId !== modalAction.id)}
                 onClick={async () => {
                   if (await applyAction(modalAction)) setModalAction(null)
                 }}

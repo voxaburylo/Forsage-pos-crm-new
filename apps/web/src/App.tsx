@@ -46,6 +46,7 @@ const WriteoffsPage        = lazyPage(() => import('@/features/inventory/Writeof
 const WriteoffFormPage     = lazyPage(() => import('@/features/inventory/WriteoffFormPage'))
 const WriteoffDetailPage   = lazyPage(() => import('@/features/inventory/WriteoffDetailPage'))
 const StaffPage            = lazyPage(() => import('@/features/staff/StaffPage'))
+const StaffSecretsOffline = lazyPage(() => import('@/features/staff/StaffSecretsOffline').then(module => ({ default: module.StaffSecretsOffline })))
 // StaffSalaryPage merged
 const InternalConsumptionsPage = lazyPage(() => import('@/features/inventory/InternalConsumptionsPage'))
 const ABCAnalysis          = lazyPage(() => import('@/features/analytics/ABCAnalysis'))
@@ -257,7 +258,7 @@ function Workspace() {
           <Route path="/suppliers/invoices/:id" element={<TillOnly what="Прихідна накладна"><ProtectedRoute roles={RECEIVING_ROLES}><InvoiceDetailPage /></ProtectedRoute></TillOnly>} />
           <Route path="/suppliers/invoices/:id/edit" element={<TillOnly what="Редагування накладної"><ProtectedRoute roles={RECEIVING_ROLES}><InvoiceFormPage /></ProtectedRoute></TillOnly>} />
 
-          <Route path="/staff"          element={<TillOnly what="Працівники"><ProtectedRoute roles={ADMIN_ROLES}><StaffPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/staff"          element={<TillOnly what="Працівники" offline={<StaffSecretsOffline />}><ProtectedRoute roles={ADMIN_ROLES}><StaffPage /></ProtectedRoute></TillOnly>} />
           
           <Route path="/internal"       element={<TillOnly what="Внутрішнє споживання"><ProtectedRoute roles={OFFICE_ROLES}><InternalConsumptionsPage /></ProtectedRoute></TillOnly>} />
           <Route path="/settings/channels" element={<TillOnly what="Канали"><ProtectedRoute roles={ADMIN_ROLES}><SettingsChannels /></ProtectedRoute></TillOnly>} />

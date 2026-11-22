@@ -71,3 +71,22 @@ describe('web works through the main PC', () => {
     expect(isWriteAllowed(req('/api/v1/till-rpc/claim', true) as never)).toBe(true)
   })
 })
+
+describe('PIN and password from the web while the main PC is off (owner decision 22.11.2026)', () => {
+  beforeEach(() => query.mockReset())
+  it('the web may change them; the till gets only a hash, never the secret', async () => {
+    const req = (method: string, path: string) => ({ method, path, get: () => undefined })
+    expect(isWriteAllowed(req('POST', '/api/v1/auth/set-pin') as never)).toBe(true)
+    expect(isWriteAllowed(req('PUT', `/api/v1/admin/users/${id(1)}/password`) as never)).toBe(true)
+    expect(isWriteAllowed(req('PUT', `/api/v1/admin/users/${id(1)}`) as never)).toBe(false)
+    const { queueStaffSecret } = await import('../tillCommandService.js')
+    const { hashSecret } = await import('../../lib/secretHash.js')
+    query.mockResolvedValue({ rows: [] })
+    await queueStaffSecret('t', id(2), id(1), 'pin', hashSecret('1234', 10_000))
+    const payload = JSON.parse(query.mock.calls[0][1][2])
+    expect(query.mock.calls[0][1][1]).toBe('staff.secret')
+    expect(payload).toMatchObject({ user_id: id(1), kind: 'pin' })
+    expect(JSON.stringify(payload)).not.toContain('1234')
+    await expect(queueStaffSecret('t', id(2), id(1), 'pin', '1234')).rejects.toMatchObject({ status: 422 })
+  })
+})

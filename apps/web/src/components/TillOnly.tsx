@@ -17,10 +17,10 @@ import { Card } from '@/components/ui'
  *
  * remote={false} — екран лише на самій касі (продаж, повернення, гроші в шухляді): чек і фіскалізація там.
  */
-export function TillOnly({ children, what, remote = true }: { children: React.ReactNode; what: string; remote?: boolean }) {
+export function TillOnly({ children, what, remote = true, offline }: { children: React.ReactNode; what: string; remote?: boolean; offline?: React.ReactNode }) {
   if (isDesktopRuntime()) return <>{children}</>
   if (!remote) return <ViewOnlyCard what={what} reason="till-only" />
-  return <ThroughMainPc what={what}>{children}</ThroughMainPc>
+  return <ThroughMainPc what={what} offline={offline}>{children}</ThroughMainPc>
 }
 
 /** Хто з вебу працює через головний ПК; касир і комірник — на самій касі. */
@@ -29,7 +29,8 @@ const STATUS_POLL_MS = 20_000
 
 type State = 'checking' | 'online' | 'offline'
 
-function ThroughMainPc({ what, children }: { what: string; children: React.ReactNode }) {
+/** offline — що можна зробити й без головного ПК (не стосується залишків і грошей); показується під карткою. */
+function ThroughMainPc({ what, children, offline }: { what: string; children: React.ReactNode; offline?: React.ReactNode }) {
   const role = String(useAuthStore(state => state.session?.user?.app_metadata?.role) ?? '')
   const [state, setState] = useState<State>('checking')
   const [ready, setReady] = useState(false)
@@ -65,7 +66,7 @@ function ThroughMainPc({ what, children }: { what: string; children: React.React
   useEffect(() => () => { release.current?.(); release.current = null }, [])
 
   if (!allowed) return <ViewOnlyCard what={what} reason="role" />
-  if (!ready) return state === 'offline' ? <ViewOnlyCard what={what} reason="offline" /> : (
+  if (!ready) return state === 'offline' ? <ViewOnlyCard what={what} reason="offline">{offline}</ViewOnlyCard> : (
     <Layout><p className="py-10 text-center text-sm text-gray-500" role="status">Підключаємось до головного ПК…</p></Layout>
   )
   return (
@@ -80,7 +81,7 @@ function ThroughMainPc({ what, children }: { what: string; children: React.React
   )
 }
 
-function ViewOnlyCard({ what, reason }: { what: string; reason: 'till-only' | 'offline' | 'role' }) {
+function ViewOnlyCard({ what, reason, children }: { what: string; reason: 'till-only' | 'offline' | 'role'; children?: React.ReactNode }) {
   const text = reason === 'offline'
     ? 'Головний ПК зараз не на звʼязку. Щойно програма на касі запуститься й матиме інтернет, цей розділ відкриється тут — і всі дії виконуватимуться на касі.'
     : reason === 'role'
@@ -105,6 +106,7 @@ function ViewOnlyCard({ what, reason }: { what: string; reason: 'till-only' | 'o
           </div>
         </Card>
       </div>
+      {children}
     </Layout>
   )
 }

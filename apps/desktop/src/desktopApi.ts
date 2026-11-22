@@ -154,6 +154,8 @@ export function createDesktopApi(ipcRenderer: DesktopInvoker) {
       employeePricing: () => ipcRenderer.invoke('desktop:staff:employee-pricing'),
       setEmployeePricing: (id: string, value: unknown) => ipcRenderer.invoke('desktop:staff:set-employee-pricing', id, value),
       setPin: (userId: string, pin: string) => ipcRenderer.invoke('desktop:staff:set-pin', userId, pin),
+      /** 22.11.2026: застосувати PIN/пароль, змінений у вебі (лише хеш; автор — із команди сервера). */
+      applyRemoteSecret: (requestedBy: string, payload: unknown) => ipcRenderer.invoke('desktop:staff:apply-remote-secret', requestedBy, payload),
       verifyPin: (userId: string, pin: string) => ipcRenderer.invoke('desktop:staff:verify-pin', userId, pin),
       listCommissionRules: () => ipcRenderer.invoke('desktop:staff:list-commission-rules'),
       createCommissionRule: (input: unknown) => ipcRenderer.invoke('desktop:staff:create-commission-rule', input),

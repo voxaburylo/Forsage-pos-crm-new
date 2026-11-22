@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useLatestRequest } from '@/hooks/useLatestRequest'
-import { isDesktopRuntime } from '@/lib/desktopBridge'
+import { writesToMainPc } from '@/lib/mainPcData'
 import { useAuthStore } from '@/stores/authStore'
 import { Plus, Trash2, ToggleLeft, ToggleRight } from 'lucide-react'
 import { api } from '@/lib/api'
@@ -34,7 +34,7 @@ export default function SettingsChannels() {
   const [deleting, setDeleting] = useState<Channel | null>(null)
   const busy = useRef(false)
   const user = useAuthStore(state => state.session?.user)
-  const canEdit = isDesktopRuntime() && ['owner', 'admin'].includes(String(user?.app_metadata?.role))
+  const canEdit = writesToMainPc() && ['owner', 'admin'].includes(String(user?.app_metadata?.role))
   const gate = useLatestRequest(user?.id)
   function closeCreate() { if (!busy.current) { setModalOpen(false); setForm({ platform: 'telegram', name: '', token: '' }) } }
 

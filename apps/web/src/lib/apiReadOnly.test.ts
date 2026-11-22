@@ -16,7 +16,16 @@ describe('web API is read-only', () => {
     expect(isWebReadOnlyRequest('/api/v1/products/1', 'PUT')).toBe(true)
     expect(isWebReadOnlyRequest('/api/v1/customer-orders/1', 'DELETE')).toBe(true)
     expect(isWebReadOnlyRequest('/api/v1/sync/push', 'POST')).toBe(true)
-    expect(isWebReadOnlyRequest('/api/v1/auth/set-pin', 'POST')).toBe(true)
+    expect(isWebReadOnlyRequest('/api/v1/auth/change-password', 'POST')).toBe(true)
+  })
+
+  it('lets the web change a staff PIN or password even without the main PC (only a hash reaches the till)', () => {
+    // 22.11.2026, рішення власника: без головного ПК — лише перегляд і зміни, що не стосуються залишків.
+    expect(isWebReadOnlyRequest('/api/v1/auth/set-pin', 'POST')).toBe(false)
+    expect(isWebReadOnlyRequest('/api/v1/admin/users/00000000-0000-4000-8000-000000000001/password', 'PUT')).toBe(false)
+    expect(isWebReadOnlyRequest('/api/v1/admin/users/00000000-0000-4000-8000-000000000001', 'PUT')).toBe(true)
+    expect(isWebReadOnlyRequest('/api/v1/settings/owner-alerts', 'PUT')).toBe(false)
+    expect(isWebReadOnlyRequest('/api/v1/settings', 'PUT')).toBe(true)
   })
 
   it('lets the web hand a command to the till, and nothing else on that route', () => {

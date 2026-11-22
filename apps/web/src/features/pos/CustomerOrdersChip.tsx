@@ -46,6 +46,13 @@ export function CustomerOrdersChip({ customerId, phone, debtBalance }: { custome
       </button>
       {summary.paid > 0 && <span className="text-green-400">внесено {formatMoney(summary.paid)}</span>}
       {summary.due > 0 && <span className="text-yellow-300">доплатити {formatMoney(summary.due)}</span>}
+      {/* 22.11.2026 (етап 5): задаток і доплата — з чека, в тій самій панелі замовлень клієнта, що й видача. */}
+      {summary.due > 0 && phone && (
+        <button type="button" onClick={open} data-customer-orders-pay
+          className="rounded bg-yellow-400 px-1.5 py-0.5 font-semibold text-black hover:bg-yellow-300">
+          Внести / доплатити
+        </button>
+      )}
       {debt}
     </span>
   )

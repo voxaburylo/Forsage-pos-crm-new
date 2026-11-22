@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useLatestRequest } from '@/hooks/useLatestRequest'
-import { isDesktopRuntime } from '@/lib/desktopBridge'
+import { writesToMainPc } from '@/lib/mainPcData'
 import { useAuthStore } from '@/stores/authStore'
 import { Edit2, AlertTriangle, ToggleLeft, ToggleRight } from 'lucide-react'
 import { Layout } from '@/components/Layout'
@@ -47,7 +47,7 @@ export default function TemplateEditor() {
   const [loadError, setLoadError] = useState('')
   const busy = useRef(false)
   const user = useAuthStore(state => state.session?.user)
-  const canEdit = isDesktopRuntime() && ['owner', 'admin'].includes(String(user?.app_metadata?.role))
+  const canEdit = writesToMainPc() && ['owner', 'admin'].includes(String(user?.app_metadata?.role))
   const gate = useLatestRequest(user?.id)
 
   async function loadTemplates() {

@@ -19,6 +19,8 @@ const WEB_DENIED_PREFIXES = [
   'desktop:backup', 'desktop:problems:', 'desktop:web-rpc:', 'desktop:window:', 'desktop:get-runtime-info',
   'desktop:catalog:cleanup-', 'desktop:orders:offline-status', 'desktop:orders:discard-offline', 'desktop:orders:retry-offline',
   'desktop:diagnostic',
+  // Автор зміни PIN/пароля передається аргументом — з вебу його можна було б підробити; лише команда сервера.
+  'desktop:staff:apply-remote-secret',
 ]
 export function webRpcChannelAllowed(channel: string): boolean {
   return /^desktop:[a-z0-9:-]{1,120}$/.test(channel) && !WEB_DENIED_PREFIXES.some(prefix => channel.startsWith(prefix))
