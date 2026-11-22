@@ -41,6 +41,10 @@ interface ReadyOrder {
 
 const READY_ORDER_READ_TIMEOUT_MS = 10_000
 const READY_ORDER_WRITE_TIMEOUT_MS = 30_000
+/** 22.11.2026 (етап 6): каса відмовила, бо такий самий платіж за це замовлення щойно вже внесено. */
+export function isPaymentRepeatWarning(message: string): boolean {
+  return message.includes('Такий самий платіж за це замовлення вже внесено щойно')
+}
 const ACTIVE_ORDER_STATUSES = 'lead,quoted,new,in_progress,ordered,arrived,called,no_answer,ready'
 type PaymentAction = 'deposit' | 'full'
 
@@ -261,9 +265,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     paymentInFlight.current = true
     setPaying(true)
     try {
-      await posOrderApi.addPayment(
-        payOrder.id,
-        {
+      const payment = {
           amount: amountVal,
           payment_id: paymentId,
           method: payMethod,
@@ -276,9 +278,16 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
             : payAction === 'full'
               ? 'Касова повна оплата замовлення'
               : (canAcceptOpenDraftDeposit ? 'Касова передоплата чернетки' : 'Касова передоплата замовлення'),
-        },
-        { silent: true, timeoutMs: READY_ORDER_WRITE_TIMEOUT_MS },
-      )
+        }
+      const paymentOptions = { silent: true, timeoutMs: READY_ORDER_WRITE_TIMEOUT_MS }
+      try {
+        await posOrderApi.addPayment(payOrder.id, payment, paymentOptions)
+      } catch (error) {
+        // 22.11.2026 (етап 6): такий самий платіж щойно внесли (можливо, на іншому ПК) — питаємо, а не записуємо вдруге.
+        const message = getErrorMessage(error, '')
+        if (!isPaymentRepeatWarning(message) || !window.confirm(message + '\n\nВнести ще один такий самий платіж?')) throw error
+        await posOrderApi.addPayment(payOrder.id, { ...payment, confirm_repeat: true }, paymentOptions)
+      }
 
       paymentAttemptRef.current = null
       paymentInFlight.current = false

@@ -68,6 +68,10 @@ function isUnpricedOrder(order: any): boolean {
     && active.every((item: any) => num(item.sell_price) === 0 && num(item.core_deposit_amount) === 0)
 }
 
+/** 22.11.2026 (етап 6): однаковий платіж за те саме замовлення протягом 2 хв — питаємо, чи це не повтор. */
+export const ORDER_PAYMENT_REPEAT_WINDOW_MS = 120_000
+export const ORDER_PAYMENT_REPEAT_MARK = 'Такий самий платіж за це замовлення вже внесено щойно'
+
 export class LocalOrderRepository {
   private readonly pos: LocalPosRepository
 
@@ -890,6 +894,8 @@ export class LocalOrderRepository {
     is_fiscal?: boolean
     shift_id?: string | null
     notes?: string | null
+    /** 22.11.2026: людина підтвердила, що це ще один платіж, а не повтор щойно внесеного. */
+    confirm_repeat?: boolean
   }): { data: any; order: any } {
     return this.db.transaction(() => this.addPaymentInTransaction(orderId, input))
   }
@@ -928,6 +934,19 @@ export class LocalOrderRepository {
     if (!canAcceptOpenDraftDeposit && amount > remaining) throw new Error('Сума перевищує залишок до сплати')
     if (input.method === 'account' && !order.customer_id) throw new Error('Замовлення без клієнта — оплата з рахунку неможлива')
     if (input.method === 'bonus' && !order.customer_id) throw new Error('Замовлення без клієнта — оплата бонусами неможлива')
+
+    // 22.11.2026 (етап 6, два ПК): той самий платіж за те саме замовлення щойно вже внесено — найімовірніше,
+    // задаток прийняли двічі (на касі й на ПК менеджера). Без явного підтвердження не записуємо.
+    if (!input.confirm_repeat) {
+      const since = new Date(Date.now() - ORDER_PAYMENT_REPEAT_WINDOW_MS).toISOString()
+      const recent = this.db.prepare(`
+        SELECT p.created_at, COALESCE(u.full_name, '') AS author FROM order_payments p
+        LEFT JOIN staff_users u ON u.id = p.created_by AND u.tenant_id = p.tenant_id
+        WHERE p.tenant_id = ? AND p.order_id = ? AND p.amount = ? AND p.method = ? AND p.deleted_at IS NULL AND p.created_at >= ?
+        ORDER BY p.created_at DESC LIMIT 1
+      `).get(tenantId, orderId, amount, input.method, since) as { created_at: string; author: string } | undefined
+      if (recent) throw new Error(`${ORDER_PAYMENT_REPEAT_MARK}: ${(amount / 100).toFixed(2)} грн${recent.author ? ' (' + recent.author + ')' : ''}. Якщо це справді ще один платіж — підтвердіть.`)
+    }
 
     const shiftId = input.shift_id ?? null
     if (!shiftId) throw new Error('Спочатку відкрийте касову зміну')
