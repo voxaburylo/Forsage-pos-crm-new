@@ -278,6 +278,35 @@ export async function signInByPassword(password: string) {
 }
 
 let restoreFlight: Promise<Session | null> | null = null
+/** Етап 9: хто може повернутися за PIN (сьогодні вже входив паролем на цьому ПК). */
+export async function readPinRoster(): Promise<Array<{ id: string; full_name: string; role: string }>> {
+  const roster = desktopBridge()?.auth?.pinRoster
+  if (!isDesktopRuntime() || !roster) return []
+  return roster().catch(() => [])
+}
+
+/**
+ * Швидка зміна касира за PIN. Пароль цього дня вже перевірено на цьому ПК; серверну сесію працівника
+ * головний ПК повертає сам (паролі не зберігаються), як і при відновленні входу.
+ */
+export async function signInByPin(userId: string, pin: string) {
+  const generation = nextDesktopLoginGeneration()
+  const login = desktopBridge()?.auth?.loginByPin
+  if (!isDesktopRuntime() || !login) throw new Error('Вхід за PIN працює в програмі каси')
+  const user = await login(userId, pin)
+  if (generation !== desktopServerLoginGeneration) throw new Error('Спробу входу скасовано')
+  const session = createDesktopSession(user)
+  useAuthStore.getState().setOfflineSession(session)
+  const stillCurrent = () => generation === desktopServerLoginGeneration && useAuthStore.getState().session?.user.id === user.id
+  void restoreDesktopServerSession(session, stillCurrent).then(online => {
+    if (stillCurrent() && online?.user.id === user.id
+      && online.user.app_metadata?.tenant_id === user.tenant_id && !isProgramAccessDenied(online.user)) {
+      useAuthStore.getState().setSession(online)
+    }
+  }).catch(() => {})
+  return session
+}
+
 export function restoreDesktopSession(): Promise<Session | null> {
   if (restoreFlight) return restoreFlight
   const restore = desktopBridge()?.auth?.restore

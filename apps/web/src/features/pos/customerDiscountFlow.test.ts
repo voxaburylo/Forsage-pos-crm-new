@@ -44,13 +44,36 @@ describe('readiness: customer discounts in every basket path', () => {
     expect(store.getState().items.map(item => item.discount)).toEqual([20, 0])
   })
   it('rounds each fractional-quantity line before computing its automatic discount', () => {
+    // 22.11.2026: ціна після знижки клієнта округлюється вгору до 5 грн і не буває вищою за повну —
+    // тому на рядку дешевше 5 грн автоматичної знижки немає, а копійки рядка лишаються точними.
     chooseCustomer(); store.getState().addItem({ ...baseItem, qty: 0.25, unitPrice: 102 })
-    expect(store.getState().items[0]).toMatchObject({ total: 23, discount: 3 })
-    expect(store.getState()).toMatchObject({ subtotal: 26, totalDiscount: 3, total: 23 })
+    expect(store.getState().items[0]).toMatchObject({ total: 26, discount: 0 })
+    expect(store.getState()).toMatchObject({ subtotal: 26, totalDiscount: 0, total: 26 })
     store.getState().updateQty(baseItem.productId, 0.333)
-    expect(store.getState()).toMatchObject({ subtotal: 34, totalDiscount: 3, total: 31 })
+    expect(store.getState()).toMatchObject({ subtotal: 34, totalDiscount: 0, total: 34 })
     store.getState().addItem({ ...baseItem, qty: 0.334 })
-    expect(store.getState()).toMatchObject({ subtotal: 68, totalDiscount: 7, total: 61 })
+    expect(store.getState()).toMatchObject({ subtotal: 68, totalDiscount: 0, total: 68 })
+    // На звичайній ціні: 2,5 × 102 грн = 255 грн, −10 % = 229,50 → 230 грн.
+    reset(); chooseCustomer(); store.getState().addItem({ ...baseItem, qty: 2.5, unitPrice: 10200 })
+    expect(store.getState().items[0]).toMatchObject({ total: 23000, discount: 2500 })
+  })
+  it('rounds the price after a customer discount up to whole 5 UAH (owner decision 22.11.2026)', () => {
+    chooseCustomer()
+    store.getState().addItem({ ...baseItem, productId: 'a', unitPrice: 20500 })      // 205 − 10 % = 184,50 → 185
+    store.getState().addItem({ ...baseItem, productId: 'b', unitPrice: 10000 })      // 100 − 10 % = 90 — уже кратне 5
+    store.getState().addItem({ ...baseItem, productId: 'c', unitPrice: 30000, qty: 3 }) // 900 − 10 % = 810
+    store.getState().addItem({ ...baseItem, productId: 'd', unitPrice: 9900 })       // 99 − 10 % = 89,10 → 90
+    expect(store.getState().items.map(item => [item.productId, item.total, item.discount])).toEqual([
+      ['a', 18500, 2000], ['b', 9000, 1000], ['c', 81000, 9000], ['d', 9000, 900],
+    ])
+    // Округлення не опускає нижче закупки і не робить ціну вищою за повну.
+    reset(); chooseCustomer()
+    store.getState().addItem({ ...baseItem, productId: 'cost', unitPrice: 20500, purchasePrice: 18700 })
+    // 184,50 нижче закупки 187 → межа 187 → вгору до 190.
+    expect(store.getState().items[0]).toMatchObject({ total: 19000, discount: 1500 })
+    reset(); chooseCustomer()
+    store.getState().addItem({ ...baseItem, productId: 'top', unitPrice: 20300 })     // 203 − 10 % = 182,70 → 185
+    expect(store.getState().items[0]).toMatchObject({ total: 18500, discount: 1800 })
   })
   it('clamps full/manual discounts to the rounded line and keeps core deposits separate', () => {
     store.getState().addItem({ ...baseItem, qty: 0.25, unitPrice: 102, requiresCoreReturn: true, coreDepositAmount: 10 })
@@ -80,7 +103,7 @@ describe('readiness: customer discounts in every basket path', () => {
     const saved = parseOpenReceipts(JSON.stringify({ tabs: store.getState().tabs }))
     expect(saved).not.toBeNull()
     store.getState().replaceOpenReceipts(saved!.tabs, key)
-    expect(store.getState()).toMatchObject({ subtotal: 26, totalDiscount: 3, total: 23, automaticDiscountPct: 10 })
+    expect(store.getState()).toMatchObject({ subtotal: 26, totalDiscount: 0, total: 26, automaticDiscountPct: 10 })
     expect(store.getState().getActiveTab()!.idempotencyKey).toBe(key)
     store.getState().addItem({ ...baseItem, productId: 'another', unitPrice: 10000 })
     expect(store.getState().items[1].discount).toBe(1000)
@@ -169,13 +192,13 @@ describe('readiness: basket → isolated local sale → restart → return', () 
   it('pays a fractional discounted basket once and returns the exact charged product amount', () => {
     localCustomer(); const id = product(0.25, 102)
     const sale = pay()
-    expect(pos.getSale(sale)).toMatchObject({ subtotal: 26, discount: 3, total: 23 })
+    expect(pos.getSale(sale)).toMatchObject({ subtotal: 26, discount: 0, total: 26 })
     const item = pos.getSaleForReturn(sale).items[0]
-    expect(item.available_refund).toBe(23)
+    expect(item.available_refund).toBe(26)
     const request = { sale_id: sale, approved_by: 'cashier', shift_id: shift, client_operation_id: randomUUID(),
       items: [{ sale_item_id: item.id, product_id: id, quantity: 0.25 }] }
-    expect(pos.createReturn(request).refund_kopecks).toBe(23)
-    expect(pos.createReturn(request).refund_kopecks).toBe(23)
+    expect(pos.createReturn(request).refund_kopecks).toBe(26)
+    expect(pos.createReturn(request).refund_kopecks).toBe(26)
     expect(pos.getExpectedCash('cashier')!.expected_amount).toBe(10000)
     expect(db.prepare('SELECT qty_on_hand n FROM products WHERE id=?').get(id)).toEqual({ n: 10 })
   })
@@ -202,15 +225,17 @@ describe('readiness: basket → isolated local sale → restart → return', () 
     const client = localCustomer(7.25)
     db.prepare('UPDATE customers SET bonus_balance=5000 WHERE id=?').run(client)
     const id = product(3, 10000)
-    expect(store.getState().total).toBe(27825)
+    // 300 грн − 7,25 % = 278,25 → 280 грн (округлення вгору до 5 грн).
+    expect(store.getState().total).toBe(28000)
     const sale = pay(3000, 3000)
     expect(db.prepare('SELECT bonus_balance n FROM customers WHERE id=?').get(client)).toEqual({ n: 2000 })
     expect(db.prepare('SELECT COUNT(*) n FROM bonus_transactions WHERE customer_id=?').get(client)).toEqual({ n: 1 })
     const line = pos.getSaleForReturn(sale).items[0]
-    for (let i = 0; i < 3; i++) {
-      expect(pos.createReturn({ sale_id: sale, approved_by: 'cashier', shift_id: shift, client_operation_id: randomUUID(),
-        items: [{ sale_item_id: line.id, product_id: id, quantity: 1 }] }).refund_kopecks).toBe(8275)
-    }
+    // Сплачено грошима 280 − 30 бонусів = 250 грн; три повернення разом — рівно 250, не більше.
+    const refunds = [0, 1, 2].map(() => pos.createReturn({ sale_id: sale, approved_by: 'cashier', shift_id: shift, client_operation_id: randomUUID(),
+      items: [{ sale_item_id: line.id, product_id: id, quantity: 1 }] }).refund_kopecks)
+    expect(refunds.reduce((sum, value) => sum + value, 0)).toBe(25000)
+    expect(Math.max(...refunds) - Math.min(...refunds)).toBeLessThanOrEqual(1)
     expect(pos.getExpectedCash('cashier')!.expected_amount).toBe(10000)
   })
   it('does not apply cashback as an immediate discount or accrue it on a core deposit; it goes to bonuses', () => {

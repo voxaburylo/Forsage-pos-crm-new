@@ -17,6 +17,11 @@ const MANAGER_SALE_EXACT = new Set<string>([
     'pay-debt', 'add-customer-deposit', 'payout-customer-deposit'].map(name => `desktop:pos:${name}`),
   'desktop:orders:add-payment', 'desktop:orders:complete',
 ])
+/** 22.11.2026: із дозволом «Може приймати задаток» менеджеру досить цих дій — своя зміна й оплата замовлення. */
+const MANAGER_DEPOSIT_EXACT = new Set<string>(['desktop:pos:open-shift', 'desktop:pos:close-shift', 'desktop:orders:add-payment'])
+export function isManagerDepositChannel(channel: string): boolean {
+  return MANAGER_DEPOSIT_EXACT.has(channel)
+}
 /** Дії каси, на які менеджеру потрібен окремий дозвіл власника. */
 export function isManagerSaleChannel(channel: string): boolean {
   return MANAGER_SALE_EXACT.has(channel) || (channel.startsWith('desktop:fiscal:') && !['desktop:fiscal:get-config', 'desktop:fiscal:status'].includes(channel))
@@ -25,6 +30,9 @@ export function isManagerSaleChannel(channel: string): boolean {
 export const PUBLIC_DESKTOP_CHANNELS = new Set([
   'desktop:auth:login',
   'desktop:auth:login-password',
+  // Етап 9: імена тих, хто сьогодні вже входив паролем на цьому ПК, і вхід за їхнім PIN.
+  'desktop:auth:pin-roster',
+  'desktop:auth:login-pin',
   'desktop:auth:login-online',
   'desktop:auth:logout',
   'desktop:auth:remembered-status',

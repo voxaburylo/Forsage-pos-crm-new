@@ -293,10 +293,19 @@ export class LocalCatalogRepository {
     if (storedById && !storedById.deleted_at) {
       // Optional fields omitted by a partial editor are not requests to erase
       // prices, identifiers or photos. Explicit null/zero/false/[] still apply.
+      const snapshot = readProductCatalogSnapshot(this.db, storedById.id, tenantId) as LocalProductUpsert
+      const callerListsBarcodes = input.additional_barcodes !== undefined
       input = {
-        ...readProductCatalogSnapshot(this.db, storedById.id, tenantId),
+        ...snapshot,
         ...Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined)),
       } as LocalProductUpsert
+      // 22.11.2026: новий основний штрихкод не стирає попередній — той стає додатковим, щоб наклеєні етикетки
+      // й далі сканувались (17.11 проведення накладної так замінило коди 81 картки, зокрема 2005543129087).
+      // Стерти код можна лише явно: передати повний список штрихкодів (картка товару).
+      const previous = String(snapshot.barcode ?? '').trim()
+      if (!callerListsBarcodes && previous && previous !== String(input.barcode ?? '').trim()) {
+        input.additional_barcodes = [...new Set([...(input.additional_barcodes ?? []), previous])]
+      }
     }
 
     // Для накладної повторний код постачальника повинен прив'язатися до вже
@@ -539,7 +548,12 @@ export class LocalCatalogRepository {
             is_primary = excluded.is_primary,
             updated_at = excluded.updated_at,
             deleted_at = NULL
+          -- 22.11.2026: стертий код (або код видаленої картки) переходить новій картці; раніше запис мовчки не робився.
+          -- Живий код іншої живої картки сюди не доходить — його відхиляє перевірка вище.
           WHERE product_barcodes.product_id = excluded.product_id
+             OR product_barcodes.deleted_at IS NOT NULL
+             OR NOT EXISTS (SELECT 1 FROM products owner WHERE owner.id = product_barcodes.product_id
+                              AND owner.tenant_id = product_barcodes.tenant_id AND owner.deleted_at IS NULL)
         `).run(
           randomUUID(),
           tenantId,

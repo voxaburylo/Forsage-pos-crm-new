@@ -521,6 +521,9 @@ interface ForsageDesktopBridge {
     login: (phone: string, password: string) => Promise<{ id: string; tenant_id: string; full_name: string; role: string; phone: string; email: string; is_active: boolean; created_at?: string }>
     /** Вхід касира лише паролем (головний ПК). Старі збірки цього не мають. */
     loginByPassword?: (password: string) => Promise<{ id: string; tenant_id: string; full_name: string; role: string; phone: string; email: string; is_active: boolean; created_at?: string }>
+    /** Етап 9: хто сьогодні вже входив паролем на цьому ПК і має PIN. */
+    pinRoster?: () => Promise<Array<{ id: string; full_name: string; role: string }>>
+    loginByPin?: (userId: string, pin: string) => Promise<{ id: string; tenant_id: string; full_name: string; role: string; phone: string; email: string; is_active: boolean; created_at?: string }>
     loginOnline: (phone: string, password: string) => Promise<{ user: { id: string; tenant_id: string; full_name: string; role: string; phone: string; email: string; is_active: boolean; created_at?: string }; access_token: string; refresh_token: string; expires_in: number }>
     logout: () => Promise<{ success: true }>
     rememberedStatus?: () => Promise<{ phone?: string; name?: string; expiresAt?: number; locked: boolean; available: boolean }>
@@ -663,6 +666,9 @@ interface ForsageDesktopBridge {
     /** 21.11.2026: менеджери, яким власник дозволив продавати (лише головний ПК). */
     saleAccess?: () => Promise<string[]>
     setSaleAccess?: (id: string, enabled: boolean) => Promise<string[]>
+    /** 22.11.2026: менеджери, яким власник дозволив лише приймати задаток за замовленнями. */
+    depositAccess?: () => Promise<string[]>
+    setDepositAccess?: (id: string, enabled: boolean) => Promise<string[]>
     /** 22.11.2026: особиста ціна працівника — відсоток або «за закупкою» (лише головний ПК). */
     employeePricing?: () => Promise<Record<string, { mode: 'pct'; pct: number } | { mode: 'cost' }>>
     setEmployeePricing?: (id: string, value: { mode: 'pct'; pct: number } | { mode: 'cost' } | null) => Promise<Record<string, { mode: 'pct'; pct: number } | { mode: 'cost' }>>

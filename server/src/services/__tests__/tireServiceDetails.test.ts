@@ -34,7 +34,7 @@ it('scopes all five reads by tenant and work date, excludes deleted records and 
   await request();expect(state.queries).toHaveLength(5)
   for(const {sql,params} of state.queries){expect(params.slice(0,2)).toEqual(['shop','2026-09-22']);expect(sql).toContain('deleted_at')}
   const receipts=state.queries.find(q=>q.sql.includes('WITH service_sales'))!
-  expect(receipts.params[2]).toEqual(['worker']);expect(receipts.sql).toContain("COALESCE(NULLIF(item.sku, ''), product.sku, '')")
+  expect(receipts.params[2]).toEqual(['worker']);expect(receipts.sql).toContain("COALESCE(NULLIF(to_jsonb(item)->>'sku', ''), product.sku, '')")
   const cash=state.queries.at(-1)!.sql;expect(cash).toContain('c.created_by');expect(cash).not.toContain('c.user_id')
 })
 it('fails the entire report instead of silently showing missing operations as zeros',async()=>{

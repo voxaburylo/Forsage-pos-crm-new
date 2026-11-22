@@ -38,3 +38,31 @@ const result = installRelease({ source, destination, rollback, expectedHash })
 console.log('result', JSON.stringify(result))
 console.log('after', sha256(destination))
 console.log('rollback', sha256(rollback))
+
+// 22.11.2026: головна каса запускається з постійної теки (швидкий старт, один дозвіл брандмауера).
+// Та сама збірка: тека win-unpacked, з якої electron-builder зібрав щойно встановлений portable-EXE.
+const { installAppFolder } = require('./install-app-folder.cjs')
+const { assertShopClosed } = require('./install-release.cjs')
+const folder = installAppFolder({
+  sourceDir: path.resolve(__dirname, '../release/staged/win-unpacked'),
+  appDir: path.join(process.env.LOCALAPPDATA ?? '', 'Forsage/app'),
+  previousDir: path.join(process.env.LOCALAPPDATA ?? '', 'Forsage/old-builds/app-before-update'),
+  portableExecutable: destination,
+  checkClosed: assertShopClosed,
+})
+console.log('folder', JSON.stringify(folder))
+
+// Ярлик каси на робочому столі веде на постійну теку. Змінюємо лише ярлик, що вів на цей portable-EXE.
+// Відкат: повернути ярлику ціль <portable-EXE> (або запустити old-builds\Forsage-before-update.exe).
+const appExe = path.join(folder.appDir, 'Forsage.exe')
+const shortcut = path.join(process.env.USERPROFILE ?? '', 'Desktop', 'ФОРСАЖ — КАСА.lnk')
+const ps = (script, env) => execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
+  { encoding: 'utf8', windowsHide: true, timeout: 20000, env: { ...process.env, ...env } }).trim()
+const linkScript = "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:FORSAGE_LNK);"
+const current = ps(linkScript + '$s.TargetPath', { FORSAGE_LNK: shortcut })
+if (path.resolve(current).toLowerCase() === path.resolve(appExe).toLowerCase()) console.log('shortcut', 'already', current)
+else if (path.resolve(current).toLowerCase() === path.resolve(destination).toLowerCase()) {
+  ps(linkScript + '$s.TargetPath=$env:FORSAGE_APP;$s.WorkingDirectory=$env:FORSAGE_DIR;$s.IconLocation=$env:FORSAGE_APP+",0";$s.Save()',
+    { FORSAGE_LNK: shortcut, FORSAGE_APP: appExe, FORSAGE_DIR: folder.appDir })
+  console.log('shortcut', current, '->', ps(linkScript + '$s.TargetPath', { FORSAGE_LNK: shortcut }))
+} else console.log('shortcut', 'NOT CHANGED: unexpected target', current)

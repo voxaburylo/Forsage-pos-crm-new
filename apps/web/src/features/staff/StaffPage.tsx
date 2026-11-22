@@ -18,8 +18,9 @@ import type { EmployeeSummary, DailySummary } from './staffApi'
 import { formatMoney } from '@/lib/utils'
 import { businessDateKey } from '@/lib/businessDate'
 import { normalizedStaffPhone, staffPaySettings } from './staffFormModel'
-import { ManagerSaleToggle } from './ManagerSaleToggle'
+import { ManagerDepositToggle, ManagerSaleToggle } from './ManagerSaleToggle'
 import { EmployeePriceControl } from './EmployeePriceControl'
+import { StaffPinControl } from './StaffPinControl'
 import { useScopedAction } from '@/hooks/useScopedAction'
 import { useBusinessDay } from '@/hooks/useBusinessDay'
 import { useLatestRequest } from '@/hooks/useLatestRequest'
@@ -262,7 +263,9 @@ export default function StaffPage() {
                         <h4 className="text-sm font-bold text-gray-800 flex items-center gap-2"><Shield size={14} className="text-gray-500"/>Безпека</h4>
                         <div className="space-y-2"><label className="text-xs font-medium text-gray-500">Новий пароль для входу</label><div className="flex gap-2"><input type="password" value={newPass} onChange={(e)=>setNewPass(e.target.value)} placeholder="Мінімум 8 символів" className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-300"/><Button type="button" size="sm" onClick={handleResetPassword} variant="secondary"><Lock size={14}/></Button></div></div>
                         {selectedUser.role==='manager'&&editForm.role==='manager'&&<ManagerSaleToggle userId={selectedUser.id}/>}
+                        {selectedUser.role==='manager'&&editForm.role==='manager'&&<ManagerDepositToggle userId={selectedUser.id}/>}
                         <EmployeePriceControl userId={selectedUser.id}/>
+                        <StaffPinControl userId={selectedUser.id} role={selectedUser.role}/>
 
                       </div>
                     )}

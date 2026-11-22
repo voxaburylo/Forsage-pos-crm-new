@@ -47,6 +47,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
   auth: {
     login: (phone: string, password: string) => ipcRenderer.invoke('desktop:auth:login', phone, password),
     loginByPassword: (password: string) => ipcRenderer.invoke('desktop:auth:login-password', password),
+    pinRoster: () => ipcRenderer.invoke('desktop:auth:pin-roster'),
+    loginByPin: (userId: string, pin: string) => ipcRenderer.invoke('desktop:auth:login-pin', userId, pin),
     loginOnline: (phone: string, password: string) => ipcRenderer.invoke('desktop:auth:login-online', phone, password),
     logout: () => ipcRenderer.invoke('desktop:auth:logout'),
     rememberedStatus: () => ipcRenderer.invoke('desktop:auth:remembered-status'),
@@ -187,6 +189,8 @@ contextBridge.exposeInMainWorld('forsageDesktop', {
     saveServerPassword: (id: string, password: string) => ipcRenderer.invoke('desktop:staff:save-server-password', id, password),
     saleAccess: () => ipcRenderer.invoke('desktop:staff:sale-access'),
     setSaleAccess: (id: string, enabled: boolean) => ipcRenderer.invoke('desktop:staff:set-sale-access', id, enabled),
+    depositAccess: () => ipcRenderer.invoke('desktop:staff:deposit-access'),
+    setDepositAccess: (id: string, enabled: boolean) => ipcRenderer.invoke('desktop:staff:set-deposit-access', id, enabled),
     employeePricing: () => ipcRenderer.invoke('desktop:staff:employee-pricing'),
     setEmployeePricing: (id: string, value: unknown) => ipcRenderer.invoke('desktop:staff:set-employee-pricing', id, value),
     setPin: (userId: string, pin: string) => ipcRenderer.invoke('desktop:staff:set-pin', userId, pin),

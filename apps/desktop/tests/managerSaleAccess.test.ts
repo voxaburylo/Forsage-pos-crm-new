@@ -5,8 +5,8 @@ import { readFileSync } from 'node:fs'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { LocalDatabase } from '../src/db/localDatabase'
 import { DEFAULT_TENANT_ID } from '../src/db/localTypes'
-import { isDesktopChannelAllowed, isManagerSaleChannel } from '../src/security/desktopAuthorization'
-import { managerCanSell, managerSaleAllowedIds, setManagerSaleAccess } from '../src/security/managerSaleAccess'
+import { isDesktopChannelAllowed, isManagerDepositChannel, isManagerSaleChannel } from '../src/security/desktopAuthorization'
+import { managerCanSell, managerCanTakeDeposit, managerDepositAllowedIds, managerSaleAllowedIds, setManagerDepositAccess, setManagerSaleAccess } from '../src/security/managerSaleAccess'
 
 describe('manager sale access (owner switch)', () => {
   let root: string
@@ -31,6 +31,33 @@ describe('manager sale access (owner switch)', () => {
     expect(() => setManagerSaleAccess(db, 'cashier-1', true)).toThrow('лише менеджеру')
     expect(() => setManagerSaleAccess(db, 'missing', true)).toThrow('не знайдено')
     expect(() => setManagerSaleAccess(db, "x' OR 1=1", true)).toThrow()
+  })
+
+  it('has a separate «may take deposits» switch that opens only the own shift and order payments (owner decision 22.11.2026)', () => {
+    expect(managerCanTakeDeposit(db, 'manager-1')).toBe(false)
+    expect(setManagerDepositAccess(db, 'manager-1', true)).toEqual(['manager-1'])
+    expect(managerCanTakeDeposit(db, 'manager-1')).toBe(true)
+    // Два дозволи незалежні: задаток не вмикає продаж.
+    expect(managerCanSell(db, 'manager-1')).toBe(false)
+    expect(managerSaleAllowedIds(db)).toEqual([])
+    expect(managerDepositAllowedIds(db)).toEqual(['manager-1'])
+    expect(() => setManagerDepositAccess(db, 'cashier-1', true)).toThrow('лише менеджеру')
+    expect(() => setManagerDepositAccess(db, 'missing', true)).toThrow('не знайдено')
+    expect(setManagerDepositAccess(db, 'manager-1', false)).toEqual([])
+    for (const channel of ['desktop:pos:open-shift', 'desktop:pos:close-shift', 'desktop:orders:add-payment']) {
+      expect(isManagerDepositChannel(channel), channel).toBe(true)
+      expect(isManagerSaleChannel(channel), channel).toBe(true)
+    }
+    // Продаж, повернення, касові операції, видача й ПРРО задатком не відкриваються.
+    for (const channel of ['desktop:pos:checkout', 'desktop:pos:create-return', 'desktop:pos:create-cash-operation', 'desktop:pos:pay-debt',
+      'desktop:orders:complete', 'desktop:fiscal:print-x-report']) expect(isManagerDepositChannel(channel), channel).toBe(false)
+    for (const channel of ['desktop:staff:deposit-access', 'desktop:staff:set-deposit-access']) {
+      expect(isDesktopChannelAllowed(channel, 'owner')).toBe(true)
+      expect(isDesktopChannelAllowed(channel, 'manager')).toBe(false)
+    }
+    const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8')
+    const execute = source.slice(source.indexOf('async function executeDesktopCommand'))
+    expect(execute).toContain('if (!(depositOnly && isManagerDepositChannel(channel))) throw new Error(depositOnly ? MANAGER_DEPOSIT_ONLY : MANAGER_SALE_DENIED)')
   })
 
   it('lets the manager role reach till channels, which the main PC then gates by the switch', () => {

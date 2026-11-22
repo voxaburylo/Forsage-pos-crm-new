@@ -10,6 +10,7 @@ import { posCustomerMoneyApi } from './posCustomerMoneyApi'
 import { canIssueOrderFromPos, isUnpricedOrder } from '@/features/orders/orderWorkflow'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { createReadPoller } from '@/lib/readPoller'
+import { OrderHandoverItems } from './OrderHandoverItems'
 
 interface OrderItem {
   id: string
@@ -489,6 +490,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                     )}
                   </div>
                 </div>
+                <OrderHandoverItems items={order.items ?? []} />
                 {renderOrderActions(order, 'mobile')}
               </div>
             )
@@ -743,6 +745,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                       )}
                     </div>
                   </div>
+                <OrderHandoverItems items={order.items ?? []} />
                 {renderOrderActions(order, 'desktop')}
                 </div>
               )

@@ -1,6 +1,9 @@
 import { localAnalytics } from './repositories/localAnalytics'
 import path from 'node:path'
 import { pendingUnitSpellings, tidyUnitSpellings } from './repositories/catalogUnitTidy'
+import { pendingErasedBarcodes, restoreErasedBarcodes } from './repositories/restoreErasedBarcodes'
+import { resolvePortableExecutable } from './updates/installedPortable'
+import { PinRoster } from './security/pinRoster'
 import { isExpectedCommandFailure } from './diagnostics/expectedCommandFailure'
 import { RendererRecovery } from './rendererRecovery'
 import { deferQuitForMainWindow, NativeCloseController, requestUnloadScript } from './nativeClose'
@@ -81,8 +84,8 @@ import { createPortableReleaseSource, downloadPortableUpdate, launchPortableUpda
 import { LanOrderClient } from './lan/orderClient'
 import { isSpoolerGuardError, postflightPrinter, preflightPrinter } from './print/spoolerGuard'
 import { disposePrintWarmShell, prewarmPrintShell } from './print/printWarmShell'
-import { desktopTenantArgumentPositions, isDesktopChannelAllowed, isManagerSaleChannel, PUBLIC_DESKTOP_CHANNELS } from './security/desktopAuthorization'
-import { MANAGER_SALE_DENIED, managerCanSell, managerSaleAllowedIds, setManagerSaleAccess } from './security/managerSaleAccess'
+import { desktopTenantArgumentPositions, isDesktopChannelAllowed, isManagerDepositChannel, isManagerSaleChannel, PUBLIC_DESKTOP_CHANNELS } from './security/desktopAuthorization'
+import { MANAGER_DEPOSIT_ONLY, MANAGER_SALE_DENIED, managerCanSell, managerCanTakeDeposit, managerDepositAllowedIds, managerSaleAllowedIds, setManagerDepositAccess, setManagerSaleAccess } from './security/managerSaleAccess'
 import { employeePricing, setEmployeePricing } from './security/employeePricing'
 import { activeSession } from './security/activeSession'
 import { customerWritePayload } from './security/customerWritePolicy'
@@ -225,10 +228,39 @@ function rememberedStatus() {
   if (locked) desktopAuthSession = null
   return { ...status, locked, available: Boolean(status) }
 }
+let pinRoster: PinRoster | null = null
+function getPinRoster(): PinRoster {
+  if (!localDatabase) throw Error('Локальна база ще не готова')
+  const db = localDatabase
+  pinRoster ??= new PinRoster({
+    read: () => {
+      const row = db.prepare("SELECT value_json FROM app_meta WHERE key='windows_day_pin_roster'").get() as { value_json: string } | undefined
+      return row ? JSON.parse(row.value_json) : null
+    },
+    write: value => {
+      if (value === null) db.prepare("DELETE FROM app_meta WHERE key='windows_day_pin_roster'").run()
+      else db.prepare("INSERT INTO app_meta(key,value_json,updated_at) VALUES('windows_day_pin_roster',?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at").run(JSON.stringify(value), new Date().toISOString())
+    },
+    encrypt: text => {
+      if (process.platform !== 'win32' || !safeStorage.isEncryptionAvailable()) throw Error('Захищене сховище Windows недоступне. Використайте пароль')
+      return safeStorage.encryptString(text).toString('base64')
+    },
+    decrypt: text => safeStorage.decryptString(Buffer.from(text, 'base64')),
+    user: rememberedUser,
+  })
+  return pinRoster
+}
+/** Швидкий вхід за PIN — лише на головному чи окремому ПК, де лежить база працівників. */
+function pinLoginAvailable(): boolean {
+  return localNetwork?.getStatus().mode !== 'client' && !hasLanIdentity(requireLocalDatabase())
+}
 function completeDesktopLogin(user: { id: string; tenant_id: string; role: string }) {
   const storedUser = rememberedUser(user.id, user.tenant_id)
   if (!storedUser) throw Error('Працівника не знайдено')
   getRememberedAccess().remember(storedUser)
+  // Пароль (чи PIN цього ж дня) щойно перевірено: до кінця дня цей працівник може повертатися за PIN.
+  try { if (pinLoginAvailable()) getPinRoster().rememberPasswordLogin(storedUser) }
+  catch (error) { writeDesktopDiagnostic('pin-roster-unavailable', error) }
   rememberedSessionRequired = true
   desktopAuthSession = { id: user.id, tenant_id: user.tenant_id, role: user.role }
   void checkLanUpdate()
@@ -691,7 +723,9 @@ async function executeDesktopCommand(
     // перевіряє головний ПК; локально там лишається тільки ПРРО цього комп'ютера.
     if (session.role === 'manager' && isManagerSaleChannel(channel) && localNetwork?.getStatus().mode !== 'client'
       && !managerCanSell(requireLocalDatabase(), session.id)) {
-      throw new Error(MANAGER_SALE_DENIED)
+      // «Може приймати задаток» відкриває лише свою зміну й оплату замовлення; решта каси лишається закритою.
+      const depositOnly = managerCanTakeDeposit(requireLocalDatabase(), session.id)
+      if (!(depositOnly && isManagerDepositChannel(channel))) throw new Error(depositOnly ? MANAGER_DEPOSIT_ONLY : MANAGER_SALE_DENIED)
     }
     for (const argument of args) validateTenantArguments(argument, session.tenant_id)
     for (const position of desktopTenantArgumentPositions(channel)) {
@@ -1166,7 +1200,8 @@ app.whenReady().then(async () => {
   localSupplierCatalog = new LocalSupplierCatalogRepository(localDatabase)
   localProblems = new LocalProblemRepository(localDatabase)
   shiftBackups = new ShiftBackupService(localDatabase,
-    process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath), error => {
+    // Вивантаження змін — поруч із portable-EXE, як і раніше; не в теці програми, яку оновлення замінює.
+    process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(resolvePortableExecutable(process.env, process.execPath) ?? process.execPath), error => {
       writeDesktopDiagnostic('shift-backup-failed', error)
       recordDesktopProblem({ source: 'database', code: 'database.shift_backup_failed',
         title: 'Не вдалося зберегти резервну копію бази',
@@ -1182,6 +1217,12 @@ app.whenReady().then(async () => {
       const changed = tidyUnitSpellings(unitTidyDb)
       blackBox?.record('catalog-unit-tidy', { changed })
     })().catch(error => writeDesktopDiagnostic('catalog-unit-tidy-failed', error))
+      // 22.11.2026, рішення власника «Вернуть»: стерті до виправлення штрихкоди повертаються карткам як додаткові.
+      .then(async () => {
+        if (localNetwork?.getStatus().mode === 'client' || !pendingErasedBarcodes(unitTidyDb)) return
+        await unitTidyDb.backupNow()
+        blackBox?.record('catalog-barcode-restore', restoreErasedBarcodes(unitTidyDb))
+      }).catch(error => writeDesktopDiagnostic('catalog-barcode-restore-failed', error))
   }, 15_000)
   externalBackups = new ExternalBackupService(dataRoot, localDatabase, error => {
     writeDesktopDiagnostic('external-backup-failed', error)
@@ -1200,7 +1241,7 @@ app.whenReady().then(async () => {
   let releaseSource: ReturnType<typeof createPortableReleaseSource> = null
   try {
     releaseSource = createPortableReleaseSource({ packaged: app.isPackaged,
-      portableExecutable: process.env.PORTABLE_EXECUTABLE_FILE, releaseId: desktopBuildInfo?.releaseId })
+      portableExecutable: resolvePortableExecutable(process.env, process.execPath), releaseId: desktopBuildInfo?.releaseId })
     if (process.env.LOCALAPPDATA) {
       const outcome = readPortableUpdateOutcome(process.env.LOCALAPPDATA)
       if (outcome) writeDesktopDiagnostic('lan-update-outcome', outcome)
@@ -1658,6 +1699,29 @@ app.whenReady().then(async () => {
     completeDesktopLogin(user)
     return user
   })
+  // Етап 9: швидка зміна касира за PIN. Лише ті, хто сьогодні вже входив паролем на цьому ПК.
+  handleDesktopIpc('desktop:auth:pin-roster', () => {
+    if (lanPairInProgress || !pinLoginAvailable()) return []
+    try { return getPinRoster().list() } catch { return [] }
+  })
+  handleDesktopIpc('desktop:auth:login-pin', async (_event, userId: string, pin: string) => {
+    if (lanPairInProgress) throw new Error('Дочекайтеся завершення підключення до головного ПК')
+    if (!pinLoginAvailable()) throw new Error('На ПК менеджера вхід — з номером телефону')
+    if (typeof userId !== 'string' || typeof pin !== 'string') throw new Error('Невірний PIN-код')
+    const generation = ++desktopLoginGeneration
+    const tenantId = rememberedUser(userId, DEFAULT_TENANT_ID)?.tenant_id ?? DEFAULT_TENANT_ID
+    const stored = getPinRoster().login(userId, tenantId, () => requireLocalStaff().verifyPin(userId, pin, tenantId))
+    if (generation !== desktopLoginGeneration) throw new Error('Спробу входу скасовано')
+    const server = getPinRoster().serverSession(stored.id, stored.tenant_id)
+    completeDesktopLogin(stored)
+    // Сьогоднішня серверна сесія цього працівника повертається разом із ним — обмін із сервером без пароля.
+    if (server) try {
+      getRememberedAccess().saveServerSession(stored, server)
+      getPinRoster().saveServerSession(stored.id, stored.tenant_id, server)
+    } catch (error) { writeDesktopDiagnostic('pin-server-session-skipped', error) }
+    return { id: stored.id, tenant_id: stored.tenant_id, full_name: stored.full_name, role: stored.role, phone: stored.phone ?? '',
+      email: `${String(stored.phone ?? '').replace(/\D/g, '')}@forsage.internal`, is_active: true }
+  })
   handleDesktopIpc('desktop:auth:login-online', async (_event, phone: string, password: string) => {
     if (lanPairInProgress || localNetwork?.getStatus().mode === 'client' || hasLanIdentity(requireLocalDatabase())) throw new Error('Вхід ПК менеджера перевіряє головний ПК без інтернету')
     const generation = ++desktopLoginGeneration
@@ -1679,7 +1743,11 @@ app.whenReady().then(async () => {
       },
       config: requireTrustedAuthConfig(),
       fetch: net.fetch.bind(net),
-      save: (identity, checked) => getRememberedAccess().saveServerSession(identity, checked),
+      save: (identity, checked) => {
+        getRememberedAccess().saveServerSession(identity, checked)
+        try { if (pinLoginAvailable()) getPinRoster().saveServerSession(identity.id, identity.tenant_id, checked) }
+        catch (error) { writeDesktopDiagnostic('pin-roster-server-session-skipped', error) }
+      },
     })
   })
   handleDesktopIpc('desktop:auth:restore-server-session', () =>
@@ -1735,12 +1803,20 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:staff:sale-access', () => managerSaleAllowedIds(requireLocalDatabase()))
   handleDesktopIpc('desktop:staff:set-sale-access', (_event, id: string, enabled: boolean) =>
     setManagerSaleAccess(requireLocalDatabase(), id, enabled))
+  handleDesktopIpc('desktop:staff:deposit-access', () => managerDepositAllowedIds(requireLocalDatabase()))
+  handleDesktopIpc('desktop:staff:set-deposit-access', (_event, id: string, enabled: boolean) =>
+    setManagerDepositAccess(requireLocalDatabase(), id, enabled))
   handleDesktopIpc('desktop:staff:employee-pricing', () => employeePricing(requireLocalDatabase()))
   handleDesktopIpc('desktop:staff:set-employee-pricing', (_event, id: string, value: unknown) =>
     setEmployeePricing(requireLocalDatabase(), id, value))
   handleDesktopIpc('desktop:staff:save-server-password', (_event, id: string, password: string) =>
     requireLocalStaff().saveServerPassword(id, password))
-  handleDesktopIpc('desktop:staff:set-pin', (_event, userId: string, pin: string) => requireLocalStaff().setPin(userId, pin))
+  handleDesktopIpc('desktop:staff:set-pin', (_event, userId: string, pin: string) => {
+    // PIN дає швидкий вхід, тож ставить його собі сам працівник або власник/адміністратор — будь-кому.
+    const session = requireDesktopSession()
+    if (userId !== session.id && !['owner', 'admin'].includes(session.role)) throw new Error('PIN-код можна змінити лише собі')
+    return requireLocalStaff().setPin(userId, pin, session.tenant_id)
+  })
   handleDesktopIpc('desktop:staff:verify-pin', (_event, userId: string, pin: string) => {
     const session = requireDesktopSession()
     if (userId !== session.id) throw new Error('PIN можна перевіряти лише для поточного користувача')
