@@ -548,7 +548,12 @@ export class LocalCatalogRepository {
             is_primary = excluded.is_primary,
             updated_at = excluded.updated_at,
             deleted_at = NULL
+          -- 22.11.2026: стертий код (або код видаленої картки) переходить новій картці; раніше запис мовчки не робився.
+          -- Живий код іншої живої картки сюди не доходить — його відхиляє перевірка вище.
           WHERE product_barcodes.product_id = excluded.product_id
+             OR product_barcodes.deleted_at IS NOT NULL
+             OR NOT EXISTS (SELECT 1 FROM products owner WHERE owner.id = product_barcodes.product_id
+                              AND owner.tenant_id = product_barcodes.tenant_id AND owner.deleted_at IS NULL)
         `).run(
           randomUUID(),
           tenantId,

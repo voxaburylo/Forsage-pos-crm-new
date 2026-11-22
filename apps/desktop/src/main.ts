@@ -1,6 +1,7 @@
 import { localAnalytics } from './repositories/localAnalytics'
 import path from 'node:path'
 import { pendingUnitSpellings, tidyUnitSpellings } from './repositories/catalogUnitTidy'
+import { pendingErasedBarcodes, restoreErasedBarcodes } from './repositories/restoreErasedBarcodes'
 import { isExpectedCommandFailure } from './diagnostics/expectedCommandFailure'
 import { RendererRecovery } from './rendererRecovery'
 import { deferQuitForMainWindow, NativeCloseController, requestUnloadScript } from './nativeClose'
@@ -1184,6 +1185,12 @@ app.whenReady().then(async () => {
       const changed = tidyUnitSpellings(unitTidyDb)
       blackBox?.record('catalog-unit-tidy', { changed })
     })().catch(error => writeDesktopDiagnostic('catalog-unit-tidy-failed', error))
+      // 22.11.2026, рішення власника «Вернуть»: стерті до виправлення штрихкоди повертаються карткам як додаткові.
+      .then(async () => {
+        if (localNetwork?.getStatus().mode === 'client' || !pendingErasedBarcodes(unitTidyDb)) return
+        await unitTidyDb.backupNow()
+        blackBox?.record('catalog-barcode-restore', restoreErasedBarcodes(unitTidyDb))
+      }).catch(error => writeDesktopDiagnostic('catalog-barcode-restore-failed', error))
   }, 15_000)
   externalBackups = new ExternalBackupService(dataRoot, localDatabase, error => {
     writeDesktopDiagnostic('external-backup-failed', error)
