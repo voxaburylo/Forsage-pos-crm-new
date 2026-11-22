@@ -22,3 +22,12 @@ describe('customer open orders at the till', () => {
     expect(customerOrdersSummary([])).toEqual({ count: 0, ready: 0, paid: 0, due: 0 })
   })
 })
+
+import { readFileSync } from 'node:fs'
+import { it as source } from 'vitest'
+// 22.11.2026 (етап 5): із чека — кнопка «Внести / доплатити», що відкриває панель замовлень клієнта (там же видача).
+source('the receipt offers deposit and top-up for the customer orders', () => {
+  const chip = readFileSync(new URL('./CustomerOrdersChip.tsx', import.meta.url), 'utf8')
+  expect(chip).toContain('data-customer-orders-pay')
+  expect(chip).toContain('Внести / доплатити')
+})
