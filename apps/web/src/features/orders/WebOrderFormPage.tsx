@@ -220,7 +220,7 @@ export default function WebOrderFormPage() {
                     onClick={() => setRows(prev => prev.filter(item => item.key !== row.key))}><Trash2 size={18} /></button>
                 )}
               </div>
-              <Input label="Назва" value={row.name} disabled={busy} onChange={event => setRow(row.key, 'name', event.target.value)} />
+              <Input id={`order-row-${row.key}-name`} aria-label={`Назва, позиція ${index + 1}`} label="Назва" value={row.name} disabled={busy} onChange={event => setRow(row.key, 'name', event.target.value)} />
               {row.productId
                 ? <p className="text-xs text-green-700">Товар зі складу{Number.isFinite(row.stock) ? ` · залишок за копією: ${row.stock}` : ''}. Назву, артикул і закупку каса візьме зі своєї картки.</p>
                 : <button type="button" disabled={busy} onClick={() => { void findInStock(row) }} className="text-sm font-medium text-blue-700 underline">Знайти на складі</button>}
@@ -238,10 +238,10 @@ export default function WebOrderFormPage() {
                 </div>
               )}
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                <Input label="Артикул" value={row.sku} disabled={busy} onChange={event => setRow(row.key, 'sku', event.target.value)} />
-                <Input label="Кількість" inputMode="decimal" value={row.qty} disabled={busy} onChange={event => setRow(row.key, 'qty', event.target.value)} />
-                <Input label="Ціна продажу, грн" inputMode="decimal" value={row.sell} disabled={busy} onChange={event => setRow(row.key, 'sell', event.target.value)} />
-                {!row.productId && <Input label="Закупка, грн" inputMode="decimal" value={row.buy} disabled={busy} onChange={event => setRow(row.key, 'buy', event.target.value)} />}
+                <Input id={`order-row-${row.key}-sku`} aria-label={`Артикул, позиція ${index + 1}`} label="Артикул" value={row.sku} disabled={busy} onChange={event => setRow(row.key, 'sku', event.target.value)} />
+                <Input id={`order-row-${row.key}-qty`} aria-label={`Кількість, позиція ${index + 1}`} label="Кількість" inputMode="decimal" value={row.qty} disabled={busy} onChange={event => setRow(row.key, 'qty', event.target.value)} />
+                <Input id={`order-row-${row.key}-sell`} aria-label={`Ціна продажу, грн, позиція ${index + 1}`} label="Ціна продажу, грн" inputMode="decimal" value={row.sell} disabled={busy} onChange={event => setRow(row.key, 'sell', event.target.value)} />
+                {!row.productId && <Input id={`order-row-${row.key}-buy`} aria-label={`Закупка, грн, позиція ${index + 1}`} label="Закупка, грн" inputMode="decimal" value={row.buy} disabled={busy} onChange={event => setRow(row.key, 'buy', event.target.value)} />}
               </div>
             </div>
           </Card>
