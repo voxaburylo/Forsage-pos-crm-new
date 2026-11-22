@@ -2,6 +2,7 @@ import { localAnalytics } from './repositories/localAnalytics'
 import path from 'node:path'
 import { pendingUnitSpellings, tidyUnitSpellings } from './repositories/catalogUnitTidy'
 import { pendingErasedBarcodes, restoreErasedBarcodes } from './repositories/restoreErasedBarcodes'
+import { resolvePortableExecutable } from './updates/installedPortable'
 import { isExpectedCommandFailure } from './diagnostics/expectedCommandFailure'
 import { RendererRecovery } from './rendererRecovery'
 import { deferQuitForMainWindow, NativeCloseController, requestUnloadScript } from './nativeClose'
@@ -1169,7 +1170,8 @@ app.whenReady().then(async () => {
   localSupplierCatalog = new LocalSupplierCatalogRepository(localDatabase)
   localProblems = new LocalProblemRepository(localDatabase)
   shiftBackups = new ShiftBackupService(localDatabase,
-    process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath), error => {
+    // Вивантаження змін — поруч із portable-EXE, як і раніше; не в теці програми, яку оновлення замінює.
+    process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(resolvePortableExecutable(process.env, process.execPath) ?? process.execPath), error => {
       writeDesktopDiagnostic('shift-backup-failed', error)
       recordDesktopProblem({ source: 'database', code: 'database.shift_backup_failed',
         title: 'Не вдалося зберегти резервну копію бази',
@@ -1209,7 +1211,7 @@ app.whenReady().then(async () => {
   let releaseSource: ReturnType<typeof createPortableReleaseSource> = null
   try {
     releaseSource = createPortableReleaseSource({ packaged: app.isPackaged,
-      portableExecutable: process.env.PORTABLE_EXECUTABLE_FILE, releaseId: desktopBuildInfo?.releaseId })
+      portableExecutable: resolvePortableExecutable(process.env, process.execPath), releaseId: desktopBuildInfo?.releaseId })
     if (process.env.LOCALAPPDATA) {
       const outcome = readPortableUpdateOutcome(process.env.LOCALAPPDATA)
       if (outcome) writeDesktopDiagnostic('lan-update-outcome', outcome)
