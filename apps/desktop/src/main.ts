@@ -3,6 +3,7 @@ import path from 'node:path'
 import { pendingUnitSpellings, tidyUnitSpellings } from './repositories/catalogUnitTidy'
 import { pendingErasedBarcodes, restoreErasedBarcodes } from './repositories/restoreErasedBarcodes'
 import { resolvePortableExecutable } from './updates/installedPortable'
+import { PinRoster } from './security/pinRoster'
 import { isExpectedCommandFailure } from './diagnostics/expectedCommandFailure'
 import { RendererRecovery } from './rendererRecovery'
 import { deferQuitForMainWindow, NativeCloseController, requestUnloadScript } from './nativeClose'
@@ -227,10 +228,39 @@ function rememberedStatus() {
   if (locked) desktopAuthSession = null
   return { ...status, locked, available: Boolean(status) }
 }
+let pinRoster: PinRoster | null = null
+function getPinRoster(): PinRoster {
+  if (!localDatabase) throw Error('Локальна база ще не готова')
+  const db = localDatabase
+  pinRoster ??= new PinRoster({
+    read: () => {
+      const row = db.prepare("SELECT value_json FROM app_meta WHERE key='windows_day_pin_roster'").get() as { value_json: string } | undefined
+      return row ? JSON.parse(row.value_json) : null
+    },
+    write: value => {
+      if (value === null) db.prepare("DELETE FROM app_meta WHERE key='windows_day_pin_roster'").run()
+      else db.prepare("INSERT INTO app_meta(key,value_json,updated_at) VALUES('windows_day_pin_roster',?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at").run(JSON.stringify(value), new Date().toISOString())
+    },
+    encrypt: text => {
+      if (process.platform !== 'win32' || !safeStorage.isEncryptionAvailable()) throw Error('Захищене сховище Windows недоступне. Використайте пароль')
+      return safeStorage.encryptString(text).toString('base64')
+    },
+    decrypt: text => safeStorage.decryptString(Buffer.from(text, 'base64')),
+    user: rememberedUser,
+  })
+  return pinRoster
+}
+/** Швидкий вхід за PIN — лише на головному чи окремому ПК, де лежить база працівників. */
+function pinLoginAvailable(): boolean {
+  return localNetwork?.getStatus().mode !== 'client' && !hasLanIdentity(requireLocalDatabase())
+}
 function completeDesktopLogin(user: { id: string; tenant_id: string; role: string }) {
   const storedUser = rememberedUser(user.id, user.tenant_id)
   if (!storedUser) throw Error('Працівника не знайдено')
   getRememberedAccess().remember(storedUser)
+  // Пароль (чи PIN цього ж дня) щойно перевірено: до кінця дня цей працівник може повертатися за PIN.
+  try { if (pinLoginAvailable()) getPinRoster().rememberPasswordLogin(storedUser) }
+  catch (error) { writeDesktopDiagnostic('pin-roster-unavailable', error) }
   rememberedSessionRequired = true
   desktopAuthSession = { id: user.id, tenant_id: user.tenant_id, role: user.role }
   void checkLanUpdate()
@@ -1669,6 +1699,29 @@ app.whenReady().then(async () => {
     completeDesktopLogin(user)
     return user
   })
+  // Етап 9: швидка зміна касира за PIN. Лише ті, хто сьогодні вже входив паролем на цьому ПК.
+  handleDesktopIpc('desktop:auth:pin-roster', () => {
+    if (lanPairInProgress || !pinLoginAvailable()) return []
+    try { return getPinRoster().list() } catch { return [] }
+  })
+  handleDesktopIpc('desktop:auth:login-pin', async (_event, userId: string, pin: string) => {
+    if (lanPairInProgress) throw new Error('Дочекайтеся завершення підключення до головного ПК')
+    if (!pinLoginAvailable()) throw new Error('На ПК менеджера вхід — з номером телефону')
+    if (typeof userId !== 'string' || typeof pin !== 'string') throw new Error('Невірний PIN-код')
+    const generation = ++desktopLoginGeneration
+    const tenantId = rememberedUser(userId, DEFAULT_TENANT_ID)?.tenant_id ?? DEFAULT_TENANT_ID
+    const stored = getPinRoster().login(userId, tenantId, () => requireLocalStaff().verifyPin(userId, pin, tenantId))
+    if (generation !== desktopLoginGeneration) throw new Error('Спробу входу скасовано')
+    const server = getPinRoster().serverSession(stored.id, stored.tenant_id)
+    completeDesktopLogin(stored)
+    // Сьогоднішня серверна сесія цього працівника повертається разом із ним — обмін із сервером без пароля.
+    if (server) try {
+      getRememberedAccess().saveServerSession(stored, server)
+      getPinRoster().saveServerSession(stored.id, stored.tenant_id, server)
+    } catch (error) { writeDesktopDiagnostic('pin-server-session-skipped', error) }
+    return { id: stored.id, tenant_id: stored.tenant_id, full_name: stored.full_name, role: stored.role, phone: stored.phone ?? '',
+      email: `${String(stored.phone ?? '').replace(/\D/g, '')}@forsage.internal`, is_active: true }
+  })
   handleDesktopIpc('desktop:auth:login-online', async (_event, phone: string, password: string) => {
     if (lanPairInProgress || localNetwork?.getStatus().mode === 'client' || hasLanIdentity(requireLocalDatabase())) throw new Error('Вхід ПК менеджера перевіряє головний ПК без інтернету')
     const generation = ++desktopLoginGeneration
@@ -1690,7 +1743,11 @@ app.whenReady().then(async () => {
       },
       config: requireTrustedAuthConfig(),
       fetch: net.fetch.bind(net),
-      save: (identity, checked) => getRememberedAccess().saveServerSession(identity, checked),
+      save: (identity, checked) => {
+        getRememberedAccess().saveServerSession(identity, checked)
+        try { if (pinLoginAvailable()) getPinRoster().saveServerSession(identity.id, identity.tenant_id, checked) }
+        catch (error) { writeDesktopDiagnostic('pin-roster-server-session-skipped', error) }
+      },
     })
   })
   handleDesktopIpc('desktop:auth:restore-server-session', () =>
@@ -1754,7 +1811,12 @@ app.whenReady().then(async () => {
     setEmployeePricing(requireLocalDatabase(), id, value))
   handleDesktopIpc('desktop:staff:save-server-password', (_event, id: string, password: string) =>
     requireLocalStaff().saveServerPassword(id, password))
-  handleDesktopIpc('desktop:staff:set-pin', (_event, userId: string, pin: string) => requireLocalStaff().setPin(userId, pin))
+  handleDesktopIpc('desktop:staff:set-pin', (_event, userId: string, pin: string) => {
+    // PIN дає швидкий вхід, тож ставить його собі сам працівник або власник/адміністратор — будь-кому.
+    const session = requireDesktopSession()
+    if (userId !== session.id && !['owner', 'admin'].includes(session.role)) throw new Error('PIN-код можна змінити лише собі')
+    return requireLocalStaff().setPin(userId, pin, session.tenant_id)
+  })
   handleDesktopIpc('desktop:staff:verify-pin', (_event, userId: string, pin: string) => {
     const session = requireDesktopSession()
     if (userId !== session.id) throw new Error('PIN можна перевіряти лише для поточного користувача')

@@ -20,6 +20,7 @@ import { businessDateKey } from '@/lib/businessDate'
 import { normalizedStaffPhone, staffPaySettings } from './staffFormModel'
 import { ManagerDepositToggle, ManagerSaleToggle } from './ManagerSaleToggle'
 import { EmployeePriceControl } from './EmployeePriceControl'
+import { StaffPinControl } from './StaffPinControl'
 import { useScopedAction } from '@/hooks/useScopedAction'
 import { useBusinessDay } from '@/hooks/useBusinessDay'
 import { useLatestRequest } from '@/hooks/useLatestRequest'
@@ -264,6 +265,7 @@ export default function StaffPage() {
                         {selectedUser.role==='manager'&&editForm.role==='manager'&&<ManagerSaleToggle userId={selectedUser.id}/>}
                         {selectedUser.role==='manager'&&editForm.role==='manager'&&<ManagerDepositToggle userId={selectedUser.id}/>}
                         <EmployeePriceControl userId={selectedUser.id}/>
+                        <StaffPinControl userId={selectedUser.id} role={selectedUser.role}/>
 
                       </div>
                     )}

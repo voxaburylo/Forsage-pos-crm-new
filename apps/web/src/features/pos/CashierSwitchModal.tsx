@@ -4,6 +4,7 @@ import { useDialogEscape } from '@/hooks/useDialogEscape'
 import { canSignInByPassword, signInByPassword } from '@/lib/auth'
 import { confirmDesktopUnlocked } from '@/lib/desktopAccessState'
 import { toast } from '@/components/ui/Toast'
+import { PinQuickLogin } from '@/pages/PinQuickLogin'
 
 /** Кнопка «Змінити касира» є лише в програмі на головному чи окремому ПК, не на ПК менеджера і не у вебі. */
 export function useCashierSwitchAvailable(): boolean {
@@ -17,7 +18,7 @@ export function useCashierSwitchAvailable(): boolean {
 }
 
 /**
- * Швидка зміна касира: новий касир вводить лише свій пароль, без виходу з каси.
+ * Швидка зміна касира: новий касир вводить свій пароль (або PIN, якщо сьогодні вже входив паролем), без виходу з каси.
  * Зміна (касова зміна з готівкою) у кожного касира своя — як і при звичайному вході.
  */
 export function CashierSwitchModal({ currentName, onClose }: { currentName: string; onClose: () => void }) {
@@ -60,6 +61,13 @@ export function CashierSwitchModal({ currentName, onClose }: { currentName: stri
             {currentName && <p className="text-xs text-gray-500">Зараз: {currentName}</p>}
           </div>
         </div>
+        {/* Етап 9: хто сьогодні вже входив паролем на цьому ПК — повертається за 4 цифрами. */}
+        <PinQuickLogin onSignedIn={session => {
+          confirmDesktopUnlocked()
+          const name = String(session.user.user_metadata?.full_name ?? '').trim()
+          toast.success(name ? `Касир: ${name}` : 'Касира змінено')
+          onClose()
+        }} />
         <label htmlFor="cashier-switch-password" className="mb-1 block text-sm text-gray-400">Пароль нового касира</label>
         <input id="cashier-switch-password" ref={inputRef} type="password" autoComplete="off" value={password}
           disabled={loading} onChange={(e) => setPassword(e.target.value)}

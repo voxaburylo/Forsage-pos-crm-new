@@ -521,6 +521,9 @@ interface ForsageDesktopBridge {
     login: (phone: string, password: string) => Promise<{ id: string; tenant_id: string; full_name: string; role: string; phone: string; email: string; is_active: boolean; created_at?: string }>
     /** Вхід касира лише паролем (головний ПК). Старі збірки цього не мають. */
     loginByPassword?: (password: string) => Promise<{ id: string; tenant_id: string; full_name: string; role: string; phone: string; email: string; is_active: boolean; created_at?: string }>
+    /** Етап 9: хто сьогодні вже входив паролем на цьому ПК і має PIN. */
+    pinRoster?: () => Promise<Array<{ id: string; full_name: string; role: string }>>
+    loginByPin?: (userId: string, pin: string) => Promise<{ id: string; tenant_id: string; full_name: string; role: string; phone: string; email: string; is_active: boolean; created_at?: string }>
     loginOnline: (phone: string, password: string) => Promise<{ user: { id: string; tenant_id: string; full_name: string; role: string; phone: string; email: string; is_active: boolean; created_at?: string }; access_token: string; refresh_token: string; expires_in: number }>
     logout: () => Promise<{ success: true }>
     rememberedStatus?: () => Promise<{ phone?: string; name?: string; expiresAt?: number; locked: boolean; available: boolean }>

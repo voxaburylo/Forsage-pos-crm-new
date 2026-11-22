@@ -8,6 +8,7 @@ import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { confirmDesktopUnlocked } from '@/lib/desktopAccessState'
 import { API_BASE_URL } from '@/lib/apiBaseUrl'
 import { LanFirstRun } from '@/features/lan/LanFirstRun'
+import { PinQuickLogin } from './PinQuickLogin'
 const PHONE_REGEX = /^\+?380\d{9}$/
 function normalizePhone(value: string): string {
   const digits = value.replace(/\D/g, '')
@@ -123,6 +124,13 @@ function LoginForm({ onUnlocked }: { onUnlocked?: () => void }) {
           <h1 className="text-2xl font-bold text-gray-900">Форсаж CRM</h1>
           <p className="text-gray-400 text-sm mt-1">Вхід до системи</p>
         </div>
+        {!restoring && passwordOnlyAvailable && !onUnlocked && (
+          <PinQuickLogin onSignedIn={session => {
+            confirmDesktopUnlocked()
+            setPassword('')
+            navigate(homePathForRole(session.user.app_metadata?.role as string | undefined), { replace: true })
+          }} />
+        )}
         {restoring ? <p className="text-center text-sm text-gray-500" role="status">Відновлюємо вхід…</p> :
         <form onSubmit={handleSubmit} className="space-y-5" data-login-kind={passwordOnly ? 'password' : 'phone'}>
           {/* Розблокування: працівник відомий, номер підставлено — достатньо пароля. */}

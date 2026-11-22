@@ -30,6 +30,9 @@ export function isManagerSaleChannel(channel: string): boolean {
 export const PUBLIC_DESKTOP_CHANNELS = new Set([
   'desktop:auth:login',
   'desktop:auth:login-password',
+  // Етап 9: імена тих, хто сьогодні вже входив паролем на цьому ПК, і вхід за їхнім PIN.
+  'desktop:auth:pin-roster',
+  'desktop:auth:login-pin',
   'desktop:auth:login-online',
   'desktop:auth:logout',
   'desktop:auth:remembered-status',
