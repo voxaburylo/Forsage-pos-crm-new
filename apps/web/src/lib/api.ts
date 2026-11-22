@@ -18,10 +18,18 @@ const WEB_SESSION_PATHS = new Set([
 const WEB_TILL_COMMAND_PATH = '/api/v1/till-commands'
 /** Розпізнавання фото накладної з телефона: лише читає фото; рядки далі їдуть на касу командою. */
 const WEB_INVOICE_PHOTO_PATH = '/api/v1/ai/supply-invoice-photo'
+/** 22.11.2026: запит вебу до головного ПК — виконує каса у своїй базі. */
+const WEB_TILL_RPC_PATH = '/api/v1/till-rpc'
+/** 22.11.2026: ШІ-помічник у вебі — розмова й пропозиції лише читають; дію застосовує головний ПК. */
+const WEB_AI_READ_PATHS = new Set(['/api/v1/ai/chat', '/api/v1/ai/catalog-review'])
+const WEB_AI_MEMORY_PATH = '/api/v1/ai/memory'
 
 export function isWebReadOnlyRequest(path: string, method: string | undefined): boolean {
   if (isDesktopRuntime() || SAFE_API_METHODS.has((method ?? 'GET').toUpperCase())) return false
-  if ((path === WEB_TILL_COMMAND_PATH || path === WEB_INVOICE_PHOTO_PATH) && (method ?? '').toUpperCase() === 'POST') return false
+  if ((path === WEB_TILL_COMMAND_PATH || path === WEB_INVOICE_PHOTO_PATH || path === WEB_TILL_RPC_PATH) && (method ?? '').toUpperCase() === 'POST') return false
+  const verb = (method ?? '').toUpperCase()
+  if (verb === 'POST' && WEB_AI_READ_PATHS.has(path)) return false
+  if ((verb === 'POST' && path === WEB_AI_MEMORY_PATH) || (verb === 'DELETE' && path.startsWith(WEB_AI_MEMORY_PATH + '/'))) return false
   // Вхід і відновлення сесії потрібні навіть у веб-перегляді. Решта записів
   // належать тільки локальній касі й сервер додатково їх відхиляє.
   return !WEB_SESSION_PATHS.has(path)

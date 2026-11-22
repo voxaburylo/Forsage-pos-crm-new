@@ -1,5 +1,5 @@
 import { api } from '@/lib/api'
-import { isDesktopRuntime } from '@/lib/desktopBridge'
+import { writesToMainPc } from '@/lib/mainPcData'
 import { applyLocalAiAction } from './localAiAction'
 import { aiRequestHistory } from './aiRequestHistory'
 
@@ -102,5 +102,5 @@ export const aiApi = {
     api.post<{ data: AiChatResponse }>('/api/v1/ai/supply-invoice-photo', body, undefined, { timeoutMs: 180000, silent: true }),
 
   applyAction: (body: { tool: string; payload: Record<string, any>; operation_id?: string }): Promise<{ data: AiApplyResult }> =>
-    isDesktopRuntime() ? applyLocalAiAction(body.tool, body.payload, body.operation_id) : api.post<{ data: AiApplyResult }>('/api/v1/ai/apply-action', body),
+    writesToMainPc() ? applyLocalAiAction(body.tool, body.payload, body.operation_id) : api.post<{ data: AiApplyResult }>('/api/v1/ai/apply-action', body),
 }

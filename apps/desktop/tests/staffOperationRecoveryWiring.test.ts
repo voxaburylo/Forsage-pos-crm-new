@@ -48,7 +48,7 @@ it('keeps owner/admin-only policy and main-PC LAN authority for resolution', () 
 })
 
 it('preload forwards only kind and identity and the web bridge marks legacy support optional', () => {
-  const preload = readFileSync(new URL('../src/preload.ts', import.meta.url), 'utf8')
+  const preload = (readFileSync(new URL('../src/preload.ts', import.meta.url), 'utf8') + readFileSync(new URL('../src/desktopApi.ts', import.meta.url), 'utf8'))
   expect(preload).toContain("resolveOperation: (kind: 'salary' | 'daily-salary', operationId: string) => ipcRenderer.invoke('desktop:staff:resolve-operation', kind, operationId)")
   const bridge = readFileSync(new URL('../../web/src/lib/desktopBridge.ts', import.meta.url), 'utf8')
   expect(bridge).toContain("resolveOperation?: (kind: 'salary' | 'daily-salary', operationId: string) => Promise<{ status: 'committed'; result: any } | { status: 'not_committed' }>")

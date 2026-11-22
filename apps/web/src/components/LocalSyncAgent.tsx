@@ -3,6 +3,7 @@ import { useOfflineSync } from '@/hooks/useOfflineSync'
 import { useDesktopOutboxSync } from '@/hooks/useDesktopOutboxSync'
 import { useShiftBackups } from '@/hooks/useShiftBackups'
 import { useTillCommands } from '@/hooks/useTillCommands'
+import { useTillRpc } from '@/hooks/useTillRpc'
 import { useServerStatus } from '@/hooks/useServerStatus'
 
 /**
@@ -14,6 +15,7 @@ export function LocalSyncAgent() {
   useOfflineSync(serverOnline)
   useShiftBackups(serverOnline)
   useTillCommands(serverOnline)
+  useTillRpc(serverOnline)
   const { lastError } = useDesktopOutboxSync(serverOnline)
   // Keep a diagnostic trace, not a popup. The queue itself remains in SQLite.
   useEffect(() => {

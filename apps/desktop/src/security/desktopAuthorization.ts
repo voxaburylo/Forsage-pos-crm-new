@@ -144,6 +144,8 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
 ])
 
 const PREFIX_RULES: Array<[string, readonly DesktopRole[]]> = [
+  // 22.11.2026: каса виконує запит вебу від імені того працівника, що в вебі (його права перевіряються окремо).
+  ['desktop:web-rpc:', ['owner', 'admin', 'manager', 'cashier']],
   ['desktop:purchases:', ['owner', 'admin', 'manager']],
   ['desktop:staff:', OWNER_ROLES],
   ['desktop:supplier-catalog:', STOCK_ROLES],

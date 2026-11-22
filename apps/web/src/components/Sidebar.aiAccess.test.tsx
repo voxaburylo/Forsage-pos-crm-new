@@ -24,7 +24,7 @@ describe('AI assistant navigation and role boundaries', () => {
     expect(html).not.toContain('href="/ai-agent"')
     expect(html).not.toContain('href="/settings"')
   })
-  it('keeps the remote web viewer read-only', () => {
+  it("a cashier in the web works on the till, not through the main PC", () => {
     state.role = 'cashier'; state.desktop = false
     expect(render()).not.toContain('href="/ai-assistant"')
   })
