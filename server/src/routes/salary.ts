@@ -130,11 +130,11 @@ async function buildTireServiceReport(tenantId: string, date: string) {
       WITH service_sales AS (
         SELECT sale.id, sale.sale_number, sale.completed_at, sale.manager_id AS employee_id,
           sale.payment_method, sale.total, sale.cash_amount, sale.cashier_id, sale.notes,
-          json_agg(json_build_object('id', item.id, 'description', COALESCE(NULLIF(item.description, ''), product.name, 'Послуги шиномонтажу'),
+          json_agg(json_build_object('id', item.id, 'description', COALESCE(NULLIF(to_jsonb(item)->>'description', ''), product.name, 'Послуги шиномонтажу'),
             'qty', item.qty, 'unit_price', item.unit_price, 'total', item.total) ORDER BY item.id)
-            FILTER (WHERE COALESCE(NULLIF(item.sku, ''), product.sku, '') = 'POS-TIRE-SERVICE') AS services,
-          COALESCE(SUM(item.qty) FILTER (WHERE COALESCE(NULLIF(item.sku, ''), product.sku, '') = 'POS-TIRE-SERVICE'), 0)::float AS services_qty,
-          COALESCE(SUM(item.total) FILTER (WHERE COALESCE(NULLIF(item.sku, ''), product.sku, '') = 'POS-TIRE-SERVICE'), 0)::bigint AS service_revenue,
+            FILTER (WHERE COALESCE(NULLIF(to_jsonb(item)->>'sku', ''), product.sku, '') = 'POS-TIRE-SERVICE') AS services,
+          COALESCE(SUM(item.qty) FILTER (WHERE COALESCE(NULLIF(to_jsonb(item)->>'sku', ''), product.sku, '') = 'POS-TIRE-SERVICE'), 0)::float AS services_qty,
+          COALESCE(SUM(item.total) FILTER (WHERE COALESCE(NULLIF(to_jsonb(item)->>'sku', ''), product.sku, '') = 'POS-TIRE-SERVICE'), 0)::bigint AS service_revenue,
           json_agg(json_build_object('id', item.id, 'total', item.total, 'qty', item.qty,
             'core_deposit_amount', COALESCE(item.core_deposit_amount, 0)) ORDER BY item.id) AS allocation_lines
         FROM sales sale
@@ -147,7 +147,7 @@ async function buildTireServiceReport(tenantId: string, date: string) {
           AND to_jsonb(sale)->>'deleted_at' IS NULL AND to_jsonb(item)->>'deleted_at' IS NULL
           AND (sale.completed_at AT TIME ZONE 'Europe/Kyiv')::date = $2::date
         GROUP BY sale.id
-        HAVING bool_or(COALESCE(NULLIF(item.sku, ''), product.sku, '') = 'POS-TIRE-SERVICE')
+        HAVING bool_or(COALESCE(NULLIF(to_jsonb(item)->>'sku', ''), product.sku, '') = 'POS-TIRE-SERVICE')
       )
       SELECT * FROM service_sales ORDER BY completed_at, id
     `, [tenantId, date, workerIds]),
