@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { hashSecret, secretHashNeedsUpgrade, verifySecret } from '../security/secretHash'
+import { hashSecret, isSupportedSecretHash, secretHashNeedsUpgrade, verifySecret } from '../security/secretHash'
 import type { LocalDatabase } from '../db/localDatabase'
 import { DEFAULT_TENANT_ID } from '../db/localTypes'
 import { idempotentMutation } from './idempotentMutation'
@@ -484,6 +484,22 @@ export class LocalStaffRepository {
     this.passwordAttempts.delete(attemptKey)
     // Далі — той самий шлях, що й звичайний вхід: оновлення хешу, перевірки й відповідь.
     return this.loginWithPassword(row.phone, password, tenantId)
+  }
+
+  /**
+   * 22.11.2026: PIN чи пароль, змінений у вебі (головний ПК міг бути вимкнений). Сервер передав лише хеш —
+   * сам секрет каса не бачить. Право перевіряє main (власник/адмін або сам працівник). Сервер уже має значення,
+   * тому в чергу відправлення нічого не кладемо.
+   */
+  applyRemoteSecret(userId: string, kind: 'pin' | 'password', hash: string, tenantId = DEFAULT_TENANT_ID): { success: true } {
+    const user = this.requireUser(userId, tenantId)
+    if (user.role === 'tire_worker') throw new Error('Шиномонтажник не має доступу до програми')
+    if (!['pin', 'password'].includes(kind) || !isSupportedSecretHash(hash) || /^[0-9a-f]{128}$/i.test(hash)) throw new Error('Некоректні дані зміни')
+    this.db.prepare(`UPDATE staff_users SET ${kind === 'pin' ? 'pin_hash' : 'password_hash'} = ?, updated_at = ? WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL`)
+      .run(hash, nowIso(), userId, tenantId)
+    if (kind === 'password') this.passwordAttempts.delete(`${tenantId}:${normalizePhone(user.phone)}`)
+    else this.pinAttempts.delete(`${tenantId}:${userId}`)
+    return { success: true }
   }
 
   setPin(userId: string, pin: string, tenantId = DEFAULT_TENANT_ID): { success: true } {

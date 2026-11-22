@@ -64,6 +64,13 @@ export function useTillCommands(serverOnline: boolean) {
           window.dispatchEvent(new Event(PHONE_INVOICE_EVENT))
           return { status: 'done', result: { rows: stored.rows } }
         }
+        // 22.11.2026: PIN чи пароль працівника, змінений у вебі. У команді лише хеш; право каса перевіряє за автором.
+        if (command.command === 'staff.secret') {
+          const apply = bridge!.staff?.applyRemoteSecret
+          if (!apply) throw new Error('Оновіть програму на касі: вона ще не вміє приймати PIN і пароль із вебу.')
+          await apply(String(command.requested_by ?? ''), command.payload)
+          return { status: 'done', result: { applied: true } }
+        }
         if (command.command !== 'product.update') throw new Error('Невідома команда. Оновіть програму на касі.')
         const update = command.payload as TillProductUpdate
         const current = await bridge!.catalog.findById!(String(update?.product_id ?? ''))

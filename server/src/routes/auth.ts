@@ -8,6 +8,8 @@ import { loginSchema } from '../validators/authSchema.js'
 import { logger } from '../lib/logger.js'
 import { rateLimit } from 'express-rate-limit'
 import { hashSecret, secretHashNeedsUpgrade, verifySecret } from '../lib/secretHash.js'
+import { queueStaffSecret } from '../services/tillCommandService.js'
+import { DESKTOP_CLIENT_HEADER, DESKTOP_CLIENT_VALUE } from '../middleware/localFirstWriteGuard.js'
 
 const router = Router()
 
@@ -182,7 +184,13 @@ router.post('/set-pin', requireAuth, async (req, res, next) => {
     }, { onConflict: 'user_id' })
     if (pinError) throw new AppError('DB_ERROR', pinError.message, 500)
 
-    res.json({ data: { success: true } })
+    // 22.11.2026: PIN з вебу — каса отримає лише його хеш (сама каса зберігає PIN собі одразу).
+    let queued = false
+    if (req.get(DESKTOP_CLIENT_HEADER) !== DESKTOP_CLIENT_VALUE) {
+      await queueStaffSecret(req.user!.tenant_id, req.user!.id, targetUserId, 'pin', hashSecret(parsed.data.pin))
+      queued = true
+    }
+    res.json({ data: { success: true, queued_for_till: queued } })
   } catch (err) { next(err) }
 })
 

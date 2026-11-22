@@ -1822,6 +1822,17 @@ app.whenReady().then(async () => {
     setEmployeePricing(requireLocalDatabase(), id, value))
   handleDesktopIpc('desktop:staff:save-server-password', (_event, id: string, password: string) =>
     requireLocalStaff().saveServerPassword(id, password))
+  // 22.11.2026: PIN чи пароль, змінений у вебі, поки головний ПК був вимкнений (команда staff.secret, лише хеш).
+  // Хто змінив — власник/адмін або сам працівник; перевіряємо за базою головного ПК.
+  handleDesktopIpc('desktop:staff:apply-remote-secret', (_event, requestedBy: string, payload: { user_id?: unknown; kind?: unknown; hash?: unknown }) => {
+    if (localNetwork?.getStatus().mode === 'client' || hasLanIdentity(requireLocalDatabase())) throw new Error('Зміни з вебу застосовує лише головний ПК')
+    const requester = typeof requestedBy === 'string' ? resolveLanSession(requestedBy) : null
+    const userId = String(payload?.user_id ?? ''), kind = payload?.kind, hash = String(payload?.hash ?? '')
+    if (!requester) throw new Error('Працівника, що вніс зміну, не знайдено або доступ вимкнено')
+    if (requester.id !== userId && !['owner', 'admin'].includes(requester.role)) throw new Error('Змінити PIN чи пароль іншому може лише власник або адміністратор')
+    if (kind !== 'pin' && kind !== 'password') throw new Error('Некоректні дані зміни')
+    return requireLocalStaff().applyRemoteSecret(userId, kind, hash, requester.tenant_id)
+  })
   handleDesktopIpc('desktop:staff:set-pin', (_event, userId: string, pin: string) => {
     // PIN дає швидкий вхід, тож ставить його собі сам працівник або власник/адміністратор — будь-кому.
     const session = requireDesktopSession()

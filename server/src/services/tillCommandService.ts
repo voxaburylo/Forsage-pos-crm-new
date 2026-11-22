@@ -20,9 +20,15 @@ export const QUEUE_TTL_SECONDS = 12 * 60 * 60
 export const QUEUED_COMMAND = 'order.save'
 /** 22.11.2026: накладна з телефона теж чекає касу — вона лише лягає у «вхідні» каси й нічого не проводить. */
 export const INVOICE_DRAFT_COMMAND = 'invoice.draft'
-export const QUEUED_COMMANDS: readonly string[] = [QUEUED_COMMAND, INVOICE_DRAFT_COMMAND]
+/**
+ * 22.11.2026 (рішення власника: PIN і пароль можна змінити й тоді, коли головний ПК вимкнено): сервер кладе касі
+ * лише ХЕШ (не сам PIN чи пароль). Каса застосує його, коли зʼявиться. Чекає довше — до 7 днів.
+ */
+export const STAFF_SECRET_COMMAND = 'staff.secret'
+export const STAFF_SECRET_TTL_SECONDS = 7 * 24 * 60 * 60
+export const QUEUED_COMMANDS: readonly string[] = [QUEUED_COMMAND, INVOICE_DRAFT_COMMAND, STAFF_SECRET_COMMAND]
 const isQueued = (command: string) => QUEUED_COMMANDS.includes(command)
-const TTL_SQL = `make_interval(secs => CASE WHEN command IN ('${QUEUED_COMMAND}', '${INVOICE_DRAFT_COMMAND}') THEN ${QUEUE_TTL_SECONDS} ELSE ${COMMAND_TTL_SECONDS} END)`
+const TTL_SQL = `make_interval(secs => CASE WHEN command = 'staff.secret' THEN 604800 WHEN command IN ('${QUEUED_COMMAND}', '${INVOICE_DRAFT_COMMAND}') THEN ${QUEUE_TTL_SECONDS} ELSE ${COMMAND_TTL_SECONDS} END)`
 export const WEB_COMMAND_ROLES = ['owner', 'admin', 'manager'] as const
 export const TILL_ROLES = ['owner', 'admin', 'manager', 'cashier'] as const
 
@@ -159,7 +165,8 @@ export async function cancelQueuedOrder(tenantId: string, operationId: string) {
   const { rowCount } = await pool.query(
     `UPDATE till_commands SET status = 'failed', error = $4, finished_at = now()
       WHERE tenant_id = $1 AND operation_id = $2 AND command = ANY($3::text[]) AND status = 'pending'`,
-    [tenantId, operationId, [...QUEUED_COMMANDS], CANCELED_IN_WEB],
+    // Скасувати з вебу можна лише бланк замовлення чи накладну; зміна PIN/пароля сюди не входить.
+    [tenantId, operationId, [QUEUED_COMMAND, INVOICE_DRAFT_COMMAND], CANCELED_IN_WEB],
   )
   if (!rowCount) throw new AppError('CONFLICT', 'Каса вже забрала цей бланк або його вже немає в черзі. Якщо він уже на касі — приберіть його там.', 409)
   return { operation_id: operationId, status: 'canceled' }
@@ -265,4 +272,13 @@ export async function finishCommand(tenantId: string, deviceId: string, id: stri
   )
   if (!rowCount) throw new AppError('NOT_FOUND', 'Команду не знайдено або вже завершено', 404)
   return { ok: true }
+}
+
+/** Передати касі новий хеш PIN чи пароля працівника (див. STAFF_SECRET_COMMAND). Сам секрет сюди не потрапляє. */
+export async function queueStaffSecret(tenantId: string, requestedBy: string, userId: string, kind: 'pin' | 'password', hash: string) {
+  if (!/^pbkdf2-sha512\$\d+\$[^$]+\$[^$]+$/.test(hash)) throw new AppError('VALIDATION_ERROR', 'Некоректний хеш', 422)
+  await pool.query(
+    `INSERT INTO till_commands (tenant_id, operation_id, command, payload, requested_by) VALUES ($1, gen_random_uuid(), $2, $3::jsonb, $4)`,
+    [tenantId, STAFF_SECRET_COMMAND, JSON.stringify({ user_id: userId, kind, hash }), requestedBy],
+  )
 }

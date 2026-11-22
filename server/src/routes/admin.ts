@@ -8,6 +8,9 @@ import {
 } from '../validators/adminSchema.js'
 import * as adminService from '../services/adminService.js'
 import { connectOwnerBot } from '../services/ownerBotConnect.js'
+import { queueStaffSecret } from '../services/tillCommandService.js'
+import { hashSecret } from '../lib/secretHash.js'
+import { DESKTOP_CLIENT_HEADER, DESKTOP_CLIENT_VALUE } from '../middleware/localFirstWriteGuard.js'
 
 // ===================== ADMIN ROUTER (/api/v1/admin) =====================
 const router = Router()
@@ -65,7 +68,13 @@ router.put('/users/:id/password', requireRole('owner', 'admin'), async (req, res
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
     await adminService.resetPassword(String(req.params.id), parsed.data.password, req.user!.tenant_id)
-    res.json({ data: { success: true } })
+    // 22.11.2026: зміна з вебу — каса отримає хеш нового пароля (сама каса зберігає його собі одразу).
+    let queued = false
+    if (req.get(DESKTOP_CLIENT_HEADER) !== DESKTOP_CLIENT_VALUE) {
+      await queueStaffSecret(req.user!.tenant_id, req.user!.id, String(req.params.id), 'password', hashSecret(parsed.data.password))
+      queued = true
+    }
+    res.json({ data: { success: true, queued_for_till: queued } })
   } catch (err) { next(err) }
 })
 

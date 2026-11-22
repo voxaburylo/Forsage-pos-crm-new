@@ -23,11 +23,16 @@ const WEB_TILL_RPC_PATH = '/api/v1/till-rpc'
 /** 22.11.2026: ШІ-помічник у вебі — розмова й пропозиції лише читають; дію застосовує головний ПК. */
 const WEB_AI_READ_PATHS = new Set(['/api/v1/ai/chat', '/api/v1/ai/catalog-review'])
 const WEB_AI_MEMORY_PATH = '/api/v1/ai/memory'
+/** 22.11.2026: дані лише на сервері (у касі їх немає) — змінювати можна й з вебу. */
+const SERVER_ONLY_DATA_PREFIXES = ['/api/v1/waitlist/', '/api/v1/notifications/', '/api/v1/channels', '/api/v1/chats/']
 
 export function isWebReadOnlyRequest(path: string, method: string | undefined): boolean {
   if (isDesktopRuntime() || SAFE_API_METHODS.has((method ?? 'GET').toUpperCase())) return false
   if ((path === WEB_TILL_COMMAND_PATH || path === WEB_INVOICE_PHOTO_PATH || path === WEB_TILL_RPC_PATH) && (method ?? '').toUpperCase() === 'POST') return false
   const verb = (method ?? '').toUpperCase()
+  // 22.11.2026: PIN і пароль працівника — із вебу навіть без головного ПК; касі сервер передає лише хеш.
+  if ((verb === 'POST' && path === '/api/v1/auth/set-pin') || (verb === 'PUT' && /^\/api\/v1\/admin\/users\/[0-9a-f-]{36}\/password$/.test(path))) return false
+  if (SERVER_ONLY_DATA_PREFIXES.some(prefix => path === prefix || path.startsWith(prefix.endsWith('/') ? prefix : prefix + '/'))) return false
   if (verb === 'POST' && WEB_AI_READ_PATHS.has(path)) return false
   if ((verb === 'POST' && path === WEB_AI_MEMORY_PATH) || (verb === 'DELETE' && path.startsWith(WEB_AI_MEMORY_PATH + '/'))) return false
   // Вхід і відновлення сесії потрібні навіть у веб-перегляді. Решта записів

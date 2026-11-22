@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { useLatestRequest } from '@/hooks/useLatestRequest'
-import { isDesktopRuntime } from '@/lib/desktopBridge'
+import { writesToMainPc } from '@/lib/mainPcData'
 import { useAuthStore } from '@/stores/authStore'
 import { notificationLink } from './notificationLink'
 import { Bell, Check, CheckCheck, ExternalLink } from 'lucide-react'
@@ -37,7 +37,7 @@ export default function InboxPage() {
   const busy = useRef(false)
   const userId = useAuthStore(state => state.session?.user.id)
   const gate = useLatestRequest(userId)
-  const readOnly = !isDesktopRuntime()
+  const readOnly = !writesToMainPc()
 
   const load = useCallback(async () => {
     const isCurrent = gate.begin()

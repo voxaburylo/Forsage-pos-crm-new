@@ -676,6 +676,8 @@ export interface ForsageDesktopBridge {
     employeePricing?: () => Promise<Record<string, { mode: 'pct'; pct: number } | { mode: 'cost' }>>
     setEmployeePricing?: (id: string, value: { mode: 'pct'; pct: number } | { mode: 'cost' } | null) => Promise<Record<string, { mode: 'pct'; pct: number } | { mode: 'cost' }>>
     setPin: (userId: string, pin: string) => Promise<{ success: true }>
+    /** 22.11.2026: PIN/пароль, змінений у вебі без головного ПК (лише хеш, автор — із команди сервера). */
+    applyRemoteSecret?: (requestedBy: string, payload: unknown) => Promise<{ success: true }>
     verifyPin: (userId: string, pin: string) => Promise<{ valid: boolean; error?: string }>
     listCommissionRules: () => Promise<any[]>
     createCommissionRule: (input: any) => Promise<any>
