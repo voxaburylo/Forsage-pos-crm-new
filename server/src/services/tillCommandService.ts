@@ -1,16 +1,19 @@
 import { z } from 'zod'
 import { pool } from '../db/pg.js'
 import { AppError } from '../middleware/errorHandler.js'
+import { wakeTill } from './tillWake.js'
 
 /**
  * Запис із вебу через касу (рішення власника 17.11.2026).
- * Веб ставить команду → каса в мережі забирає її (опитування кожні кілька секунд) → виконує
- * у своїй базі → відповідає. Черги немає: команду, яку не забрали за 30 с, не виконано ніколи.
+ * Веб ставить команду → каса в мережі забирає її (сигнал одразу, рідке опитування — страховка) → виконує
+ * у своїй базі → відповідає. Черги немає: команду, яку не забрали за 45 с, не виконано ніколи.
  * Ідемпотентність — за operation_id. Дозволені лише перелічені команди; залишки, продажі й оплати —
  * тільки на касі.
  */
-export const COMMAND_TTL_SECONDS = 30
-export const TILL_ONLINE_SECONDS = 20
+/** 22.11.2026: довше за рідке опитування каси (30 с) — якщо сигнал «прокинься» не дійшов, каса ще встигне забрати команду. */
+export const COMMAND_TTL_SECONDS = 45
+/** 22.11.2026: каса питає сервер раз на 30 с, коли у вебі нікого немає (див. tillLinkService), тож «на зв'язку» — це до 75 с тиші. */
+export const TILL_ONLINE_SECONDS = 75
 /**
  * 22.11.2026 (етап 8): замовлення з вебу чекає касу на сервері до 12 годин — його можна оформити,
  * коли каса не в мережі. Це безпечно лише для команд, які не залежать від стану бази каси
@@ -28,7 +31,7 @@ export const STAFF_SECRET_COMMAND = 'staff.secret'
 export const STAFF_SECRET_TTL_SECONDS = 7 * 24 * 60 * 60
 export const QUEUED_COMMANDS: readonly string[] = [QUEUED_COMMAND, INVOICE_DRAFT_COMMAND, STAFF_SECRET_COMMAND]
 const isQueued = (command: string) => QUEUED_COMMANDS.includes(command)
-const TTL_SQL = `make_interval(secs => CASE WHEN command = 'staff.secret' THEN 604800 WHEN command IN ('${QUEUED_COMMAND}', '${INVOICE_DRAFT_COMMAND}') THEN ${QUEUE_TTL_SECONDS} ELSE ${COMMAND_TTL_SECONDS} END)`
+export const PENDING_COMMAND_TTL_SQL = `make_interval(secs => CASE WHEN command = 'staff.secret' THEN 604800 WHEN command IN ('${QUEUED_COMMAND}', '${INVOICE_DRAFT_COMMAND}') THEN ${QUEUE_TTL_SECONDS} ELSE ${COMMAND_TTL_SECONDS} END)`
 export const WEB_COMMAND_ROLES = ['owner', 'admin', 'manager'] as const
 export const TILL_ROLES = ['owner', 'admin', 'manager', 'cashier'] as const
 
@@ -183,7 +186,11 @@ export async function createCommand(tenantId: string, userId: string, input: z.i
      RETURNING operation_id, status`,
     [tenantId, input.operation_id, input.command, JSON.stringify(input.payload), userId],
   )
-  if (rows[0]) return { operation_id: rows[0].operation_id as string, status: rows[0].status as string, till_online: online }
+  if (rows[0]) {
+    // 22.11.2026: каса більше не опитує сервер щокілька секунд — про нову команду її будить сигнал.
+    await wakeTill(tenantId)
+    return { operation_id: rows[0].operation_id as string, status: rows[0].status as string, till_online: online }
+  }
   // Повтор того самого запиту — та сама команда; інший вміст під тим самим номером — відмова.
   const existing = await pool.query('SELECT command, payload, status FROM till_commands WHERE tenant_id = $1 AND operation_id = $2', [tenantId, input.operation_id])
   const row = existing.rows[0]
@@ -199,7 +206,7 @@ export async function createCommand(tenantId: string, userId: string, input: z.i
 export async function listWaitingOrders(tenantId: string, command: string = QUEUED_COMMAND) {
   await pool.query(
     `UPDATE till_commands SET status = 'expired', finished_at = now()
-      WHERE tenant_id = $1 AND status = 'pending' AND created_at <= now() - ${TTL_SQL}`,
+      WHERE tenant_id = $1 AND status = 'pending' AND created_at <= now() - ${PENDING_COMMAND_TTL_SQL}`,
     [tenantId],
   )
   const { rows } = await pool.query(
@@ -230,7 +237,7 @@ export async function readCommand(tenantId: string, operationId: string) {
   if (!z.string().uuid().safeParse(operationId).success) throw new AppError('NOT_FOUND', 'Команду не знайдено', 404)
   await pool.query(
     `UPDATE till_commands SET status = 'expired', finished_at = now()
-      WHERE tenant_id = $1 AND operation_id = $2 AND status = 'pending' AND created_at <= now() - ${TTL_SQL}`,
+      WHERE tenant_id = $1 AND operation_id = $2 AND status = 'pending' AND created_at <= now() - ${PENDING_COMMAND_TTL_SQL}`,
     [tenantId, operationId],
   )
   const { rows } = await pool.query(
@@ -254,7 +261,7 @@ export async function claimCommands(tenantId: string, deviceId: string) {
   const { rows } = await pool.query(
     `UPDATE till_commands SET status = 'claimed', device_id = $2, claimed_at = now()
       WHERE id IN (SELECT id FROM till_commands WHERE tenant_id = $1 AND status = 'pending'
-                     AND created_at > now() - ${TTL_SQL}
+                     AND created_at > now() - ${PENDING_COMMAND_TTL_SQL}
                    ORDER BY created_at LIMIT 5 FOR UPDATE SKIP LOCKED)
       RETURNING id, operation_id, command, payload, requested_by, created_at`,
     [tenantId, deviceId],
@@ -281,4 +288,5 @@ export async function queueStaffSecret(tenantId: string, requestedBy: string, us
     `INSERT INTO till_commands (tenant_id, operation_id, command, payload, requested_by) VALUES ($1, gen_random_uuid(), $2, $3::jsonb, $4)`,
     [tenantId, STAFF_SECRET_COMMAND, JSON.stringify({ user_id: userId, kind, hash }), requestedBy],
   )
+  await wakeTill(tenantId)
 }

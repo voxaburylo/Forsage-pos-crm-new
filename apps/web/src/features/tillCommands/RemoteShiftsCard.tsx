@@ -8,7 +8,8 @@ import { useTillOnline } from './TillEditModal'
 
 export type RemoteShift = { id: string; cashier_id: string; cashier_name: string | null; opened_at: string; expected_cash: number }
 type CommandState = { status: 'pending' | 'claimed' | 'done' | 'failed' | 'expired'; result: Record<string, unknown> | null; error: string | null }
-const WAIT_MS = 20_000
+// 22.11.2026: каса питає сервер раз на 30 с (плюс сигнал одразу); чекаємо довше за строк життя команди (45 с).
+const WAIT_MS = 50_000
 
 async function runTillCommand(operationId: string, command: string, payload: Record<string, unknown>): Promise<CommandState> {
   await api.post('/api/v1/till-commands', { operation_id: operationId, command, payload }, undefined, { silent: true, timeoutMs: 15_000 })

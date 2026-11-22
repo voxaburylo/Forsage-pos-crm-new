@@ -4,13 +4,18 @@ import { AppError } from '../middleware/errorHandler.js'
 import {
   INVOICE_DRAFT_COMMAND, TILL_ROLES, WEB_COMMAND_ROLES, claimCommands, commandAllowedForRole, commandResultSchema, createCommand, createCommandSchema, finishCommand, listWaitingOrders, readCommand, tillStatus,
 } from '../services/tillCommandService.js'
+import { touchWebPresence } from '../services/tillLinkService.js'
 
 /** Запис із вебу через касу: веб ставить команду, каса її забирає й виконує у своїй базі. */
 export const tillCommandsRouter = Router()
 tillCommandsRouter.use(requireAuth)
 
 tillCommandsRouter.get('/status', requireRole(...WEB_COMMAND_ROLES), async (req, res, next) => {
-  try { res.json({ data: await tillStatus(req.user!.tenant_id) }) } catch (err) { next(err) }
+  try {
+    // 22.11.2026: відкрита сторінка вебу — це й позначка «у вебі працюють», за якою каса питає сервер часто.
+    // watch=0 — вкладка схована або людина давно нічого не натискала: касу даремно не тримаємо на частому опитуванні.
+    res.json({ data: req.query.watch === '0' ? await tillStatus(req.user!.tenant_id) : await touchWebPresence(req.user!.tenant_id) })
+  } catch (err) { next(err) }
 })
 
 // Замовлення з вебу, які ще чекають касу (оформлені, коли вона була не в мережі).

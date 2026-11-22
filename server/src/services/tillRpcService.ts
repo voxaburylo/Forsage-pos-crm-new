@@ -1,18 +1,27 @@
 import { z } from 'zod'
 import { pool } from '../db/pg.js'
 import { AppError } from '../middleware/errorHandler.js'
-import { tillStatus } from './tillCommandService.js'
+import { RPC_CLAIM_SECONDS, touchWebPresence } from './tillLinkService.js'
+import { wakeTill, type TillWake } from './tillWake.js'
 
 /**
  * 22.11.2026, рішення власника: «веб повний, але робота тільки через головний ПК, щоб нічого не задвоїлось».
  * Веб — ще один «ПК менеджера через інтернет»: кожна дія вебу — запит до головного ПК, який виконує її
  * у своїй базі тим самим кодом і з правами того самого працівника (executeLanCommand). Сервер лише
- * передає запит і відповідь. Повторів немає: запит, не забраний касою за 30 с, не виконується ніколи;
- * якщо відповідь не встигла — веб каже перевірити на касі й нічого не надсилає вдруге.
+ * передає запит і відповідь. Повторів немає: запит, не забраний касою за 45 с, не виконується ніколи.
+ * Якщо каса запит забрала, але відповісти не встигла, веб чекає відповіді ЗА НОМЕРОМ ТОГО САМОГО ЗАПИТУ
+ * (readRpc) і нічого не надсилає вдруге — так дія не може виконатись двічі через «спробуйте ще раз».
  */
-export const RPC_CLAIM_SECONDS = 30
-export const RPC_WAIT_MS = 25_000
+export { RPC_CLAIM_SECONDS }
+export { wakeTill, tillWakeTopic } from './tillWake.js'
+/** Скільки сервер чекає, що каса забере запит. Довше за рідке опитування каси (30 с): сигнал міг не дійти. */
+export const RPC_UNCLAIMED_WAIT_MS = 40_000
+/** Скільки сервер чекає відповідь загалом; далі веб питає сам за номером запиту. */
+export const RPC_WAIT_MS = 55_000
 const RPC_POLL_MS = 150
+/** Після перших секунд питаємо базу рідше: довга дія каси не має коштувати сотень запитів. */
+const RPC_POLL_SLOW_MS = 500
+const RPC_POLL_SLOW_AFTER_MS = 3_000
 /** Канали, які ніколи не йдуть із вебу: сесія, мережа, друк, фіскалізація, копії бази, журнал проблем ПК. */
 const WEB_DENIED_PREFIXES = [
   'desktop:auth:', 'desktop:lan:', 'desktop:print:', 'desktop:fiscal:', 'desktop:sync:', 'desktop:bootstrap:',
@@ -32,6 +41,8 @@ export const MAX_RPC_BYTES = 3_500_000
 export const rpcRequestSchema = z.object({
   channel: z.string().max(130),
   args: z.array(z.unknown()).max(12),
+  /** Новий веб уміє дочекатися відповіді за номером запиту; старий отримує колишню відмову. */
+  pending_ok: z.boolean().optional(),
 }).strict()
 export const rpcResultSchema = z.object({
   status: z.enum(['done', 'failed']),
@@ -39,48 +50,53 @@ export const rpcResultSchema = z.object({
   error: z.string().max(1000).nullable().optional(),
 }).strict()
 
-type Wake = (tenantId: string) => Promise<void>
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+const refused = (error: unknown) => new AppError('TILL_REFUSED', String(error || 'Каса не змогла виконати дію'), 422)
 
-/** Будимо касу одразу (Supabase Realtime, без даних у повідомленні); каса й так опитує кожні кілька секунд. */
-export const wakeTill: Wake = async tenantId => {
-  const url = process.env.SUPABASE_URL, key = process.env.SUPABASE_SERVICE_KEY
-  if (!url || !key) return
-  await fetch(`${url}/realtime/v1/api/broadcast`, {
-    method: 'POST',
-    headers: { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages: [{ topic: tillWakeTopic(tenantId), event: 'wake', payload: {} }] }),
-    signal: AbortSignal.timeout(3000),
-  }).catch(() => undefined)
-}
-export function tillWakeTopic(tenantId: string): string {
-  return `till-rpc-${tenantId}`
-}
-
-export async function callTill(tenantId: string, userId: string, input: z.infer<typeof rpcRequestSchema>, wake: Wake = wakeTill,
-  waitMs = RPC_WAIT_MS) {
+export async function callTill(tenantId: string, userId: string, input: z.infer<typeof rpcRequestSchema>, wake: TillWake = wakeTill,
+  waitMs = RPC_WAIT_MS, unclaimedMs = RPC_UNCLAIMED_WAIT_MS) {
   if (!webRpcChannelAllowed(input.channel)) throw new AppError('FORBIDDEN', 'Ця дія доступна лише на самій касі.', 403)
   const argsJson = JSON.stringify(input.args)
   if (argsJson.length > MAX_RPC_BYTES) throw new AppError('VALIDATION_ERROR', 'Завеликий запит. Зменште фото або кількість рядків.', 413)
-  if (!(await tillStatus(tenantId)).online) throw new AppError('TILL_OFFLINE', 'Головний ПК не на зв\'язку. Зараз доступний лише перегляд.', 409)
+  // Запит із вебу — це й позначка «у вебі працюють»: каса переходить на часте опитування.
+  if (!(await touchWebPresence(tenantId, async () => undefined)).online) throw new AppError('TILL_OFFLINE', 'Головний ПК не на зв\'язку. Зараз доступний лише перегляд.', 409)
   const { rows } = await pool.query(
     `INSERT INTO till_rpc (tenant_id, user_id, channel, args) VALUES ($1, $2, $3, $4::jsonb) RETURNING id`,
     [tenantId, userId, input.channel, argsJson],
   )
   const id = rows[0].id as string
   await wake(tenantId)
-  const deadline = Date.now() + waitMs
-  while (Date.now() < deadline) {
-    await sleep(RPC_POLL_MS)
+  const started = Date.now()
+  let claimed = false
+  for (;;) {
+    const elapsed = Date.now() - started
+    if (elapsed >= (claimed ? waitMs : Math.min(unclaimedMs, waitMs))) break
+    await sleep(elapsed < RPC_POLL_SLOW_AFTER_MS ? RPC_POLL_MS : RPC_POLL_SLOW_MS)
     const found = await pool.query('SELECT status, result, error FROM till_rpc WHERE id = $1', [id])
     const row = found.rows[0]
     if (row?.status === 'done') return row.result ?? null
-    if (row?.status === 'failed') throw new AppError('TILL_REFUSED', String(row.error || 'Каса не змогла виконати дію'), 422)
+    if (row?.status === 'failed') throw refused(row.error)
+    if (row?.status === 'claimed') claimed = true
   }
-  // Не забрали — гасимо, щоб каса вже не виконала. Забрали, але не відповіли — результат невідомий.
+  // Не забрали — гасимо, щоб каса вже не виконала. Забрали, але не відповіли — каса ще виконує.
   const expired = await pool.query(`UPDATE till_rpc SET status = 'expired', finished_at = now() WHERE id = $1 AND status = 'pending'`, [id])
   if (expired.rowCount) throw new AppError('TILL_OFFLINE', 'Головний ПК не відповів. Дію не виконано — спробуйте ще раз.', 504)
+  if (input.pending_ok) throw new AppError('TILL_PENDING', 'Головний ПК ще виконує дію.', 202, { request_id: id })
   throw new AppError('TILL_TIMEOUT', 'Головний ПК не встиг відповісти. Перевірте результат на касі, перш ніж повторювати.', 504)
+}
+
+/**
+ * Веб: що сталося з моїм запитом. Лише власний запит; сам запит удруге не надсилається.
+ * `pending` — каса ще виконує; `expired` — каса його так і не забрала (нічого не виконано).
+ */
+export async function readRpc(tenantId: string, userId: string, id: string) {
+  if (!z.string().uuid().safeParse(id).success) throw new AppError('VALIDATION_ERROR', 'Некоректний номер запиту', 422)
+  const { rows } = await pool.query('SELECT status, result, error FROM till_rpc WHERE tenant_id = $1 AND user_id = $2 AND id = $3', [tenantId, userId, id])
+  const row = rows[0]
+  if (!row) throw new AppError('NOT_FOUND', 'Запит не знайдено', 404)
+  if (row.status === 'done') return { status: 'done' as const, result: row.result ?? null }
+  if (row.status === 'failed') return { status: 'failed' as const, error: String(row.error || 'Каса не змогла виконати дію') }
+  return { status: row.status === 'expired' ? 'expired' as const : 'pending' as const }
 }
 
 /** Каса: забрати свіжі запити вебу (атомарно, кожен лише раз). */

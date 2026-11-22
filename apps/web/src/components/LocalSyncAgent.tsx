@@ -2,8 +2,7 @@ import { useEffect } from 'react'
 import { useOfflineSync } from '@/hooks/useOfflineSync'
 import { useDesktopOutboxSync } from '@/hooks/useDesktopOutboxSync'
 import { useShiftBackups } from '@/hooks/useShiftBackups'
-import { useTillCommands } from '@/hooks/useTillCommands'
-import { useTillRpc } from '@/hooks/useTillRpc'
+import { useTillLink } from '@/hooks/useTillLink'
 import { useServerStatus } from '@/hooks/useServerStatus'
 
 /**
@@ -14,8 +13,8 @@ export function LocalSyncAgent() {
   const serverOnline = useServerStatus()
   useOfflineSync(serverOnline)
   useShiftBackups(serverOnline)
-  useTillCommands(serverOnline)
-  useTillRpc(serverOnline)
+  // Один зв'язок із сервером на команди й запити вебу: рідке опитування, часте — лише поки у вебі працюють.
+  useTillLink(serverOnline)
   const { lastError } = useDesktopOutboxSync(serverOnline)
   // Keep a diagnostic trace, not a popup. The queue itself remains in SQLite.
   useEffect(() => {
