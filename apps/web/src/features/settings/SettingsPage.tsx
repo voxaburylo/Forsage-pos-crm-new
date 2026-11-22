@@ -27,6 +27,7 @@ import { LabelPrinterCard } from './LabelPrinterCard'
 import { SettingsLinksCard } from './SettingsLinksCard'
 import { CatalogDictionaries } from '@/features/admin/AdminPage'
 import { SettingsFormOnly, SettingsSection, SettingsTabBar, SettingsTabsProvider } from './SettingsTabs'
+import { OwnerBotConnect } from './OwnerBotConnect'
 
 import { loadReceiptPrinterSettings, saveReceiptPrinterSettings } from '@/features/pos/receiptPrinterSettings'
 import { loadSellerRequisites, saveSellerRequisites, type SellerRequisites } from '@/features/orders/orderDocuments'
@@ -605,6 +606,7 @@ export default function SettingsPage() {
                 Щодня о 21:00 бот надішле підсумок: виторг, чеки, повернення, знижки,
                 недостачі каси, мінусові залишки. Команда /zvit — звіт зараз.
               </p>
+              <OwnerBotConnect />
             </div>
 
           </Card>

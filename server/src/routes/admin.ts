@@ -7,6 +7,7 @@ import {
   categorySchema, brandSchema, settingsSchema,
 } from '../validators/adminSchema.js'
 import * as adminService from '../services/adminService.js'
+import { connectOwnerBot } from '../services/ownerBotConnect.js'
 
 // ===================== ADMIN ROUTER (/api/v1/admin) =====================
 const router = Router()
@@ -168,6 +169,11 @@ settingsRouter.get('/', async (req, res, next) => {
     }
     res.json({ data })
   } catch (err) { next(err) }
+})
+
+// Етап 11 (22.11.2026): підключити бота власника — Telegram приноситиме його команди на сервер.
+settingsRouter.post('/telegram-connect', requireRole('owner', 'admin'), async (req, res, next) => {
+  try { res.json({ data: await connectOwnerBot(req.get('host')) }) } catch (err) { next(err) }
 })
 
 settingsRouter.put('/', requireRole('owner', 'admin'), async (req, res, next) => {
