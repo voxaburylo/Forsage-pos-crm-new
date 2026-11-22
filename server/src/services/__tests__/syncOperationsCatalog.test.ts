@@ -85,6 +85,27 @@ describe('каталог операцій синхронізації', () => {
     }
   })
 
+  // 22.11.2026: п'ять комісій касира цілий день не доходили до сервера — правило вимагало власника,
+  // а комісію каса нараховує сама під час продажу, і черга йде під сесією того, хто на зміні.
+  it('автоматична комісія з чека — робота магазину; ручна зарплата — лише власник', () => {
+    for (const role of ['manager', 'cashier', 'storekeeper']) {
+      for (const source of ['commission', 'commission_reversal'])
+        expect(isSyncOperationAllowed(role, 'salary_payment.created', { source }), `${role}: ${source}`).toBe(true)
+      for (const source of ['manual', 'daily_rate', 'daily_payout', undefined, null, 'COMMISSION', ''])
+        expect(isSyncOperationAllowed(role, 'salary_payment.created', { source }), `${role}: ${String(source)}`).toBe(false)
+      expect(isSyncOperationAllowed(role, 'salary_payment.created')).toBe(false)
+      expect(isSyncOperationAllowed(role, 'salary_payment.created', null)).toBe(false)
+      // Зміст запису не відкриває інших адміністративних операцій.
+      expect(isSyncOperationAllowed(role, 'salary_payment.deleted', { source: 'commission' })).toBe(false)
+      expect(isSyncOperationAllowed(role, 'staff_user.created', { source: 'commission' })).toBe(false)
+      expect(isSyncOperationAllowed(role, 'operation.that.does.not.exist', { source: 'commission' })).toBe(false)
+    }
+    for (const role of ['tire_worker', 'sto_viewer', 'unknown'])
+      expect(isSyncOperationAllowed(role, 'salary_payment.created', { source: 'commission' })).toBe(false)
+    // Прийом черги перевіряє право вже зі змістом операції, інакше виняток не спрацює.
+    expect(syncFunctionBody('pushLocalOperations')).toContain('assertSyncOperationAllowed(params.role, operation.operation_type, operation.payload)')
+  })
+
   it('те, що народжує сутність, не залежить від ролі — інакше довідник нікому не створити', () => {
     const entities: SyncEntity[] = [
       'brand', 'category', 'supplier', 'product', 'customer',

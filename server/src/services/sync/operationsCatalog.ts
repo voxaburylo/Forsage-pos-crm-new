@@ -47,6 +47,12 @@ export type SyncRole =
  * `admin` — адміністративна зміна: працівники, ПІН-коди, налаштування,
  * правила комісії, зарплати, видалення довідників. Тут перевірка сесії
  * лишається: такі операції не робляться «принагідно» під час зміни.
+ *
+ * 22.11.2026, правило «каса головна». `admin` лишається тільки тим, що й на самій касі робить
+ * лише власник чи адміністратор. Видалення товару, замовлення й постачальника, злиття постачальників,
+ * скасування накладної та довідник постачальника каса дозволяє менеджеру, комірнику (а замовлення —
+ * і касиру), тож тепер це `shop`: інакше запис висів, доки на касі не ввійде власник (видалення товарів
+ * чекали в середньому 107 годин). Розʼїзд двох списків стереже тест каси `syncRightsMatchTill.test.ts`.
  */
 export type SyncOperationScope = 'shop' | 'admin'
 
@@ -95,13 +101,13 @@ export const SYNC_OPERATIONS: Record<string, SyncOperationSpec> = {
   'order.canceled': { scope: 'shop' },
   'order.completed': { scope: 'shop' },
   'order.created': { creates: 'order', references: ['customer', 'product'], scope: 'shop' },
-  'order.deleted': { scope: 'admin' },
+  'order.deleted': { scope: 'shop' },
   'order.item_status_updated': { scope: 'shop' },
   'order.items_arrived': { scope: 'shop' },
   'order.payment_added': { scope: 'shop' },
   'order.status_updated': { scope: 'shop' },
   'order.updated': { references: ['customer', 'product'], scope: 'shop' },
-  'product.deleted': { scope: 'admin' },
+  'product.deleted': { scope: 'shop' },
   'product.catalog_cleanup': { references: ['product'], scope: 'admin' },
   'product.upsert': { creates: 'product', references: ['brand', 'category'], scope: 'shop' },
   'reserve.created': { references: ['product'], scope: 'shop' },
@@ -122,13 +128,13 @@ export const SYNC_OPERATIONS: Record<string, SyncOperationSpec> = {
   'staff_user.deleted': { scope: 'admin' },
   'staff_user.updated': { scope: 'admin' },
   'supplier.created': { creates: 'supplier', scope: 'shop' },
-  'supplier.deleted': { scope: 'admin' },
-  'supplier.merged': { scope: 'admin' },
+  'supplier.deleted': { scope: 'shop' },
+  'supplier.merged': { scope: 'shop' },
   'supplier.updated': { scope: 'shop' },
-  'supplier_catalog.imported': { scope: 'admin' },
-  'supplier_catalog.item_deleted': { scope: 'admin' },
-  'supplier_catalog.item_upserted': { scope: 'admin' },
-  'supplier_invoice.cancelled': { scope: 'admin' },
+  'supplier_catalog.imported': { scope: 'shop' },
+  'supplier_catalog.item_deleted': { scope: 'shop' },
+  'supplier_catalog.item_upserted': { scope: 'shop' },
+  'supplier_invoice.cancelled': { scope: 'shop' },
   'supplier_invoice.created': { creates: 'invoice', references: ['supplier', 'product'], scope: 'shop' },
   'supplier_invoice.deleted': { scope: 'shop' },
   'supplier_invoice.payment_added': { scope: 'shop' },
@@ -138,12 +144,29 @@ export const SYNC_OPERATIONS: Record<string, SyncOperationSpec> = {
   'writeoff.created': { references: ['product'], scope: 'shop' },
 }
 
-/** Чи можна цій ролі надсилати таку операцію. Невідомий тип — ні. */
-export function isSyncOperationAllowed(role: string, operationType: string): boolean {
-  if (SYNC_SUPERUSER_ROLES.includes(role as SyncRole)) return true
+/**
+ * Автоматичні записи зарплати — комісію з чека та її сторно при поверненні — каса нараховує сама
+ * під час звичайного продажу. Це робота магазину, а не адміністративна зміна: 22.11.2026 п'ять
+ * комісій касира цілий день не доходили до сервера, бо черга йшла під сесією касира, а правило
+ * вимагало власника (у вересні й жовтні такі записи чекали 25 і 75 годин).
+ * Ручні виплати, денна ставка й видалення лишаються адміністративними: на касі їх робить лише власник.
+ * Достовірність копії стереже обробник (`salaryMirror`): чек, замовлення чи повернення мусять уже бути
+ * на сервері, а сума, тип і джерело — узгоджені.
+ */
+const AUTOMATIC_SALARY_SOURCES: readonly string[] = ['commission', 'commission_reversal']
+
+/** Область операції з урахуванням її змісту. Невідомий тип — `undefined`. */
+export function syncOperationScope(operationType: string, payload?: { source?: unknown } | null): SyncOperationScope | undefined {
   const spec = SYNC_OPERATIONS[operationType]
-  if (!spec) return false
-  return spec.scope === 'shop' && SYNC_SHOP_ROLES.includes(role as SyncRole)
+  if (!spec) return undefined
+  if (operationType === 'salary_payment.created' && AUTOMATIC_SALARY_SOURCES.includes(String(payload?.source ?? ''))) return 'shop'
+  return spec.scope
+}
+
+/** Чи можна цій ролі надсилати таку операцію. Невідомий тип — ні. */
+export function isSyncOperationAllowed(role: string, operationType: string, payload?: { source?: unknown } | null): boolean {
+  if (SYNC_SUPERUSER_ROLES.includes(role as SyncRole)) return true
+  return syncOperationScope(operationType, payload) === 'shop' && SYNC_SHOP_ROLES.includes(role as SyncRole)
 }
 
 /** Операції, які народжують саме цю сутність. */

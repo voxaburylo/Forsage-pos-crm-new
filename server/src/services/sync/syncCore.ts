@@ -193,8 +193,8 @@ export interface SyncPushResult {
   reset_at?: string
 }
 
-export function assertSyncOperationAllowed(role: string, operationType: string): void {
-  if (!isSyncOperationAllowed(role, operationType)) {
+export function assertSyncOperationAllowed(role: string, operationType: string, payload?: { source?: unknown } | null): void {
+  if (!isSyncOperationAllowed(role, operationType, payload)) {
     throw new AppError('FORBIDDEN', 'Недостатньо прав для цієї операції синхронізації', 403)
   }
 }

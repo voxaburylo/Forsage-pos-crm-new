@@ -31,8 +31,8 @@ const COMMERCIAL_FIELDS = new Set(['buy_price', 'purchase_price', 'cost_price'])
  * коштувало магазину даних: дозволили товар без бренда, потім накладну без
  * постачальника. Тест каталогу не дає забути втретє.
  */
-export function isSyncOperationAllowed(role: string, operationType: string): boolean {
-  return isSyncOperationAllowedByCatalog(role, operationType)
+export function isSyncOperationAllowed(role: string, operationType: string, payload?: { source?: unknown } | null): boolean {
+  return isSyncOperationAllowedByCatalog(role, operationType, payload)
 }
 
 export function canPullStaffDirectory(role: string): boolean {

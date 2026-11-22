@@ -57,7 +57,7 @@ export async function pushLocalOperations(params: {
         throw new AppError('SYNC_TENANT_MISMATCH', 'Операція належить іншому магазину', 403)
       }
 
-      assertSyncOperationAllowed(params.role, operation.operation_type)
+      assertSyncOperationAllowed(params.role, operation.operation_type, operation.payload)
       const restrictedCustomerWrite = ['customer.created', 'customer.updated'].includes(operation.operation_type)
         && !['owner', 'admin', 'manager'].includes(params.role)
       const rawPayload = { ...(operation.payload ?? {}) }
