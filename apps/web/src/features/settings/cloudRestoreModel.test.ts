@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { backupAgeDays, latestCloudBackup, usableCloudBackups, type CloudBackupItem } from './cloudRestoreModel'
+import { backupAgeDays, cloudBackupFormat, latestCloudBackup, usableCloudBackups, type CloudBackupItem } from './cloudRestoreModel'
 
 const U = (n: number) => `00000000-0000-4000-8000-00000000000${n}`
 const item = (n: number, created: string, over: Partial<CloudBackupItem> = {}): CloudBackupItem => ({
@@ -20,5 +20,14 @@ describe('finding the freshest cloud copy', () => {
   it('tells how many days of work the copy is missing', () => {
     expect(backupAgeDays('2026-11-14T17:12:00Z', Date.parse('2026-11-17T10:00:00Z'))).toBe(2)
     expect(backupAgeDays('2026-11-18T00:00:00Z', Date.parse('2026-11-17T10:00:00Z'))).toBe(0)
+  })
+
+  // 22.11.2026: нові копії стиснені Zstandard; формат береться з відповіді сервера, а якщо сервер старий — з імені файлу.
+  it('knows the archive format of a copy: from the server field, else from the file name', () => {
+    expect(cloudBackupFormat(item(1, '2026-11-22T10:00:00Z'))).toBe('gz')
+    expect(cloudBackupFormat(item(1, '2026-11-22T10:00:00Z', { name: `${U(1)}-${'a'.repeat(64)}.db.zst` }))).toBe('zst')
+    expect(cloudBackupFormat(item(1, '2026-11-22T10:00:00Z', { format: 'zst' }))).toBe('zst')
+    expect(cloudBackupFormat(item(1, '2026-11-22T10:00:00Z', { name: 'x.db.zst', format: 'gz' }))).toBe('gz')
+    expect(cloudBackupFormat({ name: 'unknown', format: 'zip' as never })).toBe('gz')
   })
 })

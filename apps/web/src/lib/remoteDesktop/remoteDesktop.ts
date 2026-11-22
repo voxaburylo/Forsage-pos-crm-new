@@ -4,6 +4,7 @@ import type { ForsageDesktopBridge } from '@/lib/desktopBridge'
 // Той самий перелік дій, що в програмі каси (preload): однакові назви й канали, екрани не дублюються.
 import { createDesktopApi } from '../../../../desktop/src/desktopApi'
 import { setRemoteBridgeSlot } from './slot'
+import { waitForTillAnswer, type TillAnswerState } from './tillAnswer'
 
 /**
  * 22.11.2026, рішення власника «веб повний, але робота тільки через головний ПК».
@@ -15,9 +16,14 @@ let active = 0
 const publish = () => setRemoteBridgeSlot(active > 0 ? bridge : null)
 
 async function invokeTill(channel: string, ...args: unknown[]): Promise<unknown> {
-  const { data } = await api.post<{ data: unknown }>('/api/v1/till-rpc', { channel, args: encodeRpcValue(args) },
-    undefined, { silent: true, timeoutMs: 35_000 })
-  return decodeRpcValue(data)
+  // Сервер чекає касу до 55 с; якщо каса запит забрала, але ще виконує, він віддає номер запиту (pending),
+  // і ми дочікуємося відповіді за цим номером — запит на касу вдруге не надсилається.
+  const answer = await api.post<{ data?: unknown; pending?: { id: string } }>('/api/v1/till-rpc',
+    { channel, args: encodeRpcValue(args), pending_ok: true }, undefined, { silent: true, timeoutMs: 70_000 })
+  if (!answer.pending) return decodeRpcValue(answer.data)
+  const requestId = answer.pending.id
+  return decodeRpcValue(await waitForTillAnswer(async () =>
+    (await api.get<{ data: TillAnswerState }>(`/api/v1/till-rpc/${requestId}`, { silent: true, timeoutMs: 10_000 })).data))
 }
 
 export async function loadRemoteBridge(): Promise<ForsageDesktopBridge> {

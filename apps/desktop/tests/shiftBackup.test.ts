@@ -1,15 +1,16 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs'
 import path from 'node:path'
 import { tmpdir } from 'node:os'
-import { gunzipSync } from 'node:zlib'
+import { zstdDecompressSync } from 'node:zlib'
 import { afterEach,beforeEach,describe,it,expect } from 'vitest'
 import * as XLSX from 'xlsx'
 import { DatabaseSync } from 'node:sqlite'
 import { LocalDatabase } from '../src/db/localDatabase'
 import { LocalCatalogRepository } from '../src/repositories/catalogRepository'
 import { LocalPosRepository } from '../src/repositories/posRepository'
-import { exportShiftSnapshot } from '../src/backup/shiftExportWorker'
+import { compressVerified, exportShiftSnapshot } from '../src/backup/shiftExportWorker'
+import { archiveFormatOf, archiveMime } from '../src/backup/archiveFormat'
 import { ShiftBackupService } from '../src/backup/shiftBackupService'
 import { customerHistory } from '../src/repositories/customerHistory'
 import { DEFAULT_TENANT_ID } from '../src/db/localTypes'
@@ -83,7 +84,7 @@ describe('shift backups and full customer history',()=>{
     await restarted.tick()
     expect(db.prepare('SELECT local_path FROM shift_backups WHERE id=?').get(next)).toEqual({local_path:null})
   })
-  it('writes typed XLSX files from the same verified snapshot and a restorable gzip',async()=>{
+  it('writes typed XLSX files from the same verified snapshot and a restorable archive',async()=>{
     new LocalCatalogRepository(db).upsertProduct({id:randomUUID(),sku:'0007',barcode:'0000123456789',name:'=Не формула',qty_on_hand:3.5,purchase_price:12345,retail_price:20000,unit:'кг'})
     pos.saveCustomer({phone:'0500000000',full_name:'Тест',card_barcode:'0000123',notes:'=1+1'})
     const snapshot=await db.backupNow()
@@ -97,7 +98,12 @@ describe('shift backups and full customer history',()=>{
     const customer=XLSX.read(readFileSync(result.customerFile),{type:'buffer'}).Sheets['Клієнти']
     expect(customer.C2).toMatchObject({t:'s',v:'0500000000'})
     expect(customer.K2.f).toBeUndefined()
-    expect(gunzipSync(readFileSync(result.compressed))).toEqual(readFileSync(snapshot))
+    // 22.11.2026: нові копії — Zstandard (17,8 МБ замість 27,6 МБ на реальній базі; ліміт файлу в хмарі 45 МБ).
+    expect(result.compressed).toBe(snapshot + '.zst')
+    expect(zstdDecompressSync(readFileSync(result.compressed))).toEqual(readFileSync(snapshot))
+    expect(result.sha256).toBe(createHash('sha256').update(readFileSync(result.compressed)).digest('hex'))
+    expect(result.size).toBe(readFileSync(result.compressed).length)
+    expect(existsSync(result.compressed + '.partial')).toBe(false)
     expect(result.products).toBe(1);expect(result.customers).toBe(1)
     LocalDatabase.assertBackupIsUsable(snapshot)
   })
@@ -119,6 +125,7 @@ describe('shift backups and full customer history',()=>{
       .rejects.toThrow(damage === 'photo-checksum' ? 'LOCAL_BACKUP_INVALID_ASSETS'
         : damage === 'missing-migration' ? 'LOCAL_BACKUP_INCOMPLETE_SCHEMA' : 'LOCAL_BACKUP_BROKEN_REFERENCES')
     expect(existsSync(snapshot + '.gz')).toBe(false)
+    expect(existsSync(snapshot + '.zst')).toBe(false)
     expect(existsSync(path.join(output, 'Товари_invalid.xlsx'))).toBe(false)
     expect(db.prepare('PRAGMA quick_check').get()).toEqual({quick_check:'ok'})
   })
@@ -140,5 +147,51 @@ describe('shift backups and full customer history',()=>{
     expect(customerHistory(db,randomUUID(),customer,'sales').data).toEqual([])
     expect(customerHistory(db,DEFAULT_TENANT_ID,customer,'sales',{from:'2026-09-11T00:00:00.000Z'}).data).toEqual([])
     expect(()=>customerHistory(db,DEFAULT_TENANT_ID,customer,'sales',{offset:-1})).toThrow()
+  })
+})
+
+// 22.11.2026: копія в хмару. Ліміт файлу 45 МБ, копія в gzip уже 27,6 МБ; архів досі жодного разу не розпаковували.
+describe('the daily copy archive: smaller, and proven to unpack', () => {
+  let dir: string
+  beforeEach(() => { dir = mkdtempSync(path.join(tmpdir(), 'forsage-archive-')) })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('new copies are zstd, old gzip copies stay readable by their extension', async () => {
+    const snapshot = path.join(dir, 'copy.db')
+    const { writeFileSync } = await import('node:fs')
+    writeFileSync(snapshot, Buffer.from('SQLite format 3 the same bytes again and again '.repeat(4000)))
+    const fresh = await compressVerified(snapshot)
+    expect(fresh.compressed).toBe(snapshot + '.zst')
+    expect(zstdDecompressSync(readFileSync(fresh.compressed))).toEqual(readFileSync(snapshot))
+    expect(fresh.size).toBeLessThan(readFileSync(snapshot).length / 10)
+    const { gunzipSync } = await import('node:zlib')
+    const old = await compressVerified(snapshot, 'gz')
+    expect(old.compressed).toBe(snapshot + '.gz')
+    expect(gunzipSync(readFileSync(old.compressed))).toEqual(readFileSync(snapshot))
+    expect(archiveFormatOf(fresh.compressed)).toBe('zst')
+    expect(archiveFormatOf(old.compressed)).toBe('gz')
+    expect(archiveFormatOf(snapshot)).toBeNull()
+    expect(archiveMime('zst')).toBe('application/zstd')
+    expect(archiveMime('gz')).toBe('application/gzip')
+  })
+
+  it('the cloud file name and upload type follow the format of the archive', async () => {
+    const database = new LocalDatabase(dir)
+    try {
+      const id = randomUUID(), sha = 'a'.repeat(64)
+      const archive = path.join(dir, 'shift-backups', 'x.db.zst')
+      database.prepare('INSERT INTO shift_backups (id, tenant_id, device_id, closed_at, created_at, compressed_path, sha256, size_bytes) VALUES (?,?,?,?,?,?,?,?)')
+        .run(id, DEFAULT_TENANT_ID, database.deviceId, '2026-11-22T17:00:00Z', '2026-11-22T17:00:00Z', archive, sha, 10)
+      const service = new ShiftBackupService(database, dir, () => undefined)
+      expect(service.pending(DEFAULT_TENANT_ID)).toEqual([expect.objectContaining({ id, sha256: sha, format: 'zst' })])
+      expect(service.pending(DEFAULT_TENANT_ID)[0]).not.toHaveProperty('compressed_path')
+      // Адреса з розширенням іншого формату — не той файл: каса туди не вантажить.
+      const origin = 'https://project.supabase.co'
+      const signed = (ext: string) => origin + '/storage/v1/object/upload/sign/forsage-private-backups/' + [DEFAULT_TENANT_ID, database.deviceId, id + '-' + sha + '.db.' + ext].join('/') + '?token=t'
+      await expect(service.upload(DEFAULT_TENANT_ID, id, signed('gz'), origin)).rejects.toThrow('Неприпустима адреса резервування')
+      database.prepare('UPDATE shift_backups SET compressed_path=? WHERE id=?').run(path.join(dir, 'shift-backups', 'x.db.gz'), id)
+      expect(service.pending(DEFAULT_TENANT_ID)[0]).toMatchObject({ format: 'gz' })
+      await expect(service.upload(DEFAULT_TENANT_ID, id, signed('zst'), origin)).rejects.toThrow('Неприпустима адреса резервування')
+    } finally { database.close() }
   })
 })

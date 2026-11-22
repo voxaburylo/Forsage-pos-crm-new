@@ -1,13 +1,14 @@
+import { NEW_ARCHIVE_FORMAT, createArchiveCompressor, createArchiveDecompressor } from './archiveFormat'
 import { embedBackupPhotos } from './embeddedPhotos'
 import { assertBackupContents } from '../db/backupValidation'
 import { LOCAL_MIGRATIONS } from '../db/schema'
 import { parentPort, workerData } from 'node:worker_threads'
 import { DatabaseSync } from 'node:sqlite'
-import { createHash } from 'node:crypto'
+import { createHash, type Hash } from 'node:crypto'
 import { createReadStream, createWriteStream } from 'node:fs'
-import { mkdir, rename, stat, writeFile } from 'node:fs/promises'
+import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { Transform, Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
-import { createGzip } from 'node:zlib'
 import path from 'node:path'
 import * as XLSX from 'xlsx'
 
@@ -24,6 +25,27 @@ export async function exportExcelOnly(input: { snapshot: string; output: string;
     tenantId = tenants[0].tenant_id
   } finally { db.close() }
   return exportShiftSnapshot({ ...input, tenantId, closedAt: '', excelOnly: true })
+}
+
+const hashing = (hash: Hash) => new Transform({ transform(chunk, _encoding, done) { hash.update(chunk); done(null, chunk) } })
+
+/**
+ * Стискає знімок бази й одразу перевіряє архів: розпаковує його назад і звіряє з вихідним знімком байт у байт.
+ * Досі архів лише рахували за контрольною сумою — тобто копія, яка їде в хмару, жодного разу не розпаковувалась.
+ * Архів, що не розпаковується в ту саму базу, не лишається на диску й не відправляється.
+ */
+export async function compressVerified(snapshot: string, format = NEW_ARCHIVE_FORMAT) {
+  const compressed = snapshot + '.' + format, partial = compressed + '.partial'
+  const sourceHash = createHash('sha256'), archiveHash = createHash('sha256'), restoredHash = createHash('sha256')
+  await pipeline(createReadStream(snapshot), hashing(sourceHash), createArchiveCompressor(format), hashing(archiveHash), createWriteStream(partial))
+  await pipeline(createReadStream(partial), createArchiveDecompressor(format),
+    new Writable({ write(chunk, _encoding, done) { restoredHash.update(chunk); done() } }))
+  if (restoredHash.digest('hex') !== sourceHash.digest('hex')) {
+    await rm(partial, { force: true })
+    throw new Error('Архів копії не розпаковується в ту саму базу. Копію не використано.')
+  }
+  await rename(partial, compressed)
+  return { compressed, sha256: archiveHash.digest('hex'), size: (await stat(compressed)).size }
 }
 
 export async function exportShiftSnapshot(input: {
@@ -86,12 +108,8 @@ export async function exportShiftSnapshot(input: {
       rows: vehicles.map(v=>[v.customer_id,v.brand,v.model,v.year??'',v.vin??'',v.notes??'']),
     }])
     if (input.excelOnly) return { productFile, customerFile, compressed: '', sha256: '', size: 0, products: products.length, customers: customers.length }
-    const compressed = input.snapshot + '.gz'
-    await pipeline(createReadStream(input.snapshot), createGzip(), createWriteStream(compressed + '.partial'))
-    await rename(compressed + '.partial', compressed)
-    const hash = createHash('sha256')
-    for await (const chunk of createReadStream(compressed)) hash.update(chunk)
-    return { productFile, customerFile, compressed, sha256: hash.digest('hex'), size: (await stat(compressed)).size, products: products.length, customers: customers.length }
+    const { compressed, sha256, size } = await compressVerified(input.snapshot)
+    return { productFile, customerFile, compressed, sha256, size, products: products.length, customers: customers.length }
   } finally { db.close() }
 }
 if (parentPort && workerData?.snapshot) (workerData.excelOnly ? exportExcelOnly(workerData) : exportShiftSnapshot(workerData)).then(

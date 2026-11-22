@@ -7,7 +7,8 @@ import { buildTillUpdate, cardFields, type TillProductFields } from './tillComma
 
 type Status = { online: boolean; seen_at: string | null }
 type CommandState = { status: 'pending' | 'claimed' | 'done' | 'failed' | 'expired'; error: string | null }
-const WAIT_MS = 20_000
+// 22.11.2026: каса питає сервер раз на 30 с (плюс сигнал одразу); чекаємо довше за строк життя команди (45 с).
+const WAIT_MS = 50_000
 
 const errorText = (error: unknown) => (error as { message?: string })?.message || 'Не вдалося передати зміну на касу'
 

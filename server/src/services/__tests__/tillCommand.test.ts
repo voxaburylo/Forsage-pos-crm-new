@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 const query = vi.hoisted(() => vi.fn())
+const wake = vi.hoisted(() => vi.fn(async () => undefined))
 vi.mock('../../db/pg.js', () => ({ pool: { query } }))
+vi.mock('../tillWake.js', () => ({ wakeTill: wake, tillWakeTopic: (tenant: string) => 'till-rpc-' + tenant }))
 import { claimCommands, commandAllowedForRole, createCommand, createCommandSchema, finishCommand, listWaitingOrders, readCommand } from '../tillCommandService.js'
 
 const id = (n: number) => `00000000-0000-4000-8000-00000000000${n}`
@@ -106,10 +108,10 @@ describe('web write through the till', () => {
     await expect(createCommand('t', 'u', add({ order_id: id(2), items }) as any)).rejects.toMatchObject({ status: 409, code: 'TILL_OFFLINE' })
     expect(query).toHaveBeenCalledTimes(1)
   })
-  it('keeps a queued order for 12 hours and everything else for 30 seconds', async () => {
+  it('keeps a queued order for 12 hours and everything else for 45 seconds (longer than the rare poll of the till)', async () => {
     query.mockResolvedValueOnce({ rowCount: 1 }).mockResolvedValueOnce({ rows: [] })
     await claimCommands('t', id(4))
-    expect(query.mock.calls[1][0]).toContain("CASE WHEN command = 'staff.secret' THEN 604800 WHEN command IN ('order.save', 'invoice.draft') THEN 43200 ELSE 30 END")
+    expect(query.mock.calls[1][0]).toContain("CASE WHEN command = 'staff.secret' THEN 604800 WHEN command IN ('order.save', 'invoice.draft') THEN 43200 ELSE 45 END")
     query.mockReset()
     query.mockResolvedValueOnce({ rowCount: 0 }).mockResolvedValueOnce({ rows: [
       { operation_id: id(7), created_at: '2026-11-22T05:00:00Z', payload: { customer_name: 'Іван', customer_phone: '0671234567', items: [{}, {}] } },

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { gzipSync } from 'node:zlib'
+import { gzipSync, zstdCompressSync } from 'node:zlib'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { assertCloudBackupUrl, cloudBackupFileName, fetchCloudBackup, type CloudBackupRequest } from '../src/backup/cloudRestore'
 
@@ -75,5 +75,24 @@ describe('emergency restore from the cloud copy', () => {
     const result = await fetchCloudBackup(request(), opts({ fetchImpl: again }))
     expect(again).not.toHaveBeenCalled()
     expect(existsSync(result.filePath)).toBe(true)
+  })
+
+  // 22.11.2026: нові копії стиснені Zstandard (менші на третину); старі gzip-копії відновлюються як і раніше.
+  it('unpacks a zstd copy, and a request for one format never accepts the file of the other', async () => {
+    const zst = zstdCompressSync(db), zsha = createHash('sha256').update(zst).digest('hex')
+    const zrequest = request({ format: 'zst', sha256: zsha, size_bytes: zst.length,
+      url: `${ORIGIN}/storage/v1/object/sign/forsage-private-backups/${TENANT}/${DEVICE}/${ID}-${zsha}.db.zst?token=abc` })
+    const result = await fetchCloudBackup(zrequest, opts({ fetchImpl: okFetch(zst) }))
+    expect(readFileSync(result.filePath).equals(db)).toBe(true)
+    expect(readdirSync(dir)).toEqual([result.fileName])
+    expect(() => assertCloudBackupUrl(request({ format: 'zst' }), ORIGIN)).toThrow('Неприпустима')
+    expect(() => assertCloudBackupUrl({ ...zrequest, format: 'gz' }, ORIGIN)).toThrow('Неприпустима')
+    expect(() => assertCloudBackupUrl({ ...request(), format: 'zip' as never }, ORIGIN)).toThrow('Некоректні')
+  })
+
+  it('a gzip file sent under the zstd name is refused and nothing is kept', async () => {
+    const wrong = request({ format: 'zst', url: request().url.replace('.db.gz', '.db.zst') })
+    await expect(fetchCloudBackup(wrong, opts())).rejects.toThrow()
+    expect(readdirSync(dir)).toEqual([])
   })
 })

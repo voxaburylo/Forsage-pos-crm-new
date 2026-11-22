@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { Monitor, Wifi, WifiOff } from 'lucide-react'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { api } from '@/lib/api'
+import { isUserWatching } from '@/lib/userActivity'
 import { useAuthStore } from '@/stores/authStore'
 import { Layout } from '@/components/Layout'
 import { Card } from '@/components/ui'
@@ -40,7 +41,8 @@ function ThroughMainPc({ what, children, offline }: { what: string; children: Re
     if (!allowed) return
     let stopped = false
     async function check() {
-      const online = await api.get<{ data: { online: boolean } }>('/api/v1/till-commands/status', { silent: true, timeoutMs: 10_000 })
+      // watch=0 — вкладка схована або людина давно нічого не натискала: тоді сервер не просить касу опитувати його часто.
+      const online = await api.get<{ data: { online: boolean } }>('/api/v1/till-commands/status' + (isUserWatching() ? '' : '?watch=0'), { silent: true, timeoutMs: 10_000 })
         .then(result => Boolean(result.data?.online), () => false)
       if (!stopped) setState(online ? 'online' : 'offline')
     }

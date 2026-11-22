@@ -1,0 +1,53 @@
+import { Router, type NextFunction, type Request, type Response } from 'express'
+import { requireAuth, requireRole } from '../middleware/auth.js'
+import { AppError } from '../middleware/errorHandler.js'
+import { authenticateTillDevice, parseDeviceAuthorization, registerTillDevice } from '../services/tillDeviceService.js'
+import { tillBeat } from '../services/tillLinkService.js'
+import { claimRpc, finishRpc, rpcResultSchema } from '../services/tillRpcService.js'
+
+/**
+ * Зв'язок головного ПК власним ключем (див. tillDeviceService): програма забирає запити вебу й тоді,
+ * коли в ній ніхто не увійшов. Ті самі дії, що й /till-link/beat та /till-rpc/claim|result, але пристрій
+ * упізнається за ключем, а не за сесією працівника. Усі адреси — лише з програми на касі
+ * (заголовок каси перевіряє localFirstWriteGuard).
+ */
+export const tillDeviceRouter = Router()
+
+// Власник чи адміністратор, увійшовши на головному ПК, видає ПК ключ зв'язку (повторно — заміняє старий).
+tillDeviceRouter.post('/register', requireAuth, requireRole('owner', 'admin'), async (req, res, next) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store')
+    res.json({ data: await registerTillDevice(req.user!.tenant_id, req.user!.id, String(req.body?.device_id ?? '')) })
+  } catch (err) { next(err) }
+})
+
+interface DeviceRequest extends Request { tillDevice?: { tenant_id: string; device_id: string } }
+
+async function requireTillDevice(req: DeviceRequest, _res: Response, next: NextFunction): Promise<void> {
+  try {
+    const credentials = parseDeviceAuthorization(req.get('authorization'))
+    const device = credentials ? await authenticateTillDevice(credentials.deviceId, credentials.token) : null
+    if (!device) throw new AppError('TILL_DEVICE_UNAUTHORIZED', 'Ключ зв\'язку каси не прийнято', 401)
+    req.tillDevice = device
+    next()
+  } catch (err) { next(err) }
+}
+
+tillDeviceRouter.post('/beat', requireTillDevice, async (req: DeviceRequest, res, next) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store')
+    res.json({ data: await tillBeat(req.tillDevice!.tenant_id, req.tillDevice!.device_id) })
+  } catch (err) { next(err) }
+})
+
+tillDeviceRouter.post('/rpc/claim', requireTillDevice, async (req: DeviceRequest, res, next) => {
+  try { res.json({ data: await claimRpc(req.tillDevice!.tenant_id, req.tillDevice!.device_id) }) } catch (err) { next(err) }
+})
+
+tillDeviceRouter.post('/rpc/:id/result', requireTillDevice, async (req: DeviceRequest, res, next) => {
+  try {
+    const parsed = rpcResultSchema.safeParse(req.body?.outcome)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Некоректна відповідь каси', 422)
+    res.json({ data: await finishRpc(req.tillDevice!.tenant_id, req.tillDevice!.device_id, String(req.params.id), parsed.data) })
+  } catch (err) { next(err) }
+})

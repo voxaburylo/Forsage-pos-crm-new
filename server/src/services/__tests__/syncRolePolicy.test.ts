@@ -42,7 +42,9 @@ describe('sync role policy', () => {
     for (const operation of cashierOperations) {
       expect(isSyncOperationAllowed('cashier', operation)).toBe(true)
     }
-    expect(isSyncOperationAllowed('cashier', 'supplier_invoice.cancelled')).toBe(false)
+    // 22.11.2026, «каса головна»: скасування накладної каса дозволяє менеджеру й комірнику, а чергу
+    // може відправити сесія касира — запис не має чекати власника.
+    expect(isSyncOperationAllowed('cashier', 'supplier_invoice.cancelled')).toBe(true)
   })
   it('lets every role that can receive goods also push the supplier the invoice points at', () => {
     // POST /suppliers дозволений усім, хто приймає товар. Поки sync це
@@ -59,10 +61,19 @@ describe('sync role policy', () => {
     // приймає його від будь-якого працівника: право робити цю дію стережеться
     // в самій касі, а не на виході черги (див. syncOperations.ts, scope).
     expect(isSyncOperationAllowed('cashier', 'supplier.updated')).toBe(true)
-    // А видалення довідника — адміністративна зміна, і тут перевірка лишається.
-    expect(isSyncOperationAllowed('cashier', 'supplier.deleted')).toBe(false)
-    expect(isSyncOperationAllowed('manager', 'supplier.deleted')).toBe(false)
-    expect(isSyncOperationAllowed('owner', 'supplier.deleted')).toBe(true)
+    // 22.11.2026, «каса головна»: видалення й злиття постачальника каса дозволяє менеджеру й комірнику,
+    // тож копія на сервері приймає їх під сесією будь-кого на зміні (право стереже сама каса).
+    for (const role of ['owner', 'manager', 'storekeeper', 'cashier']) {
+      expect(isSyncOperationAllowed(role, 'supplier.deleted')).toBe(true)
+      expect(isSyncOperationAllowed(role, 'supplier.merged')).toBe(true)
+    }
+    // Те, що й на касі робить лише власник, лишається адміністративним.
+    for (const role of ['manager', 'storekeeper', 'cashier']) {
+      expect(isSyncOperationAllowed(role, 'customer.deleted')).toBe(false)
+      expect(isSyncOperationAllowed(role, 'settings.updated')).toBe(false)
+      expect(isSyncOperationAllowed(role, 'staff_pin.updated')).toBe(false)
+    }
+    for (const role of ['tire_worker', 'sto_viewer']) expect(isSyncOperationAllowed(role, 'supplier.deleted')).toBe(false)
   })
 
   it('lets every role that can push a product also push the brand and category it points at', () => {

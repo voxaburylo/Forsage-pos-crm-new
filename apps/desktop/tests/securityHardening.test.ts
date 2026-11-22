@@ -16,9 +16,12 @@ describe('desktop authorization boundary', () => {
     expect(isDesktopChannelAllowed('desktop:pos:list-sales', 'manager')).toBe(true)
   })
   it('exposes only authentication and narrowly gated clean-PC onboarding before authentication', () => {
+    // 22.11.2026: стан зв'язку головного ПК і сигнал «на сервері є робота» — щоб веб працював через ПК і на екрані
+    // входу. Вони нічого не змінюють і не відкривають даних; ключ зв'язку (register) приносить лише власник.
     expect([...PUBLIC_DESKTOP_CHANNELS]).toEqual(['desktop:auth:login', 'desktop:auth:login-password', 'desktop:auth:pin-roster', 'desktop:auth:login-pin', 'desktop:auth:login-online', 'desktop:auth:logout', 'desktop:auth:remembered-status', 'desktop:auth:restore',
+      'desktop:link:status', 'desktop:link:wake',
       'desktop:lan:first-run-status', 'desktop:lan:discover', 'desktop:lan:pair'])
-    for (const channel of ['desktop:lan:get-status', 'desktop:lan:update', 'desktop:lan:test', 'desktop:staff:list-users', 'desktop:backup:restore']) {
+    for (const channel of ['desktop:lan:get-status', 'desktop:lan:update', 'desktop:lan:test', 'desktop:staff:list-users', 'desktop:backup:restore', 'desktop:link:register']) {
       expect(PUBLIC_DESKTOP_CHANNELS.has(channel)).toBe(false)
       expect(isDesktopChannelAllowed(channel, 'manager')).toBe(false)
     }

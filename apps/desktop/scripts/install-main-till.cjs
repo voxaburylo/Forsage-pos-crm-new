@@ -2,7 +2,7 @@
 /**
  * Встановлення зібраного EXE на головний ПК каси (раніше — тимчасовий скрипт у %TEMP%).
  *
- *   node apps/desktop/scripts/install-main-till.cjs <sha256-нового-exe> <шлях-до-exe-ярлика>
+ *   node apps/desktop/scripts/install-main-till.cjs <sha256-нового-exe> <шлях-до-exe-ярлика> [--autostart]
  *
  * Джерело — apps/desktop/release/staged/Forsage-0.1.0-portable.exe цієї копії.
  * Перед заміною перевіряє, що жоден процес Forsage не запущено (каса закрита), і
@@ -66,3 +66,15 @@ else if (path.resolve(current).toLowerCase() === path.resolve(destination).toLow
     { FORSAGE_LNK: shortcut, FORSAGE_APP: appExe, FORSAGE_DIR: folder.appDir })
   console.log('shortcut', current, '->', ps(linkScript + '$s.TargetPath', { FORSAGE_LNK: shortcut }))
 } else console.log('shortcut', 'NOT CHANGED: unexpected target', current)
+
+// 22.11.2026, «головний ПК — тимчасовий сервер магазину». З ключем --autostart програма стартує разом із Windows:
+// після перезапуску чи вимкнення світла веб знову працює через ПК без того, щоб хтось прийшов і ввімкнув касу
+// (зв'язок тримає сама програма й на екрані входу). Це звичайний ярлик у теці «Автозавантаження» цього користувача;
+// прибрати — видалити ярлик. Windows має сам входити в обліковий запис, а ПК — вмикатися після повернення живлення
+// (це налаштування Windows і BIOS; скрипт їх не чіпає).
+if (process.argv.includes('--autostart')) {
+  const startup = path.join(process.env.APPDATA ?? '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'ФОРСАЖ — КАСА.lnk')
+  ps(linkScript + '$s.TargetPath=$env:FORSAGE_APP;$s.WorkingDirectory=$env:FORSAGE_DIR;$s.IconLocation=$env:FORSAGE_APP+",0";$s.Save()',
+    { FORSAGE_LNK: startup, FORSAGE_APP: appExe, FORSAGE_DIR: folder.appDir })
+  console.log('autostart', ps(linkScript + '$s.TargetPath', { FORSAGE_LNK: startup }))
+} else console.log('autostart', 'not requested (--autostart starts Forsage together with Windows)')

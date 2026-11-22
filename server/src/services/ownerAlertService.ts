@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { pool } from '../db/pg.js'
 import { db } from '../db/supabase.js'
 import { logger } from '../lib/logger.js'
-import { BACKUP_BUCKET } from './backupPolicy.js'
+import { BACKUP_BUCKET, MAX_BACKUP_BYTES, VERIFIED_BACKUP_NAME } from './backupPolicy.js'
 
 /**
  * Тривоги власнику в Telegram (етап 11 плану, рішення власника 22.11.2026: «усі»).
@@ -36,7 +36,20 @@ export interface OwnerAlertFacts {
   negative_products: Array<{ id: string; name: string; sku: string | null; qty_on_hand: number }>
   /** Час останньої перевіреної хмарної копії; undefined — дізнатися не вдалося (тривоги немає). */
   last_backup_at: string | null | undefined
+  /** Розмір цієї копії, байти; немає значення — дізнатися не вдалося (тривоги немає). */
+  last_backup_bytes?: number | null
+  /** Розмір хмарної бази, байти; немає значення — дізнатися не вдалося (тривоги немає). */
+  database_bytes?: number | null
 }
+
+/**
+ * Ліміти хмари (22.11.2026: безкоштовний тариф — файл копії до 45 МБ, база до 500 МБ; повна база стає
+ * «лише для читання», і копія даних у хмарі перестає оновлюватись). Попереджаємо на 80 %, раз на місяць.
+ * На іншому тарифі чи власному сервері ліміт бази задається змінною CLOUD_DATABASE_LIMIT_MB.
+ */
+export const CLOUD_NEAR_LIMIT = 0.8
+export const cloudDatabaseLimitBytes = () => (Number(process.env.CLOUD_DATABASE_LIMIT_MB) > 0 ? Number(process.env.CLOUD_DATABASE_LIMIT_MB) : 500) * 1024 * 1024
+const megabytes = (bytes: number) => (bytes / 1024 / 1024).toFixed(bytes < 100 * 1024 * 1024 ? 1 : 0).replace('.', ',')
 export interface OwnerAlert { key: string; text: string }
 
 const KYIV = 'Europe/Kyiv'
@@ -112,6 +125,19 @@ export function planOwnerAlerts(facts: OwnerAlertFacts, now: Date, settings: Own
         : '🗄 У хмарі немає жодної перевіреної копії бази.',
     })
   }
+
+  // 6. Копія бази підходить до ліміту файлу в хмарі — раз на місяць, поки так: є час зробити «копію частинами».
+  if (typeof facts.last_backup_bytes === 'number' && facts.last_backup_bytes >= MAX_BACKUP_BYTES * CLOUD_NEAR_LIMIT) alerts.push({
+    key: `backup_size:${today.slice(0, 7)}`,
+    text: `🗄 Копія бази в хмарі вже ${megabytes(facts.last_backup_bytes)} МБ із ${megabytes(MAX_BACKUP_BYTES)} дозволених. Коли перевищить — хмарні копії перестануть завантажуватись. Потрібна доробка «копія частинами».`,
+  })
+
+  // 7. Хмарна база заповнюється — раз на місяць, поки так.
+  const databaseLimit = cloudDatabaseLimitBytes()
+  if (typeof facts.database_bytes === 'number' && facts.database_bytes >= databaseLimit * CLOUD_NEAR_LIMIT) alerts.push({
+    key: `database_size:${today.slice(0, 7)}`,
+    text: `🗃 Хмарна база заповнена на ${Math.floor(facts.database_bytes / databaseLimit * 100)} % (${megabytes(facts.database_bytes)} МБ із ${megabytes(databaseLimit)}). Коли заповниться — копія даних у хмарі перестане оновлюватись; каса продавати продовжить.`,
+  })
   return alerts
 }
 
@@ -143,22 +169,37 @@ export async function sendOwnerTelegram(chatId: number, text: string): Promise<b
   } catch { return false }
 }
 
-async function lastVerifiedBackup(tenantId: string): Promise<string | null | undefined> {
+/** Час і розмір найновішої перевіреної копії. undefined — дізнатися не вдалося; at: null — копій немає. */
+async function lastVerifiedBackup(tenantId: string): Promise<{ at: string | null; bytes: number | null } | undefined> {
   try {
     const devices = await db.storage.from(BACKUP_BUCKET).list(tenantId, { limit: 100 })
     if (devices.error) return undefined
-    let newest: string | null = null
+    let newest: string | null = null, bytes: number | null = null
     for (const device of devices.data ?? []) {
       if (!/^[a-f0-9-]{36}$/i.test(device.name)) continue
       const files = await db.storage.from(BACKUP_BUCKET).list(tenantId + '/' + device.name, { limit: 20, sortBy: { column: 'created_at', order: 'desc' } })
       if (files.error) return undefined
+      // Архів лежить поряд із маніфестом: те саме ім'я без «.json».
+      const sizes = new Map((files.data ?? []).map(file => [file.name, Number((file as { metadata?: { size?: unknown } }).metadata?.size)]))
       for (const file of files.data ?? []) {
-        if (!/\.db\.gz\.json$/i.test(file.name) || !file.created_at) continue
-        if (!newest || file.created_at > newest) newest = file.created_at
+        if (!VERIFIED_BACKUP_NAME.test(file.name) || !file.created_at) continue
+        if (newest && file.created_at <= newest) continue
+        newest = file.created_at
+        const size = sizes.get(file.name.slice(0, -5))
+        bytes = Number.isFinite(size) && Number(size) > 0 ? Number(size) : null
       }
     }
-    return newest
+    return { at: newest, bytes }
   } catch { return undefined }
+}
+
+/** Розмір хмарної бази; null — дізнатися не вдалося. */
+async function cloudDatabaseBytes(): Promise<number | null> {
+  try {
+    const { rows } = await pool.query('SELECT pg_database_size(current_database()) AS bytes')
+    const bytes = Number(rows[0]?.bytes)
+    return Number.isFinite(bytes) && bytes > 0 ? bytes : null
+  } catch { return null }
 }
 
 async function collectFacts(tenantId: string): Promise<OwnerAlertFacts> {
@@ -169,12 +210,16 @@ async function collectFacts(tenantId: string): Promise<OwnerAlertFacts> {
     pool.query(`SELECT id, name, sku, qty_on_hand FROM products WHERE tenant_id = $1 AND deleted_at IS NULL AND qty_on_hand < 0 ORDER BY updated_at DESC LIMIT 50`, [tenantId]),
     lastVerifiedBackup(tenantId),
   ])
+  // Окремо й останнім: розмір бази не має зупинити решту тривог.
+  const databaseBytes = await cloudDatabaseBytes()
   return {
     till_seen_at: presence.rows[0]?.seen_at ? new Date(presence.rows[0].seen_at).toISOString() : null,
     open_shifts: open.rows.map(row => ({ id: String(row.id), opened_at: new Date(row.opened_at).toISOString() })),
     closed_shifts: closed.rows.map(row => ({ id: String(row.id), closed_at: new Date(row.closed_at).toISOString(), cash_variance: row.cash_variance == null ? null : Number(row.cash_variance) })),
     negative_products: negative.rows.map(row => ({ id: String(row.id), name: String(row.name ?? ''), sku: row.sku ? String(row.sku) : null, qty_on_hand: Number(row.qty_on_hand) })),
-    last_backup_at: backup,
+    last_backup_at: backup === undefined ? undefined : backup.at,
+    last_backup_bytes: backup?.bytes ?? null,
+    database_bytes: databaseBytes,
   }
 }
 

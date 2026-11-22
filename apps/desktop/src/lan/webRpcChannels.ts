@@ -6,7 +6,7 @@ import { isLanProxyChannel } from './localNetwork'
  * копії бази, мережа. Сервер має такий самий список (webRpcChannelAllowed) — перевірка з двох боків.
  */
 const WEB_DENIED_PREFIXES = [
-  'desktop:auth:', 'desktop:lan:', 'desktop:print:', 'desktop:fiscal:', 'desktop:sync:', 'desktop:bootstrap:',
+  'desktop:auth:', 'desktop:lan:', 'desktop:link:', 'desktop:print:', 'desktop:fiscal:', 'desktop:sync:', 'desktop:bootstrap:',
   'desktop:backup', 'desktop:problems:', 'desktop:web-rpc:', 'desktop:window:', 'desktop:get-runtime-info',
   'desktop:catalog:cleanup-', 'desktop:orders:offline-status', 'desktop:orders:discard-offline', 'desktop:orders:retry-offline',
   'desktop:diagnostic',

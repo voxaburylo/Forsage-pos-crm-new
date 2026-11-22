@@ -5,6 +5,7 @@ import { pendingErasedBarcodes, restoreErasedBarcodes } from './repositories/res
 import { resolvePortableExecutable } from './updates/installedPortable'
 import { PinRoster } from './security/pinRoster'
 import { webRpcChannelAllowed } from './lan/webRpcChannels'
+import { TillDeviceLink } from './link/tillDeviceLink'
 import { isExpectedCommandFailure } from './diagnostics/expectedCommandFailure'
 import { RendererRecovery } from './rendererRecovery'
 import { deferQuitForMainWindow, NativeCloseController, requestUnloadScript } from './nativeClose'
@@ -164,6 +165,7 @@ let localDatabase: LocalDatabase | null = null
 let stopBackupScheduler: (() => void) | null = null
 let shiftBackups: ShiftBackupService | null = null
 let externalBackups: ExternalBackupService | null = null
+let tillDeviceLink: TillDeviceLink | null = null
 let databaseMaintenance = false
 let quitAfterCleanup = false
 let localCatalog: LocalCatalogRepository | null = null
@@ -747,6 +749,59 @@ function resolveLanSession(userId: string): LanSession | null {
   return activeSession(requireLocalDatabase(), { id: userId, tenant_id: DEFAULT_TENANT_ID })
 }
 
+/** Головний ПК із власною базою (не ПК менеджера). */
+function isMainTill(): boolean {
+  return Boolean(localDatabase) && localNetwork?.getStatus().mode !== 'client' && !hasLanIdentity(requireLocalDatabase())
+}
+
+/**
+ * 22.11.2026, рішення власника «веб повний, але тільки через головний ПК»: запит вебу виконується тут, у базі
+ * головного ПК, тим самим шляхом і з правами того самого працівника, що й команда з ПК менеджера.
+ * Викликається і з вікна програми (сесія працівника), і з головного процесу (ключ ПК, екран входу).
+ */
+async function executeWebRequest(userId: unknown, channel: unknown, args: unknown): Promise<unknown> {
+  if (!isMainTill()) throw new Error('Запити вебу виконує лише головний ПК')
+  if (databaseMaintenance) throw new Error('База готується до перезапуску. Дочекайтеся завершення.')
+  if (typeof channel !== 'string' || !webRpcChannelAllowed(channel)) throw new Error('Ця дія доступна лише на самій касі')
+  const session = typeof userId === 'string' ? resolveLanSession(userId) : null
+  if (!session) throw new Error('Працівника не знайдено або доступ до програми вимкнено')
+  if (session.role === 'cashier' || session.role === 'tire_worker') throw new Error('Касир працює лише на касі')
+  return executeLanCommand(channel, Array.isArray(args) ? args : [], session)
+}
+
+let tillDeviceLinkError = ''
+function getTillDeviceLink(): TillDeviceLink {
+  tillDeviceLink ??= new TillDeviceLink({
+    fetch: (url, init) => net.fetch(url, init as RequestInit),
+    apiUrl: () => { try { return requireTrustedAuthConfig().apiUrl ?? null } catch { return null } },
+    deviceId: () => localDatabase?.deviceId ?? null,
+    readKey: () => {
+      const row = localDatabase?.prepare("SELECT value_json FROM app_meta WHERE key='till_device_link'").get() as { value_json: string } | undefined
+      if (!row || process.platform !== 'win32' || !safeStorage.isEncryptionAvailable()) return null
+      const stored = JSON.parse(row.value_json) as { key?: string; tenant_id?: string }
+      if (typeof stored.key !== 'string' || typeof stored.tenant_id !== 'string') return null
+      return { token: safeStorage.decryptString(Buffer.from(stored.key, 'base64')), tenant_id: stored.tenant_id }
+    },
+    writeKey: key => {
+      const db = requireLocalDatabase()
+      if (!key) { db.prepare("DELETE FROM app_meta WHERE key='till_device_link'").run(); return }
+      if (process.platform !== 'win32' || !safeStorage.isEncryptionAvailable()) throw new Error('Захищене сховище Windows недоступне: ключ зв’язку не збережено')
+      db.prepare("INSERT INTO app_meta(key,value_json,updated_at) VALUES('till_device_link',?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at")
+        .run(JSON.stringify({ key: safeStorage.encryptString(key.token).toString('base64'), tenant_id: key.tenant_id }), new Date().toISOString())
+    },
+    execute: executeWebRequest,
+    canRun: () => isMainTill() && !databaseMaintenance,
+    // Без інтернету помилка повторюється щопівхвилини — у діагностику пишемо лише зміну стану.
+    onError: error => {
+      const text = error instanceof Error ? error.message : String(error)
+      if (text === tillDeviceLinkError) return
+      tillDeviceLinkError = text
+      writeDesktopDiagnostic('till-device-link', { error: text })
+    },
+  })
+  return tillDeviceLink
+}
+
 async function executeLanCommand(channel: string, args: unknown[], session: LanSession): Promise<unknown> {
   const listener = desktopCommandHandlers.get(channel)
   if (!listener) throw new Error('Локальну команду не знайдено')
@@ -1209,6 +1264,8 @@ app.whenReady().then(async () => {
         detail: 'Копія бази (після зміни або щоденна) повториться сама. ' + (error instanceof Error ? error.message : String(error)) })
     }, undefined, { dailyCopy: true })
   shiftBackups.start()
+  // Зв'язок головного ПК із сервером власним ключем: веб працює через ПК і тоді, коли в програмі ніхто не увійшов.
+  getTillDeviceLink().start()
   // 20.11.2026: однакове написання одиниць у картках (шт/компл/…), один раз після оновлення; спершу копія бази.
   const unitTidyDb = localDatabase
   setTimeout(() => {
@@ -1439,6 +1496,7 @@ app.whenReady().then(async () => {
     stopBackupScheduler = null
     let closed = false
     try {
+      tillDeviceLink?.stop()
       await shiftBackups?.stop()
       await externalBackups?.stop()
       await database.waitForBackup()
@@ -1702,13 +1760,20 @@ app.whenReady().then(async () => {
   })
   // 22.11.2026, рішення власника «веб повний, але тільки через головний ПК»: запит вебу виконується тут, у базі
   // головного ПК, тим самим шляхом і з правами того самого працівника, що й команда з ПК менеджера.
-  handleDesktopIpc('desktop:web-rpc:execute', async (_event, userId: string, channel: string, args: unknown[]) => {
-    if (localNetwork?.getStatus().mode === 'client' || hasLanIdentity(requireLocalDatabase())) throw new Error('Запити вебу виконує лише головний ПК')
-    if (typeof channel !== 'string' || !webRpcChannelAllowed(channel)) throw new Error('Ця дія доступна лише на самій касі')
-    const session = typeof userId === 'string' ? resolveLanSession(userId) : null
-    if (!session) throw new Error('Працівника не знайдено або доступ до програми вимкнено')
-    if (session.role === 'cashier' || session.role === 'tire_worker') throw new Error('Касир працює лише на касі')
-    return executeLanCommand(channel, Array.isArray(args) ? args : [], session)
+  handleDesktopIpc('desktop:web-rpc:execute', (_event, userId: string, channel: string, args: unknown[]) => executeWebRequest(userId, channel, args))
+  // 22.11.2026, «головний ПК — тимчасовий сервер магазину»: зв'язок із сервером власним ключем ПК (tillDeviceLink).
+  // Стан і сигнал доступні й на екрані входу: вони нічого не змінюють і не відкривають даних.
+  // main_till = це головний ПК і в збірці відома адреса сервера: лише тоді вікно програми просить для ПК ключ.
+  const linkPossible = () => { try { return isMainTill() && Boolean(requireTrustedAuthConfig().apiUrl) } catch { return false } }
+  handleDesktopIpc('desktop:link:status', () => ({ ...getTillDeviceLink().status(), main_till: linkPossible() }))
+  handleDesktopIpc('desktop:link:wake', async () => ({ ...(await getTillDeviceLink().wake()), main_till: linkPossible() }))
+  handleDesktopIpc('desktop:link:commands-taken', () => { getTillDeviceLink().commandsTaken() })
+  // Ключ видає сервер власнику чи адміністратору; сюди його приносить вікно програми одразу після видачі.
+  handleDesktopIpc('desktop:link:register', (_event, token: string) => {
+    const session = requireDesktopSession()
+    if (!isMainTill()) throw new Error('Ключ зв’язку потрібен лише головному ПК')
+    getTillDeviceLink().register(token, session.tenant_id)
+    return { ...getTillDeviceLink().status(), main_till: true }
   })
   // Етап 9: швидка зміна касира за PIN. Лише ті, хто сьогодні вже входив паролем на цьому ПК.
   handleDesktopIpc('desktop:auth:pin-roster', () => {
@@ -2397,6 +2462,7 @@ app.on('before-quit', (event) => {
       await lanUpdateFlight
       await lanOrderQueue?.settle()
       cashalot?.stopWorker()
+      tillDeviceLink?.stop()
       await shiftBackups?.stop()
       await externalBackups?.stop()
       await localDatabase?.waitForBackup().catch((error) => writeDesktopDiagnostic('backup-on-quit-failed', error))

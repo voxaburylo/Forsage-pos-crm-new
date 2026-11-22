@@ -1,3 +1,4 @@
+import { archiveFormatOf, archiveMime } from './archiveFormat'
 import { assertBackupSpace } from './backupSpace'
 import path from 'node:path'
 import { Worker } from 'node:worker_threads'
@@ -89,16 +90,19 @@ export class ShiftBackupService {
     return new Promise((resolve,reject) => {
       const worker = new Worker(path.join(__dirname, 'shiftExportWorker.js'), { workerData: input })
       let result: ExportResult | undefined, failure: Error | undefined
-      const timer = setTimeout(() => { failure = new Error('Перевищено час вивантаження'); void worker.terminate() }, 120_000)
+      // Сильніше стиснення копії (zstd) довше за gzip; на великій базі чи слабшому ПК двох хвилин могло б не вистачити.
+      const timer = setTimeout(() => { failure = new Error('Перевищено час вивантаження'); void worker.terminate() }, 300_000)
       worker.on('message', message => { if (message.error) failure = new Error(message.error); else result=message.result })
       worker.on('error', error => { failure=error })
       worker.on('exit', code => { clearTimeout(timer); if (failure || code !== 0 || !result) reject(failure ?? new Error('Вивантаження перервано')); else resolve(result) })
     })
   }
   pending(tenant: string) {
-    return this.db.prepare(`SELECT id, tenant_id, device_id, closed_at, captured_at, sha256, size_bytes
+    const rows = this.db.prepare(`SELECT id, tenant_id, device_id, closed_at, captured_at, sha256, size_bytes, compressed_path
       FROM shift_backups WHERE tenant_id=? AND compressed_path IS NOT NULL AND cloud_completed_at IS NULL
-      ORDER BY closed_at,id LIMIT 1`).all(tenant)
+      ORDER BY closed_at,id LIMIT 1`).all(tenant) as Array<Record<string, unknown> & { compressed_path: string }>
+    // Формат архіву (gz у старих копій, zst у нових) сервер бере з цього поля: від нього залежить ім'я файлу в хмарі.
+    return rows.map(({ compressed_path, ...row }) => ({ ...row, format: archiveFormatOf(compressed_path) ?? 'gz' }))
   }
   status(tenant: string) {
     const rows = this.db.prepare(`SELECT id,closed_at,captured_at,export_directory,local_error,cloud_error,cloud_completed_at,local_path,compressed_path,sha256
@@ -125,8 +129,9 @@ export class ShiftBackupService {
     const job = this.db.prepare('SELECT * FROM shift_backups WHERE id=? AND tenant_id=?').get(id,tenant) as unknown as ShiftBackupJob | undefined
     if (!job?.compressed_path || !job.sha256) throw new Error('Резервну копію ще не підготовлено')
     const url = new URL(signedUrl)
+    const format = archiveFormatOf(job.compressed_path) ?? 'gz'
     const expectedPath = '/storage/v1/object/upload/sign/forsage-private-backups/' +
-      [job.tenant_id, job.device_id, job.id+'-'+job.sha256+'.db.gz'].map(encodeURIComponent).join('/')
+      [job.tenant_id, job.device_id, job.id+'-'+job.sha256+'.db.'+format].map(encodeURIComponent).join('/')
     if (url.origin !== new URL(trustedOrigin).origin || url.protocol !== 'https:' || decodeURI(url.pathname) !== decodeURI(expectedPath))
       throw new Error('Неприпустима адреса резервування')
     if (this.uploads.has(id)) throw new Error('Копія вже надсилається')
@@ -136,7 +141,7 @@ export class ShiftBackupService {
     try {
       const response = await fetch(url, {
         method: 'PUT', body: createReadStream(resolved) as any, duplex: 'half',
-        headers: { 'Content-Type': 'application/gzip' }, redirect: 'error', signal: AbortSignal.timeout(90_000),
+        headers: { 'Content-Type': archiveMime(format) }, redirect: 'error', signal: AbortSignal.timeout(90_000),
       } as RequestInit)
       if (!response.ok) throw new Error('Сервер не прийняв копію: HTTP '+response.status)
       return { ok: true }

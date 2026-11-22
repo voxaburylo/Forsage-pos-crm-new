@@ -513,7 +513,24 @@ export interface DesktopFiscalReturnProcessResult {
   data: any
 }
 
+/** 22.11.2026: стан зв'язку головного ПК із сервером власним ключем (працює й на екрані входу). */
+export interface TillLinkStatus {
+  registered: boolean
+  rejected: boolean
+  tenant_id: string | null
+  /** На сервері чекають команди, які виконує вікно програми під сесією працівника. */
+  commands_pending: boolean
+  last_ok_at: string | null
+  main_till: boolean
+}
+
 export interface ForsageDesktopBridge {
+  link?: {
+    status: () => Promise<TillLinkStatus>
+    wake: () => Promise<TillLinkStatus>
+    register: (token: string) => Promise<TillLinkStatus>
+    commandsTaken: () => Promise<void>
+  }
   diagnostics?: {
     reportError: (kind: 'renderer-error' | 'renderer-rejection', message: string, stack: string) => void
     onAudioUnavailable?: (listener: () => void) => () => void
@@ -556,7 +573,7 @@ export interface ForsageDesktopBridge {
   }
   backupNow: () => Promise<string>
   shiftBackups?: {
-    pending: () => Promise<Array<{ id: string; tenant_id: string; device_id: string; closed_at: string; captured_at: string; sha256: string; size_bytes: number }>>
+    pending: () => Promise<Array<{ id: string; tenant_id: string; device_id: string; closed_at: string; captured_at: string; sha256: string; size_bytes: number; format?: 'gz' | 'zst' }>>
     status: () => Promise<Array<{ id: string; closed_at: string; captured_at: string | null; export_directory: string | null; local_ready?: boolean; exports_ready?: boolean; local_error: string | null; cloud_error: string | null; cloud_completed_at: string | null }>>
     upload: (id: string, url: string) => Promise<{ ok: true }>
     confirmed: (id: string, sha: string) => Promise<void>
@@ -566,7 +583,7 @@ export interface ForsageDesktopBridge {
   /** Ставить копію на місце й перезапускає програму — відповіді можна не чекати. */
   restoreBackup?: (fileName: string) => Promise<DesktopDatabaseBackup>
   /** Аварійне відновлення: скачати перевірену хмарну копію у папку копій цього ПК (заміна бази — restoreBackup). */
-  fetchCloudBackup?: (request: { url: string; tenant_id: string; device_id: string; id: string; sha256: string; size_bytes: number }) => Promise<{ fileName: string; sizeBytes: number }>
+  fetchCloudBackup?: (request: { url: string; tenant_id: string; device_id: string; id: string; sha256: string; size_bytes: number; format?: 'gz' | 'zst' }) => Promise<{ fileName: string; sizeBytes: number }>
   /** Друга копія на флешці / зовнішньому диску. */
   externalBackup?: {
     status: () => Promise<ExternalBackupStatus>
