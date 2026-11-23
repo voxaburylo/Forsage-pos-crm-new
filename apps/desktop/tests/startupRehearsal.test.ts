@@ -71,7 +71,7 @@ describe('update rehearsal: the new program on a copy of the database', () => {
   it('the installer stops when the new program fails on the copy, and the main process starts nothing else in rehearsal', () => {
     const installer = readFileSync(new URL('../scripts/install-main-till.cjs', import.meta.url), 'utf8')
     expect(installer).toContain("const started = runExeRehearsal({ exe: source, dataRoot: ownerRoot })")
-    const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8')
+    const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
     expect(main).toContain("globalThis.fetch = (async () => { throw new Error('REHEARSAL_OFFLINE') }) as typeof fetch")
     expect(main).toMatch(/if \(rehearsalRoot\) \{\n\s+\/\/ Нічого іншого не запускаємо[^\n]*\n\s+const outcome = runStartupRehearsal\(rehearsalRoot/)
   })
