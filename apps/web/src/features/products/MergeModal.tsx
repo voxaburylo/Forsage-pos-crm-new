@@ -1,4 +1,4 @@
-import { isDesktopRuntime } from '@/lib/desktopBridge'
+import { writesToMainPc } from '@/lib/mainPcData'
 import { useLatestRequest } from '@/hooks/useLatestRequest'
 import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle, Search } from 'lucide-react'
@@ -14,7 +14,8 @@ interface Props {
 }
 
 export function MergeModal({ product, onClose, onMerged }: Props) {
-  const localMergeUnavailable = isDesktopRuntime()
+  // Злиття ще не перенесено в базу каси — ні в програмі, ні у вебі через головний ПК (там зміни пише каса).
+  const localMergeUnavailable = writesToMainPc()
   const [search, setSearch] = useState('')
   const [results, setResults] = useState<Product[]>([])
   const [selected, setSelected] = useState<Product | null>(null)
