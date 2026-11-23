@@ -78,6 +78,8 @@ export default function DailyReport() {
   const userScope = `${session?.user?.id ?? ''}:${role}`
   const canSeeFullReports = role === 'owner' || role === 'admin'
   const canSeeTireReport = canSeeFullReports || role === 'cashier'
+  // 23.11.2026 (власник): зарплату наприкінці дня видає касир — і шиномонтажникам теж (лише на касі, у своїй зміні).
+  const canPayTire = canSeeTireReport
   const [savedTab, setTab] = useListViewState<Tab>('reports.tab', () => canSeeFullReports ? 'today' : 'sold')
   const linkKey = userScope + ':' + searchParams.toString()
   const urlTab = searchParams.get('tab')
@@ -314,7 +316,7 @@ export default function DailyReport() {
   }, [canSeeTireReport, tireDate, tireReportScope])
 
   async function payTireSalary(row: TireServiceReportRow, fundSource: SalaryFundSource) {
-    if (!isDesktopRuntime() || !canSeeFullReports || tireLoading || tireError || tireReport?.date !== tireDate || !row.salary_ready || row.payable_due <= 0) return
+    if (!isDesktopRuntime() || !canPayTire || tireLoading || tireError || tireReport?.date !== tireDate || !row.salary_ready || row.payable_due <= 0) return
     const attempt = tireAction.begin()
     if (!attempt) return
     try {
@@ -804,7 +806,7 @@ export default function DailyReport() {
         loading={tireLoading} error={tireError}
         onDate={date => { if (!tireAction.isBusy()) { setTireDate(date); if (date && tirePeriod && !date.startsWith(tirePeriod)) setTirePeriod('') } }}
         onEmployee={id => { if (!tireAction.isBusy()) setTireEmployeeId(id) }}
-        onRefresh={() => { if (!tireAction.isBusy()) void loadTireReport() }} canPay={canSeeFullReports} canMutate={isDesktopRuntime()}
+        onRefresh={() => { if (!tireAction.isBusy()) void loadTireReport() }} canPay={canPayTire} canMutate={isDesktopRuntime()}
         busy={tireAction.busy}
         onPay={payTireSalary}
       />}

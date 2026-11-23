@@ -36,6 +36,15 @@ export interface LanBootstrapServices {
   updateMetadata?: (session: LanSession) => unknown | Promise<unknown>
   updateChunk?: (input: LanUpdateChunk, session: LanSession) => { offset: number; data: Uint8Array } | Promise<{ offset: number; data: Uint8Array }>
   discovery?: LanDiscoveryOptions | false
+  /** 23.11.2026 (план T7): збірка цього ПК — ПК менеджера надсилає її головному з кожною командою. */
+  clientBuild?: string | null
+}
+
+/** Що головний ПК знає про ПК менеджера: яка в нього збірка і коли він востаннє звертався. */
+export interface LanClientSeen { release_id: string | null; seen_at: string }
+
+export function lanClientBuild(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim().slice(0, 80) : null
 }
 export interface LanBootstrapCapability { service: 'forsage-lan'; version: 3; bootstrap: 1; offlineAuth: boolean; updates: boolean }
 
@@ -180,6 +189,11 @@ export class LocalNetworkCoordinator {
   ) {
     this.config = loadConfig(dataRoot)
   }
+
+  private clientSeen: LanClientSeen | null = null
+  /** 23.11.2026 (план T7): остання відома збірка ПК менеджера (null — ще не звертався після запуску). */
+  lastClientSeen(): LanClientSeen | null { return this.clientSeen }
+  private rememberClient(build: unknown) { this.clientSeen = { release_id: lanClientBuild(build), seen_at: new Date().toISOString() } }
 
   getStatus(): LanStatus {
     return {
@@ -337,6 +351,7 @@ export class LocalNetworkCoordinator {
     if (typeof input.user_id !== 'string' || typeof input.tenant_id !== 'string') throw new Error('Потрібен вхід працівника')
     const session = this.currentHubSession(input.user_id, input.tenant_id)
     if (input.action === 'rpc') {
+      this.rememberClient(input.client_build)
       if (typeof input.channel !== 'string' || !isLanProxyChannel(input.channel) || !Array.isArray(input.args)) throw new Error('Цю команду не можна виконувати через мережу')
       return this.invokeRemote(input.channel, input.args, session)
     }
@@ -436,7 +451,7 @@ export class LocalNetworkCoordinator {
     if (this.config.mode !== 'client' || !isLanProxyChannel(channel)) {
       throw new Error('LAN_PROXY_NOT_CONFIGURED')
     }
-    if (this.config.secureTransport === 1) return this.secureClientRequest({ action: 'rpc', channel, args, user_id: session.id, tenant_id: session.tenant_id })
+    if (this.config.secureTransport === 1) return this.secureClientRequest({ action: 'rpc', channel, args, user_id: session.id, tenant_id: session.tenant_id, client_build: this.services.clientBuild ?? null })
     let response: Response
     let payload: { ok?: boolean; result?: unknown; error?: string } | null
     try {
@@ -446,7 +461,7 @@ export class LocalNetworkCoordinator {
           Authorization: `Bearer ${this.config.accessKey}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(encodeTransport({ channel, args, user_id: session.id, protocol_version: LAN_PROTOCOL_VERSION })),
+        body: JSON.stringify(encodeTransport({ channel, args, user_id: session.id, protocol_version: LAN_PROTOCOL_VERSION, client_build: this.services.clientBuild ?? null })),
       }, ['desktop:orders:list', 'desktop:orders:get', 'desktop:orders:accept-offline'].includes(channel) ? 3_000 : 30_000)
       response = reply.response
       payload = reply.payload
@@ -531,8 +546,9 @@ export class LocalNetworkCoordinator {
       }
       try {
         const body = await this.readBody(request)
-        const decoded = decodeTransport(JSON.parse(body)) as { channel?: unknown; args?: unknown; user_id?: unknown; protocol_version?: unknown }
+        const decoded = decodeTransport(JSON.parse(body)) as { channel?: unknown; args?: unknown; user_id?: unknown; protocol_version?: unknown; client_build?: unknown }
         if (decoded.protocol_version !== LAN_PROTOCOL_VERSION) throw new Error('Несумісні версії програм. Оновіть обидва ПК однією збіркою.')
+        this.rememberClient(decoded.client_build)
         const channel = String(decoded.channel ?? '')
         if (!isLanProxyChannel(channel)) throw new Error('Цю команду не можна виконувати через мережу')
         const requestedUserId = String(decoded.user_id ?? '')

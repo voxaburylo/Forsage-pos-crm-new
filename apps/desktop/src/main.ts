@@ -100,10 +100,18 @@ import { activeSession } from './security/activeSession'
 import { customerWritePayload } from './security/customerWritePolicy'
 import { BACKGROUND_TASK, clearHandoff, decideStart, handoffRequested, isBackgroundLaunch, releaseOwner, writeOwner } from './background/tillOwner'
 import { spawn } from 'node:child_process'
+import { rehearsalRootFrom, runStartupRehearsal } from './diagnostics/startupRehearsal'
 
 // Keep the existing encryption profile stable across package/product renames.
 // Перевірки (смоки) запускають справжню програму поруч із робочою касою — їм окремий профіль; у зібраній програмі цього немає.
-app.setPath('userData', !app.isPackaged && process.env.FORSAGE_TEST_USER_DATA ? process.env.FORSAGE_TEST_USER_DATA : path.join(app.getPath('appData'), 'desktop'))
+// 23.11.2026 (план C7): репетиція оновлення — копія бази в окремій теці, власний профіль, без мережі (diagnostics/startupRehearsal).
+const rehearsalRoot = rehearsalRootFrom(process.argv, process.env)
+if (rehearsalRoot) {
+  // Жодного звернення назовні: ні сервер, ні Telegram, ні ШІ. Репетиція лише відкриває й перевіряє копію.
+  globalThis.fetch = (async () => { throw new Error('REHEARSAL_OFFLINE') }) as typeof fetch
+}
+app.setPath('userData', rehearsalRoot ? path.join(rehearsalRoot, 'userData')
+  : !app.isPackaged && process.env.FORSAGE_TEST_USER_DATA ? process.env.FORSAGE_TEST_USER_DATA : path.join(app.getPath('appData'), 'desktop'))
 // This business UI/thermal rasterizer does not require 3D acceleration.
 // Avoid the hardware-driver path on Windows, including remote desktop sessions.
 if (process.platform === 'win32') app.disableHardwareAcceleration()
@@ -856,6 +864,7 @@ function getTillDeviceLink(): TillDeviceLink {
         schemaVersion: attempt(() => db.info().schemaVersion),
         startedAt: Date.now() - Math.round(process.uptime() * 1000),
         check: attempt(() => readNightlySummary(db)),
+        managerClient: localNetwork?.lastClientSeen() ?? null,
       })
     },
     canRun: () => isMainTill() && !databaseMaintenance,
@@ -1244,6 +1253,12 @@ function openLocalDatabaseOrExplain(dataRoot: string): LocalDatabaseOpenResult |
 }
 
 app.whenReady().then(async () => {
+  if (rehearsalRoot) {
+    // Нічого іншого не запускаємо: ні вікна, ні фону, ні мережі, ні копій. Відкрити копію, перевірити, вийти.
+    const outcome = runStartupRehearsal(rehearsalRoot, desktopBuildInfo?.releaseId ?? null)
+    app.exit(outcome.ok ? 0 : 5)
+    return
+  }
   blackBox?.record('app-ready')
   // Перший друк дня не чекає запуску PowerShell (на старому ПК це 3–5 с). Після старту, щоб не гальмувати запуск.
   setTimeout(() => prewarmPrintShell(app.getPath('userData')), 20_000).unref?.()
@@ -1419,6 +1434,7 @@ app.whenReady().then(async () => {
         return (await loginOnlineAndProvisionLocal(phone, password, null)).user
       }
     },
+    clientBuild: desktopBuildInfo?.releaseId ?? null,
     ...(releaseSource ? { updateMetadata: () => releaseSource.describe(), updateChunk: input => releaseSource.chunk(input) } : {}),
   })
   lanOrderQueue = new LanOrderQueue(localDatabase, (channel, args, session) => localNetwork!.invoke(channel, args, session))
@@ -2038,6 +2054,7 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:staff:delete-commission-rule', (_event, id: string) => requireLocalStaff().deleteCommissionRule(id))
   handleDesktopIpc('desktop:staff:list-salary', (_event, input?: any) => requireLocalStaff().listSalary(input))
   handleDesktopIpc('desktop:staff:salary-summary', (_event, period?: string) => requireLocalStaff().salarySummary(period))
+  handleDesktopIpc('desktop:staff:payout-list', (_event, workDate?: string) => requireLocalStaff().payoutList(workDate))
   handleDesktopIpc('desktop:staff:daily-summary', (_event, workDate?: string) => requireLocalStaff().dailySummary(workDate))
   handleDesktopIpc('desktop:staff:tire-service-report', (_event, workDate?: string) => requireLocalStaff().tireServiceReport(workDate))
   handleDesktopIpc('desktop:staff:tire-cash-handover', (_event, input: any) => requireLocalStaff().tireCashHandover({ ...input, user_id: requireDesktopSession().id }))

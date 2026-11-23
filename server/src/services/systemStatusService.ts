@@ -25,6 +25,7 @@ export type TillStatusReport = {
   schema_version: number | null; started_at: string | null
   /** План T6: остання нічна перевірка бази каси. */
   check_at: string | null; check_findings: Array<{ code: string; title: string; count: number }>
+  manager_release_id?: string | null; manager_seen_at?: string | null
 }
 
 /** Повідомлення каси приймається лише у відомому вигляді: зайве відкидається, неправильне — стає null. */
@@ -43,6 +44,8 @@ export function readStatusReport(raw: unknown): TillStatusReport | null {
     check_findings: (Array.isArray(input.check_findings) ? input.check_findings as Array<Record<string, unknown>> : [])
       .filter(item => item && typeof item === 'object' && typeof item.code === 'string' && typeof item.title === 'string')
       .slice(0, 10).map(item => ({ code: String(item.code).slice(0, 60), title: String(item.title).slice(0, 120), count: Math.max(0, Math.trunc(Number(item.count)) || 0) })),
+    // 23.11.2026 (план T7): збірка ПК менеджера й коли він востаннє звертався до головного ПК.
+    manager_release_id: text(input.manager_release_id, 80), manager_seen_at: time(input.manager_seen_at),
   }
 }
 

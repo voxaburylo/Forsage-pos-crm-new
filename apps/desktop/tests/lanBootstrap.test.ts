@@ -139,3 +139,16 @@ it('rejects redirect/downgrade/auth failures as non-network errors and preserves
   const abort = new AbortController(); abort.abort()
   await expect(client.requestUpdateMetadata(actor, abort.signal)).rejects.toThrow('LAN_REQUEST_CANCELLED')
 })
+
+// 23.11.2026 (план T7): головний ПК знає, яка збірка стоїть на ПК менеджера, — це видно на «Стан системи».
+it('the main PC remembers the build of the manager PC from its commands', async () => {
+  const hubPort = await port()
+  const hub = new LocalNetworkCoordinator(root(), async () => 'ok', () => actor, { discovery: false, authenticate: async () => ({ ...actor, is_active: true }) })
+  peers.push(hub); await hub.update({ mode: 'hub', port: hubPort, accessKey: code, allowedUserId: actor.id })
+  expect(hub.lastClientSeen()).toBeNull()
+  const client = new LocalNetworkCoordinator(root(), async () => null, () => null, { discovery: false, clientBuild: '20261120T100000-aaaa' }); peers.push(client)
+  await client.pairRemote({ hubAddress: `127.0.0.1:${hubPort}`, accessKey: code })
+  expect(await client.invoke('desktop:orders:list', [], actor)).toBe('ok')
+  expect(hub.lastClientSeen()).toMatchObject({ release_id: '20261120T100000-aaaa' })
+  expect(Date.parse(hub.lastClientSeen()!.seen_at)).toBeGreaterThan(Date.now() - 60_000)
+})

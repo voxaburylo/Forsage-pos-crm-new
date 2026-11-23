@@ -12,6 +12,7 @@ export type TillReport = {
   local_backup_at: string | null; cloud_backup_at: string | null; external_backup_at: string | null
   schema_version: number | null; started_at: string | null
   check_at?: string | null; check_findings?: Array<{ code: string; title: string; count: number }>
+  manager_release_id?: string | null; manager_seen_at?: string | null
 }
 export type SystemStatus = {
   server: { build: string | null; time: string }
@@ -63,6 +64,21 @@ function backupLine(id: string, label: string, at: string | null, now: number, o
   return { id, label, value: ago(at, now), level: hours > BACKUP_BAD_HOURS ? 'bad' : hours > BACKUP_WARN_HOURS ? 'warn' : 'ok' }
 }
 
+/**
+ * 23.11.2026 (план T7): версія ПК менеджера. Головний ПК бачить її, коли менеджер працює через нього.
+ * Інша збірка, ніж на касі, — попередження: дані й команди можуть розходитися.
+ */
+export function managerPcLine(report: TillReport, now: number): StatusLine {
+  const label = 'Версія ПК менеджера'
+  if (!report.manager_seen_at) return { id: 'manager-pc', label, value: 'ще не звертався після запуску каси', level: 'unknown' }
+  const seen = `звертався ${ago(report.manager_seen_at, now)}`
+  if (!report.manager_release_id) return { id: 'manager-pc', label, value: 'стара програма (версію не повідомляє)', level: 'warn', hint: seen + '. Оновіть ПК менеджера.' }
+  if (report.release_id && report.manager_release_id !== report.release_id) {
+    return { id: 'manager-pc', label, value: report.manager_release_id, level: 'warn', hint: seen + '. Відрізняється від каси — оновіть ПК менеджера.' }
+  }
+  return { id: 'manager-pc', label, value: report.manager_release_id, level: 'ok', hint: seen }
+}
+
 export function statusLines(status: SystemStatus, now: number): StatusLine[] {
   const lines: StatusLine[] = []
   const { till } = status
@@ -80,6 +96,7 @@ export function statusLines(status: SystemStatus, now: number): StatusLine[] {
       hint: till.reported_at ? `відомості ${ago(till.reported_at, now)}` : undefined })
     lines.push({ id: 'version', label: 'Версія каси', value: [report.version, report.release_id].filter(Boolean).join(' · ') || 'невідомо', level: report.release_id ? 'ok' : 'unknown',
       hint: report.built_at ? `зібрано ${new Date(report.built_at).toLocaleDateString('uk-UA')}` : undefined })
+    lines.push(managerPcLine(report, now))
   }
 
   const outbox = till.outbox
@@ -120,7 +137,8 @@ export function statusLines(status: SystemStatus, now: number): StatusLine[] {
 export function overallLevel(lines: StatusLine[]): Level {
   if (lines.some(line => line.level === 'bad')) return 'bad'
   if (lines.some(line => line.level === 'warn')) return 'warn'
-  return lines.some(line => line.level === 'unknown') ? 'unknown' : 'ok'
+  // ПК менеджера, який ще не звертався (вимкнений), — не привід писати «невідомо» про всю систему.
+  return lines.some(line => line.level === 'unknown' && line.id !== 'manager-pc') ? 'unknown' : 'ok'
 }
 
 export const OVERALL_TEXT: Record<Level, string> = {

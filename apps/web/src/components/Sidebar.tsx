@@ -9,6 +9,7 @@ import {
   Truck, BarChart2, Settings, Zap, LogOut, ClipboardList, Activity,
   ChevronDown, Tag, UserCog, Users,
   X, PackagePlus, Sparkles,
+  Wallet,
 } from 'lucide-react'
 import { signOut } from '@/lib/auth'
 import { useAuthStore } from '@/stores/authStore'
@@ -49,6 +50,8 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: '/pos',                 icon: <Zap size={18} />,             label: 'Каса (POS)' },
       { to: '/sales',               icon: <ShoppingCart size={18} />,    label: 'Чеки та касові операції', roles: ['owner','admin','manager','cashier'] },
+      // 23.11.2026 (власник): касир видає зарплату наприкінці дня. Лише на касі (адреси немає серед веб-маршрутів).
+      { to: '/salary-payout',       icon: <Wallet size={18} />,          label: 'Видати зарплату',      roles: ['owner','admin','manager','cashier'] },
     ],
   },
   // 21.11.2026 (план зручності, «меню»): було 10 пунктів уперемішку в «Основне». Тепер за роботою:

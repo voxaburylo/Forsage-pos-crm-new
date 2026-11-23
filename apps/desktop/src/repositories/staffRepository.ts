@@ -677,6 +677,31 @@ export class LocalStaffRepository {
     return [...map.values()]
   }
 
+  /**
+   * 23.11.2026 (власник): касир наприкінці дня видає зарплату з каси й закриває зміну; якщо готівки бракує —
+   * власник доносить свої гроші («Видати коштами власника»). Тут — кому скільки видати сьогодні, без ставок,
+   * історії й налаштувань. Денна ставка, яку ще не нараховано, теж входить: її нарахує сама виплата.
+   * Шиномонтажників видають через звіт шиномонтажу — там свої умови (здана каса, день готовності).
+   */
+  payoutList(workDate = currentDate(), tenantId = DEFAULT_TENANT_ID): Array<{ employee_id: string; employee_name: string; role: string; earned: number; paid: number; penalty: number; pending_day_rate: number; due: number }> {
+    const users = this.db.prepare(`
+      SELECT id, full_name, role, base_rate, rate_period FROM staff_users
+      WHERE tenant_id = ? AND deleted_at IS NULL AND COALESCE(is_active, 1) = 1 AND role NOT IN ('owner', 'tire_worker')
+      ORDER BY full_name COLLATE NOCASE
+    `).all(tenantId) as any[]
+    const totals = new Map(this.dailySummary(workDate, tenantId).map(row => [String(row.employee_id), row]))
+    const accrued = new Set((this.db.prepare(`
+      SELECT DISTINCT employee_id FROM salary_payments
+      WHERE tenant_id = ? AND work_date = ? AND source = 'daily_rate' AND deleted_at IS NULL
+    `).all(tenantId, workDate) as any[]).map(row => String(row.employee_id)))
+    return users.map(user => {
+      const row = totals.get(String(user.id))
+      const earned = money(row?.earned); const paid = money(row?.paid); const penalty = money(row?.penalty)
+      const pending = user.rate_period === 'day' && money(user.base_rate) > 0 && !accrued.has(String(user.id)) ? money(user.base_rate) : 0
+      return { employee_id: user.id, employee_name: user.full_name, role: user.role, earned, paid, penalty, pending_day_rate: pending, due: Math.max(0, earned + pending - paid - penalty) }
+    })
+  }
+
   tireServiceReport(workDate = currentDate(), tenantId = DEFAULT_TENANT_ID): any {
     const workers = this.db.prepare(`
       SELECT id AS employee_id, full_name AS employee_name, base_rate, rate_period, is_active, deleted_at

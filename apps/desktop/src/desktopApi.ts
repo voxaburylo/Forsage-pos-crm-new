@@ -180,6 +180,7 @@ export function createDesktopApi(ipcRenderer: DesktopInvoker) {
       tireCashHandover: (input: unknown) => ipcRenderer.invoke('desktop:staff:tire-cash-handover', input),
       createSalary: (input: unknown) => ipcRenderer.invoke('desktop:staff:create-salary', input),
       dailyPayout: (input: unknown) => ipcRenderer.invoke('desktop:staff:daily-payout', input),
+      payoutList: (workDate?: string) => ipcRenderer.invoke('desktop:staff:payout-list', workDate),
       resolveOperation: (kind: 'salary' | 'daily-salary', operationId: string) => ipcRenderer.invoke('desktop:staff:resolve-operation', kind, operationId),
       deleteSalary: (id: string) => ipcRenderer.invoke('desktop:staff:delete-salary', id),
     },  warehouse: {

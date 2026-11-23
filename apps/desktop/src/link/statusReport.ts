@@ -20,6 +20,9 @@ export type TillStatusReport = {
   /** План T6: остання нічна перевірка бази — коли й що знайшла (назва перевірки й кількість, без даних магазину). */
   check_at: string | null
   check_findings: Array<{ code: string; title: string; count: number }>
+  /** 23.11.2026 (план T7): ПК менеджера — яка збірка й коли востаннє звертався до головного ПК. */
+  manager_release_id?: string | null
+  manager_seen_at?: string | null
 }
 
 /** Як часто повідомляти: стан змінюється повільно, а «я на зв'язку» йде щопівхвилини. */
@@ -48,6 +51,7 @@ export type StatusSources = {
   schemaVersion?: unknown
   startedAt?: unknown
   check?: { checked_at?: unknown; findings?: unknown } | null
+  managerClient?: { release_id?: unknown; seen_at?: unknown } | null
 }
 
 /** Збирає повідомлення з того, що вдалося прочитати; чого прочитати не вдалося — null, а не вигадане число. */
@@ -71,6 +75,8 @@ export function buildStatusReport(sources: StatusSources): TillStatusReport {
     check_findings: (Array.isArray(sources.check?.findings) ? sources.check.findings as Array<Record<string, unknown>> : [])
       .filter(item => item && typeof item.code === 'string' && typeof item.title === 'string')
       .slice(0, 10).map(item => ({ code: String(item.code).slice(0, 60), title: String(item.title).slice(0, 120), count: Math.max(0, Math.trunc(Number(item.count)) || 0) })),
+    manager_release_id: text(sources.managerClient?.release_id, 80),
+    manager_seen_at: time(sources.managerClient?.seen_at),
   }
 }
 
