@@ -165,7 +165,7 @@ describe('wiring', () => {
   it('the main process starts the uploader, kicks it after every web action and stops it on exit', () => {
     expect(main).toContain('getTillDeviceLink().start()\n  getOutboxPusher().start()')
     expect(main).toContain('available: () => Boolean(localSync) && getTillDeviceLink().available(),')
-    expect(main).toContain('try { return await executeLanCommand(channel, Array.isArray(args) ? args : [], session) } finally { getOutboxPusher().soon() }')
+    expect(main).toContain('try { return await executeLanCommand(channel, list, session) } finally { getOutboxPusher().soon() }')
     expect(main).toContain('tillDeviceLink?.stop(); outboxPusher?.stop()')
     expect(main).toContain("handleDesktopIpc('desktop:link:push-outbox', () => getOutboxPusher().pushNow())")
   })
