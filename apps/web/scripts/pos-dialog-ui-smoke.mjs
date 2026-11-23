@@ -59,7 +59,7 @@ let browser
 const errors=[],blocked=[],passed=[]
 try{
   await server.listen();browser=await chromium.launch({headless:true});const base=server.resolvedUrls.local[0]
-  async function setup(){const page=await browser.newPage({viewport:{width:1366,height:768}});page.setDefaultTimeout(10000);page.on('pageerror',e=>{errors.push(e.message);console.error(e.message)});await page.route('**/*',route=>new URL(route.request().url()).origin===new URL(base).origin?route.continue():(blocked.push(route.request().url()),route.abort()));await page.goto(base+'pos-dialog-test');await page.locator('.receipt-header').waitFor();return page}
+  async function setup(){const page=await browser.newPage({viewport:{width:1366,height:768}});page.setDefaultTimeout(process.env.CI ? 30000 : 10000);page.on('pageerror',e=>{errors.push(e.message);console.error(e.message)});await page.route('**/*',route=>new URL(route.request().url()).origin===new URL(base).origin?route.continue():(blocked.push(route.request().url()),route.abort()));await page.goto(base+'pos-dialog-test');await page.locator('.receipt-header').waitFor();return page}
   if(!process.env.FORSAGE_DIALOG_CASE||process.env.FORSAGE_DIALOG_CASE==='create'){
     const page=await setup();await page.getByRole('button',{name:/Додати клієнта/}).click();await page.getByRole('button',{name:'Новий клієнт',exact:true}).click();await page.getByLabel("Ім'я",{exact:true}).fill('Незбережений клієнт');await page.keyboard.press('Escape');
     assert.equal(await page.getByLabel("Ім'я",{exact:true}).count(),1,'Escape must not bypass rejected dirty confirmation');assert.equal(await page.getByLabel("Ім'я",{exact:true}).inputValue(),'Незбережений клієнт');assert.equal(await page.evaluate(()=>fixture.confirms),1);

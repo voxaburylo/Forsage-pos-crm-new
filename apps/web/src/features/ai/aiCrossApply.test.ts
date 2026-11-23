@@ -13,4 +13,14 @@ describe('chat cross numbers on the till', () => {
     expect(result).toMatchObject({ products: 1, numbers: 2 })
     expect(result.skipped.map(row => row.error)).toEqual(['Товар не знайдено', 'Немає номерів для додавання'])
   })
+
+  // 23.11.2026: бренд номера зберігається в картці — «Hyundai: a, b; Kia: c».
+  it('passes the brand of each number to the till', async () => {
+    const changeCrossNumbers = vi.fn(async () => [])
+    await applyChatCrossNumbers([{ product_id: 'p1', numbers: [
+      { number: '26300-35503', brand: 'Hyundai', source: 'avtopro.ua' }, { number: 'W 811/80', brand: ' MANN ', source: 'avtopro.ua' }, { number: 'X1', source: 'avtopro.ua' },
+    ] }], { changeCrossNumbers })
+    expect(changeCrossNumbers).toHaveBeenCalledWith('p1', {
+      add: [{ number: '26300-35503', brand: 'Hyundai' }, { number: 'W 811/80', brand: 'MANN' }, 'X1'], source: 'ШІ-помічник: avtopro.ua' })
+  })
 })

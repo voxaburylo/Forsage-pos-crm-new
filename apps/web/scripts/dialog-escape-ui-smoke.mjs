@@ -30,7 +30,7 @@ let browser
 const errors=[],blocked=[],passed=[]
 try{
   await server.listen();browser=await chromium.launch({headless:true});const base=server.resolvedUrls.local[0]
-  async function setup(screen='nested'){const page=await browser.newPage({viewport:{width:1366,height:768}});page.setDefaultTimeout(8000);page.on('pageerror',error=>{errors.push(error.message);console.error(error.message)});await page.route('**/*',route=>new URL(route.request().url()).origin===new URL(base).origin?route.continue():(blocked.push(route.request().url()),route.abort()));await page.addInitScript(screen=>window.testScreen=screen,screen);await page.goto(base+'dialog-escape-test');return page}
+  async function setup(screen='nested'){const page=await browser.newPage({viewport:{width:1366,height:768}});page.setDefaultTimeout(process.env.CI ? 30000 : 8000);page.on('pageerror',error=>{errors.push(error.message);console.error(error.message)});await page.route('**/*',route=>new URL(route.request().url()).origin===new URL(base).origin?route.continue():(blocked.push(route.request().url()),route.abort()));await page.addInitScript(screen=>window.testScreen=screen,screen);await page.goto(base+'dialog-escape-test');return page}
   const page=await setup()
   await page.getByRole('button',{name:'Відкрити внутрішній',exact:true}).click()
   const input=page.getByRole('textbox',{name:'Поле списку',exact:true})

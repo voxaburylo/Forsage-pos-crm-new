@@ -6,6 +6,7 @@ import { parseWriteoffQuantity } from '@/features/inventory/writeoffQuantity'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Trash2, Clock, AlertTriangle, Trash, CheckCircle, XCircle, Printer, Camera } from 'lucide-react'
 import { productApi, type ProductCrossNumber } from './productApi'
+import { crossNumbersText, groupCrossNumbers, parseCrossPaste } from './crossNumberBrands'
 import type { Product } from '@/types/product'
 import { kopecksToHryvnia, stockStatus } from '@/types/product'
 import { getSpecTemplate } from './productSpecs'
@@ -134,7 +135,8 @@ function ProductDetail() {
 
   const handleAddCrossNumbers = async () => {
     if (!id || !canWrite || linksLoading || linksError || editorBusy) return
-    const numbers = [...new Set(crossPaste.split(/[\r\n,;\t]+/).map(value => value.trim()).filter(Boolean))]
+    // «Hyundai: a, b» — номери з брендом; рядок без бренду — просто номери (crossNumberBrands.ts).
+    const numbers = parseCrossPaste(crossPaste).map(entry => entry.brand ? entry : entry.number)
     if (!numbers.length) { toast.error('Вставте хоча б один номер'); return }
     const attempt = writes.begin()
     if (!attempt) return
@@ -519,9 +521,10 @@ function ProductDetail() {
             {canWrite && <>
             <textarea
               value={crossPaste}
+              aria-label="Крос-номери для додавання"
               onChange={(event) => setCrossPaste(event.target.value)}
               rows={4}
-              placeholder={'Наприклад:\n96182220\n94788122\nOC90'}
+              placeholder={'Наприклад:\nHyundai: 26300-35503, 26300-35504\nKia: 26300-35530\nMANN: W 811/80\nабо просто номери: 96182220, OC90'}
               className="w-full resize-y rounded-xl border border-gray-200 bg-white px-3 py-2.5 font-mono text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-400"
             />
 
@@ -544,8 +547,11 @@ function ProductDetail() {
 
             </>}
             {crossNumbers.length > 0 && (
-              <div className="flex flex-wrap gap-2 mt-4">
-                {crossNumbers.map((crossNumber) => (
+              <div className="mt-4 space-y-2" data-cross-groups>
+                {groupCrossNumbers(crossNumbers).map(group => (
+                <div key={group.brand || '—'} className="flex flex-wrap items-center gap-2">
+                {(group.brand || crossNumbers.some(item => item.brand)) && <span className="min-w-[5.5rem] text-xs font-semibold text-gray-700">{group.brand || 'Інші'}:</span>}
+                {group.items.map((crossNumber) => (
                   <div
                     key={crossNumber.id}
                     className="group flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white pl-2.5 pr-1.5 py-1.5 shadow-sm"
@@ -572,6 +578,10 @@ function ProductDetail() {
                     </button>}
                   </div>
                 ))}
+                </div>
+                ))}
+                <button type="button" onClick={() => copyCrossNumber(crossNumbersText(crossNumbers))}
+                  className="text-xs text-blue-700 hover:underline">Скопіювати всі номери за брендами</button>
               </div>
             )}
           </div>

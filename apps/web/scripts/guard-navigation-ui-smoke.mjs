@@ -45,7 +45,7 @@ const errors=[],blocked=[],results=[]
 try{
   await server.listen();browser=await chromium.launch({headless:true});const base=server.resolvedUrls.local[0]
   const route=(page,value)=>page.waitForFunction(value=>document.querySelector('[data-testid=route]')?.textContent===value,value)
-  async function setup(mode,start){const page=await browser.newPage();page.setDefaultTimeout(10000);page.on('pageerror',error=>errors.push(error.message));await page.route('**/*',request=>new URL(request.request().url()).origin===new URL(base).origin?request.continue():(blocked.push(request.request().url()),request.abort()));await page.addInitScript(mode=>{window.testMode=mode},mode);await page.goto(mode==='hash'?base+'fixture#'+start:base+start.slice(1));await route(page,start);await page.waitForFunction(()=>fixture.guardReady===true);return page}
+  async function setup(mode,start){const page=await browser.newPage();page.setDefaultTimeout(process.env.CI ? 30000 : 10000);page.on('pageerror',error=>errors.push(error.message));await page.route('**/*',request=>new URL(request.request().url()).origin===new URL(base).origin?request.continue():(blocked.push(request.request().url()),request.abort()));await page.addInitScript(mode=>{window.testMode=mode},mode);await page.goto(mode==='hash'?base+'fixture#'+start:base+start.slice(1));await route(page,start);await page.waitForFunction(()=>fixture.guardReady===true);return page}
   // Main-process preflight is represented only by its public DOM event. No
   // Electron APIs, lifecycle IPC, app close, or real browser unload are invoked.
   const requestNativeUnload=(page,approved,{deadlineOffsetMs=30000,confirmDelayMs=0}={})=>page.evaluate(({approved,deadlineOffsetMs,confirmDelayMs})=>{

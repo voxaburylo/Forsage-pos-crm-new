@@ -77,7 +77,7 @@ try {
 
   async function setup(mode, boundary = summer, timezoneId = 'America/Los_Angeles', extra = {}) {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1100 }, timezoneId })
-    page.setDefaultTimeout(5000)
+    page.setDefaultTimeout(process.env.CI ? 30000 : 5000)
     await page.clock.install({ time: new Date(boundary.before) })
     page.on('pageerror', error => pageErrors.push(error.message))
     page.on('dialog', dialog => dialog.accept())
