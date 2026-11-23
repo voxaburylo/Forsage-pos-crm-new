@@ -88,4 +88,12 @@ describe('system status for the owner', () => {
     expect(bytesText(300 * 1024 ** 2)).toBe('300 МБ')
     expect(bytesText(1.5 * GB)).toBe('1,5 ГБ')
   })
+
+  it('shows the manager PC build and warns when it differs from the till (plan T7)', () => {
+    const at = (extra: Partial<TillReport>) => line(statusLines(status({ report: report(extra) }), now), 'manager-pc')
+    expect(at({})).toMatchObject({ level: 'unknown', value: 'ще не звертався після запуску каси' })
+    expect(at({ manager_seen_at: minutesAgo(5), manager_release_id: '20261123T113640-dc2cc67e' })).toMatchObject({ level: 'ok', hint: 'звертався 5 хв тому' })
+    expect(at({ manager_seen_at: minutesAgo(5), manager_release_id: '20261115T171614-b606' })).toMatchObject({ level: 'warn', value: '20261115T171614-b606' })
+    expect(at({ manager_seen_at: minutesAgo(5), manager_release_id: null })).toMatchObject({ level: 'warn', value: 'стара програма (версію не повідомляє)' })
+  })
 })

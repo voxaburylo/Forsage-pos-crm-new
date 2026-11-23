@@ -11,6 +11,7 @@ describe('till status report (T2)', () => {
     disk_free_bytes: 1000, disk_total_bytes: 5000, database_bytes: 300, local_backup_at: '2026-11-23T09:00:00.000Z',
     cloud_backup_at: '2026-11-23T08:00:00.000Z', external_backup_at: null, schema_version: 28, started_at: '2026-11-23T07:00:00.000Z',
     check_at: '2026-11-23T03:00:00.000Z', check_findings: [{ code: 'nightly-stock-ledger', title: 'Залишок не збігається з рухом товару', count: 274 }],
+    manager_release_id: '20261120T100000-aaaa', manager_seen_at: '2026-11-23T11:50:00.000Z',
   }
 
   it('accepts the known shape as is', () => {

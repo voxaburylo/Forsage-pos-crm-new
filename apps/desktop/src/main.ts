@@ -856,6 +856,7 @@ function getTillDeviceLink(): TillDeviceLink {
         schemaVersion: attempt(() => db.info().schemaVersion),
         startedAt: Date.now() - Math.round(process.uptime() * 1000),
         check: attempt(() => readNightlySummary(db)),
+        managerClient: localNetwork?.lastClientSeen() ?? null,
       })
     },
     canRun: () => isMainTill() && !databaseMaintenance,
@@ -1419,6 +1420,7 @@ app.whenReady().then(async () => {
         return (await loginOnlineAndProvisionLocal(phone, password, null)).user
       }
     },
+    clientBuild: desktopBuildInfo?.releaseId ?? null,
     ...(releaseSource ? { updateMetadata: () => releaseSource.describe(), updateChunk: input => releaseSource.chunk(input) } : {}),
   })
   lanOrderQueue = new LanOrderQueue(localDatabase, (channel, args, session) => localNetwork!.invoke(channel, args, session))
