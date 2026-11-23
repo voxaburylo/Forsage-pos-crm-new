@@ -324,3 +324,127 @@ export function printDeliveryNote(order: CustomerOrder, seller: SellerRequisites
     </div>`
   printDoc(`Видаткова накладна №${docNumber(order)}`, body)
 }
+
+// ─────────────────────────────────────────────────────────────
+// Бланк замовлення (23.11.2026, план 4.3 / етап 4): читабельний, з мініатюрами позицій.
+// Клієнт і авто зверху, позиції таблицею, підсумок і внесене внизу — як і на екрані.
+// ─────────────────────────────────────────────────────────────
+const ITEM_STATE_LABEL: Record<string, string> = {
+  ordered: 'Замовлено', arrived: 'Прибуло', handed: 'Видано', canceled: 'Скасовано', returned: 'Повернено',
+}
+
+/** Стан позиції людською мовою: склад / під замовлення / замовлено (з датою) / прибуло / видано. */
+export function orderItemStateText(item: { item_status?: string | null; source_type?: string | null; expected_date?: string | null }): string {
+  const status = item.item_status ?? 'pending'
+  const expected = item.expected_date ? ` · очікуємо ${formatDate(item.expected_date)}` : ''
+  if (status !== 'pending') return (ITEM_STATE_LABEL[status] ?? status) + (status === 'ordered' ? expected : '')
+  return item.source_type === 'supplier' ? 'Під замовлення' + expected : 'Є на складі'
+}
+
+/** Мініатюра: лише data: (з головного ПК) чи https:; решту адрес у бланк не вставляємо. */
+function thumbHtml(src: string | undefined): string {
+  if (!src || !(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(src) || /^https:\/\/[^\s"'<>]+$/.test(src))) return '<div class="noimg"></div>'
+  return `<img class="thumb" src="${esc(src)}" alt="">`
+}
+
+export function orderFormHtml(order: CustomerOrder, seller: SellerRequisites, thumbnails: Record<string, string> = {}): string {
+  const lines = order.items.filter((i) => !(i as { is_draft_note?: boolean }).is_draft_note && i.item_status !== 'canceled')
+  let total = 0
+  const rows = lines.map((item, index) => {
+    const sum = (item.sell_price / 100) * item.qty
+    total += sum
+    return `
+      <tr>
+        <td class="c">${index + 1}</td>
+        <td class="c">${thumbHtml(item.product_id ? thumbnails[item.product_id] : undefined)}</td>
+        <td><div class="strong">${esc(item.name)}</div>${item.sku ? `<div class="muted">${esc(item.sku)}</div>` : ''}</td>
+        <td class="c">${item.qty}</td>
+        <td class="r">${money(item.sell_price / 100)}</td>
+        <td class="r strong">${money(sum)}</td>
+        <td>${esc(orderItemStateText(item))}</td>
+      </tr>`
+  }).join('')
+  const paid = Math.max(0, (order.total_paid ?? order.prepayment ?? 0) / 100)
+  const due = Math.max(0, total - paid)
+  const v = order.vehicle_info
+  const car = [v?.make, v?.model, v?.year].filter(Boolean).join(' ')
+  const shop = seller.name || 'Форсаж'
+  return `
+    <div class="doc order-form">
+      <div class="top">
+        <div><div class="shop">${esc(shop)}</div>${seller.phone ? `<div>${esc(seller.phone)}</div>` : ''}${seller.address ? `<div class="muted">${esc(seller.address)}</div>` : ''}</div>
+        <div class="no">Замовлення № ${esc(docNumber(order))}<div class="date">від ${formatDate(order.created_at)}</div></div>
+      </div>
+      <div class="cards">
+        <div class="card"><div class="cap">Клієнт</div><div class="big">${esc(buyerName(order))}</div>${order.customer?.phone ? `<div>${esc(order.customer.phone)}</div>` : ''}</div>
+        <div class="card"><div class="cap">Автомобіль</div><div class="big">${esc(car || '—')}</div>${v?.vin ? `<div class="mono">VIN ${esc(v.vin)}</div>` : ''}${v?.engine_volume ? `<div>Двигун ${esc(v.engine_volume)}</div>` : ''}</div>
+      </div>
+      <table class="items">
+        <thead><tr><th class="c">№</th><th class="c">Фото</th><th>Товар</th><th class="c">К-сть</th><th class="r">Ціна, грн</th><th class="r">Сума, грн</th><th>Стан</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <table class="sum">
+        <tr><td>Разом</td><td class="r">${money(total)} грн</td></tr>
+        <tr><td>Внесено</td><td class="r">${money(paid)} грн</td></tr>
+        <tr class="due"><td>До сплати</td><td class="r">${money(due)} грн</td></tr>
+      </table>
+      ${order.pickup_deadline_at || order.pickup_cell ? `<p>${order.pickup_deadline_at ? `Забрати до: <b>${formatDate(order.pickup_deadline_at)}</b>` : ''}${order.pickup_cell ? ` · Комірка: <b>${esc(order.pickup_cell)}</b>` : ''}</p>` : ''}
+      ${order.comment ? `<p class="comment">Коментар: ${esc(order.comment)}</p>` : ''}
+      <div class="signs">
+        <div class="sign">Менеджер <div class="line"></div></div>
+        <div class="sign">Клієнт <div class="line"></div></div>
+      </div>
+    </div>`
+}
+
+function orderFormStyles(): string {
+  return `
+    @page { size: A4; margin: 12mm; }
+    * { box-sizing: border-box; }
+    body { font-family: Arial, 'Segoe UI', sans-serif; font-size: 13px; color: #000; margin: 0; }
+    .top { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #000; padding-bottom: 8px; }
+    .shop { font-size: 20px; font-weight: bold; }
+    .no { font-size: 20px; font-weight: bold; text-align: right; }
+    .date { font-size: 13px; font-weight: normal; }
+    .cards { display: flex; gap: 10px; margin: 12px 0; }
+    .card { flex: 1; border: 1px solid #999; border-radius: 6px; padding: 8px 10px; }
+    .cap { font-size: 10px; text-transform: uppercase; color: #555; letter-spacing: .04em; }
+    .big { font-size: 16px; font-weight: bold; margin: 2px 0; }
+    .mono { font-family: Consolas, monospace; }
+    .muted { color: #555; font-size: 12px; }
+    .strong { font-weight: bold; }
+    table.items { width: 100%; border-collapse: collapse; }
+    table.items th, table.items td { border: 1px solid #777; padding: 5px 6px; vertical-align: middle; }
+    table.items th { background: #eee; font-size: 11px; text-transform: uppercase; }
+    .c { text-align: center; } .r { text-align: right; white-space: nowrap; }
+    .thumb { width: 52px; height: 52px; object-fit: contain; display: block; margin: 0 auto; }
+    .noimg { width: 52px; height: 52px; margin: 0 auto; border: 1px dashed #bbb; border-radius: 4px; }
+    table.sum { margin: 10px 0 0 auto; border-collapse: collapse; min-width: 260px; font-size: 14px; }
+    table.sum td { padding: 3px 6px; }
+    table.sum .due td { font-size: 18px; font-weight: bold; border-top: 2px solid #000; }
+    .comment { border-left: 3px solid #999; padding-left: 8px; }
+    .signs { display: flex; justify-content: space-between; margin-top: 34px; }
+    .sign { width: 45%; } .sign .line { border-top: 1px solid #000; margin-top: 26px; }
+    @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+  `
+}
+
+/** Мініатюри з головного ПК (у програмі чи у вебі через ПК); без ПК чи довше 3 с — бланк без фото. */
+export async function loadOrderThumbnails(order: CustomerOrder, read?: (ids: string[]) => Promise<Record<string, string>>): Promise<Record<string, string>> {
+  const ids = [...new Set(order.items.map((item) => item.product_id).filter((id): id is string => Boolean(id)))]
+  if (!ids.length || !read) return {}
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([read(ids), new Promise<Record<string, string>>((resolve) => { timer = setTimeout(() => resolve({}), 3000) })])
+  } catch { return {} } finally { if (timer) clearTimeout(timer) }
+}
+
+/** Друкований бланк замовлення. */
+/** Повний документ бланка (зі стилями) — для друку й перевірки. */
+export function orderFormDocument(order: CustomerOrder, seller: SellerRequisites, thumbnails: Record<string, string> = {}): string {
+  return `<html><head><meta charset="utf-8"><title>${esc('Замовлення №' + docNumber(order))}</title><style>${orderFormStyles()}</style></head><body>${orderFormHtml(order, seller, thumbnails)}</body></html>`
+}
+
+export function printOrderForm(order: CustomerOrder, seller: SellerRequisites, thumbnails: Record<string, string> = {}) {
+  PrintService.printHtml(orderFormDocument(order, seller, thumbnails), { mode: 'window', width: 800, height: 1000 })
+}
