@@ -61,8 +61,8 @@ export function CashierSwitchModal({ currentName, onClose }: { currentName: stri
             {currentName && <p className="text-xs text-gray-500">Зараз: {currentName}</p>}
           </div>
         </div>
-        {/* Етап 9: хто сьогодні вже входив паролем на цьому ПК — повертається за 4 цифрами. */}
-        <PinQuickLogin onSignedIn={session => {
+        {/* Етап 9: хто сьогодні вже входив паролем на цьому ПК — повертається за своїм PIN, нікого не вибираючи. */}
+        <PinQuickLogin dark onSignedIn={session => {
           confirmDesktopUnlocked()
           const name = String(session.user.user_metadata?.full_name ?? '').trim()
           toast.success(name ? `Касир: ${name}` : 'Касира змінено')

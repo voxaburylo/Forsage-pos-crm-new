@@ -32,10 +32,10 @@ function LoginForm({ onUnlocked }: { onUnlocked?: () => void }) {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [restoring, setRestoring] = useState(isDesktopRuntime() && !onUnlocked)
-  // На головному ПК усі входять лише паролем; номер телефону — за бажанням і на ПК менеджера.
+  // 23.11.2026, рішення власника «логін прибираємо, досить пароля»: у програмі (і на головному ПК, і на ПК
+  // менеджера) вхід лише паролем. Номер телефону лишається у вебі (там вхід перевіряє сервер) і як запасний
+  // вихід, коли однаковий пароль мають двоє працівників — тоді програма сама покаже поле номера.
   const [passwordOnlyAvailable, setPasswordOnlyAvailable] = useState(false)
-  // Вибір «з телефоном» діє лише до наступного входу: каса завжди відкривається входом за паролем
-  // (19.11.2026: раз натиснута кнопка запам'ятовувалась назавжди, і власник знову бачив телефон).
   const [withPhone, setWithPhone] = useState(false)
   useEffect(() => { try { localStorage.removeItem('forsage:login-with-phone') } catch { /* optional */ } }, [])
   const passwordOnly = passwordOnlyAvailable && !withPhone && !onUnlocked
@@ -50,10 +50,6 @@ function LoginForm({ onUnlocked }: { onUnlocked?: () => void }) {
   useEffect(() => {
     if (passwordOnly && !restoring) passwordRef.current?.focus()
   }, [passwordOnly, restoring])
-  function chooseLoginKind(phoneLogin: boolean) {
-    setWithPhone(phoneLogin)
-    setError('')
-  }
   useEffect(() => {
     if (!isDesktopRuntime()) {
       fetch(`${API_BASE_URL}/api/v1/health`, { signal: AbortSignal.timeout(30000) }).catch(() => {})
@@ -104,7 +100,10 @@ function LoginForm({ onUnlocked }: { onUnlocked?: () => void }) {
       if (onUnlocked) onUnlocked()
       else navigate(homePathForRole(session.user.app_metadata?.role as string | undefined), { replace: true })
     } catch (err) {
-      setError(err instanceof Error ? err.message.replace(/^.*?\[LOCAL_AUTH_[A-Z_]+\]\s*/, '') : 'Помилка входу')
+      const message = err instanceof Error ? err.message.replace(/^.*?\[LOCAL_AUTH_[A-Z_]+\]\s*/, '') : 'Помилка входу'
+      setError(message)
+      // Однаковий пароль у двох працівників: пароль не може сказати, хто це, — показуємо поле номера.
+      if (passwordOnly && /кілька працівників/.test(message)) setWithPhone(true)
       if (passwordOnly) { setPassword(''); passwordRef.current?.focus() }
     } finally {
       submitting.current = false
@@ -162,12 +161,6 @@ function LoginForm({ onUnlocked }: { onUnlocked?: () => void }) {
           <button type="submit" disabled={loading} className="w-full bg-accent hover:bg-accent-dark text-black font-semibold py-3 rounded-lg disabled:opacity-50">
             {loading?'Входимо…':'Увійти'}
           </button>
-          {passwordOnlyAvailable && !onUnlocked && (
-            <button type="button" disabled={loading} onClick={() => chooseLoginKind(passwordOnly)}
-              className="w-full text-sm text-gray-500 hover:text-gray-800">
-              {passwordOnly ? 'Увійти з номером телефону' : 'Вхід лише паролем'}
-            </button>
-          )}
           {onUnlocked && <button type="button" disabled={loading} onClick={()=>{void leave()}} className="w-full text-sm text-gray-500">Вийти</button>}
         </form>}
       </div>

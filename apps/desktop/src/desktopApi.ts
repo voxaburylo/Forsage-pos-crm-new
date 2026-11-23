@@ -17,7 +17,7 @@ export function createDesktopApi(ipcRenderer: DesktopInvoker) {
       pinRoster: () => ipcRenderer.invoke('desktop:auth:pin-roster'),
       /** 22.11.2026: виконати на головному ПК запит, що прийшов із вебу, від імені його працівника. */
       executeWebRequest: (userId: string, channel: string, args: unknown[]) => ipcRenderer.invoke('desktop:web-rpc:execute', userId, channel, args),
-      loginByPin: (userId: string, pin: string) => ipcRenderer.invoke('desktop:auth:login-pin', userId, pin),
+      loginByPin: (pin: string) => ipcRenderer.invoke('desktop:auth:login-pin', pin),
       loginOnline: (phone: string, password: string) => ipcRenderer.invoke('desktop:auth:login-online', phone, password),
       logout: () => ipcRenderer.invoke('desktop:auth:logout'),
       rememberedStatus: () => ipcRenderer.invoke('desktop:auth:remembered-status'),
