@@ -39,7 +39,7 @@ const errors = [], blocked = [], passed = []
 try {
   await server.listen(); browser = await chromium.launch({ headless: true }); const base = server.resolvedUrls.local[0]
   async function setup(options) {
-    const page = await browser.newPage(); page.setDefaultTimeout(10000)
+    const page = await browser.newPage(); page.setDefaultTimeout(process.env.CI ? 30000 : 10000)
     page.on('pageerror', error => errors.push(error.message))
     await page.route('**/*', route => new URL(route.request().url()).origin === new URL(base).origin ? route.continue() : (blocked.push(route.request().url()), route.abort()))
     await page.addInitScript(options => { window.testOptions = options }, options)

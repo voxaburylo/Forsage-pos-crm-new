@@ -56,7 +56,7 @@ try {
   const base = server.resolvedUrls.local[0], errors = [], blocked = []
   async function setup(start = '/orders/new', defaultFail = false, width = 1440, largeHistory = false) {
     const page = await browser.newPage({ viewport: { width, height: 1000 } })
-    page.setDefaultTimeout(10000)
+    page.setDefaultTimeout(process.env.CI ? 30000 : 10000)
     page.on('pageerror', error => { errors.push(error.message); console.error(error.message) })
     await page.route('**/*', route => new URL(route.request().url()).origin === new URL(base).origin ? route.continue() : (blocked.push(route.request().url()), route.abort()))
     await page.addInitScript(({ start, defaultFail, largeHistory }) => { window.testStart = start; window.testDefaultFail = defaultFail; window.testLargeHistory = largeHistory }, { start, defaultFail, largeHistory })

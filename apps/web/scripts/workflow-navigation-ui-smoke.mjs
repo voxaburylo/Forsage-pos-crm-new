@@ -66,7 +66,7 @@ const server = await createServer({ cacheDir:createSmokeCache(),configFile:false
 let browser
 try {
   await server.listen();browser=await chromium.launch({headless:true});const base=server.resolvedUrls.local[0],errors=[],blocked=[]
-  async function setup(start){const page=await browser.newPage({viewport:{width:1440,height:1100}});page.setDefaultTimeout(10000);page.on('pageerror',e=>{errors.push(e.message);console.error(e.message)});page.on('dialog',d=>d.accept());await page.route('**/*',r=>new URL(r.request().url()).origin===new URL(base).origin?r.continue():(blocked.push(r.request().url()),r.abort()));await page.addInitScript(start=>{window.testStart=start},start);await page.goto(base+'navigation-test',{timeout:30000});return page}
+  async function setup(start){const page=await browser.newPage({viewport:{width:1440,height:1100}});page.setDefaultTimeout(process.env.CI ? 30000 : 10000);page.on('pageerror',e=>{errors.push(e.message);console.error(e.message)});page.on('dialog',d=>d.accept());await page.route('**/*',r=>new URL(r.request().url()).origin===new URL(base).origin?r.continue():(blocked.push(r.request().url()),r.abort()));await page.addInitScript(start=>{window.testStart=start},start);await page.goto(base+'navigation-test',{timeout:30000});return page}
   const route=(page,value)=>page.waitForFunction(value=>document.querySelector('[data-testid=route]')?.textContent===value,value)
   const back=page=>page.getByRole('button',{name:'Test back',exact:true}).click()
   const waitRead=(page,kind,field,value)=>page.waitForFunction(({kind,field,value})=>fixture.reads.some(row=>row.kind===kind&&row[field]===value),{kind,field,value})

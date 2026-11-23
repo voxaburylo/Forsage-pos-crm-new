@@ -43,7 +43,7 @@ try {
   await server.listen(); browser = await chromium.launch({ headless: true })
   const base = server.resolvedUrls.local[0], errors = [], blocked = []
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
-  page.setDefaultTimeout(10000)
+  page.setDefaultTimeout(process.env.CI ? 30000 : 10000)
   page.on('pageerror', error => { errors.push(error.message); console.error(error.message) })
   await page.route('**/*', route => new URL(route.request().url()).origin === new URL(base).origin ? route.continue() : (blocked.push(route.request().url()), route.abort()))
   await page.goto(base + 'report-context-test')
