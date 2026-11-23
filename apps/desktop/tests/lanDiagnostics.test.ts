@@ -2,7 +2,7 @@ import { createServer } from 'node:http'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import {
   buildLanDiagnosis, describeLanConnectFailure, firewallQueryScript, firewallRuleScript, parseFirewallState,
   type LanDiagnosisInput,
@@ -123,4 +123,35 @@ it('tells a pairing manager PC that the hub program is closed or not enabled', a
   // Невдала спроба не має перетворювати чистий ПК на клієнта.
   expect(client.getStatus().mode).toBe('standalone')
   expect(client.getStatus().discovery).toBe(false)
+})
+
+// 23.11.2026: на головному ПК Windows мала правило «Блокувати» для Forsage.exe (натиснули «Скасувати» у вікні доступу до мережі).
+// Перевірка готовності бачила лише дозволи й нічого не показувала, кнопка «Дозволити в брандмауері» заборону не прибирала —
+// ПК менеджера не міг підключитись («помилка з'єднання», статистика не відкривалась).
+describe('a Windows block rule for the program itself', () => {
+  it('is read, wins over any allow rule and is named to the owner', () => {
+    const query = firewallQueryScript(3210, 'C:\App\Forsage.exe')
+    expect(query).toContain("$_.Action -eq 'Block' -and $_.Direction -eq 'Inbound'")
+    expect(query).toContain('(-not $blocked) -and')
+    expect(query).not.toMatch(/New-NetFirewallRule|Remove-NetFirewallRule|Set-NetFirewall/)
+    expect(parseFirewallState('{"blocked":true,"tcp":false,"udp":false,"networks":["Public"]}'))
+      .toEqual({ tcpAllowed: false, udpAllowed: false, networks: ['Public'], blocked: true })
+    const diagnosis = buildLanDiagnosis(hub, { tcpAllowed: false, udpAllowed: false, networks: ['Public'], blocked: true }, 'C:\App\Forsage.exe')
+    expect(diagnosis.ready).toBe(false)
+    const check = diagnosis.checks.find(item => item.id === 'firewall')!
+    expect(check.state).toBe('problem')
+    expect(check.title).toBe('Windows заборонила Форсажу мережу')
+    expect(check.detail).toContain('«Блокувати»')
+  })
+
+  it('the allow button removes the block of this program only, then adds the port rules', () => {
+    const script = firewallRuleScript(3210, "C:\App\it's\Forsage.exe")
+    const unblock = script.indexOf("Get-NetFirewallApplicationFilter -Program 'C:\App\it''s\Forsage.exe'")
+    expect(unblock).toBe(0)
+    expect(script).toContain("Where-Object { $_.Action -eq 'Block' -and $_.Direction -eq 'Inbound' } | Remove-NetFirewallRule")
+    expect(unblock).toBeLessThan(script.indexOf('New-NetFirewallRule'))
+    // Дозвіл і далі за портом, не за шляхом програми.
+    expect(script.slice(script.indexOf('New-NetFirewallRule'))).not.toContain('-Program')
+    expect(buildLanDiagnosis(hub, undefined, 'C:\App\Forsage.exe').firewallCommand).toContain("-Program 'C:\App\Forsage.exe'")
+  })
 })

@@ -13,7 +13,9 @@ export function BuildBadge({ className = '' }: { className?: string }) {
     // Підпис не має права зламати сторінку: старий міст або міст без getRuntimeInfo — просто без підпису.
     const load = async () => {
       try {
-        const info = await desktopBridge()?.getRuntimeInfo?.()
+        const bridge = desktopBridge()
+        // getBuildInfo працює й до входу; у старій програмі його немає — тоді як раніше (після входу).
+        const info = await (bridge?.getBuildInfo ? bridge.getBuildInfo() : bridge?.getRuntimeInfo?.())
         if (info && !stopped) setLabel(buildLabel({ desktop: true, build: info.build, stagedUpdateReleaseId: info.stagedUpdateReleaseId, managerPc: info.lan?.mode === 'client' }))
       } catch { /* без підпису */ }
     }

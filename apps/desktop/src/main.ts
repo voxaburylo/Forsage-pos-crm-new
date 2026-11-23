@@ -1366,6 +1366,10 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:get-runtime-info', () => ({ ...requireLocalDatabase().info(), build: desktopBuildInfo,
     stagedUpdateReleaseId: stagedLanUpdate?.releaseId ?? null }))
 
+  // 23.11.2026: номер збірки видно й на екрані входу (власник звіряє версії двох ПК, не входячи). Лише збірка й режим ПК.
+  handleDesktopIpc('desktop:get-runtime-info-build', () => ({ build: desktopBuildInfo, stagedUpdateReleaseId: stagedLanUpdate?.releaseId ?? null,
+    lan: { mode: localNetwork?.getStatus().mode ?? 'standalone' } }))
+
   handleDesktopIpc('desktop:lan:first-run-status', () => {
     const status = localNetwork!.getStatus()
     try { assertLanIdentityConnection(requireLocalDatabase(), status) }
@@ -1416,14 +1420,14 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:lan:diagnose', async () => {
     const status = localNetwork!.getStatus()
     const firewall = status.mode === 'hub' ? await readFirewallState(status.port, process.execPath) : undefined
-    return buildLanDiagnosis(status, firewall)
+    return buildLanDiagnosis(status, firewall, process.execPath)
   })
   // Правило додає сама Windows після свого підтвердження (UAC); без «Так» нічого не змінюється.
   handleDesktopIpc('desktop:lan:allow-firewall', async () => {
     const status = localNetwork!.getStatus()
     if (status.mode !== 'hub') throw new Error('Дозвіл брандмауера потрібен лише на головному ПК каси')
-    await requestFirewallRule(status.port)
-    return buildLanDiagnosis(localNetwork!.getStatus(), await readFirewallState(status.port, process.execPath))
+    await requestFirewallRule(status.port, process.execPath)
+    return buildLanDiagnosis(localNetwork!.getStatus(), await readFirewallState(status.port, process.execPath), process.execPath)
   })
   handleDesktopIpc('desktop:problems:list', (_event, options?: { includeResolved?: boolean; limit?: number }) =>
     requireLocalProblems().list({ includeResolved: options?.includeResolved, limit: options?.limit }))

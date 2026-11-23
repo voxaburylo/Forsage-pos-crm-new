@@ -40,6 +40,11 @@ export interface FirewallState {
   udpAllowed: boolean | null
   /** Категорії активних мереж: Public / Private / DomainAuthenticated. */
   networks: string[]
+  /**
+   * 23.11.2026: Windows має правило «Блокувати» саме для цієї програми (натиснули «Скасувати» у вікні
+   * «Дозволити доступ до мережі»). Заборона сильніша за будь-який дозвіл — ПК менеджера не підключиться.
+   */
+  blocked?: boolean
 }
 
 export const FIREWALL_RULE_TCP = 'Forsage LAN TCP'
@@ -55,13 +60,19 @@ function safePort(port: number): number {
  * оновлення розпаковується в іншу теку, і дозвіл «для програми» мовчки
  * перестає діяти. Доступ лише з локальної підмережі — не з інтернету.
  */
-export function firewallRuleScript(port: number): string {
+export function firewallRuleScript(port: number, programPath = ''): string {
   const tcp = safePort(port)
+  // Заборона «для програми» перекриває дозвіл за портом, тому спершу прибираємо її (лише для цієї програми).
+  const program = programPath.replace(/'/g, "''")
+  const unblock = program
+    ? `Get-NetFirewallApplicationFilter -Program '${program}' -ErrorAction SilentlyContinue | Get-NetFirewallRule | `
+      + `Where-Object { $_.Action -eq 'Block' -and $_.Direction -eq 'Inbound' } | Remove-NetFirewallRule -ErrorAction SilentlyContinue; `
+    : ''
   const rule = (name: string, protocol: 'TCP' | 'UDP', localPort: number) =>
     `Remove-NetFirewallRule -DisplayName '${name}' -ErrorAction SilentlyContinue; `
     + `New-NetFirewallRule -DisplayName '${name}' -Direction Inbound -Action Allow -Protocol ${protocol} `
     + `-LocalPort ${localPort} -RemoteAddress LocalSubnet -Profile Any | Out-Null`
-  return `${rule(FIREWALL_RULE_TCP, 'TCP', tcp)}; ${rule(FIREWALL_RULE_UDP, 'UDP', LAN_DISCOVERY_PORT)}`
+  return `${unblock}${rule(FIREWALL_RULE_TCP, 'TCP', tcp)}; ${rule(FIREWALL_RULE_UDP, 'UDP', LAN_DISCOVERY_PORT)}`
 }
 
 /** Читає лише факт наявності дозволу. Нічого не змінює й не потребує прав адміністратора. */
@@ -75,20 +86,22 @@ export function firewallQueryScript(port: number, programPath: string): string {
     `  return [bool]$rules`,
     `}`,
     `$app = [bool](Get-NetFirewallApplicationFilter -Program '${program}' | Get-NetFirewallRule | Where-Object { $_.Enabled -eq 'True' -and $_.Action -eq 'Allow' -and $_.Direction -eq 'Inbound' })`,
-    `$result = @{ tcp = ($app -or (Allowed 'TCP' ${tcp})); udp = ($app -or (Allowed 'UDP' ${LAN_DISCOVERY_PORT})); networks = @(Get-NetConnectionProfile | ForEach-Object { "$($_.NetworkCategory)" }) }`,
+    `$blocked = [bool](Get-NetFirewallApplicationFilter -Program '${program}' | Get-NetFirewallRule | Where-Object { $_.Enabled -eq 'True' -and $_.Action -eq 'Block' -and $_.Direction -eq 'Inbound' })`,
+    `$result = @{ blocked = $blocked; tcp = ((-not $blocked) -and ($app -or (Allowed 'TCP' ${tcp}))); udp = ((-not $blocked) -and ($app -or (Allowed 'UDP' ${LAN_DISCOVERY_PORT}))); networks = @(Get-NetConnectionProfile | ForEach-Object { "$($_.NetworkCategory)" }) }`,
     `$result | ConvertTo-Json -Compress`,
   ].join('\n')
 }
 
 export function parseFirewallState(output: string): FirewallState {
   try {
-    const parsed = JSON.parse(output.trim()) as { tcp?: unknown; udp?: unknown; networks?: unknown }
+    const parsed = JSON.parse(output.trim()) as { tcp?: unknown; udp?: unknown; networks?: unknown; blocked?: unknown }
     const networks = Array.isArray(parsed.networks) ? parsed.networks.filter((item): item is string => typeof item === 'string').slice(0, 8)
       : typeof parsed.networks === 'string' ? [parsed.networks] : []
     return {
       tcpAllowed: typeof parsed.tcp === 'boolean' ? parsed.tcp : null,
       udpAllowed: typeof parsed.udp === 'boolean' ? parsed.udp : null,
       networks,
+      ...(parsed.blocked === true ? { blocked: true } : {}),
     }
   } catch {
     return { tcpAllowed: null, udpAllowed: null, networks: [] }
@@ -116,9 +129,9 @@ export async function readFirewallState(port: number, programPath: string): Prom
  * Просить Windows додати правило. Сама програма прав не має: Windows показує
  * власне вікно підтвердження (UAC), і без «Так» нічого не змінюється.
  */
-export async function requestFirewallRule(port: number): Promise<void> {
+export async function requestFirewallRule(port: number, programPath = ''): Promise<void> {
   if (process.platform !== 'win32') throw new Error('Налаштування брандмауера доступне лише у Windows')
-  const inner = Buffer.from(firewallRuleScript(port), 'utf16le').toString('base64')
+  const inner = Buffer.from(firewallRuleScript(port, programPath), 'utf16le').toString('base64')
   const outer = `$p = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -WindowStyle Hidden `
     + `-ArgumentList '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand','${inner}'; exit $p.ExitCode`
   try { await runPowerShell(outer, 120_000) }
@@ -130,6 +143,11 @@ function firewallCheck(firewall: FirewallState, port: number): LanCheck {
   if (firewall.tcpAllowed === null) {
     return { id: 'firewall', state: 'unknown', title: 'Брандмауер Windows',
       detail: `Не вдалося прочитати правила Windows. Якщо другий ПК не підключається, дозвольте вхідні TCP ${port} і UDP ${LAN_DISCOVERY_PORT}.` }
+  }
+  if (firewall.blocked) {
+    return { id: 'firewall', state: 'problem', title: 'Windows заборонила Форсажу мережу',
+      detail: 'У брандмауері Windows є правило «Блокувати» саме для цієї програми (так буває, якщо у вікні Windows «Дозволити доступ» натиснули «Скасувати»). '
+        + 'Через нього другий ПК не підключиться. Натисніть «Дозволити в брандмауері» і підтвердьте запит Windows — заборону буде прибрано.' }
   }
   if (!firewall.tcpAllowed) {
     return { id: 'firewall', state: 'problem', title: 'Брандмауер Windows блокує підключення',
@@ -143,7 +161,7 @@ function firewallCheck(firewall: FirewallState, port: number): LanCheck {
   return { id: 'firewall', state: 'ok', title: 'Брандмауер Windows дозволяє підключення', detail: `Вхідні TCP ${port} і UDP ${LAN_DISCOVERY_PORT} дозволено.` }
 }
 
-export function buildLanDiagnosis(status: LanDiagnosisInput, firewall: FirewallState = UNKNOWN_FIREWALL): LanDiagnosis {
+export function buildLanDiagnosis(status: LanDiagnosisInput, firewall: FirewallState = UNKNOWN_FIREWALL, programPath = ''): LanDiagnosis {
   const checks: LanCheck[] = []
   if (status.mode === 'standalone') {
     checks.push({ id: 'mode', state: 'problem', title: 'Цей ПК не ввімкнено як головний',
@@ -173,7 +191,7 @@ export function buildLanDiagnosis(status: LanDiagnosisInput, firewall: FirewallS
       detail: 'Другий ПК можна підключити вручну за адресою вище.' })
   checks.push(firewallCheck(firewall, status.port))
   const ready = checks.every(check => check.state !== 'problem')
-  return { mode: status.mode, ready, checks, firewallCommand: firewallRuleScript(status.port), canAllowFirewall: process.platform === 'win32' }
+  return { mode: status.mode, ready, checks, firewallCommand: firewallRuleScript(status.port, programPath), canAllowFirewall: process.platform === 'win32' }
 }
 
 /** Причина обриву на ПК менеджера: що саме зробити, а не просто «немає звʼязку». */
