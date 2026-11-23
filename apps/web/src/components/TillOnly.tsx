@@ -30,12 +30,13 @@ const STATUS_POLL_MS = 20_000
 
 type State = 'checking' | 'online' | 'offline'
 
-/** offline — що можна зробити й без головного ПК (не стосується залишків і грошей); показується під карткою. */
-function ThroughMainPc({ what, children, offline }: { what: string; children: React.ReactNode; offline?: React.ReactNode }) {
-  const role = String(useAuthStore(state => state.session?.user?.app_metadata?.role) ?? '')
+/**
+ * Зв'язок екрана вебу з головним ПК: стан (опитування сервера) і місток, який живе, доки відкритий екран.
+ * Спільний для TillOnly (екран лише через ПК) і MainPcWhenOnline (перегляд, а з ПК — повна робота).
+ */
+function useMainPcLink(allowed: boolean): { state: State; ready: boolean } {
   const [state, setState] = useState<State>('checking')
   const [ready, setReady] = useState(false)
-  const allowed = WEB_RPC_ROLES.has(role)
 
   useEffect(() => {
     if (!allowed) return
@@ -66,6 +67,45 @@ function ThroughMainPc({ what, children, offline }: { what: string; children: Re
     return () => { cancelled = true }
   }, [state, ready])
   useEffect(() => () => { release.current?.(); release.current = null }, [])
+  return { state, ready }
+}
+
+function MainPcBadge({ state }: { state: State }) {
+  return (
+    <div className={`fixed bottom-3 right-3 z-40 flex items-center gap-2 rounded-full px-3 py-1.5 text-xs shadow ${state === 'offline' ? 'bg-red-600 text-white' : 'bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200'}`}
+      role="status" data-main-pc-link={state}>
+      {state === 'offline' ? <WifiOff size={14} /> : <Wifi size={14} />}
+      {state === 'offline' ? 'Головний ПК не на звʼязку — зміни зараз не пройдуть' : 'Працює через головний ПК'}
+    </div>
+  )
+}
+
+/**
+ * 23.11.2026, план 4.1 «веб через головний ПК — кожен екран»: екрани перегляду (товари, клієнти, замовлення, звіти,
+ * зарплата) у вебі теж працюють повністю, коли головний ПК на зв'язку: усі зміни виконує він. Без ПК — той самий
+ * екран лише для перегляду серверної копії (як і раніше), а не заглушка. Касир і комірник — лише перегляд.
+ * view — окремий екран перегляду для вебу без ПК (якщо повний екран без ПК не працює, напр. замовлення).
+ */
+export function MainPcWhenOnline({ children, view }: { children: React.ReactNode; view?: React.ReactNode }) {
+  const role = String(useAuthStore(state => state.session?.user?.app_metadata?.role) ?? '')
+  const desktop = isDesktopRuntime()
+  const allowed = !desktop && WEB_RPC_ROLES.has(role)
+  const { state, ready } = useMainPcLink(allowed)
+  if (desktop) return <>{children}</>
+  if (!allowed) return <>{view ?? children}</>
+  if (!ready) {
+    if (state === 'checking') return <Layout><p className="py-10 text-center text-sm text-gray-500" role="status">Перевіряємо звʼязок із головним ПК…</p></Layout>
+    // Без ПК — перегляд. Коли ПК зʼявиться, екран відкриється заново вже з повною роботою (key нижче).
+    return <div key="view" data-main-pc-mode="view">{view ?? children}</div>
+  }
+  return <div key="main-pc" data-main-pc-mode="main-pc"><MainPcBadge state={state} />{children}</div>
+}
+
+/** offline — що можна зробити й без головного ПК (не стосується залишків і грошей); показується під карткою. */
+function ThroughMainPc({ what, children, offline }: { what: string; children: React.ReactNode; offline?: React.ReactNode }) {
+  const role = String(useAuthStore(state => state.session?.user?.app_metadata?.role) ?? '')
+  const allowed = WEB_RPC_ROLES.has(role)
+  const { state, ready } = useMainPcLink(allowed)
 
   if (!allowed) return <ViewOnlyCard what={what} reason="role" />
   if (!ready) return state === 'offline' ? <ViewOnlyCard what={what} reason="offline">{offline}</ViewOnlyCard> : (
@@ -73,11 +113,7 @@ function ThroughMainPc({ what, children, offline }: { what: string; children: Re
   )
   return (
     <>
-      <div className={`fixed bottom-3 right-3 z-40 flex items-center gap-2 rounded-full px-3 py-1.5 text-xs shadow ${state === 'offline' ? 'bg-red-600 text-white' : 'bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200'}`}
-        role="status" data-main-pc-link={state}>
-        {state === 'offline' ? <WifiOff size={14} /> : <Wifi size={14} />}
-        {state === 'offline' ? 'Головний ПК не на звʼязку — зміни зараз не пройдуть' : 'Працює через головний ПК'}
-      </div>
+      <MainPcBadge state={state} />
       {children}
     </>
   )

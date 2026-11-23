@@ -50,11 +50,11 @@ describe('екрани змін не відкриваються у вебі', ()
     })
   }
 
-  it('/orders/new у вебі — лише бланк, який іде командою на касу (етап 8, 22.11.2026)', () => {
+  it('/orders/new у вебі: з головним ПК — повна форма через ПК, без ПК — бланк командою на касу (23.11.2026)', () => {
     const route = app.split('\n').filter(line => line.includes('<Route path="/orders/new"'))
     expect(route).toHaveLength(1)
-    // Повна форма з грошима й складом — тільки на касі; у вебі окремий екран без запису на сервер.
-    expect(route[0]).toContain('<TillOrView till={<OrderFormPage />} view={<WebOrderFormPage />} />')
+    // Повну форму з грошима й складом виконує головний ПК; без нього — окремий екран без запису на сервер.
+    expect(route[0]).toContain('<MainPcWhenOnline view={<WebOrderFormPage />}><OrderFormPage /></MainPcWhenOnline>')
     const form = readFileSync(new URL('../features/orders/WebOrderFormPage.tsx', import.meta.url), 'utf8')
     // Екран уміє рівно дві команди касі: новий бланк і дозамовлення до відкритого замовлення.
     expect(form).toContain("command: appendTo ? 'order.append' : 'order.save'")

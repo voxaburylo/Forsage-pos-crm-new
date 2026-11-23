@@ -2,7 +2,7 @@ import { OrderArrivalModal } from '@/features/orders/OrderArrivalModal'
 import { Component, lazy, Suspense, useEffect, useState, type ErrorInfo, type ReactNode } from 'react'
 import { createBrowserRouter, createHashRouter, RouterProvider, Routes, Route, Navigate, useLocation, useParams } from 'react-router-dom'
 import ProtectedRoute from '@/components/ProtectedRoute'
-import { TillOnly, TillOrView } from '@/components/TillOnly'
+import { MainPcWhenOnline, TillOnly, TillOrView } from '@/components/TillOnly'
 import { DesktopAccessGate } from '@/components/DesktopAccessGate'
 import { ToastContainer } from '@/components/ui'
 import { CommandPalette } from '@/components/CommandPalette'
@@ -216,17 +216,17 @@ function Workspace() {
           <Route path="/analytics/statistics" element={<ProtectedRoute roles={OFFICE_ROLES}><DashboardPage /></ProtectedRoute>} />
           <Route path="/analytics/sales"      element={<ProtectedRoute roles={REPORT_ROLES}><DailyReport /></ProtectedRoute>} />
           <Route path="/analytics/control"    element={<ProtectedRoute roles={OFFICE_ROLES}><ControlReportPage /></ProtectedRoute>} />
-          <Route path="/analytics/recount"    element={<ProtectedRoute roles={OFFICE_ROLES}><NegativeStockPage /></ProtectedRoute>} />
+          <Route path="/analytics/recount"    element={<ProtectedRoute roles={OFFICE_ROLES}><MainPcWhenOnline><NegativeStockPage /></MainPcWhenOnline></ProtectedRoute>} />
           <Route path="/analytics/payroll"    element={<ProtectedRoute roles={ADMIN_ROLES}><PayrollPage /></ProtectedRoute>} />
           <Route path="/dashboard"             element={<Navigate to="/analytics/statistics" replace />} />
-          <Route path="/products"           element={<ProtectedRoute><ProductsPage /></ProtectedRoute>} />
+          <Route path="/products"           element={<ProtectedRoute><MainPcWhenOnline><ProductsPage /></MainPcWhenOnline></ProtectedRoute>} />
           <Route path="/products/new"       element={<TillOnly what="Створення товару"><ProtectedRoute roles={CATALOG_EDITOR_ROLES}><ProductFormPage /></ProtectedRoute></TillOnly>} />
-          <Route path="/products/:id"       element={<ProtectedRoute><ProductDetailPage /></ProtectedRoute>} />
+          <Route path="/products/:id"       element={<ProtectedRoute><MainPcWhenOnline><ProductDetailPage /></MainPcWhenOnline></ProtectedRoute>} />
           <Route path="/products/:id/edit"  element={<TillOnly what="Редагування товару"><ProtectedRoute roles={CATALOG_EDITOR_ROLES}><CanonicalCard kind="products" /></ProtectedRoute></TillOnly>} />
 
-          <Route path="/customers"           element={<ProtectedRoute><CustomersPage /></ProtectedRoute>} />
+          <Route path="/customers"           element={<ProtectedRoute><MainPcWhenOnline><CustomersPage /></MainPcWhenOnline></ProtectedRoute>} />
           <Route path="/customers/new"       element={<TillOnly what="Створення клієнта"><ProtectedRoute><CustomerFormPage /></ProtectedRoute></TillOnly>} />
-          <Route path="/customers/:id"       element={<ProtectedRoute><CustomerDetailPage /></ProtectedRoute>} />
+          <Route path="/customers/:id"       element={<ProtectedRoute><MainPcWhenOnline><CustomerDetailPage /></MainPcWhenOnline></ProtectedRoute>} />
           <Route path="/customers/:id/edit"  element={<TillOnly what="Редагування клієнта"><ProtectedRoute roles={CUSTOMER_CARD_EDITOR_ROLES}><CanonicalCard kind="customers" /></ProtectedRoute></TillOnly>} />
 
           <Route path="/pos"      element={<TillOnly what="Каса" remote={false}><ProtectedRoute><POSPage /></ProtectedRoute></TillOnly>} />
@@ -282,10 +282,10 @@ function Workspace() {
 
           {/* Чат-боти — окремий розділ (той самий компонент у режимі chatMode) */}
           <Route path="/chats" element={<TillOnly what="Замовлення"><ProtectedRoute roles={OFFICE_ROLES}><OrdersPage /></ProtectedRoute></TillOnly>} />
-          <Route path="/orders"          element={<ProtectedRoute roles={OFFICE_ROLES}><TillOrView till={<OrdersPage />} view={<OrdersViewPage />} /></ProtectedRoute>} />
-          <Route path="/orders/new"      element={<ProtectedRoute roles={OFFICE_ROLES}><TillOrView till={<OrderFormPage />} view={<WebOrderFormPage />} /></ProtectedRoute>} />
-          <Route path="/orders/:id/add"  element={<ProtectedRoute roles={OFFICE_ROLES}><TillOrView till={<OrderDetailPage />} view={<WebOrderAppendPage />} /></ProtectedRoute>} />
-          <Route path="/orders/:id"      element={<ProtectedRoute roles={OFFICE_ROLES}><TillOrView till={<OrderDetailPage />} view={<OrdersViewPage />} /></ProtectedRoute>} />
+          <Route path="/orders"          element={<ProtectedRoute roles={OFFICE_ROLES}><MainPcWhenOnline view={<OrdersViewPage />}><OrdersPage /></MainPcWhenOnline></ProtectedRoute>} />
+          <Route path="/orders/new"      element={<ProtectedRoute roles={OFFICE_ROLES}><MainPcWhenOnline view={<WebOrderFormPage />}><OrderFormPage /></MainPcWhenOnline></ProtectedRoute>} />
+          <Route path="/orders/:id/add"  element={<ProtectedRoute roles={OFFICE_ROLES}><MainPcWhenOnline view={<WebOrderAppendPage />}><OrderDetailPage /></MainPcWhenOnline></ProtectedRoute>} />
+          <Route path="/orders/:id"      element={<ProtectedRoute roles={OFFICE_ROLES}><MainPcWhenOnline view={<OrdersViewPage />}><OrderDetailPage /></MainPcWhenOnline></ProtectedRoute>} />
           <Route path="/orders/:id/edit" element={<TillOnly what="Редагування замовлення"><ProtectedRoute roles={OFFICE_ROLES}><OrderFormPage /></ProtectedRoute></TillOnly>} />
 
           <Route path="/quotes"          element={<Navigate to="/orders" replace />} />

@@ -28,6 +28,7 @@ import { toast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/stores/authStore'
 import { getCachedBrands, getCachedCategories, listProductsOffline } from '@/lib/offlineDB'
 import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
+import { useWritesToMainPc } from '@/lib/mainPcData'
 import { canAdvanceCatalogPage, loadCatalogPage, type CatalogSource } from './catalogPaging'
 import {
   printLabels,
@@ -82,8 +83,10 @@ export default function ProductsPage() {
   const session  = useAuthStore((s) => s.session)
   const role     = (session?.user?.app_metadata?.role as string) ?? 'cashier'
   const scopeKey = session?.user?.id ?? ''
-  const isAdmin  = isDesktopRuntime() && canDeleteCatalog(role)
-  const canEditCatalog = isDesktopRuntime() && ['owner', 'admin', 'manager', 'storekeeper'].includes(role)
+  // 23.11.2026 (план 4.1): зміни — у програмі каси або у вебі через головний ПК (MainPcWhenOnline).
+  const mainPcWrites = useWritesToMainPc()
+  const isAdmin  = mainPcWrites && canDeleteCatalog(role)
+  const canEditCatalog = mainPcWrites && ['owner', 'admin', 'manager', 'storekeeper'].includes(role)
 
   const [result, setResult]         = useState<PaginatedProducts | null>(null)
   const loadRequestRef             = useRef(0)

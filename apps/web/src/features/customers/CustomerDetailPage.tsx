@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Trash2, Plus, Copy, ClipboardList } from 'lucide-react'
-import { desktopBridge } from '@/lib/desktopBridge'
+import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
 import { customerApi } from './customerApi'
 import type { CustomerOrder } from '@/features/orders/orderApi'
@@ -201,7 +201,8 @@ export default function CustomerDetailPage() {
         </Card>}
 
         <CustomerBalances customer={customer} deposit={deposit?.balance}/>
-        {local && canUseOrderCash(role) && <Button onClick={() => navigation.open(customerCashPath(customer.id))}>Розрахунки в касі</Button>}
+        {/* Гроші в касі — лише на самій касі; у вебі через головний ПК кнопки немає (23.11.2026). */}
+        {isDesktopRuntime() && canUseOrderCash(role) && <Button onClick={() => navigation.open(customerCashPath(customer.id))}>Розрахунки в касі</Button>}
         {depositError && <p role="alert" className="text-sm text-red-700">{depositError}</p>}
 
         {!canEdit && <Card>
@@ -213,7 +214,8 @@ export default function CustomerDetailPage() {
           </div>)}</div>}
         </Card>}
 
-        {!local && !offlineMode && (
+        {/* Нотатки й уподобання живуть лише на сервері — у вебі вони є й тоді, коли веб працює через головний ПК. */}
+        {!isDesktopRuntime() && !offlineMode && (
           <>
             <Card><CustomerNotes customerId={customer.id} /></Card>
             <Card><CustomerPreferences customerId={customer.id} /></Card>

@@ -18,14 +18,14 @@ import { api } from '@/lib/api'
 import { recognizeVehicleImage } from '@/lib/vehicleOcr'
 import { Layout } from '@/components/Layout'
 import { Button, Input, Card } from '@/components/ui'
-import { buildMessengerText, printInvoice, printDeliveryNote, loadSellerRequisites, hasSellerRequisites } from './orderDocuments'
+import { buildMessengerText, printInvoice, printDeliveryNote, loadSellerRequisites, hasSellerRequisites, loadOrderThumbnails, printOrderForm } from './orderDocuments'
 import { toast } from '@/components/ui/Toast'
 import { OrderProductResults } from './OrderProductResults'
 import { OrderPartSuggestions, type OrderPartSuggestion } from './OrderPartSuggestions'
 import { availableStock, orderNumber, stockFirst, validateOrderRows, replaceOrderProduct } from './orderUx'
 import { readOrderFormDraft, writeOrderFormDraft, removeOrderFormDraft } from './orderFormDraft'
 import { beginOrderSaveAttempt, checkOrderSaveAttempt, clearOrderSaveAttempt, readOrderSaveAttempt } from './orderSaveAttempt'
-import { isDesktopRuntime } from '@/lib/desktopBridge'
+import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
 import { saveOrderForm } from './orderFormSave'
 import { OrderLanNotice } from './OrderLanNotice'
 import { useAuthStore } from '@/stores/authStore'
@@ -180,6 +180,9 @@ interface ItemRow {
   buy_price?:  string
   source_type?: 'warehouse' | 'supplier'
 }
+
+/** Колонки таблиці позицій на широкому екрані: №, назва, артикул, к-сть, закупка+націнка, продаж, сума, джерело, дії. */
+const ORDER_ITEM_COLUMNS = 'lg:grid-cols-[1.75rem_minmax(0,3fr)_minmax(0,1.2fr)_4.5rem_minmax(0,1.8fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.5fr)_11rem]'
 
 const EMPTY_ITEM: ItemRow = { name: '', sku: '', qty: '1', sell_price: '0', supplier_id: '', expected_date: '', product_id: null, item_type: 'product', buy_price: '0', source_type: 'supplier' }
 
@@ -963,6 +966,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
       total_amount: totalKop,
       total_paid: totalPaid,
       prepayment: totalPaid,
+      comment: comment.trim() || null,
       items: validItems.map((r, i) => ({
         id: r.id ?? String(i),
         name: r.name.trim(),
@@ -972,16 +976,28 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
         buy_price: 0,
         product_id: r.product_id ?? null,
         supplier_id: r.supplier_id || null,
+        // Для бланка: стан позиції (склад / під замовлення / прибуло…).
+        source_type: r.source_type ?? 'warehouse',
+        item_status: r.item_status ?? 'pending',
+        expected_date: r.expected_date || null,
       })),
     } as unknown as CustomerOrder
   }
 
-  function printDoc(kind: 'invoice' | 'delivery') {
+  function printDoc(kind: 'invoice' | 'delivery' | 'form') {
     const validItems = items.filter((r) => r.name.trim())
     if (!validItems.length) { toast.error('Немає позицій для документа'); return }
     const seller = loadSellerRequisites()
-    if (!hasSellerRequisites(seller)) toast.warning('Реквізити продавця не заповнені (Налаштування → Реквізити продавця)')
+    if (kind !== 'form' && !hasSellerRequisites(seller)) toast.warning('Реквізити продавця не заповнені (Налаштування → Реквізити продавця)')
     const order = buildOrderForDocs()
+    if (kind === 'form') {
+      // Бланк замовлення з мініатюрами (23.11.2026, план 4.3); реквізити продавця тут не обов'язкові.
+      void loadOrderThumbnails(order, desktopBridge()?.catalog?.photoThumbnails).then(thumbnails => {
+        try { printOrderForm(order, seller, thumbnails) }
+        catch { toast.error('Не вдалося сформувати бланк. Перевірте, чи не заблоковані спливаючі вікна.') }
+      })
+      return
+    }
     try {
       if (kind === 'invoice') printInvoice(order, seller)
       else printDeliveryNote(order, seller)
@@ -1727,17 +1743,23 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
                   Почніть із пошуку товару вгорі або додайте замовлену запчастину вручну кнопкою внизу.
                 </p>
               ) : (
-                <div className="divide-y divide-gray-100">
+                <div className="divide-y divide-gray-100" data-order-items-table>
+                  {/* 23.11.2026 (план 4.3): на широкому екрані позиції — таблицею (один рядок на позицію), на телефоні — картками. */}
+                  <div className={'hidden px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500 lg:grid lg:gap-x-2 ' + ORDER_ITEM_COLUMNS} aria-hidden="true">
+                    <span>№</span><span>Назва, бренд</span><span>Артикул / OEM</span><span>К-сть</span><span>Закупка, націнка</span>
+                    <span>Продаж</span><span className="text-right">Сума</span><span>Джерело</span><span />
+                  </div>
                   {items.map((row, idx) => {
                     const backorder = row.source_type === 'supplier'
                     const locked = !!row.item_status && row.item_status !== 'pending'
                     const shortage = !backorder && row.item_type !== 'service' && row.stock !== undefined && orderNumber(row.qty) > row.stock
                     const fieldClass = 'w-full rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-300'
                     return (
-                      <div key={row.id ?? row.local_key ?? idx} className={backorder ? 'bg-amber-50/40 px-3 py-3 sm:px-4' : 'px-3 py-3 sm:px-4'}>
-                        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-xs font-semibold text-gray-600">Позиція {idx + 1}</span>
+                      <div key={row.id ?? row.local_key ?? idx} className={(backorder ? 'bg-amber-50/40 ' : '') + 'px-3 py-3 sm:px-4 lg:grid lg:items-center lg:gap-x-2 lg:gap-y-2 lg:py-2 ' + ORDER_ITEM_COLUMNS}>
+                        <span className="hidden text-sm font-semibold text-gray-500 lg:block">{idx + 1}</span>
+                        <div className="mb-2 flex flex-wrap items-center justify-between gap-2 lg:contents">
+                          <div className="flex flex-wrap items-center gap-2 lg:order-[8]">
+                            <span className="text-xs font-semibold text-gray-600 lg:hidden">Позиція {idx + 1}</span>
                             {row.product_id && !locked ? (
                               <select aria-label={`Джерело позиції ${idx + 1}`} value={row.source_type ?? 'warehouse'}
                                 onChange={(e) => setItems((rows) => rows.map((item, index) => index === idx ? { ...item, source_type: e.target.value as 'warehouse' | 'supplier', supplier_id: '', expected_date: '' } : item))}
@@ -1748,26 +1770,26 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
                             ) : <span className={backorder ? 'text-xs text-orange-700' : 'text-xs text-green-700'}>{backorder ? 'Під замовлення' : 'Зі складу'}</span>}
                             {!backorder && row.stock !== undefined && row.item_type !== 'service' && <span className="text-xs text-gray-500">Доступно: {row.stock}</span>}
                           </div>
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 lg:order-[9] lg:justify-end">
                             {!locked && <button type="button" onClick={() => startReplacement(idx)} className="rounded-lg border border-gray-200 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-50">Замінити товар ▾</button>}
                             <button type="button" onClick={() => removeItem(idx)} title="Видалити рядок" aria-label={`Видалити позицію ${idx + 1}`} className="rounded p-1.5 text-red-600 hover:bg-red-50"><Trash2 size={16} /></button>
                           </div>
                         </div>
-                        <div className="grid grid-cols-2 gap-3 lg:grid-cols-12">
-                          <label className="col-span-2 lg:col-span-4">
-                            <span className="mb-1 block text-xs text-gray-600">Назва запчастини, бренд *</span>
+                        <div className="grid grid-cols-2 gap-3 lg:contents">
+                          <label className="col-span-2 lg:col-span-1">
+                            <span className="mb-1 block text-xs text-gray-600 lg:sr-only">Назва запчастини, бренд *</span>
                             <input value={row.name} onChange={(e) => updateItem(idx, 'name', e.target.value)} placeholder="Назва та бренд запчастини" className={fieldClass} />
                           </label>
-                          <label className="lg:col-span-2">
-                            <span className="mb-1 block text-xs text-gray-600">Артикул / OEM</span>
+                          <label>
+                            <span className="mb-1 block text-xs text-gray-600 lg:sr-only">Артикул / OEM</span>
                             <input value={row.sku} onChange={(e) => updateItem(idx, 'sku', e.target.value)} className={fieldClass} />
                           </label>
-                          <label className="lg:col-span-1">
-                            <span className="mb-1 block text-xs text-gray-600">Кількість</span>
+                          <label>
+                            <span className="mb-1 block text-xs text-gray-600 lg:sr-only">Кількість</span>
                             <input type="number" min="0" step="1" value={row.qty} onChange={(e) => updateItem(idx, 'qty', e.target.value)} className={fieldClass} aria-invalid={shortage} />
                           </label>
-                          <label className="lg:col-span-3">
-                            <span className="mb-1 block text-xs text-gray-600">Закупка, грн</span>
+                          <label>
+                            <span className="mb-1 block text-xs text-gray-600 lg:sr-only">Закупка, грн</span>
                             <div className="flex gap-1">
                               <input inputMode="decimal" value={row.buy_price ?? '0'} onChange={(e) => updateItem(idx, 'buy_price', e.target.value)} className={fieldClass + ' min-w-0'} />
                               <select value="" aria-label={`Націнка позиції ${idx + 1}`} title="Розрахувати ціну продажу"
@@ -1779,25 +1801,38 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
                               </select>
                             </div>
                           </label>
-                          <label className="lg:col-span-2">
-                            <span className="mb-1 block text-xs text-gray-600">Продаж, грн</span>
+                          <label>
+                            <span className="mb-1 block text-xs text-gray-600 lg:sr-only">Продаж, грн</span>
                             <input inputMode="decimal" value={row.sell_price} onChange={(e) => updateItem(idx, 'sell_price', e.target.value)} className={fieldClass + ' font-semibold'} />
                           </label>
+                          <p className="col-span-2 text-right text-sm text-gray-700 lg:col-span-1" data-order-line-sum>
+                            <span className="text-xs text-gray-500 lg:sr-only">Сума: </span>
+                            <span className="font-semibold">{formatMoney(Math.round(orderNumber(row.sell_price) * 100) * (orderNumber(row.qty) || 0))}</span>
+                          </p>
                           {backorder && <>
-                            <div className="lg:col-span-4">
+                            <div className="lg:order-[10] lg:col-start-2 lg:col-span-3">
                               <span className="mb-1 block text-xs text-gray-600">Постачальник</span>
                               <SupplierQuickPicker suppliers={suppliers} value={row.supplier_id} onChange={(value) => updateItem(idx, 'supplier_id', value)} onCreate={createSupplierFromName} placeholder="Пошук або новий" />
                             </div>
-                            <label className="lg:col-span-2">
+                            <label className="lg:order-[11] lg:col-span-2">
                               <span className="mb-1 block text-xs text-gray-600">Очікуємо</span>
                               <input type="date" value={row.expected_date ?? ''} onChange={(e) => updateItem(idx, 'expected_date', e.target.value)} className={fieldClass} />
                             </label>
                           </>}
                         </div>
-                        {shortage && <p role="alert" className="mt-2 text-xs font-medium text-red-700">Доступно {row.stock}, потрібно {row.qty}. Зменшіть кількість або виберіть «Під замовлення».</p>}
+                        {shortage && <p role="alert" className="mt-2 text-xs font-medium text-red-700 lg:order-[12] lg:col-span-full lg:mt-0">Доступно {row.stock}, потрібно {row.qty}. Зменшіть кількість або виберіть «Під замовлення».</p>}
                       </div>
                     )
                   })}
+                </div>
+              )}
+
+              {/* Підсумок під таблицею позицій (23.11.2026, план 4.3): разом, внесено, до сплати. */}
+              {hasValidItems && (
+                <div className="flex flex-wrap items-baseline justify-end gap-x-6 gap-y-1 border-t border-gray-100 px-4 py-3 text-sm" data-order-items-total>
+                  <span className="text-gray-600">Разом: <b className="text-gray-900">{formatMoney(totalKop)}</b></span>
+                  {totalPaid > 0 && <span className="text-green-700">Внесено: <b>{formatMoney(totalPaid)}</b></span>}
+                  <span className="text-gray-600">До сплати: <b className="text-lg text-yellow-700">{formatMoney(toPayKop)}</b></span>
                 </div>
               )}
 
@@ -1944,6 +1979,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
                 <details className="relative">
                   <summary className="cursor-pointer rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium">Документи</summary>
                   <div className="absolute bottom-full left-0 mb-2 min-w-56 rounded-xl border border-gray-200 bg-white p-2 shadow-lg flex flex-col gap-1">
+                    <Button variant="secondary" disabled={!hasValidItems} onClick={() => printDoc('form')}>Бланк замовлення</Button>
                     <Button variant="secondary" disabled={!hasValidItems} onClick={() => printDoc('invoice')}>Рахунок-фактура</Button>
                     <Button variant="secondary" disabled={!hasValidItems} onClick={() => printDoc('delivery')}>Видаткова накладна</Button>
                     <Button variant="secondary" disabled={!hasValidItems} onClick={copyMessengerText}>Копіювати для клієнта</Button>

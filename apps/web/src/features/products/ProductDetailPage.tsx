@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useLatestRequest } from '@/hooks/useLatestRequest'
 import { useScopedAction } from '@/hooks/useScopedAction'
-import { isDesktopRuntime } from '@/lib/desktopBridge'
+import { useWritesToMainPc } from '@/lib/mainPcData'
 import { parseWriteoffQuantity } from '@/features/inventory/writeoffQuantity'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Trash2, Clock, AlertTriangle, Trash, CheckCircle, XCircle, Printer, Camera } from 'lucide-react'
@@ -76,14 +76,17 @@ function ProductDetail() {
   const offlineMode = useAuthStore((s) => s.offlineMode)
   const writes = useScopedAction(JSON.stringify([id, role, offlineMode]))
   const linksRequests = useLatestRequest([id, offlineMode])
-  const canWrite = isDesktopRuntime() && ['owner', 'admin', 'manager', 'cashier', 'storekeeper'].includes(role)
+  // 23.11.2026 (план 4.1): зміни — у програмі каси або у вебі через головний ПК (MainPcWhenOnline).
+  const mainPcWrites = useWritesToMainPc()
+  const canWrite = mainPcWrites && ['owner', 'admin', 'manager', 'cashier', 'storekeeper'].includes(role)
   const canReserve = canWrite && role !== 'cashier'
   const reserveRecovery = useWarehouseRecovery('reserve', canReserve)
   const reserveRefresh = useLatestRequest([id, role, offlineMode])
   const canSeeMargin = ['owner', 'admin', 'storekeeper'].includes(role)
   const canDeleteProduct = canWrite && canDeleteCatalog(role)
   // Веб лише переглядає; правку картки виконує каса в мережі (рішення власника 17.11.2026).
-  const canEditViaTill = !isDesktopRuntime() && !offlineMode && ['owner', 'admin', 'manager'].includes(role)
+  // Без головного ПК на зв'язку — правка командою на касу (як і раніше); з ПК — звичайна правка вище.
+  const canEditViaTill = !mainPcWrites && !offlineMode && ['owner', 'admin', 'manager'].includes(role)
   const tillStatus = useTillOnline(canEditViaTill)
   const [tillEditOpen, setTillEditOpen] = useState(false)
   const [product, setProduct] = useState<Product | null>(null)

@@ -17,13 +17,13 @@ import { customerApi } from '@/features/customers/customerApi'
 import type { Customer } from '@/types/customer'
 import type { Product } from '@/types/product'
 import { loadProductLabelSettings, printLabels } from '@/features/labels/LabelDesigner'
-import { printInvoice, printDeliveryNote, orderMessengerText, loadSellerRequisites, hasSellerRequisites } from './orderDocuments'
+import { printInvoice, printDeliveryNote, orderMessengerText, loadSellerRequisites, hasSellerRequisites, loadOrderThumbnails, printOrderForm } from './orderDocuments'
 import { isTerminalOrderStatus } from './orderStatus'
 import { allowedOrderStatusTransitions } from './orderWorkflow'
 import { canUseOrderCash, orderEditPath } from './orderUx'
 import { useAuthStore } from '@/stores/authStore'
 import { OrderLanBadge, OrderLanNotice } from './OrderLanNotice'
-import { desktopBridge } from '@/lib/desktopBridge'
+import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
 
 interface Payment {
   id: string
@@ -119,7 +119,10 @@ const ITEM_STATUS_ACTIONS: Record<string, Array<{ status: ItemStatus; label: str
 }
 
 export default function OrderDetailPage() {
-  const canUseCash = useAuthStore((state) => canUseOrderCash(state.session?.user.app_metadata?.role))
+  // Оплата, видача, повернення й обмін — гроші й чек у касі: лише на самій касі. У вебі через головний ПК цих кнопок немає
+  // (план вебу 22.11.2026; 23.11.2026 повна картка замовлення відкрилась у вебі через головний ПК).
+  const atTill = isDesktopRuntime()
+  const canUseCash = useAuthStore((state) => canUseOrderCash(state.session?.user.app_metadata?.role)) && atTill
   const navigate = useNavigate()
   const { open, back } = useViewNavigation('/orders')
   const { id } = useParams<{ id: string }>()
@@ -319,7 +322,7 @@ export default function OrderDetailPage() {
               <span className="hidden sm:inline">Редагувати</span>
             </Button>
           )}
-          {serverActionsReady && order.status === 'completed' && order.sale_id && (
+          {atTill && serverActionsReady && order.status === 'completed' && order.sale_id && (
             <>
               <Button variant="secondary" onClick={() => open(`/returns?saleId=${order.sale_id}&orderId=${id}`)}>
                 ↩️ <span className="hidden sm:inline">Повернути</span>
@@ -357,6 +360,22 @@ export default function OrderDetailPage() {
                   className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 font-medium"
                 >
                   🔄 Повторити замовлення
+                </button>
+                {/* 23.11.2026 (план 4.3): друкований бланк замовлення з мініатюрами — першим у списку документів. */}
+                <button
+                  onClick={async () => {
+                    setActionsOpen(false)
+                    const thumbnails = await loadOrderThumbnails(order, desktopBridge()?.catalog?.photoThumbnails)
+                    try {
+                      printOrderForm(order, loadSellerRequisites(), thumbnails)
+                    } catch (err) {
+                      console.error(err)
+                      toast.error('Не вдалося надрукувати бланк. Перевірте, чи не заблоковані спливаючі вікна.')
+                    }
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 font-semibold"
+                >
+                  🖨 Бланк замовлення
                 </button>
                 <button
                   onClick={() => {

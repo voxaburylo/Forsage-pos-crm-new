@@ -18,7 +18,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createHash, randomUUID } from 'node:crypto'
-import { app, BrowserWindow, dialog, ipcMain, Menu, net, shell, safeStorage, powerMonitor, crashReporter, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, shell, safeStorage, powerMonitor, crashReporter, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from 'electron'
 import { RememberedAccess, type RememberedUser } from './security/rememberedAccess'
 import { DesktopSessionLifecycleError, serverSessionCacheResultForError } from './security/desktopSessionLifecycle'
 import { verifyAndRememberServerSession } from './security/serverSession'
@@ -80,6 +80,7 @@ import { loadPrintHtml } from './print/loadPrintHtml'
 import { getPrintSession, isPrintSession } from './print/printSession'
 import { assertPrintRuntimeFiles } from './print/printRuntime'
 import { isLanProxyChannel, LocalNetworkCoordinator, type LanSession } from './lan/localNetwork'
+import { productPhotoThumbnails } from './lib/photoThumbnails'
 import { LanOrderQueue } from './lan/orderQueue'
 import { buildLanDiagnosis, readFirewallState, requestFirewallRule } from './lan/diagnostics'
 import { assertLanIdentityConnection, canPairEmptyClient, cacheLanIdentity, hasLanIdentity, loginLanClient } from './lan/clientIdentity'
@@ -1598,6 +1599,13 @@ app.whenReady().then(async () => {
     })
     return { ok: true }
   })
+  // 23.11.2026 (план 4.3): мініатюри товарів для друкованого бланка замовлення — і в програмі, і у вебі через
+  // головний ПК (фото лежать файлами тут, а file:-адреси не відкриваються ні у вебі, ні у вікні друку).
+  // Лише фото, на які посилаються самі товари; лише з теки photos; зменшені до 96 px.
+  handleDesktopIpc('desktop:catalog:photo-thumbnails', (_event, productIds: unknown) =>
+    productPhotoThumbnails(requireLocalDatabase(), desktopDataRoot, productIds,
+      filePath => { const image = nativeImage.createFromPath(filePath); return image.isEmpty() ? null : image.resize({ width: 96 }).toDataURL() }),
+  )
   handleDesktopIpc('desktop:catalog:list-categories', () =>
     requireLocalCatalog().listCategories(),
   )
