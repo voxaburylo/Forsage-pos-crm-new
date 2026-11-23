@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Monitor, Wifi, WifiOff } from 'lucide-react'
+import { Monitor, WifiOff } from 'lucide-react'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { api } from '@/lib/api'
 import { isUserWatching } from '@/lib/userActivity'
@@ -68,13 +68,13 @@ function useMainPcLink(allowed: boolean): { state: State; ready: boolean } {
   return { state, ready }
 }
 
+// 23.11.2026 (власник): напис «Працює через головний ПК» закривав перемикання сторінок на телефоні.
+// Тепер це лише крапка в кутку: зелена — ПК на звʼязку, червона — ні. Вона не перехоплює натискань.
 function MainPcBadge({ state }: { state: State }) {
+  const text = state === 'offline' ? 'Головний ПК не на звʼязку — зміни зараз не пройдуть' : 'Працює через головний ПК'
   return (
-    <div className={`fixed bottom-3 right-3 z-40 flex items-center gap-2 rounded-full px-3 py-1.5 text-xs shadow ${state === 'offline' ? 'bg-red-600 text-white' : 'bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200'}`}
-      role="status" data-main-pc-link={state}>
-      {state === 'offline' ? <WifiOff size={14} /> : <Wifi size={14} />}
-      {state === 'offline' ? 'Головний ПК не на звʼязку — зміни зараз не пройдуть' : 'Працює через головний ПК'}
-    </div>
+    <span className={`pointer-events-none fixed bottom-1 right-1 z-40 h-2.5 w-2.5 rounded-full ring-2 ring-white ${state === 'offline' ? 'bg-red-600' : 'bg-emerald-500'}`}
+      role="status" aria-label={text} title={text} data-main-pc-link={state} />
   )
 }
 
