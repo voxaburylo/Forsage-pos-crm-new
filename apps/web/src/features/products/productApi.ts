@@ -23,10 +23,10 @@ export interface ProductCrossNumber {
   created_at: string
 }
 
-function localCrossNumbers(rows: Array<{ id: string; number: string; source: string }>): ProductCrossNumber[] {
+function localCrossNumbers(rows: Array<{ id: string; number: string; source: string; brand?: string | null }>): ProductCrossNumber[] {
   return rows.map(r => ({
     id: r.id, number: r.number, normalized_number: r.number, number_type: 'cross',
-    brand: null, source: r.source, is_verified: true, created_at: '',
+    brand: r.brand ?? null, source: r.source, is_verified: true, created_at: '',
   }))
 }
 
@@ -362,7 +362,7 @@ export const productApi = {
 
   addCrossNumbers: async (
     id: string,
-    numbers: string[],
+    numbers: Array<string | { number: string; brand?: string | null }>,
     source: string,
   ) => {
     const local = desktopBridge()?.catalog.changeCrossNumbers

@@ -654,8 +654,9 @@ export interface ForsageDesktopBridge {
     savePhoto?: (folder: string, bytes: ArrayBuffer) => Promise<string>
     deletePhoto?: (photoUrl: string) => Promise<{ ok: true }>
     deleteProduct?: (id: string) => Promise<{ ok: true }>
-    listCrossNumbers?: (productId: string) => Promise<Array<{ id: string; number: string; source: string }>>
-    changeCrossNumbers?: (productId: string, change: { add?: string[]; removeId?: string; source?: string }) => Promise<Array<{ id: string; number: string; source: string }>>
+    listCrossNumbers?: (productId: string) => Promise<Array<{ id: string; number: string; source: string; brand?: string | null }>>
+    /** add: номер рядком або { number, brand } — бренд номера зберігається (23.11.2026). */
+    changeCrossNumbers?: (productId: string, change: { add?: Array<string | { number: string; brand?: string | null }>; removeId?: string; source?: string }) => Promise<Array<{ id: string; number: string; source: string; brand?: string | null }>>
     listAnalogs?: (productId: string, limit?: number) => Promise<DesktopProduct[]>
     negativeStock?: () => Promise<NegativeStockRow[]>
     listPopular: (limit?: number) => Promise<DesktopProduct[]>
