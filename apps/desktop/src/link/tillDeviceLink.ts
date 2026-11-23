@@ -26,6 +26,8 @@ export interface TillDeviceLinkDeps {
   deviceId(): string | null
   /** Ключ лежить у захищеному сховищі Windows; null — ключа ще немає. */
   readKey(): { token: string; tenant_id: string } | null
+  /** 23.11.2026: стан черги передачі на сервер — іде з кожним «я на зв'язку», щоб сервер міг попередити власника. */
+  outboxSummary?: () => { waiting: number; oldest_at: string | null; error: string | null } | null
   writeKey(key: { token: string; tenant_id: string } | null): void
   /** Виконати запит вебу в базі каси з правами його працівника. Відмова — виняток із зрозумілим текстом. */
   execute(userId: string, channel: string, args: unknown[]): Promise<unknown>
@@ -113,6 +115,23 @@ export class TillDeviceLink {
     try { return await this.post('/server-data', {}, 30_000) } catch (error) { this.deps.onError?.(error); return null }
   }
 
+  /** Чи може ПК зараз говорити із сервером власним ключем (ключ є, не відхилений, це головний ПК). */
+  available(): boolean {
+    return Boolean(this.currentKey()) && !this.rejected && this.deps.canRun() && Boolean(this.deps.apiUrl()) && Boolean(this.deps.deviceId())
+  }
+
+  /**
+   * 23.11.2026: передача документів каси на сервер ключем ПК (див. outboxPush.ts). Помилка зв'язку летить далі —
+   * викликач позначає пачку для повтору.
+   */
+  async syncPush(body: Record<string, unknown>): Promise<unknown> {
+    if (!this.available()) throw new Error('Зв\'язок головного ПК не налаштовано')
+    try { return await this.post('/sync/push', body, 60_000) } catch (error) {
+      if (Number((error as { status?: number })?.status) === 401) this.rejected = true
+      throw error
+    }
+  }
+
   private currentKey() {
     if (this.key === undefined) { try { this.key = this.deps.readKey() } catch { this.key = null } }
     return this.key
@@ -131,7 +150,9 @@ export class TillDeviceLink {
     this.busy = true
     try {
       if (!this.currentKey() || this.rejected || !this.deps.canRun() || !this.deps.apiUrl() || !this.deps.deviceId()) return
-      const beat = (await this.post('/beat', {}, 10_000)) as Beat | null
+      let outbox: unknown = null
+      try { outbox = this.deps.outboxSummary?.() ?? null } catch { outbox = null }
+      const beat = (await this.post('/beat', outbox ? { outbox } : {}, 10_000)) as Beat | null
       this.commandsPending = Boolean(beat?.commands)
       if (woken || beat?.web_active) this.fastUntil = this.now() + DEVICE_LINK_FAST_HOLD_MS
       if (woken || beat?.rpc) {

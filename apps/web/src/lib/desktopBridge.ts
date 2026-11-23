@@ -530,6 +530,8 @@ export interface ForsageDesktopBridge {
     wake: () => Promise<TillLinkStatus>
     register: (token: string) => Promise<TillLinkStatus>
     commandsTaken: () => Promise<void>
+    /** 23.11.2026: передати зміни каси на сервер ключем ПК. null — ключа ще немає (тоді вікно надсилає своєю сесією). */
+    pushOutbox?: () => Promise<{ pushed: number; failed: number; pending: number; resetRequired: boolean } | null>
   }
   diagnostics?: {
     reportError: (kind: 'renderer-error' | 'renderer-rejection', message: string, stack: string) => void

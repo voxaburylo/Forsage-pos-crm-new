@@ -37,11 +37,12 @@ export function parseDeviceAuthorization(header: string | undefined): { deviceId
 }
 
 /** Хто цей пристрій. Невідомий пристрій чи невірний ключ — null. */
-export async function authenticateTillDevice(deviceId: string, token: string): Promise<{ tenant_id: string; device_id: string } | null> {
-  const { rows } = await pool.query('SELECT tenant_id, token_hash FROM till_devices WHERE device_id = $1', [deviceId])
+export async function authenticateTillDevice(deviceId: string, token: string): Promise<{ tenant_id: string; device_id: string; created_by: string | null } | null> {
+  const { rows } = await pool.query('SELECT tenant_id, token_hash, created_by FROM till_devices WHERE device_id = $1', [deviceId])
   const row = rows[0]
   if (!row) return null
   const given = Buffer.from(hash(token), 'hex'), stored = Buffer.from(String(row.token_hash), 'hex')
   if (given.length !== stored.length || !timingSafeEqual(given, stored)) return null
-  return { tenant_id: row.tenant_id as string, device_id: deviceId }
+  // created_by — власник чи адміністратор, який видав ПК ключ: від його імені записуються зміни, у яких каса не вказала автора.
+  return { tenant_id: row.tenant_id as string, device_id: deviceId, created_by: (row.created_by as string | null) ?? null }
 }

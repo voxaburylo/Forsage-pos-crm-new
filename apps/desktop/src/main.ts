@@ -82,6 +82,7 @@ import { assertPrintRuntimeFiles } from './print/printRuntime'
 import { isLanProxyChannel, LocalNetworkCoordinator, type LanSession } from './lan/localNetwork'
 import { productPhotoThumbnails } from './lib/photoThumbnails'
 import { RealtimeWake } from './link/realtimeWake'
+import { OutboxPusher } from './link/outboxPush'
 import { LanOrderQueue } from './lan/orderQueue'
 import { buildLanDiagnosis, readFirewallState, requestFirewallRule } from './lan/diagnostics'
 import { assertLanIdentityConnection, canPairEmptyClient, cacheLanIdentity, hasLanIdentity, loginLanClient } from './lan/clientIdentity'
@@ -783,7 +784,23 @@ async function executeWebRequest(userId: unknown, channel: unknown, args: unknow
   const session = typeof userId === 'string' ? resolveLanSession(userId) : null
   if (!session) throw new Error('Працівника не знайдено або доступ до програми вимкнено')
   if (session.role === 'cashier' || session.role === 'tire_worker') throw new Error('Касир працює лише на касі')
-  return executeLanCommand(channel, Array.isArray(args) ? args : [], session)
+  // Дія вебу могла змінити базу — передаємо зміни на сервер одразу, не чекаючи таймера.
+  try { return await executeLanCommand(channel, Array.isArray(args) ? args : [], session) } finally { getOutboxPusher().soon() }
+}
+
+/**
+ * 23.11.2026: зміни каси йдуть на сервер ключем самого головного ПК з головного процесу — і коли в програмі касир,
+ * і коли вона працює у фоні. Права на кожну дію вже перевірила каса, коли її виконувала.
+ */
+let outboxPusher: OutboxPusher | null = null
+function getOutboxPusher(): OutboxPusher {
+  outboxPusher ??= new OutboxPusher({
+    available: () => Boolean(localSync) && getTillDeviceLink().available(),
+    store: () => localSync,
+    send: body => getTillDeviceLink().syncPush(body as unknown as Record<string, unknown>),
+    onError: error => writeDesktopDiagnostic('outbox-push', { error: error instanceof Error ? error.message : String(error) }),
+  })
+  return outboxPusher
 }
 
 let tillDeviceLinkError = ''
@@ -807,6 +824,11 @@ function getTillDeviceLink(): TillDeviceLink {
         .run(JSON.stringify({ key: safeStorage.encryptString(key.token).toString('base64'), tenant_id: key.tenant_id }), new Date().toISOString())
     },
     execute: executeWebRequest,
+    outboxSummary: () => {
+      if (!localSync) return null
+      const status = localSync.getSyncStatus()
+      return { waiting: status.pending + status.retrying + status.stuck, oldest_at: status.oldest_created_at, error: status.last_error }
+    },
     canRun: () => isMainTill() && !databaseMaintenance,
     // Без інтернету помилка повторюється щопівхвилини — у діагностику пишемо лише зміну стану.
     onError: error => {
@@ -1283,6 +1305,7 @@ app.whenReady().then(async () => {
   shiftBackups.start()
   // Зв'язок головного ПК із сервером власним ключем: веб працює через ПК і тоді, коли в програмі ніхто не увійшов.
   getTillDeviceLink().start()
+  getOutboxPusher().start()
   // 23.11.2026: у фоні (без вікна) сигнал «у вебі є робота» слухає сам головний процес — інакше запити вебу чекали 1–11 с.
   if (backgroundMode) {
     new RealtimeWake({
@@ -1538,7 +1561,7 @@ app.whenReady().then(async () => {
     stopBackupScheduler = null
     let closed = false
     try {
-      tillDeviceLink?.stop()
+      tillDeviceLink?.stop(); outboxPusher?.stop()
       await shiftBackups?.stop()
       await externalBackups?.stop()
       await database.waitForBackup()
@@ -1826,6 +1849,8 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:link:status', () => ({ ...getTillDeviceLink().status(), main_till: linkPossible() }))
   handleDesktopIpc('desktop:link:wake', async () => ({ ...(await getTillDeviceLink().wake()), main_till: linkPossible() }))
   handleDesktopIpc('desktop:link:commands-taken', () => { getTillDeviceLink().commandsTaken() })
+  // Вікно програми просить передати зміни зараз. null — ключа ПК ще немає: тоді вікно надсилає по-старому, своєю сесією.
+  handleDesktopIpc('desktop:link:push-outbox', () => getOutboxPusher().pushNow())
   // Ключ видає сервер власнику чи адміністратору; сюди його приносить вікно програми одразу після видачі.
   handleDesktopIpc('desktop:link:register', (_event, token: string) => {
     const session = requireDesktopSession()
@@ -2528,7 +2553,7 @@ app.on('before-quit', (event) => {
       await lanUpdateFlight
       await lanOrderQueue?.settle()
       cashalot?.stopWorker()
-      tillDeviceLink?.stop()
+      tillDeviceLink?.stop(); outboxPusher?.stop()
       await shiftBackups?.stop()
       await externalBackups?.stop()
       await localDatabase?.waitForBackup().catch((error) => writeDesktopDiagnostic('backup-on-quit-failed', error))

@@ -46,6 +46,10 @@ async function executeDesktopOutboxPush(limit = 50): Promise<DesktopPushResult> 
 
   pushExecutionActive = true
   try {
+    // 23.11.2026: головний ПК сам передає зміни на сервер власним ключем (і у фоні, і коли в касі касир) —
+    // тоді сесія того, хто увійшов, для передачі не потрібна. null — ключа ПК ще немає: надсилаємо, як раніше.
+    const viaMainPc = await desktop.link?.pushOutbox?.()
+    if (viaMainPc) return viaMainPc
     if (!await canUseCloudBackground()) return { pushed: 0, failed: 0, pending: 0, resetRequired: false }
     const [pendingOperations, state] = await Promise.all([
       desktop.sync.listPending(limit),
