@@ -144,6 +144,9 @@ describe('wiring of the background mode', () => {
     expect(script).toContain("-Argument '--background'")
     expect(script).toContain('-AtStartup')
     expect(script).toContain('-MultipleInstances IgnoreNew')
+    // 23.11.2026: «$action = New-ScheduledTaskAction» перезаписував параметр $Action (PowerShell не розрізняє регістр)
+    // і завдання не створювалось. Змінні скрипту не мають збігатися з параметрами ні в якому регістрі.
+    for (const parameter of ['action', 'apppath']) expect(script).not.toMatch(new RegExp('^\\s*\\$' + parameter + '\\s*=', 'im'))
     const installer = readFileSync(new URL('../scripts/install-main-till.cjs', import.meta.url), 'utf8')
     expect(installer).toContain('const backgroundTask = String.raw`\\Forsage\\TillBackground`')
     expect(installer).toContain("'till-handoff.request'")
