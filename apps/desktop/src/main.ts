@@ -2208,6 +2208,11 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:orders:bulk-arrival', (_event, itemIds: string[], tenantId?: string) =>
     requireLocalOrders().bulkArrival(itemIds, tenantId),
   )
+  // 23.11.2026 (план C3): «Замовити в постачальника».
+  handleDesktopIpc('desktop:orders:supplier-lines', () =>
+    requireLocalOrders().listSupplierOrderLines(requireDesktopSession().tenant_id))
+  handleDesktopIpc('desktop:orders:bulk-ordered', (_event, itemIds: string[]) =>
+    requireLocalOrders().bulkOrdered(itemIds, requireDesktopSession().tenant_id))
   handleDesktopIpc('desktop:orders:get', (_event, id: string, tenantId?: string) =>
     requireLocalOrders().getOrder(id, tenantId),
   )
