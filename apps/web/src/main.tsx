@@ -5,7 +5,10 @@ import App from './App.tsx'
 import { installLocalDiagnostics } from './lib/localDiagnostics'
 import { applyLiteMode } from './lib/liteMode'
 import { installDialogFocusRepair } from './lib/dialogFocusRepair'
+import { installScannerPrefixGuard } from './lib/scannerPrefixGuard'
 
+// Першим: F7 сканера не має відкривати вікно браузера на жодному екрані (23.11.2026).
+installScannerPrefixGuard()
 installLocalDiagnostics()
 applyLiteMode()
 installDialogFocusRepair()
