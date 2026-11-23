@@ -75,6 +75,18 @@ else {
 }
 
 const source = path.resolve(__dirname, '../release/staged/Forsage-0.1.0-portable.exe')
+// 23.11.2026 (план C7): сама нова програма — на копії бази, без мережі. Не відкрила копію — не ставимо.
+if (!process.argv.includes('--skip-rehearsal')) {
+  if (sha256(source) !== expectedHash) { console.error('Хеш зібраного EXE не збігається з очікуваним — нічого не встановлено.'); restartBackground(); process.exit(1) }
+  const { runExeRehearsal } = require('./install-rehearsal.cjs')
+  const started = runExeRehearsal({ exe: source, dataRoot: ownerRoot })
+  console.log('exe-rehearsal', started.status, started.reason ?? '')
+  if (started.status === 'failed') {
+    console.error('Встановлення зупинено: нова програма не пройшла запуск на копії бази. Каса лишилась на попередній версії.')
+    restartBackground()
+    process.exit(4)
+  }
+}
 const rollback = path.join(process.env.LOCALAPPDATA ?? '', 'Forsage/old-builds/Forsage-before-update.exe')
 console.log('before', sha256(destination))
 const result = installRelease({ source, destination, rollback, expectedHash })
