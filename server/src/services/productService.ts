@@ -861,7 +861,10 @@ export async function getProductAnalogs(productId: string, tenantId: string) {
   for (const row of sourceCrosses ?? []) {
     const normalized = normalizeCatalogCode(row.normalized_number || row.number)
     if (normalized.length >= 4) lookupCodes.add(normalized)
-    for (const code of catalogCodesFromName(row.number)) lookupCodes.add(code)
+    // 23.11.2026: крос-номер — один номер, навіть із пробілом («E87KP D150» не ділимо на «D150»); на шматки — лише запис зі словом-брендом.
+    if (String(row.number ?? '').trim().split(/\s+/).some((piece: string) => /^[A-Za-zА-Яа-яІЇЄҐіїєґ][A-Za-zА-Яа-яІЇЄҐіїєґ.&-]+[:,;]?$/.test(piece))) {
+      for (const code of catalogCodesFromName(row.number)) lookupCodes.add(code)
+    }
   }
 
   const explicitMeta = new Map<string, { analog_type: string; priority: number }>()
