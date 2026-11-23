@@ -52,7 +52,7 @@ try {
   const base = server.resolvedUrls.local[0]
   async function setup(route = '/pos', role = 'owner') {
     const page = await browser.newPage({ viewport: { width: 1366, height: 768 } })
-    page.setDefaultTimeout(10000)
+    page.setDefaultTimeout(process.env.CI ? 30000 : 10000)
     page.on('pageerror', error => { pageErrors.push(error.message); console.error(error.message) })
     await page.route('**/*', request => new URL(request.request().url()).origin === new URL(base).origin ? request.continue() : (blocked.push(request.request().url()), request.abort()))
     await page.addInitScript(({ route, role }) => { window.testRoute = route; window.testRole = role }, { route, role })
