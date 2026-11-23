@@ -716,6 +716,7 @@ export interface ForsageDesktopBridge {
     tireCashHandover: (input: any) => Promise<any>
     createSalary: (input: any) => Promise<any>
     dailyPayout: (input: any) => Promise<any>
+    payoutList?: (workDate?: string) => Promise<any[]>
     resolveOperation?: (kind: 'salary' | 'daily-salary', operationId: string) => Promise<{ status: 'committed'; result: any } | { status: 'not_committed' }>
     deleteSalary: (id: string) => Promise<{ success: true }>
   }

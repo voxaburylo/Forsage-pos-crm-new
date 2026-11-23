@@ -1,3 +1,4 @@
+import { type PayoutRow, payoutRows } from './salaryPayoutModel'
 import { api } from '@/lib/api'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
@@ -144,6 +145,12 @@ export const staffApi = {
       return { data: await localSalaryRequest('daily-salary', body, local, local.dailyPayout) as { amount: number; fund_source?: SalaryFundSource } }
     }
     return api.post<{ data: { amount: number; fund_source?: SalaryFundSource } }>('/api/v1/salary/daily-payout', body)
+  },
+  /** 23.11.2026: кому скільки видати сьогодні — для касира. Лише на касі. */
+  async payoutList(workDate?: string): Promise<PayoutRow[]> {
+    const local = localStaff()?.payoutList
+    if (!local) throw new Error('Видача зарплати доступна лише на касі')
+    return payoutRows(await local(workDate))
   },
   async deleteSalary(id: string): Promise<void> {
     const local = localStaff()?.deleteSalary

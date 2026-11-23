@@ -2038,6 +2038,7 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:staff:delete-commission-rule', (_event, id: string) => requireLocalStaff().deleteCommissionRule(id))
   handleDesktopIpc('desktop:staff:list-salary', (_event, input?: any) => requireLocalStaff().listSalary(input))
   handleDesktopIpc('desktop:staff:salary-summary', (_event, period?: string) => requireLocalStaff().salarySummary(period))
+  handleDesktopIpc('desktop:staff:payout-list', (_event, workDate?: string) => requireLocalStaff().payoutList(workDate))
   handleDesktopIpc('desktop:staff:daily-summary', (_event, workDate?: string) => requireLocalStaff().dailySummary(workDate))
   handleDesktopIpc('desktop:staff:tire-service-report', (_event, workDate?: string) => requireLocalStaff().tireServiceReport(workDate))
   handleDesktopIpc('desktop:staff:tire-cash-handover', (_event, input: any) => requireLocalStaff().tireCashHandover({ ...input, user_id: requireDesktopSession().id }))
