@@ -323,4 +323,13 @@ describe('crossResearchPrompt (21.11.2026: аналоги, популярні в
     expect(prompt).toContain('Не вгадуй')
     expect(prompt).toContain('product_id p1')
   })
+  // 23.11.2026, слово власника: «знаходить буквально 10 і вважає, що все».
+  it('asks for the full list: every OE number for every car make, every brand found, grouped by brand', () => {
+    const prompt = crossResearchPrompt('- product_id p1: фільтр масляний; артикул 26300-35503; бренд Hyundai')
+    expect(prompt).toContain('ПОВНИЙ перелік')
+    expect(prompt).toContain('Не зупиняйся на перших 5–10')
+    expect(prompt).toContain('по КОЖНІЙ марці авто')
+    for (const brand of ['Profit', 'Starline', 'Hyundai', 'Kia', 'Mitsubishi']) expect(prompt).toContain(brand)
+    expect(prompt).toContain('бренд один раз, номери через кому')
+  })
 })

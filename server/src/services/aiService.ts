@@ -16,7 +16,7 @@ import { asksPermissionInText } from './aiPermissionText.js'
 import { rulesPromptSafe } from './aiMemoryService.js'
 import { createAiToolBudget, parseAiReadArguments } from './aiToolSafety.js'
 import { safeAiErrorInfo } from './aiResponseSafety.js'
-import { cleanCrossProposal } from './aiCrossNumberRules.js'
+import { cleanCrossProposal, CROSS_RESEARCH_PRODUCTS, crossResearchSearches, groupCrossNumbersByBrand } from './aiCrossNumberRules.js'
 
 // ─── Моделі та приблизна вартість ($ за 1M токенів) ──────────────────────────
 // Значення орієнтовні (тарифи Anthropic можуть змінюватись) — лічильник показуємо
@@ -194,14 +194,19 @@ const RESEARCH_TOOL = 'search_cross_numbers'
  */
 export function crossResearchPrompt(productLines: string): string {
   return [
-    'Знайди для цих автотоварів крос-номери аналогів і оригінальні (OE) номери виробника авто.',
-    'Пріоритет — бренди, популярні в Україні:',
-    '- фільтри: MANN, WIX, MAHLE/KNECHT, BOSCH, Blue Print, FILTRON, HENGST, UFI, PURFLUX, Champion, SCT, Sakura;',
+    'Знайди для цих автотоварів ПОВНИЙ перелік крос-номерів аналогів і оригінальних (OE) номерів.',
+    // 23.11.2026, слово власника: «знаходить буквально 10 і вважає, що все — цього дуже мало».
+    'Повнота важлива: у ходової запчастини чи фільтра зазвичай 20–40 номерів. Не зупиняйся на перших 5–10: шукай, доки каталоги дають нові номери.',
+    'OE — УСІ оригінальні номери й по КОЖНІЙ марці авто, де стоїть ця деталь (напр. окремо Hyundai, окремо Kia, Mitsubishi; VAG — VW/Audi/Skoda/Seat; Renault/Dacia/Nissan; PSA — Peugeot/Citroen; Toyota/Lexus тощо), включно зі старими й заміненими номерами.',
+    'Аналоги — від УСІХ знайдених брендів, не лише перших трьох. Шукай окремо: (1) сторінку товару в українському каталозі з таблицею «аналоги/замінники» — вона дає більшість номерів одразу; (2) OE-номери за артикулом; (3) каталог виробника товару; (4) ще один каталог для перевірки й доповнення.',
+    'Бренди, популярні в Україні:',
+    '- фільтри: MANN, WIX, MAHLE/KNECHT, BOSCH, Blue Print, FILTRON, HENGST, UFI, PURFLUX, Champion, SCT, Sakura, Profit, Starline, Denckermann, JC Premium, Japanparts, Nipparts, Parts-Mall, AMC, Alco, Clean Filters, M-Filter, Fram, Meyle, Febi, Kolbenschmidt, Stellox, WUNDER, BIG Filter;',
     '- ходова й кермо (шарові, наконечники, тяги, сайлентблоки, стійки стабілізатора): CTR, LEMFÖRDER, TRW, FEBI, MOOG, DELPHI, SIDEM, RTS, Ruville;',
     '- гальма: BOSCH, TRW, ATE, Brembo, Ferodo, Textar, Jurid; амортизатори: KYB, Monroe, SACHS, Bilstein;',
     '- запалювання: NGK, BOSCH, DENSO, Champion; ремені й ролики: GATES, ContiTech, DAYCO, SKF, INA; підшипники: SKF, FAG, SNR.',
     'Джерела: українські каталоги запчастин (avtopro.ua, exist.ua, elit.ua, ukrparts.com.ua) і каталоги виробників (mann-filter.com, wixfilters.com, catalog.mahle.com, boschaftermarket тощо). Оголошення (eBay, OLX тощо) — не джерело.',
     'Для кожного товару: номер, бренд номера (або марка авто для OE), url сторінки, де номер прямо вказано як аналог/OE САМЕ цього товару (той самий артикул і виробник товару).',
+    'Відповідь по кожному товару групуй за брендом, бренд один раз, номери через кому, спершу OE по марках авто, далі аналоги: «Hyundai: 26300-35503, 26300-35504; Kia: 26300-35530; MANN: W 811/80; BOSCH: 0 451 103 316». Після групи — url джерел цієї групи.',
     'Не вгадуй і не переноси номери з інших товарів; якщо прямого підтвердження немає — так і напиши.',
     productLines,
   ].join('\n')
@@ -210,7 +215,7 @@ export function crossResearchPrompt(productLines: string): string {
 const toolDeclarations: FunctionDeclaration[] = [
   {
     name: 'search_cross_numbers',
-    description: 'Пошук крос-номерів (аналогів брендів, популярних в Україні) і оригінальних OE-номерів в інтернеті. До 5 товарів за виклик; для 10–30 товарів виклич кілька разів ОДНОЧАСНО (вони виконуються паралельно). product_id бери з search_products. Повертає текст знахідок і список джерел (url). Нічого не записує.',
+    description: 'Пошук ПОВНОГО переліку крос-номерів (аналогів брендів, популярних в Україні) і оригінальних OE-номерів по всіх марках авто в інтернеті. До 3 товарів за виклик (менше товарів — глибший пошук); для 6–30 товарів виклич кілька разів ОДНОЧАСНО (вони виконуються паралельно). product_id бери з search_products. Повертає текст знахідок і список джерел (url). Нічого не записує.',
     parameters: {
       type: SchemaType.OBJECT,
       properties: { product_ids: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } } },
@@ -643,9 +648,9 @@ const SYSTEM_PROMPT = `Ти — AI-помічник «Директор» для 
   1) знайди кожен названий товар через search_products (за номером без пробілів і з пробілами, за назвою, артикулом, штрихкодом); 2) покажи власнику знайдені картки списком: артикул, назва, залишок; 3) пари, що точно той самий товар (той самий каталожний номер, бренд, упаковка/кількість у комплекті, сторона, обʼєм), запропонуй одним merge_products_bulk з причиною до кожної пари; 4) сумнівні (різна упаковка «1шт»/«2шт», інший обʼєм чи сторона, інший комплект) НЕ обʼєднуй — перелічи окремо й спитай.
   Залишки сам НЕ переносиш і не виправляєш: облікова кількість змінюється лише документами. Якщо товар ліг не в ту картку (наприклад, клеми 135 г на картку 200 г), поясни коротко: «Ревізія → порахуйте обидві картки на полиці й поставте факт», і скажи, яку картку якою кількістю перевірити. Неправильний артикул у старій картці можна виправити через update_products_bulk лише назвою/категорією — артикул власник виправляє в картці сам; назви, яку саме картку і на що змінити.
   Якщо картку з недавньої накладної не знайдено — вона могла ще не дійти з каси на сервер; так і скажи, не вигадуй.
-- КРОС-НОМЕРИ: аналоги брендів, ПОПУЛЯРНИХ В УКРАЇНІ, і оригінальні OE-номери виробника авто. У відповіді НЕ згадуй сайти й джерела (url лишаються лише в пропозиції для перевірки) — пиши номер і бренд.
-  ПАКЕТ («візьми шарові на Логан і знайди кроси», «усі масляні фільтри в наявності»): search_products з limit до 30 (in_stock_only, якщо «в наявності») → search_cross_numbers по 5 товарів, кілька викликів В ОДНОМУ кроці (паралельно) → ОДИН add_cross_numbers_bulk на всі товари. Наприкінці коротко: скільки товарів оброблено, скільки номерів додано, для яких товарів нічого надійного не знайдено.
-- КРОС-НОМЕРИ («додай кроси», «знайди аналоги до …»): search_products → search_cross_numbers (до 5 товарів за раз) → add_cross_numbers_bulk лише з номерами, де ти ТОЧНО впевнений: джерело прямо називає номер аналогом/OE саме цього товару (той самий виробник і артикул товару), url зі списку sources. Номери з інших товарів, розміри, обʼєми, штрихкоди й сумнівні — не додавай, перелічи окремо. Скажи, скільки номерів знайдено і скільки відкинуто.
+- КРОС-НОМЕРИ: аналоги брендів, ПОПУЛЯРНИХ В УКРАЇНІ, і оригінальні OE-номери виробника авто — повний перелік, а не кілька перших. У відповіді номери групуй за брендом: бренд один раз, його номери через кому («Hyundai: …, …; Kia: …; MANN: …; BOSCH: …»), спершу OE по марках авто, далі аналоги; не пиши бренд біля кожного номера. У відповіді НЕ згадуй сайти й джерела (url лишаються лише в пропозиції для перевірки) — пиши номер і бренд.
+  ПАКЕТ («візьми шарові на Логан і знайди кроси», «усі масляні фільтри в наявності»): search_products з limit до 30 (in_stock_only, якщо «в наявності») → search_cross_numbers по 3 товари, кілька викликів В ОДНОМУ кроці (паралельно) → ОДИН add_cross_numbers_bulk на всі товари. Наприкінці коротко: скільки товарів оброблено, скільки номерів додано, для яких товарів нічого надійного не знайдено.
+- КРОС-НОМЕРИ («додай кроси», «знайди аналоги до …»): search_products → search_cross_numbers (до 3 товарів за раз) → add_cross_numbers_bulk з УСІМА підтвердженими номерами (не скорочуй перелік до кількох «головних»), де ти ТОЧНО впевнений: джерело прямо називає номер аналогом/OE саме цього товару (той самий виробник і артикул товару), url зі списку sources. Номери з інших товарів, розміри, обʼєми, штрихкоди й сумнівні — не додавай, перелічи окремо. Скажи, скільки номерів знайдено і скільки відкинуто.
 - НІКОЛИ не проси весь каталог одразу і не обробляй більше 200 товарів за один виклик — працюй сторінками. product_id бери тільки з відповідей інструментів.
 
 Правила:
@@ -863,7 +868,7 @@ async function buildPendingAction(name: string, args: any, tenantId: string, bud
       items: items.map(item => ({
         'Артикул': current.get(item.product_id)?.sku ?? '?',
         'Товар': current.get(item.product_id)?.name ?? '?',
-        'Крос-номери': item.numbers.map(n => n.brand ? `${n.number} (${n.brand})` : n.number).join(', '),
+        'Крос-номери': groupCrossNumbersByBrand(item.numbers),
         'Джерело': [...new Set(item.numbers.map(n => n.source))].join(', '),
       })),
       payload: { items },
@@ -1209,18 +1214,18 @@ async function runChatWithinBudget(
   const handleCall = async (name: string, args: Record<string, unknown>): Promise<unknown> => {
     if (name === RESEARCH_TOOL) {
       try {
-        const ids = Array.isArray((args as any)?.product_ids) ? (args as any).product_ids.map(String).slice(0, 5) : []
-        if (!ids.length) return { error: 'Вкажіть product_id товарів (до 5)' }
+        const ids = Array.isArray((args as any)?.product_ids) ? (args as any).product_ids.map(String).slice(0, CROSS_RESEARCH_PRODUCTS) : []
+        if (!ids.length) return { error: 'Вкажіть product_id товарів (до 3)' }
         const { data } = await budget.run(signal => db.from('products').select('id, sku, name, brand:brands(name)')
           .eq('tenant_id', tenantId).in('id', ids).abortSignal(signal))
         if (!data?.length) return { error: 'Товари не знайдено' }
         const lines = data.map((p: any) => `- product_id ${p.id}: ${p.name}; артикул ${p.sku || '—'}; бренд ${p.brand?.name ?? '—'}`).join('\n')
         const found = await withAiExecutionBudget(150_000, research => claude.research(research,
-          crossResearchPrompt(lines), Math.min(4 + ids.length, 9)), budget.signal)
+          crossResearchPrompt(lines), crossResearchSearches(ids.length)), budget.signal)
         usage.promptTokens += found.promptTokens
         usage.completionTokens += found.completionTokens
         usage.costAdjustUsd = (usage.costAdjustUsd ?? 0) + (found.costAdjustUsd ?? 0)
-        return { text: found.text.slice(0, 20_000), sources: found.sources.slice(0, 30) }
+        return { text: found.text.slice(0, 40_000), sources: found.sources.slice(0, 60) }
       } catch (e: any) {
         if (isAiBudgetError(e)) throw e
         return { error: 'Пошук в інтернеті не вдався', ...safeAiErrorInfo(e) }
