@@ -40,6 +40,8 @@ export const PUBLIC_DESKTOP_CHANNELS = new Set([
   // 22.11.2026: стан зв'язку головного ПК і сигнал «на сервері є робота» — потрібні й на екрані входу.
   'desktop:link:status',
   'desktop:link:wake',
+  // 23.11.2026: номер збірки на екрані входу — лише збірка й режим ПК, жодних даних магазину.
+  'desktop:get-runtime-info-build',
   'desktop:lan:first-run-status',
   'desktop:lan:discover',
   'desktop:lan:pair',

@@ -552,6 +552,8 @@ export interface ForsageDesktopBridge {
     restoreServerSession?: () => Promise<{access_token:string;refresh_token:string} | null>
   }
   getRuntimeInfo: () => Promise<DesktopRuntimeInfo>
+  /** Збірка й режим ПК без входу (екран входу); у старих програмах немає. */
+  getBuildInfo?: () => Promise<Pick<DesktopRuntimeInfo, 'build' | 'stagedUpdateReleaseId'> & { lan?: { mode?: string } | null }>
   /** 22.11.2026: повертає клавіатуру в поля після системного вікна confirm/alert. */
   restoreInputFocus?: () => void
   lan?: {

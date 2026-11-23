@@ -26,6 +26,7 @@ export function createDesktopApi(ipcRenderer: DesktopInvoker) {
       restoreServerSession: () => ipcRenderer.invoke('desktop:auth:restore-server-session'),
     },
     getRuntimeInfo: () => ipcRenderer.invoke('desktop:get-runtime-info'),
+    getBuildInfo: () => ipcRenderer.invoke('desktop:get-runtime-info-build'),
     lan: {
       firstRunStatus: () => ipcRenderer.invoke('desktop:lan:first-run-status'),
       discover: () => ipcRenderer.invoke('desktop:lan:discover'),

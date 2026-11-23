@@ -20,6 +20,8 @@ describe('desktop authorization boundary', () => {
     // входу. Вони нічого не змінюють і не відкривають даних; ключ зв'язку (register) приносить лише власник.
     expect([...PUBLIC_DESKTOP_CHANNELS]).toEqual(['desktop:auth:login', 'desktop:auth:login-password', 'desktop:auth:pin-roster', 'desktop:auth:login-pin', 'desktop:auth:login-online', 'desktop:auth:logout', 'desktop:auth:remembered-status', 'desktop:auth:restore',
       'desktop:link:status', 'desktop:link:wake',
+      // 23.11.2026: номер збірки на екрані входу — лише збірка й режим ПК (buildInfoChannel.test.ts).
+      'desktop:get-runtime-info-build',
       'desktop:lan:first-run-status', 'desktop:lan:discover', 'desktop:lan:pair'])
     for (const channel of ['desktop:lan:get-status', 'desktop:lan:update', 'desktop:lan:test', 'desktop:staff:list-users', 'desktop:backup:restore', 'desktop:link:register']) {
       expect(PUBLIC_DESKTOP_CHANNELS.has(channel)).toBe(false)
