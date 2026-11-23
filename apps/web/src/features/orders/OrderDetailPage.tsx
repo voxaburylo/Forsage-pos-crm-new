@@ -17,7 +17,7 @@ import { customerApi } from '@/features/customers/customerApi'
 import type { Customer } from '@/types/customer'
 import type { Product } from '@/types/product'
 import { loadProductLabelSettings, printLabels } from '@/features/labels/LabelDesigner'
-import { printInvoice, printDeliveryNote, orderMessengerText, loadSellerRequisites, hasSellerRequisites } from './orderDocuments'
+import { printInvoice, printDeliveryNote, orderMessengerText, loadSellerRequisites, hasSellerRequisites, loadOrderThumbnails, printOrderForm } from './orderDocuments'
 import { isTerminalOrderStatus } from './orderStatus'
 import { allowedOrderStatusTransitions } from './orderWorkflow'
 import { canUseOrderCash, orderEditPath } from './orderUx'
@@ -360,6 +360,22 @@ export default function OrderDetailPage() {
                   className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 font-medium"
                 >
                   🔄 Повторити замовлення
+                </button>
+                {/* 23.11.2026 (план 4.3): друкований бланк замовлення з мініатюрами — першим у списку документів. */}
+                <button
+                  onClick={async () => {
+                    setActionsOpen(false)
+                    const thumbnails = await loadOrderThumbnails(order, desktopBridge()?.catalog?.photoThumbnails)
+                    try {
+                      printOrderForm(order, loadSellerRequisites(), thumbnails)
+                    } catch (err) {
+                      console.error(err)
+                      toast.error('Не вдалося надрукувати бланк. Перевірте, чи не заблоковані спливаючі вікна.')
+                    }
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 font-semibold"
+                >
+                  🖨 Бланк замовлення
                 </button>
                 <button
                   onClick={() => {

@@ -49,6 +49,7 @@ describe('adding items to an existing order from the web (stage 8, 22.11.2026)',
     const app = readFileSync(new URL('../../App.tsx', import.meta.url), 'utf8')
     const route = app.split('\n').filter(line => line.includes('<Route path="/orders/:id/add"'))
     expect(route).toHaveLength(1)
-    expect(route[0]).toContain('<TillOrView till={<OrderDetailPage />} view={<WebOrderAppendPage />} />')
+    // 23.11.2026: з головним ПК на зв'язку — повна картка через ПК; без нього — цей екран (лише order.append).
+    expect(route[0]).toContain('<MainPcWhenOnline view={<WebOrderAppendPage />}><OrderDetailPage /></MainPcWhenOnline>')
   })
 })

@@ -653,6 +653,8 @@ export interface ForsageDesktopBridge {
     }, options?: { reuseExistingSku?: boolean }) => Promise<DesktopProduct>
     savePhoto?: (folder: string, bytes: ArrayBuffer) => Promise<string>
     deletePhoto?: (photoUrl: string) => Promise<{ ok: true }>
+    /** 23.11.2026: мініатюри фото товарів (96 px) для друкованого бланка замовлення: { product_id: data:/https: адреса }. */
+    photoThumbnails?: (productIds: string[]) => Promise<Record<string, string>>
     deleteProduct?: (id: string) => Promise<{ ok: true }>
     listCrossNumbers?: (productId: string) => Promise<Array<{ id: string; number: string; source: string }>>
     changeCrossNumbers?: (productId: string, change: { add?: string[]; removeId?: string; source?: string }) => Promise<Array<{ id: string; number: string; source: string }>>

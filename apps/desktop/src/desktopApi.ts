@@ -117,6 +117,8 @@ export function createDesktopApi(ipcRenderer: DesktopInvoker) {
         ipcRenderer.invoke('desktop:catalog:save-photo', folder, bytes),
       deletePhoto: (photoUrl: string) =>
         ipcRenderer.invoke('desktop:catalog:delete-photo', photoUrl),
+      photoThumbnails: (productIds: string[]) =>
+        ipcRenderer.invoke('desktop:catalog:photo-thumbnails', productIds),
       deleteProduct: (id: string) =>
         ipcRenderer.invoke('desktop:catalog:delete-product', id),
       listPopular: (limit?: number) =>
