@@ -1884,7 +1884,7 @@ export default function OrdersPage() {
 
   // ── рендер ──
   return (
-    <div className="flex h-screen bg-gray-100 overflow-hidden">
+    <div className="app-shell flex bg-gray-100 overflow-hidden">
       <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
       {/* Mobile backdrop for sidebar */}
