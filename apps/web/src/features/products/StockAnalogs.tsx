@@ -30,7 +30,7 @@ function useAnalogs(productId: string, enabled: boolean): State & { reload: () =
 
 function AnalogRows({ rows, error, reload, onLeave }: State & { reload: () => void; onLeave?: () => void }) {
   const navigate = useNavigate()
-  const { session } = useAuthStore()
+  const session = useAuthStore(state => state.session)
   const actions = analogActions(String(session?.user?.app_metadata?.role ?? ''), isDesktopRuntime())
   const go = (path: string) => { onLeave?.(); navigate(path) }
   if (error) return <p role="alert" className="py-3 text-sm text-amber-700">Не вдалося завантажити аналоги. <button type="button" className="font-semibold underline" onClick={reload}>Повторити</button></p>
