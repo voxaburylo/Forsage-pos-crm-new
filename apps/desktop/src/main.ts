@@ -791,7 +791,12 @@ async function executeWebRequest(userId: unknown, channel: unknown, args: unknow
   if (typeof channel !== 'string' || !webRpcChannelAllowed(channel)) throw new Error('Ця дія доступна лише на самій касі')
   if (!viaWeb) throw new Error(session.role === 'cashier' ? WEB_WORK_DENIED : 'Через веб із головним ПК працюють власник, адміністратор, менеджер і касир із дозволом')
   // Дія вебу могла змінити базу — передаємо зміни на сервер одразу, не чекаючи таймера.
-  try { return await executeLanCommand(channel, Array.isArray(args) ? args : [], session) } finally { getOutboxPusher().soon() }
+  // 23.11.2026: у вебі «магазин не вказано» (undefined) проходить через сервер у JSON як null, а значення за
+  // замовчуванням у дії каси спрацьовує лише для undefined — каса шукала клієнта магазину null і відповідала
+  // «Клієнта не знайдено» (картка боржника з телефона). Магазин null ніколи не має змісту: повертаємо «не вказано».
+  const list = Array.isArray(args) ? [...args] : []
+  for (const position of desktopTenantArgumentPositions(channel)) if (list[position] === null) list[position] = undefined
+  try { return await executeLanCommand(channel, list, session) } finally { getOutboxPusher().soon() }
 }
 
 /**
