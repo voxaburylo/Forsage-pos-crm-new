@@ -44,7 +44,7 @@ run('web through the main PC on a copy of the real database', () => {
   let foreignKeyProblemsBefore = 0
   const foreignKeyProblems = () => db.prepare('PRAGMA foreign_key_check').all().length
   const qty = (id: string) => Number((db.prepare('SELECT qty_on_hand FROM products WHERE id = ?').get(id) as { qty_on_hand: number }).qty_on_hand)
-  const count = (sql: string, ...args: unknown[]) => Number((db.prepare(sql).get(...args) as { n: number }).n)
+  const count = (sql: string, ...args: Array<string | number>) => Number((db.prepare(sql).get(...args) as { n: number }).n)
 
   beforeAll(() => {
     root = mkdtempSync(path.join(tmpdir(), 'forsage-web-rehearsal-'))
