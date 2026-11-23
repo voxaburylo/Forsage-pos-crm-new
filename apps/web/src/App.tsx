@@ -3,6 +3,7 @@ import { Component, lazy, Suspense, useEffect, useState, type ErrorInfo, type Re
 import { createBrowserRouter, createHashRouter, RouterProvider, Routes, Route, Navigate, useLocation, useParams } from 'react-router-dom'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { MainPcWhenOnline, TillOnly, TillOrView } from '@/components/TillOnly'
+import { LiveCameraScanner } from '@/components/LiveCameraScanner'
 import { DesktopAccessGate } from '@/components/DesktopAccessGate'
 import { ToastContainer } from '@/components/ui'
 import { CommandPalette } from '@/components/CommandPalette'
@@ -21,6 +22,7 @@ const ProductsPage         = lazyPage(() => import('@/features/products/Products
 const ProductFormPage      = lazyPage(() => import('@/features/products/ProductFormPage'))
 const ProductDetailPage    = lazyPage(() => import('@/features/products/ProductDetailPage'))
 const CustomersPage        = lazyPage(() => import('@/features/customers/CustomersPage'))
+const CustomerCardsPage    = lazyPage(() => import('@/features/customers/CustomerCardsPage'))
 const CustomerFormPage     = lazyPage(() => import('@/features/customers/CustomerFormPage'))
 const CustomerDetailPage   = lazyPage(() => import('@/features/customers/CustomerDetailPage'))
 const POSPage              = lazyPage(() => import('@/features/pos/POSPage'))
@@ -33,6 +35,7 @@ const PayrollPage          = lazyPage(() => import('@/features/analytics/Payroll
 const NegativeStockPage    = lazyPage(() => import('@/features/analytics/NegativeStockPage'))
 const AdminPage            = lazyPage(() => import('@/features/admin/AdminPage'))
 const SettingsPage         = lazyPage(() => import('@/features/settings/SettingsPage'))
+const SystemStatusPage     = lazyPage(() => import('@/features/system/SystemStatusPage'))
 // CommissionRulesPage merged
 const SuppliersPage        = lazyPage(() => import('@/features/suppliers/SuppliersPage'))
 const SupplierFormPage     = lazyPage(() => import('@/features/suppliers/SupplierFormPage'))
@@ -225,6 +228,7 @@ function Workspace() {
           <Route path="/products/:id/edit"  element={<TillOnly what="Редагування товару"><ProtectedRoute roles={CATALOG_EDITOR_ROLES}><CanonicalCard kind="products" /></ProtectedRoute></TillOnly>} />
 
           <Route path="/customers"           element={<ProtectedRoute><MainPcWhenOnline><CustomersPage /></MainPcWhenOnline></ProtectedRoute>} />
+          <Route path="/customers/cards"     element={<TillOnly what="Картки для друку"><ProtectedRoute roles={ADMIN_ROLES}><CustomerCardsPage /></ProtectedRoute></TillOnly>} />
           <Route path="/customers/new"       element={<TillOnly what="Створення клієнта"><ProtectedRoute><CustomerFormPage /></ProtectedRoute></TillOnly>} />
           <Route path="/customers/:id"       element={<ProtectedRoute><MainPcWhenOnline><CustomerDetailPage /></MainPcWhenOnline></ProtectedRoute>} />
           <Route path="/customers/:id/edit"  element={<TillOnly what="Редагування клієнта"><ProtectedRoute roles={CUSTOMER_CARD_EDITOR_ROLES}><CanonicalCard kind="customers" /></ProtectedRoute></TillOnly>} />
@@ -240,6 +244,8 @@ function Workspace() {
           <Route path="/needs-action" element={<TillOnly what="Робота із замовленнями"><ProtectedRoute roles={OFFICE_ROLES}><NeedsActionPage /></ProtectedRoute></TillOnly>} />
           <Route path="/staff-analytics" element={<ProtectedRoute roles={ADMIN_ROLES}><StaffAnalytics /></ProtectedRoute>} />
           <Route path="/admin"    element={<TillOnly what="Адміністрування"><ProtectedRoute roles={ADMIN_ROLES}><AdminPage /></ProtectedRoute></TillOnly>} />
+          {/* План T2 (23.11.2026): стан системи читається із сервера — працює й тоді, коли головний ПК не на звʼязку. */}
+          <Route path="/system" element={<ProtectedRoute roles={ADMIN_ROLES}><SystemStatusPage /></ProtectedRoute>} />
           <Route path="/settings" element={<TillOnly what="Налаштування"><ProtectedRoute roles={ADMIN_ROLES}><SettingsPage /></ProtectedRoute></TillOnly>} />
           <Route path="/settings/draft-nomenclature" element={<TillOnly what="Номенклатура постачальника"><ProtectedRoute roles={ADMIN_ROLES}><SupplierPricesPage /></ProtectedRoute></TillOnly>} />
           <Route path="/settings/draft-nomenclature/import" element={<TillOnly what="Імпорт номенклатури"><ProtectedRoute roles={ADMIN_ROLES}><BulkImportPage /></ProtectedRoute></TillOnly>} />
@@ -297,6 +303,8 @@ function Workspace() {
         </Routes>
       </Suspense>
       </AppErrorBoundary>
+      {/* 23.11.2026 (план B1): постійний сканер камерою для вебу на телефоні — один на весь застосунок. */}
+      <LiveCameraScanner />
       <ToastContainer />
       <CommandPalette />
       </div>

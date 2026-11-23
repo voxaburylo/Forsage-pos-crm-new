@@ -26,8 +26,24 @@ export const BEAT_FAST_MS = 3_000
 export const BEAT_SLOW_MS = 30_000
 
 /** Каса: «я на зв'язку» + чи є для мене робота. Один запит до бази замість п'яти-шести. */
-export async function tillBeat(tenantId: string, deviceId: string) {
+/** Стан черги передачі каси (23.11.2026). Усе некоректне — «невідомо», тривоги не буде. */
+export function readOutboxReport(raw: unknown): { waiting: number; oldest_at: string | null; error: string | null } | null {
+  if (!raw || typeof raw !== 'object') return null
+  const input = raw as Record<string, unknown>
+  const waiting = Number(input.waiting)
+  if (!Number.isSafeInteger(waiting) || waiting < 0 || waiting > 10_000_000) return null
+  const oldest = typeof input.oldest_at === 'string' && !Number.isNaN(Date.parse(input.oldest_at)) ? new Date(input.oldest_at).toISOString() : null
+  return { waiting, oldest_at: waiting > 0 ? oldest : null, error: waiting > 0 && typeof input.error === 'string' ? input.error.slice(0, 300) : null }
+}
+
+export async function tillBeat(tenantId: string, deviceId: string, outbox?: unknown) {
   if (!z.string().uuid().safeParse(deviceId).success) throw new AppError('VALIDATION_ERROR', 'Некоректний ідентифікатор каси', 422)
+  const report = readOutboxReport(outbox)
+  // Окремим запитом і без права зупинити зв'язок: стан черги — довідка для тривоги власнику.
+  if (report) void pool.query(
+    'UPDATE till_presence SET outbox_waiting = $2, outbox_oldest_at = $3, outbox_error = $4, outbox_reported_at = now() WHERE tenant_id = $1',
+    [tenantId, report.waiting, report.oldest_at, report.error],
+  ).catch(() => undefined)
   const { rows } = await pool.query(
     `WITH presence AS (
        INSERT INTO till_presence (tenant_id, device_id, seen_at) VALUES ($1, $2, now())

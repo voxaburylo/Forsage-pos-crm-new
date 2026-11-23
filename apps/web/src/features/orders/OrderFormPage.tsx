@@ -7,6 +7,7 @@ import { useViewNavigation } from '@/hooks/useViewNavigation'
 import { Plus, Trash2, User, Car, Check, ChevronRight, ArrowLeft, Search, ClipboardList, X } from 'lucide-react'
 import { orderApi, type CreateOrderPayload, type CustomerOrder } from './orderApi'
 import { productApi } from '@/features/products/productApi'
+import { productIdFromParam } from '@/features/products/analogModel'
 import { kopecksToHryvnia } from '@/types/product'
 import type { Product } from '@/types/product'
 import { customerApi } from '@/features/customers/customerApi'
@@ -921,6 +922,18 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
     toast.success(replaceIndex !== null ? 'Товар замінено. Кількість і ціна продажу збережені.' : `Додано: ${p.name}`)
     setReplaceIndex(null)
   }
+
+  // 23.11.2026 (план B1b): «У замовлення» з аналогів у «Товарах» відкриває нове замовлення з ?product=<товар>.
+  // Товар додається звичним шляхом форми — один раз, коли форма готова.
+  const productFromLink = !id ? productIdFromParam(searchParams.get('product')) : null
+  const productFromLinkDone = useRef(false)
+  const addProductRef = useRef(addProductAsItem)
+  useEffect(() => { addProductRef.current = addProductAsItem })
+  useEffect(() => {
+    if (!productFromLink || !formReady || productFromLinkDone.current) return
+    productFromLinkDone.current = true
+    void productApi.get(productFromLink).then(found => { addProductRef.current(found.data) }, () => { toast.error('Товар для замовлення не знайдено') })
+  }, [productFromLink, formReady])
 
   // Копіювання списку для месенджера (підтвердження клієнту)
   async function copyMessengerText() {

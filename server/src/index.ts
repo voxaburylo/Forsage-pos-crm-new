@@ -36,6 +36,7 @@ import waitlistRouter from './routes/waitlist.js'
 import { priceLinksRouter, publicPriceRouter } from './routes/priceLinks.js'
 import { tillCommandsRouter } from './routes/tillCommands.js'
 import { tillRpcRouter } from './routes/tillRpc.js'
+import { systemRouter } from './routes/system.js'
 import { tillLinkRouter } from './routes/tillLink.js'
 import { tillDeviceRouter } from './routes/tillDevice.js'
 import customerOrdersRouter from './routes/customerOrders.js'
@@ -195,6 +196,7 @@ app.use('/api/v1/waitlist', waitlistRouter)
 app.use('/api/v1/price-links', priceLinksRouter)
 app.use('/api/v1/till-commands', tillCommandsRouter)
 app.use('/api/v1/till-rpc', tillRpcRouter)
+app.use('/api/v1/system', systemRouter)
 app.use('/api/v1/till-link', tillLinkRouter)
 app.use('/api/v1/till-device', tillDeviceRouter)
 app.use('/api/v1/public', publicPriceRouter)

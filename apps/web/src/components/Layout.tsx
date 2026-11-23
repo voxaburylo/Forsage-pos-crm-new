@@ -55,7 +55,7 @@ export function Layout({ children, title, actions, onBack, contentClassName = ''
     .sort((a, b) => b.path.length - a.path.length)[0]?.group
 
   return (
-    <div className="flex h-screen h-[100dvh] overflow-hidden bg-gray-100">
+    <div className="app-shell flex overflow-hidden bg-gray-100">
       {/* Mobile backdrop */}
       {sidebarOpen && (
         <div
@@ -67,7 +67,7 @@ export function Layout({ children, title, actions, onBack, contentClassName = ''
       <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        <header className="shrink-0 bg-white border-b border-gray-100 px-4 md:px-6 py-3 flex items-center gap-2 pt-safe">
+        <header className="app-header shrink-0 bg-white border-b border-gray-100 pb-3 flex items-center gap-2" data-app-header>
           {/* Hamburger — mobile only */}
           <button
             className="md:hidden shrink-0 p-1.5 -ml-1 rounded-lg text-gray-500 hover:bg-gray-100 active:bg-gray-200 transition-colors"
@@ -99,7 +99,7 @@ export function Layout({ children, title, actions, onBack, contentClassName = ''
           )}
         </header>
 
-        <main ref={scrollRef} id="app-main-scroll" className={`min-h-0 min-w-0 flex-1 p-4 md:p-6 overflow-auto pb-safe ${contentClassName}`}>
+        <main ref={scrollRef} id="app-main-scroll" className={`app-main min-h-0 min-w-0 flex-1 p-4 md:p-6 ${contentClassName}`}>
           {isAnalyticsPath(location.pathname)
             ? <AnalyticsNav role={role} />
             : activeGroup && <SubNavTabs tabs={activeGroup} currentRole={role} />}

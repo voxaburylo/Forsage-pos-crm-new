@@ -45,3 +45,35 @@ describe('cross numbers keep their brand on the till', () => {
     expect(JSON.parse(row.payload_json).cross_numbers).toEqual(['26300-35503'])
   })
 })
+
+// 23.11.2026: до паливного фільтра (крос Hengst «E87KP D150») «прив'язались» полірувальні круги «… M14 d150»:
+// крос-номер ділився на шматки, і «D150» збігся з діаметром у назві.
+describe('a cross number is one number even with a space', () => {
+  it('is looked up whole; only a record with a brand word is split', async () => {
+    const { crossNumberCodes } = await import('../src/repositories/catalogRepository')
+    expect(crossNumberCodes('E87KP D150')).toEqual(['E87KPD150'])
+    expect(crossNumberCodes('PE 973/2')).toEqual(['PE9732'])
+    expect(crossNumberCodes('W 811/80')).toEqual(['W81180'])
+    expect(crossNumberCodes('MANN W811/80')).toEqual(expect.arrayContaining(['MANNW81180', 'W81180']))
+    expect(crossNumberCodes('V10-0499')).toEqual(['V100499'])
+    // Старі записи «бренд: номер» теж розпізнаються.
+    expect(crossNumberCodes('WIX: WL7131')).toContain('WL7131')
+    expect(crossNumberCodes('MAHLE OC 196')).toContain('OC196')
+    expect(crossNumberCodes('A1')).toEqual([])
+  })
+
+  it('polishing pads with «d150» in the name are not analogs of the filter', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'forsage-cross-d150-'))
+    const db = new LocalDatabase(root)
+    try {
+      const catalog = new LocalCatalogRepository(db)
+      catalog.saveProduct({ id: 'filter', sku: '77811', name: 'Фильтр топливный MAHLE KX 228 D VW CADDY', qty_on_hand: 1, retail_price: 66500, purchase_price: 40000 })
+      catalog.saveProduct({ id: 'pad', sku: '85506', name: 'Губка полировочная APP GP 150 M M14 d150 желтая', qty_on_hand: 0, retail_price: 31000, purchase_price: 20000 })
+      catalog.saveProduct({ id: 'analog', sku: 'WF8355', name: 'Фільтр паливний WIX WF8355', qty_on_hand: 2, retail_price: 50000, purchase_price: 30000 })
+      catalog.changeCrossNumbers('filter', { add: [{ number: 'E87KP D150', brand: 'Hengst' }, { number: 'WF8355', brand: 'WIX' }] })
+      expect(catalog.listAnalogs('filter').map(item => item.id)).toEqual(['analog'])
+      // І в зворотний бік: круг не бачить фільтр своїм аналогом.
+      expect(catalog.listAnalogs('pad')).toEqual([])
+    } finally { db.close(); rmSync(root, { recursive: true, force: true }) }
+  })
+})

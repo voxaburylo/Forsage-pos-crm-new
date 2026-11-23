@@ -26,7 +26,7 @@ import { LiteModeCard } from './LiteModeCard'
 import { LabelPrinterCard } from './LabelPrinterCard'
 import { SettingsLinksCard } from './SettingsLinksCard'
 import { CatalogDictionaries } from '@/features/admin/AdminPage'
-import { SettingsFormOnly, SettingsSection, SettingsTabBar, SettingsTabsProvider } from './SettingsTabs'
+import { SettingsFormOnly, SettingsRareToggle, SettingsSection, SettingsTabBar, SettingsTabsProvider } from './SettingsTabs'
 import { OwnerBotConnect } from './OwnerBotConnect'
 
 import { loadReceiptPrinterSettings, saveReceiptPrinterSettings } from '@/features/pos/receiptPrinterSettings'
@@ -346,7 +346,8 @@ export default function SettingsPage() {
       <div className="max-w-2xl">
         <SettingsTabBar />
         {/* 21.11.2026 (план «порядок у налаштуваннях»): довідники товарів і повідомлення — тут, а не на прихованих сторінках. */}
-        <SettingsSection tab="products" title="Категорії бренди довідники товарів">
+        <SettingsSection tab="catalog" title="Категорії бренди довідники товарів"
+          hint="Категорії, бренди й номенклатура постачальників. Відкривається також із «Товари» → «Довідники».">
           <SettingsLinksCard icon={<Package size={18} className="text-gray-500" />} title="Довідники товарів"
             note="Категорії й бренди, номенклатура постачальників і очищення дублів."
             links={[
@@ -356,7 +357,8 @@ export default function SettingsPage() {
             <CatalogDictionaries />
           </SettingsLinksCard>
         </SettingsSection>
-        <SettingsSection tab="notifications" title="Канали шаблони сповіщення telegram">
+        <SettingsSection tab="telegram" title="Канали шаблони сповіщення telegram"
+          hint="Куди й якими словами програма пише клієнтам. Потрібно, коли змінюєте тексти повідомлень або додаєте канал.">
           <SettingsLinksCard icon={<Bell size={18} className="text-amber-500" />} title="Канали та шаблони повідомлень"
             links={[
               { to: '/settings/channels', label: 'Канали (Telegram, месенджери)' },
@@ -364,16 +366,19 @@ export default function SettingsPage() {
               { to: '/notifications', label: 'Вхідні сповіщення' },
             ]} />
         </SettingsSection>
-        <SettingsSection tab="till" title="Принтер етикеток друк етикеток">
+        <SettingsSection tab="till" title="Принтер етикеток друк етикеток"
+          hint="Який принтер друкує цінники й етикетки та якого вони розміру. Потрібно після заміни принтера чи рулону.">
           <LabelPrinterCard />
         </SettingsSection>
-        <SettingsSection tab="service" title="Журнал аудиту дії працівників">
+        <SettingsSection tab="audit" title="Журнал аудиту дії працівників"
+          hint="Хто й коли змінював дані. Відкривається також з «Аналітика» → «Контроль».">
           <SettingsLinksCard icon={<Database size={18} className="text-gray-500" />} title="Журнал аудиту"
             note="Хто й коли змінював дані в програмі."
             links={[{ to: '/audit', label: 'Відкрити журнал аудиту' }]} />
         </SettingsSection>
         <form onSubmit={handleSubmit}>
-          <SettingsSection tab="shop" title="Основна інформація назва магазину адреса телефон чернова номенклатура">
+          <SettingsSection tab="shop" title="Основна інформація назва магазину адреса телефон чернова номенклатура"
+          hint="Назва, адреса й телефон — те, що друкується на чеку й документах.">
           {/* ========== Основна інформація ========== */}
           <Card className="space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-gray-100">
@@ -414,7 +419,8 @@ export default function SettingsPage() {
           </Card>
           </SettingsSection>
 
-          <SettingsSection tab="service" title="Локальна база на цьому ПК версія програми">
+          <SettingsSection tab="pc" title="Локальна база на цьому ПК версія програми"
+          hint="Яка версія програми стоїть на цьому комп’ютері і де лежить база. Знадобиться, коли питатимуть «яка у вас версія».">
           {isDesktopRuntime() && (
             <Card className="mt-6 space-y-4 border-emerald-200 bg-emerald-50/50">
               <div className="flex items-start justify-between gap-4">
@@ -445,35 +451,39 @@ export default function SettingsPage() {
           )}
           </SettingsSection>
 
-          <SettingsSection tab="network" title="Копія на сервері синхронізація відправка">
+          <SettingsSection tab="pc" title="Копія на сервері синхронізація відправка"
+          hint="Чи дійшли зміни каси до сервера (звідти їх бачить веб і телефон). Дивіться, якщо у вебі застарілі дані.">
           {isDesktopRuntime() && <ServerCopyStatusCard />}
           </SettingsSection>
 
-          <SettingsSection tab="service" title="Журнал проблем помилки">
+          <SettingsSection tab="pc" title="Журнал проблем помилки"
+          hint="Збої цього комп’ютера: друк, зв’язок, база. Дивіться, коли щось не спрацювало.">
           {isDesktopRuntime() && <ProblemLogCard />}
           </SettingsSection>
 
-          <SettingsSection tab="network" title="Резервні копії бази копія зміни хмара">
+          <SettingsSection tab="pc" title="Резервні копії бази копія зміни хмара"
+          hint="Копії бази в хмару — щодня й після закриття зміни. Перевіряйте, що остання копія свіжа.">
           {isDesktopRuntime() && <BackupSettingsCard />}
           </SettingsSection>
 
-          <SettingsSection tab="network" title="Копії на флешку зовнішній диск">
+          <SettingsSection tab="pc" title="Копії на флешку зовнішній диск"
+          hint="Друга копія бази — на флешку чи зовнішній диск, на випадок поломки комп’ютера.">
           {isDesktopRuntime() && <ExternalBackupCard />}
           </SettingsSection>
-          <SettingsSection tab="service" title="Відновлення з хмарної копії">
-          {isDesktopRuntime() && <CloudRestoreCard />}
-          </SettingsSection>
 
-          <SettingsSection tab="network" title="Локальна мережа ПК менеджера брандмауер">
+          <SettingsSection tab="pc" title="Локальна мережа ПК менеджера брандмауер"
+          hint="Зв’язок головного ПК з ПК менеджера. Потрібно, коли другий комп’ютер не підключається.">
           {isDesktopRuntime() && <LanSettingsCard />}
           </SettingsSection>
 
 
-          <SettingsSection tab="till" title="Фіскалізація ПРРО каса чек">
+          <SettingsSection tab="till" title="Фіскалізація ПРРО каса чек"
+          hint="Зв’язок із податковою (ПРРО) для фіскальних чеків.">
           {isDesktopRuntime() && <FiscalSettingsCard />}
           </SettingsSection>
 
-          <SettingsSection tab="sales" title="Правила продажу максимальна знижка продаж у мінус">
+          <SettingsSection tab="prices" title="Правила продажу максимальна знижка продаж у мінус"
+          hint="Найбільша знижка на касі й чи можна продавати товар, якого немає на залишку.">
           {/* ========== Правила продажу ========== */}
           <Card className="mt-6 space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-gray-100">
@@ -515,7 +525,8 @@ export default function SettingsPage() {
           </Card>
           </SettingsSection>
 
-          <SettingsSection tab="till" title="Друк чека автодрук ширина чека принтер чеків">
+          <SettingsSection tab="till" title="Друк чека автодрук ширина чека принтер чеків"
+          hint="Який принтер друкує чек, ширина стрічки й чи друкувати чек одразу після продажу.">
           <Card className="mt-6 space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-gray-100"><Printer size={18} className="text-gray-500" /><h3 className="text-sm font-semibold text-gray-800">Друк чеків</h3></div>
             {/* Авто-друк чека */}
@@ -588,7 +599,8 @@ export default function SettingsPage() {
           </Card>
           </SettingsSection>
 
-          <SettingsSection tab="notifications" title="Повідомлення Telegram вечірній звіт власнику">
+          <SettingsSection tab="telegram" title="Повідомлення Telegram вечірній звіт власнику"
+          hint="Бот власника: підключення, вечірній звіт і тривоги (незакрита зміна, каса не на зв’язку).">
           <Card className="mt-6 space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-gray-100"><Bell size={18} className="text-amber-500" /><h3 className="text-sm font-semibold text-gray-800">Повідомлення власнику (Telegram)</h3></div>
             {/* Вечірній звіт власнику */}
@@ -612,7 +624,8 @@ export default function SettingsPage() {
           </Card>
           </SettingsSection>
 
-          <SettingsSection tab="sales" title="Знижка для працівників">
+          <SettingsSection tab="prices" title="Знижка для працівників"
+          hint="Загальна знижка для своїх. Особиста ціна конкретного працівника — у його картці в «Працівники».">
           <Card className="mt-6 space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-gray-100"><Users size={18} className="text-blue-500" /><h3 className="text-sm font-semibold text-gray-800">Знижка для працівників</h3></div>
             {/* Знижка для працівників */}
@@ -633,7 +646,8 @@ export default function SettingsPage() {
           </Card>
           </SettingsSection>
 
-          <SettingsSection tab="sales" title="Правила повернення борг ліміт боргу">
+          <SettingsSection tab="prices" title="Правила повернення борг ліміт боргу"
+          hint="Скільки днів приймаємо повернення і до якої суми відпускаємо в борг.">
           {/* ========== Правила повернення ========== */}
           <Card className="mt-6 space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-gray-100">
@@ -671,7 +685,8 @@ export default function SettingsPage() {
           </Card>
           </SettingsSection>
 
-          <SettingsSection tab="products" title="Матриця націнок націнка округлення ціни">
+          <SettingsSection tab="prices" title="Матриця націнок націнка округлення ціни"
+          hint="Сітка націнок: з неї програма рахує ціну продажу із закупки при приході товару.">
           {/* ========== Матриця націнок ========== */}
           <Card className="mt-6 space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-gray-100">
@@ -806,7 +821,8 @@ export default function SettingsPage() {
           </Card>
           </SettingsSection>
 
-          <SettingsSection tab="sales" title="Швидкі відсотки знижки">
+          <SettingsSection tab="prices" title="Швидкі відсотки знижки"
+          hint="Кнопки знижок на касі (5%, 10%…), щоб не набирати відсоток руками.">
           {/* ========== Швидкі відсотки ========== */}
           <Card className="mt-6 space-y-4">
             <div className="flex items-center justify-between pb-3 border-b border-gray-100">
@@ -848,7 +864,8 @@ export default function SettingsPage() {
           </Card>
           </SettingsSection>
 
-          <SettingsSection tab="till" title="Швидкі кнопки POS каса">
+          <SettingsSection tab="till" title="Швидкі кнопки POS каса"
+          hint="Кнопки частих товарів і послуг на екрані каси.">
           {/* ========== Швидкі кнопки POS ========== */}
           <div id="pos-quick-settings" className="scroll-mt-6">
           <Card className="mt-6 space-y-4">
@@ -925,7 +942,8 @@ export default function SettingsPage() {
           </div>
           </SettingsSection>
 
-          <SettingsSection tab="service" title="Декодер VIN інтеграція">
+          <SettingsSection tab="ai" title="Декодер VIN інтеграція"
+          hint="Ключ сервісу, який за VIN-кодом визначає марку й модель авто. Без ключа VIN вводиться вручну.">
           {/* ========== Декодер VIN (інтеграція) ========== */}
           <Card className="mt-6 space-y-4">
             <div className="flex items-center gap-2 pb-3 border-b border-gray-100">
@@ -948,7 +966,7 @@ export default function SettingsPage() {
           </Card>
           </SettingsSection>
 
-          <SettingsFormOnly tabs={['shop', 'products', 'sales', 'till', 'notifications', 'service']}>
+          <SettingsFormOnly tabs={['shop', 'prices', 'till', 'telegram', 'ai']}>
           {/* ========== Зберегти ========== */}
           <div className="mt-6">
             <Button type="submit" loading={saving} icon={<Save size={16} />}>
@@ -959,7 +977,8 @@ export default function SettingsPage() {
 
         </form>
 
-        <SettingsSection tab="shop" title="Реквізити продавця ЄДРПОУ IBAN банк рахунки накладні">
+        <SettingsSection tab="shop" title="Реквізити продавця ЄДРПОУ IBAN банк рахунки накладні"
+          hint="ЄДРПОУ, IBAN і банк — для рахунків і накладних покупцям.">
         {/* ========== Реквізити продавця (для рахунків / накладних) ========== */}
         <Card className="mt-6 space-y-4">
           <div className="flex items-center gap-2 pb-3 border-b border-gray-100">
@@ -1000,7 +1019,8 @@ export default function SettingsPage() {
         </Card>
         </SettingsSection>
 
-        <SettingsSection tab="ai" title="ШІ-помічник Claude ключ Anthropic правила помічника пам'ять">
+        <SettingsSection tab="ai" title="ШІ-помічник Claude ключ Anthropic правила помічника пам'ять"
+          hint="Ключ і правила ШІ-помічника: розбір накладних, пошук крос-номерів, відповіді по товару.">
         {/* ========== Помічник АІ (Claude) ========== */}
         {/* Окремо від форми магазину: ключ шифрується й зберігається через власний ендпойнт. */}
         {!offlineMode && (
@@ -1072,7 +1092,14 @@ export default function SettingsPage() {
         )}
         </SettingsSection>
 
-        <SettingsSection tab="service" title="Полегшений режим старий ПК швидкість анімації">
+        {/* План B4: рідкісне й небезпечне — внизу вкладки, за окремою кнопкою. */}
+        <SettingsRareToggle tabs={['pc']} />
+        <SettingsSection tab="pc" rare title="Відновлення з хмарної копії"
+        hint="Повертає базу з копії. Потрібно лише після поломки комп’ютера або переїзду на новий.">
+        {isDesktopRuntime() && <CloudRestoreCard />}
+        </SettingsSection>
+        <SettingsSection tab="pc" rare title="Полегшений режим старий ПК швидкість анімації"
+          hint="Вимикає анімації, щоб програма йшла швидше на слабкому комп’ютері.">
         <LiteModeCard />
         </SettingsSection>
       </div>

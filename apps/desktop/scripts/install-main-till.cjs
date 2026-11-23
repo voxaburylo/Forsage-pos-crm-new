@@ -2,7 +2,7 @@
 /**
  * Встановлення зібраного EXE на головний ПК каси (раніше — тимчасовий скрипт у %TEMP%).
  *
- *   node apps/desktop/scripts/install-main-till.cjs <sha256-нового-exe> <шлях-до-exe-ярлика> [--autostart]
+ *   node apps/desktop/scripts/install-main-till.cjs <sha256-нового-exe> <шлях-до-exe-ярлика> [--autostart] [--skip-rehearsal]
  *
  * Джерело — apps/desktop/release/staged/Forsage-0.1.0-portable.exe цієї копії.
  * Перед заміною перевіряє, що жоден процес Forsage не запущено (каса закрита), і
@@ -50,6 +50,28 @@ const running = runningForsage()
 if (running.length) {
   console.error('Каса відкрита — закрийте Forsage і повторіть. Процеси:\n' + running.join('\n'))
   process.exit(3)
+}
+
+// Фон працював до встановлення — запускаємо його знову (після встановлення — вже з новою версією).
+function restartBackground() {
+  if (!backgroundWasRunning) return
+  try { execFileSync('schtasks.exe', ['/Run', '/TN', backgroundTask], { stdio: 'ignore', windowsHide: true }); console.log('background', 'restarted') }
+  catch { console.log('background', 'NOT restarted: task missing') }
+}
+
+// 23.11.2026 (план T5): репетиція на копії справжньої бази — перед кожним встановленням, сама.
+// Впала — нова збірка не ставиться, каса лишається на попередній. --skip-rehearsal — лише для аварійного відкату.
+if (process.argv.includes('--skip-rehearsal')) console.log('rehearsal', 'SKIPPED by --skip-rehearsal')
+else {
+  const { runInstallRehearsal } = require('./install-rehearsal.cjs')
+  const rehearsal = runInstallRehearsal({ repoRoot: path.resolve(__dirname, '../../..'), dataRoot: ownerRoot })
+  console.log('rehearsal', rehearsal.status, rehearsal.reason ?? '')
+  if (rehearsal.status === 'failed') {
+    console.error(String(rehearsal.output ?? '').replace(/\x1b\[[0-9;]*m/g, '').split(/\r?\n/).slice(-40).join('\n'))
+    console.error('Встановлення зупинено: репетиція на копії бази не пройшла. Каса лишилась на попередній версії.')
+    restartBackground()
+    process.exit(4)
+  }
 }
 
 const source = path.resolve(__dirname, '../release/staged/Forsage-0.1.0-portable.exe')
@@ -101,7 +123,4 @@ if (process.argv.includes('--autostart')) {
 } else console.log('autostart', 'not requested (--autostart starts Forsage together with Windows)')
 
 // Фон працював до встановлення — запускаємо його знову вже з новою версією (якщо власник не відкриє касу раніше).
-if (backgroundWasRunning) {
-  try { execFileSync('schtasks.exe', ['/Run', '/TN', backgroundTask], { stdio: 'ignore', windowsHide: true }); console.log('background', 'restarted') }
-  catch { console.log('background', 'NOT restarted: task missing') }
-}
+restartBackground()

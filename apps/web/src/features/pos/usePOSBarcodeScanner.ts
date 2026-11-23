@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { CAMERA_SCAN_EVENT } from '@/lib/cameraScan'
 
 const IDLE_COMPLETE_MS = 220
 const SEQUENCE_RESET_MS = 900
@@ -243,10 +244,21 @@ export function usePOSBarcodeScanner({ onScan }: ScannerOptions) {
     // щоб не лишалось «залиплого» захоплення клавіатури.
     const handleWindowBlur = () => { reset(); resetField(); prefixGuardUntil = 0 }
 
+    // 23.11.2026 (план B1): код із постійного сканера камерою — тим самим шляхом, що й код USB-сканера.
+    // Поле, яке саме приймає скан (картка клієнта), лишаємо йому: тоді код ляже в це поле.
+    const handleCameraScan = (event: Event) => {
+      if (ownsScan(document.activeElement)) return
+      const code = normalizeCode(String((event as CustomEvent<{ code?: unknown }>).detail?.code ?? ''))
+      if (!code) return
+      event.preventDefault()
+      emitCode(code)
+    }
+    window.addEventListener(CAMERA_SCAN_EVENT, handleCameraScan)
     window.addEventListener('keydown', handleKeyDown, true)
     window.addEventListener('blur', handleWindowBlur)
     return () => {
       clearTimer()
+      window.removeEventListener(CAMERA_SCAN_EVENT, handleCameraScan)
       window.removeEventListener('keydown', handleKeyDown, true)
       window.removeEventListener('blur', handleWindowBlur)
     }

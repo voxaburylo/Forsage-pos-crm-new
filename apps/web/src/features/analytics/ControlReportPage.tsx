@@ -64,6 +64,8 @@ export default function ControlReportPage() {
   return (
     <Layout title="Контроль">
       <ReportSourceNote local={false} server />
+      {/* План B4 (23.11.2026): журнал аудиту — частина контролю, а не налаштувань магазину. */}
+      {canSeeIncome && <p className="mb-3 text-sm"><Link to="/audit" className="font-medium text-blue-700 hover:text-blue-900">Журнал аудиту: хто й коли змінював дані →</Link></p>}
       <Card className="mb-3 flex flex-wrap items-end gap-3 text-sm">
         <label>З <input type="date" value={period.from} onChange={e => setPeriod(p => ({ ...p, from: e.target.value }))} className="ml-1 rounded-lg border border-gray-200 px-2 py-1.5" /></label>
         <label>По <input type="date" value={period.to} onChange={e => setPeriod(p => ({ ...p, to: e.target.value }))} className="ml-1 rounded-lg border border-gray-200 px-2 py-1.5" /></label>

@@ -105,6 +105,52 @@ body {
   }
 }
 
+/*
+ * 23.11.2026 (план B1a, нотатки власника): на телефоні «вкладки западають угору, тягнеш униз — сторінка оновлюється,
+ * а верхня панель не повертається», «сторінка їздить убік за край екрана».
+ * Причина 1: оболонка мала класи h-screen і h-[100dvh] разом, а в зібраному CSS правило 100vh стояло ПІСЛЯ 100dvh і
+ * перемагало: оболонка була вищою за видиму частину екрана (на висоту панелі браузера), прокручувався сам документ,
+ * і шапка з вкладками їхала під панель браузера. Тепер висота оболонки — одним класом із правильним порядком.
+ * Причина 2: робоча область прокручувалась і вбік. Тепер убік не їде сторінка — лише широка таблиця у власній рамці.
+ */
+.app-shell {
+  height: 100vh;
+  height: 100dvh;
+  width: 100%;
+  max-width: 100vw;
+}
+html, body {
+  /* «Потягнути вниз» не перезавантажує сторінку посеред роботи; край прокрутки не тягне за собою документ. */
+  overscroll-behavior: none;
+}
+.app-header {
+  padding-top: max(0.75rem, env(safe-area-inset-top, 0px));
+  padding-left: max(1rem, env(safe-area-inset-left, 0px));
+  padding-right: max(1rem, env(safe-area-inset-right, 0px));
+}
+@media (min-width: 768px) {
+  .app-header { padding-left: max(1.5rem, env(safe-area-inset-left, 0px)); padding-right: max(1.5rem, env(safe-area-inset-right, 0px)); }
+}
+.app-main {
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+}
+.app-main > * { min-width: 0; max-width: 100%; }
+/* Широка таблиця прокручується у власній рамці, а не разом зі сторінкою. */
+.app-main :where(div:has(> table)) { max-width: 100%; overflow-x: auto; }
+/* Довге слово чи широкий блок не розпирає сторінку — на будь-якому екрані. */
+.app-main :where(.grid > *, .flex > *) { min-width: 0; }
+.app-main :where(p, h1, h2, h3, h4, dd, label) { overflow-wrap: anywhere; }
+@media (max-width: 1023px) {
+  /* iPhone збільшує сторінку, коли в полі шрифт менший за 16px, — після цього вона «їздить». */
+  .app-main :where(input, select, textarea) { max-width: 100%; font-size: max(16px, 1em); }
+  /* Кнопки під палець. */
+  .app-main :where(button, [role="button"], a[href]) { touch-action: manipulation; }
+}
+
 /* iPhone Safe Area insets */
 .pt-safe { padding-top: env(safe-area-inset-top, 0px); }
 .pb-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }

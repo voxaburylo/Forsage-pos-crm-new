@@ -142,6 +142,10 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   ['desktop:supply:delete-invoice', RECEIVING_ROLES],
   ['desktop:pos:reconcile', OWNER_ROLES],
   ['desktop:pos:payout-customer-deposit', TILL_ROLES],
+  // 23.11.2026 (план B2): пачки карток для друкарні видає власник чи адміністратор; «вільну картку» впізнає каса.
+  ['desktop:pos:card-batches', OWNER_ROLES],
+  ['desktop:pos:card-batch-codes', OWNER_ROLES],
+  ['desktop:pos:card-batch-create', OWNER_ROLES],
   ['desktop:fiscal:set-config', OWNER_ROLES],
   ['desktop:fiscal:get-config', POS_ROLES],
   ['desktop:fiscal:status', POS_ROLES],
@@ -151,6 +155,8 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
 const PREFIX_RULES: Array<[string, readonly DesktopRole[]]> = [
   // 22.11.2026: ключ зв'язку головного ПК приносить власник чи адміністратор; «команди забрано» — будь-хто на зміні.
   ['desktop:link:commands-taken', ['owner', 'admin', 'manager', 'cashier']],
+  // 23.11.2026: «передай зміни на сервер зараз» — будь-хто на касі; сама передача йде ключем ПК.
+  ['desktop:link:push-outbox', ['owner', 'admin', 'manager', 'cashier', 'storekeeper']],
   ['desktop:link:', OWNER_ROLES],
   // 22.11.2026: каса виконує запит вебу від імені того працівника, що в вебі (його права перевіряються окремо).
   ['desktop:web-rpc:', ['owner', 'admin', 'manager', 'cashier']],

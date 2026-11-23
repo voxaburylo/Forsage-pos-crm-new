@@ -11,6 +11,7 @@ import { PriceLinkModal } from '@/features/priceLinks/PriceLinkModal'
 import { ProductPhotoSearchModal } from '@/features/ai/ProductPhotoSearchModal'
 import { MergeModal } from './MergeModal'
 import { CrossNumberBadge } from './CrossNumberBadge'
+import { AnalogsButton } from './StockAnalogs'
 import { CatalogChunk, catalogChunks, useDesktopCatalogLayout } from './CatalogChunk'
 import { CategorySidebar, UNCATEGORIZED_CATEGORY_ID } from './CategorySidebar'
 import { ImportModal } from './ImportModal'
@@ -564,6 +565,12 @@ export default function ProductsPage() {
             <Button variant="secondary" size="sm" icon={<Download size={13} />} onClick={handleExportExcel}>Експорт Excel</Button>
             <Button variant="secondary" size="sm" icon={<Download size={13} />} onClick={handleExportCsv}>Експорт CSV</Button>
           </span>
+          {/* План B4 (23.11.2026): категорії, бренди й номенклатура постачальників — тут, а не серед налаштувань магазину. */}
+          {['owner', 'admin'].includes(role) && (
+            <Button variant="secondary" size="sm" icon={<FileText size={13} />} onClick={() => navigate('/settings?tab=catalog')} title="Категорії, бренди, номенклатура постачальників, очищення дублів">
+              Довідники
+            </Button>
+          )}
           {['owner', 'admin', 'manager', 'storekeeper'].includes(role) && (
             <Button variant="secondary" size="sm" icon={<FileText size={13} />} onClick={() => navigate('/suppliers/invoices/new')} title="Створити прихідну накладну">
               Прихід
@@ -772,6 +779,7 @@ export default function ProductsPage() {
                         <div className="mt-1 flex flex-wrap items-center gap-1.5">
                           <span className="font-mono text-[11px] text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded">{p.sku}</span>
                           <CrossNumberBadge count={p.cross_numbers_count} onEdit={() => open(`/products/${p.id}`)} />
+                          <AnalogsButton productId={p.id} name={p.name} />
                           {p.category && <span className="text-[11px] text-gray-400">{p.category.name}</span>}
                           {p.brand?.name && <span className="text-[11px] text-gray-400">{p.brand.name}</span>}
                         </div>
@@ -921,7 +929,7 @@ export default function ProductsPage() {
                             </div>
                           </div>
                         </td>
-                        <td className="px-1 py-3 text-center"><CrossNumberBadge count={p.cross_numbers_count} onEdit={() => open(`/products/${p.id}`)} /></td>
+                        <td className="px-1 py-3 text-center"><CrossNumberBadge count={p.cross_numbers_count} onEdit={() => open(`/products/${p.id}`)} /><AnalogsButton productId={p.id} name={p.name} /></td>
                         <td className="px-3 py-3 text-sm text-gray-500">{p.brand?.name ?? '—'}</td>
                         <td className="px-3 py-3">
                           {editBinId === p.id ? (

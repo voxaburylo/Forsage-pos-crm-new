@@ -36,8 +36,9 @@ describe('the main PC has its own link key', () => {
 
   it('recognises the device only by the right key', async () => {
     const token = 'k'.repeat(43)
-    query.mockResolvedValue({ rows: [{ tenant_id: 't', token_hash: sha(token) }] })
-    await expect(authenticateTillDevice(id(4), token)).resolves.toEqual({ tenant_id: 't', device_id: id(4) })
+    query.mockResolvedValue({ rows: [{ tenant_id: 't', token_hash: sha(token), created_by: 'owner-1' }] })
+    // 23.11.2026: разом із пристроєм — хто видав йому ключ (від його імені йдуть зміни каси).
+    await expect(authenticateTillDevice(id(4), token)).resolves.toEqual({ tenant_id: 't', device_id: id(4), created_by: 'owner-1' })
     await expect(authenticateTillDevice(id(4), 'x'.repeat(43))).resolves.toBeNull()
     query.mockResolvedValue({ rows: [] })
     await expect(authenticateTillDevice(id(5), token)).resolves.toBeNull()

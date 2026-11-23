@@ -98,6 +98,18 @@ export function normalizeCatalogCode(value: string | null | undefined): string {
     .replace(/[^A-ZА-ЯІЇЄҐ0-9]/g, '')
 }
 
+/**
+ * Коди, за якими крос-номер шукає товар. 23.11.2026: номер Hengst «E87KP D150» розбивався на шматки, і шматок «D150»
+ * збігся з діаметром «d150» у назвах полірувальних кругів — до паливного фільтра «прив'язались» круги.
+ * Крос-номер — це ОДИН номер, навіть із пробілом: беремо його цілим. На шматки ділимо лише запис зі словом-брендом
+ * («MANN W 811/80», старі записи), де номер — частина тексту.
+ */
+export function crossNumberCodes(value: string | null | undefined): string[] {
+  const text = String(value ?? '').trim()
+  const hasBrandWord = text.split(/\s+/).some((piece) => /^[A-Za-zА-Яа-яІЇЄҐіїєґ][A-Za-zА-Яа-яІЇЄҐіїєґ.&-]+[:,;]?$/.test(piece))
+  return [...new Set([normalizeCatalogCode(text), ...(hasBrandWord ? catalogCodesFromName(text) : [])])].filter((code) => code.length >= 4)
+}
+
 export function catalogCodesFromName(value: string | null | undefined): string[] {
   const pieces = String(value ?? '')
     .normalize('NFKC')
@@ -695,10 +707,7 @@ export class LocalCatalogRepository {
     const sourceIdentity = new Set<string>([
       ...catalogCodesFromName(source.name), normalizeCatalogCode(source.sku), normalizeCatalogCode(source.barcode),
     ].filter((code) => code.length >= 4))
-    const lookupCodes = new Set<string>([
-      ...sourceCrosses.map((row) => normalizeCatalogCode(row.number)),
-      ...sourceCrosses.flatMap((row) => catalogCodesFromName(row.number)),
-    ].filter((code) => code.length >= 4))
+    const lookupCodes = new Set<string>(sourceCrosses.flatMap((row) => crossNumberCodes(row.number)))
     // Shared OE references are not proof of interchangeability. Only a direct
     // cross-to-product identity is accepted, in either direction; never traverse
     // cross-to-cross intersections or transitive chains.
@@ -759,7 +768,7 @@ export class LocalCatalogRepository {
     for (const product of products) for (const code of [normalizeCatalogCode(product.sku), normalizeCatalogCode(product.barcode), ...catalogCodesFromName(product.name)]) add(identities, code, product.id)
     const rows = this.db.prepare(`SELECT product_id, cross_number FROM product_cross_numbers
       WHERE tenant_id = ? AND deleted_at IS NULL`).all(tenant) as Array<{ product_id: string; cross_number: string }>
-    for (const row of rows) for (const code of [normalizeCatalogCode(row.cross_number), ...catalogCodesFromName(row.cross_number)]) add(crosses, code, row.product_id)
+    for (const row of rows) for (const code of crossNumberCodes(row.cross_number)) add(crosses, code, row.product_id)
     this.analogCache = { tenant, stamp, identities, crosses }
     return this.analogCache
   }

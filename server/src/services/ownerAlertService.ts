@@ -40,7 +40,12 @@ export interface OwnerAlertFacts {
   last_backup_bytes?: number | null
   /** Розмір хмарної бази, байти; немає значення — дізнатися не вдалося (тривоги немає). */
   database_bytes?: number | null
+  /** 23.11.2026: черга передачі каси на сервер, як її востаннє повідомила каса; немає — невідомо (тривоги немає). */
+  outbox?: { waiting: number; oldest_at: string | null; error: string | null; reported_at: string } | null
 }
+/** Скільки документ може чекати передачі, перш ніж попередити власника; і наскільки свіжим має бути звіт каси. */
+export const OUTBOX_STUCK_MINUTES = 30
+export const OUTBOX_REPORT_FRESH_MINUTES = 15
 
 /**
  * Ліміти хмари (22.11.2026: безкоштовний тариф — файл копії до 45 МБ, база до 500 МБ; повна база стає
@@ -138,6 +143,17 @@ export function planOwnerAlerts(facts: OwnerAlertFacts, now: Date, settings: Own
     key: `database_size:${today.slice(0, 7)}`,
     text: `🗃 Хмарна база заповнена на ${Math.floor(facts.database_bytes / databaseLimit * 100)} % (${megabytes(facts.database_bytes)} МБ із ${megabytes(databaseLimit)}). Коли заповниться — копія даних у хмарі перестане оновлюватись; каса продавати продовжить.`,
   })
+
+  // 8. Каса не може передати зміни на сервер (23.11.2026: 4 документи висіли з помилкою, і ніхто не знав —
+  // через це не прив'язався бот). Раз на кожний «затор»: ключ — найстаріший документ, що чекає.
+  const outbox = facts.outbox
+  if (outbox && outbox.waiting > 0 && outbox.oldest_at
+    && hoursBetween(outbox.reported_at, now) * 60 <= OUTBOX_REPORT_FRESH_MINUTES
+    && hoursBetween(outbox.oldest_at, now) * 60 >= OUTBOX_STUCK_MINUTES) alerts.push({
+    key: `outbox:${new Date(outbox.oldest_at).toISOString()}`,
+    text: `🔄 Каса не може передати на сервер ${outbox.waiting} ${outbox.waiting === 1 ? 'зміну' : 'змін'} — найстаріша чекає з ${kyivTime(outbox.oldest_at)}.`
+      + (outbox.error ? `\nПричина: ${outbox.error}` : '') + '\nКаса працює як завжди; не оновлюється лише копія для перегляду у вебі.',
+  })
   return alerts
 }
 
@@ -212,6 +228,9 @@ async function collectFacts(tenantId: string): Promise<OwnerAlertFacts> {
   ])
   // Окремо й останнім: розмір бази не має зупинити решту тривог.
   const databaseBytes = await cloudDatabaseBytes()
+  // Теж окремо: до міграції 20261123100000 цих колонок немає — тоді просто без цієї тривоги.
+  const outbox = await pool.query('SELECT outbox_waiting, outbox_oldest_at, outbox_error, outbox_reported_at FROM till_presence WHERE tenant_id = $1', [tenantId])
+    .then(result => result.rows[0], () => undefined)
   return {
     till_seen_at: presence.rows[0]?.seen_at ? new Date(presence.rows[0].seen_at).toISOString() : null,
     open_shifts: open.rows.map(row => ({ id: String(row.id), opened_at: new Date(row.opened_at).toISOString() })),
@@ -220,6 +239,8 @@ async function collectFacts(tenantId: string): Promise<OwnerAlertFacts> {
     last_backup_at: backup === undefined ? undefined : backup.at,
     last_backup_bytes: backup?.bytes ?? null,
     database_bytes: databaseBytes,
+    outbox: outbox?.outbox_reported_at ? { waiting: Number(outbox.outbox_waiting ?? 0), oldest_at: outbox.outbox_oldest_at ? new Date(outbox.outbox_oldest_at).toISOString() : null,
+      error: outbox.outbox_error ? String(outbox.outbox_error) : null, reported_at: new Date(outbox.outbox_reported_at).toISOString() } : null,
   }
 }
 

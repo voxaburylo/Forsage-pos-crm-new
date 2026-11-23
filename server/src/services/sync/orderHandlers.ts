@@ -168,20 +168,22 @@ export async function applyOrderUpsert(tenantId: string, userId: string, operati
 
 export async function applyOrderDeleted(tenantId: string, userId: string, operation: SyncOutboxOperation): Promise<void> {
   await runTransaction(async (client) => {
+    // 23.11.2026: Postgres не дозволяє FOR UPDATE разом із GROUP BY — видалення замовлення з каси не доходило до сервера
+    // («FOR UPDATE is not allowed with GROUP BY clause»). Спершу блокуємо рядок замовлення, потім окремо рахуємо оплати.
     const order = await client.query(
-      `SELECT o.status, o.prepayment, o.total_paid, o.sale_id,
-              COUNT(p.id)::integer AS payment_count,
-              COALESCE(SUM(p.amount), 0)::bigint AS ledger_paid
+      `SELECT o.status, o.prepayment, o.total_paid, o.sale_id
        FROM customer_orders o
-       LEFT JOIN order_payments p
-         ON p.order_id = o.id AND p.tenant_id = o.tenant_id
        WHERE o.id = $1 AND o.tenant_id = $2 AND o.deleted_at IS NULL
-       GROUP BY o.id
-       FOR UPDATE OF o`,
+       FOR UPDATE`,
       [operation.aggregate_id, tenantId],
     )
     if (!order.rowCount) return
-    const row = order.rows[0]
+    const payments = await client.query(
+      `SELECT COUNT(*)::integer AS payment_count, COALESCE(SUM(amount), 0)::bigint AS ledger_paid
+       FROM order_payments WHERE order_id = $1 AND tenant_id = $2`,
+      [operation.aggregate_id, tenantId],
+    )
+    const row = { ...order.rows[0], ...payments.rows[0] }
     // Помилкове перенесення з блокнота каса може прибрати в будь-якому стані, поки не було грошей, чека й виданих позицій.
     let notebookDelete = false
     if (operation.payload?.from_notebook === true) {

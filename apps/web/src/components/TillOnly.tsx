@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Monitor, Wifi, WifiOff } from 'lucide-react'
+import { Monitor, WifiOff } from 'lucide-react'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { api } from '@/lib/api'
 import { isUserWatching } from '@/lib/userActivity'
-import { useAuthStore } from '@/stores/authStore'
+import { useWebWorkAccess } from '@/lib/webWorkAccess'
 import { Layout } from '@/components/Layout'
 import { Card } from '@/components/ui'
 
@@ -24,8 +24,6 @@ export function TillOnly({ children, what, remote = true, offline }: { children:
   return <ThroughMainPc what={what} offline={offline}>{children}</ThroughMainPc>
 }
 
-/** Хто з вебу працює через головний ПК; касир і комірник — на самій касі. */
-const WEB_RPC_ROLES = new Set(['owner', 'admin', 'manager'])
 const STATUS_POLL_MS = 20_000
 
 type State = 'checking' | 'online' | 'offline'
@@ -70,26 +68,27 @@ function useMainPcLink(allowed: boolean): { state: State; ready: boolean } {
   return { state, ready }
 }
 
+// 23.11.2026 (власник): напис «Працює через головний ПК» закривав перемикання сторінок на телефоні.
+// Тепер це лише крапка в кутку: зелена — ПК на звʼязку, червона — ні. Вона не перехоплює натискань.
 function MainPcBadge({ state }: { state: State }) {
+  const text = state === 'offline' ? 'Головний ПК не на звʼязку — зміни зараз не пройдуть' : 'Працює через головний ПК'
   return (
-    <div className={`fixed bottom-3 right-3 z-40 flex items-center gap-2 rounded-full px-3 py-1.5 text-xs shadow ${state === 'offline' ? 'bg-red-600 text-white' : 'bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200'}`}
-      role="status" data-main-pc-link={state}>
-      {state === 'offline' ? <WifiOff size={14} /> : <Wifi size={14} />}
-      {state === 'offline' ? 'Головний ПК не на звʼязку — зміни зараз не пройдуть' : 'Працює через головний ПК'}
-    </div>
+    <span className={`pointer-events-none fixed bottom-1 right-1 z-40 h-2.5 w-2.5 rounded-full ring-2 ring-white ${state === 'offline' ? 'bg-red-600' : 'bg-emerald-500'}`}
+      role="status" aria-label={text} title={text} data-main-pc-link={state} />
   )
 }
 
 /**
  * 23.11.2026, план 4.1 «веб через головний ПК — кожен екран»: екрани перегляду (товари, клієнти, замовлення, звіти,
  * зарплата) у вебі теж працюють повністю, коли головний ПК на зв'язку: усі зміни виконує він. Без ПК — той самий
- * екран лише для перегляду серверної копії (як і раніше), а не заглушка. Касир і комірник — лише перегляд.
+ * екран лише для перегляду серверної копії (як і раніше), а не заглушка. Касир без дозволу й комірник — лише перегляд.
  * view — окремий екран перегляду для вебу без ПК (якщо повний екран без ПК не працює, напр. замовлення).
  */
 export function MainPcWhenOnline({ children, view }: { children: React.ReactNode; view?: React.ReactNode }) {
-  const role = String(useAuthStore(state => state.session?.user?.app_metadata?.role) ?? '')
+  // Власник, адміністратор, менеджер — за роллю; касир — із дозволом «Працює через веб» (lib/webWorkAccess).
+  const viaWeb = useWebWorkAccess()
   const desktop = isDesktopRuntime()
-  const allowed = !desktop && WEB_RPC_ROLES.has(role)
+  const allowed = !desktop && viaWeb
   const { state, ready } = useMainPcLink(allowed)
   if (desktop) return <>{children}</>
   if (!allowed) return <>{view ?? children}</>
@@ -103,8 +102,7 @@ export function MainPcWhenOnline({ children, view }: { children: React.ReactNode
 
 /** offline — що можна зробити й без головного ПК (не стосується залишків і грошей); показується під карткою. */
 function ThroughMainPc({ what, children, offline }: { what: string; children: React.ReactNode; offline?: React.ReactNode }) {
-  const role = String(useAuthStore(state => state.session?.user?.app_metadata?.role) ?? '')
-  const allowed = WEB_RPC_ROLES.has(role)
+  const allowed = useWebWorkAccess()
   const { state, ready } = useMainPcLink(allowed)
 
   if (!allowed) return <ViewOnlyCard what={what} reason="role" />
@@ -123,7 +121,7 @@ function ViewOnlyCard({ what, reason, children }: { what: string; reason: 'till-
   const text = reason === 'offline'
     ? 'Головний ПК зараз не на звʼязку. Щойно програма на касі запуститься й матиме інтернет, цей розділ відкриється тут — і всі дії виконуватимуться на касі.'
     : reason === 'role'
-      ? 'Через веб цей розділ відкривають власник, адміністратор і менеджер. Працюйте на касі.'
+      ? 'Через веб цей розділ відкривають власник, адміністратор, менеджер і касир, якому власник увімкнув «Працює через веб» у картці працівника. Працюйте на касі.'
       : 'Продаж, повернення й гроші в касі — лише на самій касі: там друкується чек.'
   return (
     <Layout>

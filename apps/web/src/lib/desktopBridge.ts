@@ -530,6 +530,8 @@ export interface ForsageDesktopBridge {
     wake: () => Promise<TillLinkStatus>
     register: (token: string) => Promise<TillLinkStatus>
     commandsTaken: () => Promise<void>
+    /** 23.11.2026: передати зміни каси на сервер ключем ПК. null — ключа ще немає (тоді вікно надсилає своєю сесією). */
+    pushOutbox?: () => Promise<{ pushed: number; failed: number; pending: number; resetRequired: boolean } | null>
   }
   diagnostics?: {
     reportError: (kind: 'renderer-error' | 'renderer-rejection', message: string, stack: string) => void
@@ -691,6 +693,9 @@ export interface ForsageDesktopBridge {
     /** 21.11.2026: менеджери, яким власник дозволив продавати (лише головний ПК). */
     saleAccess?: () => Promise<string[]>
     setSaleAccess?: (id: string, enabled: boolean) => Promise<string[]>
+    /** 23.11.2026: касири, яким власник дозволив працювати через веб (лише головний ПК). */
+    webAccess?: () => Promise<string[]>
+    setWebAccess?: (id: string, enabled: boolean) => Promise<string[]>
     /** 22.11.2026: менеджери, яким власник дозволив лише приймати задаток за замовленнями. */
     depositAccess?: () => Promise<string[]>
     setDepositAccess?: (id: string, enabled: boolean) => Promise<string[]>
@@ -847,6 +852,11 @@ export interface ForsageDesktopBridge {
     searchCustomers?: (input?: { tenant_id?: string; search?: string; has_debt?: boolean; limit?: number }) => Promise<Array<{ id: string; full_name: string | null; phone: string | null; debt_balance: number; deposit_balance?: number }>>
     listCustomers?: (input?: any) => Promise<any>
     findCustomerByBarcode?: (barcode: string) => Promise<any | null>
+    /** 23.11.2026 (план B2): пачки штрихкодів для карток клієнтів; «вільна картка» — видана, але ще нічия. */
+    cardBatches?: () => Promise<Array<{ id: string; created_at: string; format: 'ean13' | 'digits10'; count: number; linked: number }>>
+    cardBatchCodes?: (id: string) => Promise<string[]>
+    createCardBatch?: (input: { count: number; format: 'ean13' | 'digits10' }) => Promise<{ id: string; created_at: string; format: 'ean13' | 'digits10'; codes: string[] }>
+    isFreeCard?: (code: string) => Promise<boolean>
     getCustomer?: (id: string, tenantId?: string) => Promise<any>
     getCustomerSales?: (id: string, tenantId?: string) => Promise<any[]>
     customerHistory?: (id: string, kind: 'sales'|'deposit', options: { offset?: number; limit?: number; from?: string; to?: string }) => Promise<{ data: any[]; has_more: boolean }>

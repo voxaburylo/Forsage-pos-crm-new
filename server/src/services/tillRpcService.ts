@@ -48,8 +48,12 @@ export function webRpcChannelAllowed(channel: string): boolean {
   return /^desktop:[a-z0-9:-]{1,120}$/.test(channel) && !WEB_DENIED_PREFIXES.some(prefix => channel.startsWith(prefix))
     && !WEB_MONEY_CHANNELS.includes(channel)
 }
-/** Хто з вебу може працювати через головний ПК (касир — лише на касі). Права всередині перевіряє каса. */
-export const WEB_RPC_ROLES = ['owner', 'admin', 'manager'] as const
+/**
+ * Хто з вебу може звернутися до головного ПК. 23.11.2026 (план B3): касира сервер пропускає, а чи дозволено йому
+ * працювати через веб («Працює через веб» у картці працівника) і що саме — вирішує головний ПК, де цей дозвіл живе.
+ * Гроші в касі закриті для всіх (WEB_MONEY_CHANNELS).
+ */
+export const WEB_RPC_ROLES = ['owner', 'admin', 'manager', 'cashier'] as const
 export const MAX_RPC_BYTES = 3_500_000
 
 export const rpcRequestSchema = z.object({
