@@ -81,6 +81,7 @@ import { getPrintSession, isPrintSession } from './print/printSession'
 import { assertPrintRuntimeFiles } from './print/printRuntime'
 import { isLanProxyChannel, LocalNetworkCoordinator, type LanSession } from './lan/localNetwork'
 import { productPhotoThumbnails } from './lib/photoThumbnails'
+import { RealtimeWake } from './link/realtimeWake'
 import { LanOrderQueue } from './lan/orderQueue'
 import { buildLanDiagnosis, readFirewallState, requestFirewallRule } from './lan/diagnostics'
 import { assertLanIdentityConnection, canPairEmptyClient, cacheLanIdentity, hasLanIdentity, loginLanClient } from './lan/clientIdentity'
@@ -1282,6 +1283,15 @@ app.whenReady().then(async () => {
   shiftBackups.start()
   // Зв'язок головного ПК із сервером власним ключем: веб працює через ПК і тоді, коли в програмі ніхто не увійшов.
   getTillDeviceLink().start()
+  // 23.11.2026: у фоні (без вікна) сигнал «у вебі є робота» слухає сам головний процес — інакше запити вебу чекали 1–11 с.
+  if (backgroundMode) {
+    new RealtimeWake({
+      url: () => { try { return requireTrustedAuthConfig().supabaseUrl } catch { return null } },
+      apiKey: () => { try { return requireTrustedAuthConfig().supabaseAnonKey } catch { return null } },
+      topic: () => { const tenant = getTillDeviceLink().status().tenant_id; return tenant ? `till-rpc-${tenant}` : null },
+      onWake: () => { void getTillDeviceLink().wake().catch(() => undefined) },
+    }).start()
+  }
   // Раз на добу — копія даних, що живуть лише в хмарі, у власну базу: так вони є в кожній копії бази.
   const copyServerData = async () => {
     const db = localDatabase

@@ -8,7 +8,8 @@ import { searchProductsOffline } from '@/lib/offlineDB'
 import { useAuthStore } from '@/stores/authStore'
 import { requestDesktopSync } from '@/features/products/productApi'
 import { desktopBridge } from '@/lib/desktopBridge'
-import { freeSaleLineName, freeSaleName, freeSaleSku, nextFreeSaleIndex } from './quickChargeModel'
+import { freeSaleLineName, freeSaleName, freeSaleSku, nextFreeSaleIndex, TIRE_SERVICE_SKU, tireChargeTotal, type TireChargeMode } from './quickChargeModel'
+import { formatMoney } from '@/lib/utils'
 
 type Kind = 'tire_service' | 'free_sale'
 type Staff = { id: string; full_name: string; role: string }
@@ -27,16 +28,22 @@ export function QuickChargeModal({
   const [amount, setAmount] = useState('')
   const [description, setDescription] = useState('')
   const [workerId, setWorkerId] = useState('')
+  const [tireMode, setTireMode] = useState<TireChargeMode>('add')
   const [saving, setSaving] = useState(false)
   const savingRef = useRef(false)
   const safeClose = () => { if (!savingRef.current) onClose() }
   useDialogEscape(open, safeClose, { disabled: saving })
   const isTire = kind === 'tire_service'
+  // Шиномонтаж, який уже є в цьому чеку: повторне введення — явний вибір «додати» чи «замінити» (23.11.2026).
+  const existingTire = isTire ? store.items.find((item) => item.sku === TIRE_SERVICE_SKU) ?? null : null
+  const enteredKop = Math.round(Number(amount.trim().replace(',', '.')) * 100)
+  const enteredValid = Number.isSafeInteger(enteredKop) && enteredKop > 0
 
   useEffect(() => {
     if (!open) return
     setAmount('')
     setDescription('')
+    setTireMode('add')
     const previousWorker = staff.find((person) => person.id === store.managerId)?.id ?? ''
     setWorkerId(isTire ? (previousWorker || staff[0]?.id || '') : '')
   }, [open, kind, isTire, staff, store.managerId])
@@ -55,6 +62,12 @@ export function QuickChargeModal({
       toast.error('Спочатку створіть працівника з роллю «Шиномонтажник» та виберіть його')
       return
     }
+    // Один майстер на чек: додати суму іншого майстра до чужої не можна — його робота окремим чеком.
+    if (isTire && existingTire && tireMode === 'add' && store.managerId && store.managerId !== workerId) {
+      toast.error('У чеку шиномонтаж іншого майстра. Проведіть цей чек і пробийте роботу іншого майстра окремим чеком.')
+      return
+    }
+    const finalPrice = isTire ? tireChargeTotal(existingTire?.unitPrice, price, existingTire ? tireMode : 'replace') : price
     savingRef.current = true
     setSaving(true)
     try {
@@ -92,8 +105,8 @@ export function QuickChargeModal({
       }
       if (!data) throw new Error('Не вдалося створити службову позицію')
 
-      // Шиномонтаж — одна підсумкова сума: повторне введення замінює її, а не множить ціну на кількість.
-      // Вільна сума на касі сюди не потрапляє: для неї взято вільну службову позицію.
+      // Шиномонтаж — один рядок у чеку: нова сума додається до наявної або замінює її — як вибрав касир
+      // (23.11.2026; раніше мовчки замінювала). Вільна сума сюди не потрапляє: для неї окрема службова позиція.
       if (store.items.some((item) => item.productId === data.id)) {
         store.removeItem(data.id)
       }
@@ -103,7 +116,7 @@ export function QuickChargeModal({
         name: isTire ? data.name : freeSaleLineName(data.name, description),
         unit: data.unit,
         qty: 1,
-        unitPrice: price,
+        unitPrice: finalPrice,
         discount: 0,
         discountPct: 0, // The cashier entered the final amount for this charge.
         qtyOnHand: 999999,
@@ -115,7 +128,11 @@ export function QuickChargeModal({
         const prefix = isTire ? 'Шиномонтаж' : 'Вільний продаж'
         store.setNotes([store.notes, `${prefix}: ${description.trim()}`].filter(Boolean).join('\n'))
       }
-      toast.success('Позицію додано в чек')
+      const workerName = staff.find((person) => person.id === workerId)?.full_name
+      // Сума великими цифрами — щоб касир одразу побачив помилку набору (1920 замість 1900).
+      toast.success(isTire
+        ? `Шиномонтаж у чеку: ${formatMoney(finalPrice)}${workerName ? ' — ' + workerName : ''}${existingTire ? (tireMode === 'add' ? ' (додано ' + formatMoney(price) + ')' : ' (замінено)') : ''}`
+        : `Додано в чек: ${formatMoney(price)}`)
       onClose()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Не вдалося додати позицію')
@@ -169,6 +186,18 @@ export function QuickChargeModal({
               placeholder={isTire ? 'Напр.: ремонт проколу, балансування' : 'Напр.: б/у колесо R15'}
               className="w-full rounded-xl border border-gray-700 bg-[#2C2C2C] px-3 py-3 text-sm outline-none focus:border-yellow-400" />
           </div>
+
+          {existingTire && (
+            <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-sm" data-tire-existing>
+              <p className="font-semibold text-amber-200">У чеку вже є шиномонтаж: {formatMoney(existingTire.unitPrice)}</p>
+              <div className="mt-2 grid gap-2">
+                <label className="flex items-center gap-2"><input type="radio" name="tire-mode" checked={tireMode === 'add'} onChange={() => setTireMode('add')} />
+                  Додати до неї{enteredValid ? ` — разом ${formatMoney(existingTire.unitPrice + enteredKop)}` : ''}</label>
+                <label className="flex items-center gap-2"><input type="radio" name="tire-mode" checked={tireMode === 'replace'} onChange={() => setTireMode('replace')} />
+                  Замінити{enteredValid ? ` на ${formatMoney(enteredKop)}` : ''}</label>
+              </div>
+            </div>
+          )}
 
           <button onClick={add} disabled={saving}
             className="w-full rounded-xl bg-yellow-400 py-3.5 font-bold text-black hover:bg-yellow-300 disabled:opacity-50">
