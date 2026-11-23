@@ -14,7 +14,7 @@ import { BlackBox } from './diagnostics/blackBox'
 import { safeDiagnosticDetails } from './diagnostics/blackBoxData'
 import { readBuildInfo } from './diagnostics/buildInfo'
 import { LOCAL_CRASH_OPTIONS } from './diagnostics/localCrashCapture'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, statSync, statfsSync, writeFileSync } from 'node:fs'
 import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createHash, randomUUID } from 'node:crypto'
@@ -91,7 +91,10 @@ import { LanOrderClient } from './lan/orderClient'
 import { isSpoolerGuardError, postflightPrinter, preflightPrinter } from './print/spoolerGuard'
 import { disposePrintWarmShell, prewarmPrintShell } from './print/printWarmShell'
 import { desktopTenantArgumentPositions, isDesktopChannelAllowed, isManagerDepositChannel, isManagerSaleChannel, PUBLIC_DESKTOP_CHANNELS } from './security/desktopAuthorization'
-import { MANAGER_DEPOSIT_ONLY, MANAGER_SALE_DENIED, managerCanSell, managerCanTakeDeposit, managerDepositAllowedIds, managerSaleAllowedIds, setManagerDepositAccess, setManagerSaleAccess } from './security/managerSaleAccess'
+import { cardBatchCodes, generateCardBatch, isFreeCard, listCardBatches } from './repositories/customerCardBatches'
+import { buildStatusReport } from './link/statusReport'
+import { nightlyCheckTick, readNightlySummary } from './diagnostics/nightlyCheckRunner'
+import { MANAGER_DEPOSIT_ONLY, MANAGER_SALE_DENIED, WEB_ACCESS_PROBE, WEB_WORK_DENIED, canWorkViaWeb, managerCanSell, managerCanTakeDeposit, managerDepositAllowedIds, managerSaleAllowedIds, setManagerDepositAccess, setManagerSaleAccess, setWebWorkAccess, webWorkAllowedIds } from './security/managerSaleAccess'
 import { employeePricing, setEmployeePricing } from './security/employeePricing'
 import { activeSession } from './security/activeSession'
 import { customerWritePayload } from './security/customerWritePolicy'
@@ -780,10 +783,13 @@ function isMainTill(): boolean {
 async function executeWebRequest(userId: unknown, channel: unknown, args: unknown): Promise<unknown> {
   if (!isMainTill()) throw new Error('Запити вебу виконує лише головний ПК')
   if (databaseMaintenance) throw new Error('База готується до перезапуску. Дочекайтеся завершення.')
-  if (typeof channel !== 'string' || !webRpcChannelAllowed(channel)) throw new Error('Ця дія доступна лише на самій касі')
   const session = typeof userId === 'string' ? resolveLanSession(userId) : null
   if (!session) throw new Error('Працівника не знайдено або доступ до програми вимкнено')
-  if (session.role === 'cashier' || session.role === 'tire_worker') throw new Error('Касир працює лише на касі')
+  // 23.11.2026 (план B3): касир працює через веб лише з дозволом власника в картці працівника; права — його ж, як на касі.
+  const viaWeb = canWorkViaWeb(requireLocalDatabase(), session.id, session.role)
+  if (channel === WEB_ACCESS_PROBE) return viaWeb
+  if (typeof channel !== 'string' || !webRpcChannelAllowed(channel)) throw new Error('Ця дія доступна лише на самій касі')
+  if (!viaWeb) throw new Error(session.role === 'cashier' ? WEB_WORK_DENIED : 'Через веб із головним ПК працюють власник, адміністратор, менеджер і касир із дозволом')
   // Дія вебу могла змінити базу — передаємо зміни на сервер одразу, не чекаючи таймера.
   try { return await executeLanCommand(channel, Array.isArray(args) ? args : [], session) } finally { getOutboxPusher().soon() }
 }
@@ -828,6 +834,24 @@ function getTillDeviceLink(): TillDeviceLink {
       if (!localSync) return null
       const status = localSync.getSyncStatus()
       return { waiting: status.pending + status.retrying + status.stuck, oldest_at: status.oldest_created_at, error: status.last_error }
+    },
+    // 23.11.2026 (план T2): версія, вікно чи фон, копії бази й місце на диску — для «Стан системи» у вебі власника.
+    // Лише читання й лише відомості про комп'ютер; чого прочитати не вдалося, те лишається «невідомо».
+    statusReport: () => {
+      const db = localDatabase
+      if (!db) return null
+      const attempt = <T>(read: () => T): T | null => { try { return read() } catch { return null } }
+      return buildStatusReport({
+        build: desktopBuildInfo, background: backgroundMode, managerPc: false,
+        disk: attempt(() => { const disk = statfsSync(db.dataRoot); return { free: Number(disk.bavail) * Number(disk.bsize), total: Number(disk.blocks) * Number(disk.bsize) } }),
+        databaseBytes: attempt(() => statSync(db.databasePath).size),
+        localBackupAt: attempt(() => db.listBackups()[0]?.createdAt ?? null),
+        cloudBackupAt: attempt(() => (db.prepare('SELECT MAX(cloud_completed_at) AS at FROM shift_backups WHERE cloud_completed_at IS NOT NULL').get() as { at: string | null } | undefined)?.at ?? null),
+        externalBackupAt: attempt(() => readExternalConfig(db.dataRoot).last_copy_at),
+        schemaVersion: attempt(() => db.info().schemaVersion),
+        startedAt: Date.now() - Math.round(process.uptime() * 1000),
+        check: attempt(() => readNightlySummary(db)),
+      })
     },
     canRun: () => isMainTill() && !databaseMaintenance,
     // Без інтернету помилка повторюється щопівхвилини — у діагностику пишемо лише зміну стану.
@@ -1325,6 +1349,15 @@ app.whenReady().then(async () => {
   }
   setTimeout(() => { void copyServerData().catch(error => writeDesktopDiagnostic('server-data-copy-failed', error)) }, 3 * 60_000).unref()
   setInterval(() => { void copyServerData().catch(error => writeDesktopDiagnostic('server-data-copy-failed', error)) }, 60 * 60_000).unref()
+  // 23.11.2026 (план T6): нічна перевірка бази — лише на головному ПК, лише читання. Знайдене йде в журнал проблем
+  // і на екран «Стан системи»; програма нічого не виправляє сама.
+  setInterval(() => {
+    if (!localDatabase || !isMainTill() || databaseMaintenance) return
+    try {
+      const result = nightlyCheckTick(localDatabase, { record: recordDesktopProblem, resolveCode: code => { localProblems?.resolveCode(code) } })
+      if (result) blackBox?.record('nightly-check', { duration_ms: result.duration_ms, findings: result.findings.map(item => item.code + ':' + item.count) })
+    } catch (error) { writeDesktopDiagnostic('nightly-check-failed', error) }
+  }, 30 * 60_000).unref()
   // 20.11.2026: однакове написання одиниць у картках (шт/компл/…), один раз після оновлення; спершу копія бази.
   const unitTidyDb = localDatabase
   setTimeout(() => {
@@ -1965,6 +1998,9 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:staff:deposit-access', () => managerDepositAllowedIds(requireLocalDatabase()))
   handleDesktopIpc('desktop:staff:set-deposit-access', (_event, id: string, enabled: boolean) =>
     setManagerDepositAccess(requireLocalDatabase(), id, enabled))
+  handleDesktopIpc('desktop:staff:web-access', () => webWorkAllowedIds(requireLocalDatabase()))
+  handleDesktopIpc('desktop:staff:set-web-access', (_event, id: string, enabled: boolean) =>
+    setWebWorkAccess(requireLocalDatabase(), id, enabled))
   handleDesktopIpc('desktop:staff:employee-pricing', () => employeePricing(requireLocalDatabase()))
   handleDesktopIpc('desktop:staff:set-employee-pricing', (_event, id: string, value: unknown) =>
     setEmployeePricing(requireLocalDatabase(), id, value))
@@ -2224,6 +2260,12 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:pos:find-customer-by-barcode', (_event, barcode: string) =>
     requireLocalPos().findCustomerByBarcode(barcode),
   )
+  // 23.11.2026 (план B2): пачки штрихкодів для карток клієнтів (друкарня) і «вільна картка» при першому скануванні.
+  handleDesktopIpc('desktop:pos:card-batches', () => listCardBatches(requireLocalDatabase()))
+  handleDesktopIpc('desktop:pos:card-batch-codes', (_event, id: string) => cardBatchCodes(requireLocalDatabase(), id))
+  handleDesktopIpc('desktop:pos:card-batch-create', (_event, input: { count?: unknown; format?: unknown }) =>
+    generateCardBatch(requireLocalDatabase(), { count: input?.count, format: input?.format, createdBy: requireDesktopSession().id }))
+  handleDesktopIpc('desktop:pos:free-card', (_event, code: string) => isFreeCard(requireLocalDatabase(), code))
   handleDesktopIpc('desktop:pos:get-customer', (_event, id: string, tenantId?: string) =>
     requireLocalPos().getCustomer(id, tenantId),
   )

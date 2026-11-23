@@ -70,7 +70,8 @@ describe('screens that were view-only in the web now work through the main PC', 
     expect(body).toContain('if (!allowed) return <>{view ?? children}</>')
     expect(body).toContain('<div key="view" data-main-pc-mode="view">{view ?? children}</div>')
     expect(body).toContain('<div key="main-pc" data-main-pc-mode="main-pc"><MainPcBadge state={state} />{children}</div>')
-    expect(wrapper).toContain("const WEB_RPC_ROLES = new Set(['owner', 'admin', 'manager'])")
+    expect(wrapper).toContain('const viaWeb = useWebWorkAccess()')
+    expect(read('../lib/webWorkAccess.ts')).toContain("new Set(['owner', 'admin', 'manager'])")
   })
 })
 

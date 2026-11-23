@@ -142,6 +142,10 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   ['desktop:supply:delete-invoice', RECEIVING_ROLES],
   ['desktop:pos:reconcile', OWNER_ROLES],
   ['desktop:pos:payout-customer-deposit', TILL_ROLES],
+  // 23.11.2026 (план B2): пачки карток для друкарні видає власник чи адміністратор; «вільну картку» впізнає каса.
+  ['desktop:pos:card-batches', OWNER_ROLES],
+  ['desktop:pos:card-batch-codes', OWNER_ROLES],
+  ['desktop:pos:card-batch-create', OWNER_ROLES],
   ['desktop:fiscal:set-config', OWNER_ROLES],
   ['desktop:fiscal:get-config', POS_ROLES],
   ['desktop:fiscal:status', POS_ROLES],

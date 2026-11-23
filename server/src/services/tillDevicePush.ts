@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { AppError } from '../middleware/errorHandler.js'
 import { pushLocalOperations } from './syncService.js'
+import { recordServerError } from './systemStatusService.js'
 
 /**
  * 23.11.2026: зміни каси, надіслані ключем самого головного ПК (а не сесією того, хто увійшов у програму).
@@ -29,6 +30,7 @@ export async function pushFromMainPc(
   device: { tenant_id: string; device_id: string; created_by: string | null },
   body: z.infer<typeof devicePushSchema>,
   push: typeof pushLocalOperations = pushLocalOperations,
+  report: typeof recordServerError = recordServerError,
 ) {
   // Ключ ПК несе лише документи цього ПК: чужий пристрій чи чужий магазин під ним не пройде.
   for (const operation of body.operations) {
@@ -37,11 +39,19 @@ export async function pushFromMainPc(
     }
   }
   if (!device.created_by) throw new AppError('TILL_DEVICE_UNAUTHORIZED', 'Ключ звʼязку каси видано без автора. Увійдіть на касі власником — ключ оновиться.', 401)
-  return push({
+  const answer = await push({
     tenantId: device.tenant_id,
     userId: device.created_by,
     role: 'owner',
     resetGeneration: body.reset_generation,
     operations: body.operations.map(operation => ({ ...operation, payload: operation.payload ?? {} })),
   })
+  // 23.11.2026 (план T3): документ каси, який сервер не прийняв, записується в базу помилок (вид документа й
+  // технічний текст, без вмісту документа) — його видно на екрані «Стан системи», а не лише в черзі каси.
+  const types = new Map(body.operations.map(operation => [operation.operation_id, operation.operation_type]))
+  for (const result of answer.results ?? []) {
+    if (result.status !== 'failed') continue
+    void report({ tenantId: device.tenant_id, source: 'sync', route: types.get(result.operation_id) ?? null, message: String(result.error ?? 'sync failed') })
+  }
+  return answer
 }

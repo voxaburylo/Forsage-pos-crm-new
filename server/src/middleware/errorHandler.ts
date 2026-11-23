@@ -2,6 +2,19 @@ import type { Request, Response, NextFunction } from 'express'
 import { logger } from '../lib/logger.js'
 import { safeUnhandledErrorInfo } from '../lib/safeErrorInfo.js'
 
+/**
+ * 23.11.2026 (план T3): неочікувана помилка сервера записується ще й у базу (адреса без параметрів і номерів,
+ * технічний текст без особистих даних). Модуль бази підвантажується лише тут і лише коли помилка сталася:
+ * запис ніколи не затримує відповідь і сам помилкою не стає.
+ */
+function rememberError(req: Request, status: number, code: string, err: unknown): void {
+  void import('../services/systemStatusService.js').then(service => service.recordServerError({
+    tenantId: (req as Request & { user?: { tenant_id?: string } }).user?.tenant_id ?? null, source: 'request',
+    route: service.safeRoute(req.method, req.originalUrl ?? req.url), status, code: String((err as { code?: unknown })?.code ?? code),
+    message: err instanceof Error ? err.message : String(err),
+  })).catch(() => undefined)
+}
+
 export class AppError extends Error {
   constructor(
     public code: string,
@@ -16,7 +29,7 @@ export class AppError extends Error {
 
 export function errorHandler(
   err: unknown,
-  _req: Request,
+  req: Request,
   res: Response,
   _next: NextFunction,
 ): void {
@@ -50,6 +63,7 @@ export function errorHandler(
   }
 
   logger.error(diagnostic, 'Unhandled error')
+  rememberError(req, 500, 'INTERNAL_ERROR', err)
   res.status(500).json({
     error: {
       code: 'INTERNAL_ERROR',

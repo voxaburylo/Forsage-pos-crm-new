@@ -122,11 +122,13 @@ export const ANALYTICS_TABS = [
   { to: '/analytics/sales', label: 'Звіти про продажі', roles: ['owner', 'admin', 'manager', 'cashier'] },
   { to: '/analytics/control', label: 'Контроль', roles: ['owner', 'admin', 'manager'] },
   { to: '/analytics/recount', label: 'Перерахунок', roles: ['owner', 'admin', 'manager'] },
-  { to: '/analytics/payroll', label: 'Зарплата та виплати', roles: ['owner', 'admin'] },
 ]
 
+// 23.11.2026 (план B5, слово власника: «зарплату теж перенести у вкладку працівників»): ставки й комісії — у картці
+// працівника («Команда»), нарахування й виплати — поруч («Зарплата»). В «Аналітиці» лишилось посилання сюди ж.
 export const STAFF_TABS = [
-  { to: '/staff', label: 'Працівники', roles: ['owner', 'admin'] }
+  { to: '/staff', label: 'Команда', roles: ['owner', 'admin'] },
+  { to: '/analytics/payroll', label: 'Зарплата', roles: ['owner', 'admin'] },
 ]
 
 export const SETTINGS_TABS = [

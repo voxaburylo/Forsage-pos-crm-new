@@ -10,7 +10,8 @@ import { touchWebPresence } from '../services/tillLinkService.js'
 export const tillCommandsRouter = Router()
 tillCommandsRouter.use(requireAuth)
 
-tillCommandsRouter.get('/status', requireRole(...WEB_COMMAND_ROLES), async (req, res, next) => {
+// 23.11.2026 (план B3): «чи на зв'язку головний ПК» питає й касир — йому власник може дозволити роботу через веб.
+tillCommandsRouter.get('/status', requireRole(...WEB_COMMAND_ROLES, 'cashier'), async (req, res, next) => {
   try {
     // 22.11.2026: відкрита сторінка вебу — це й позначка «у вебі працюють», за якою каса питає сервер часто.
     // watch=0 — вкладка схована або людина давно нічого не натискала: касу даремно не тримаємо на частому опитуванні.

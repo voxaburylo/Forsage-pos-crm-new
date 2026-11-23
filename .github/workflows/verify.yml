@@ -152,6 +152,13 @@ jobs:
       - run: node apps/web/scripts/web-order-form-ui-smoke.mjs
       - run: node apps/web/scripts/web-invoice-photo-ui-smoke.mjs
       - run: node apps/web/scripts/responsive-shell-ui-smoke.mjs
+      # 23.11.2026 (план T8): ключові екрани — ще й у Microsoft Edge (сканер каси працював у Chrome і не працював в Edge).
+      - run: node apps/web/scripts/run-in-edge.mjs apps/web/scripts/pos-dialog-ui-smoke.mjs
+      - run: node apps/web/scripts/run-in-edge.mjs apps/web/scripts/pos-usability-ui-smoke.mjs
+      - run: node apps/web/scripts/run-in-edge.mjs apps/web/scripts/inventory-revision-ui-smoke.mjs
+      - run: node apps/web/scripts/run-in-edge.mjs apps/web/scripts/invoice-usability-ui-smoke.mjs
+      - run: node apps/web/scripts/run-in-edge.mjs apps/web/scripts/catalog-edit-ui-smoke.mjs
+      - run: node apps/web/scripts/run-in-edge.mjs apps/web/scripts/web-order-form-ui-smoke.mjs
       - run: pnpm --filter desktop exec electron scripts/ai-input-renderer-smoke.cjs
       - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/ai-invoice-worker-smoke.cjs
       - run: pnpm --filter desktop exec cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/receiving-worker-smoke.cjs

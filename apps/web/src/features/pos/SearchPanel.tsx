@@ -16,6 +16,9 @@ import { useServerStatus } from '@/hooks/useServerStatus'
 import { useAuthStore } from '@/stores/authStore'
 import { desktopBridge, desktopProductToProduct } from '@/lib/desktopBridge'
 import { productApi } from '@/features/products/productApi'
+import { productIdFromParam } from '@/features/products/analogModel'
+import { FREE_CARD_EVENT } from '@/features/customers/cardBatchModel'
+import { useSearchParams } from 'react-router-dom'
 import { AnalogProducts } from './AnalogProducts'
 function saveRecentItem(key: string, value: string) {
   if (!value) return
@@ -396,6 +399,11 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
         saveRecentItem('recent_scans', normalizedCode)
         playSuccessBeep()
         reportScannerStage('added', normalizedCode, customer.full_name ?? customer.phone)
+      } else if (desktopRuntime && await desktopBridge()?.pos?.isFreeCard?.(normalizedCode).catch(() => false)) {
+        // План B2 (23.11.2026): картка з виданої пачки, ще нічия — пропонуємо привʼязати її до клієнта.
+        playSuccessBeep()
+        window.dispatchEvent(new CustomEvent(FREE_CARD_EVENT, { detail: { code: normalizedCode } }))
+        reportScannerStage('added', normalizedCode, 'вільна картка клієнта')
       } else {
         playErrorTone()
         toast.error(desktopRuntime
@@ -501,6 +509,23 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
     // Після вибору товару клавіатура знову належить сканеру.
     inputRef.current?.blur()
   }
+
+  // 23.11.2026 (план B1b): «У чек» з аналогів у «Товарах» відкриває касу з ?add=<товар>. Товар додається
+  // тим самим шляхом, що й вибір із пошуку (ціна, знижка, заборона нижче закупки); параметр одразу прибираємо,
+  // щоб оновлення сторінки не додало товар удруге.
+  const [params, setParams] = useSearchParams()
+  const addRef = useRef(addToReceipt)
+  useEffect(() => { addRef.current = addToReceipt })
+  const addFromLink = productIdFromParam(params.get('add'))
+  const addHandled = useRef<string | null>(null)
+  useEffect(() => {
+    if (!addFromLink || addHandled.current === addFromLink) return
+    addHandled.current = addFromLink
+    const next = new URLSearchParams(params)
+    next.delete('add')
+    setParams(next, { replace: true })
+    void productApi.get(addFromLink).then(found => { addRef.current(found.data) }, () => { toast.error('Товар для чека не знайдено') })
+  }, [addFromLink])
 
   function openPricingModal(sItem: any) {
     const purchase = sItem.price_kopecks / 100

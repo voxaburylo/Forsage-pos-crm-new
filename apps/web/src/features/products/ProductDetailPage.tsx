@@ -6,6 +6,7 @@ import { parseWriteoffQuantity } from '@/features/inventory/writeoffQuantity'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Trash2, Clock, AlertTriangle, Trash, CheckCircle, XCircle, Printer, Camera } from 'lucide-react'
 import { productApi, type ProductCrossNumber } from './productApi'
+import { StockAnalogsCard } from './StockAnalogs'
 import { crossNumbersText, groupCrossNumbers, parseCrossPaste } from './crossNumberBrands'
 import type { Product } from '@/types/product'
 import { kopecksToHryvnia, stockStatus } from '@/types/product'
@@ -494,6 +495,9 @@ function ProductDetail() {
           </Card>
         )}
 
+
+        {/* 23.11.2026 (план B1b): аналоги зі складу — вище списку номерів, із залишком, ціною та «у чек / у замовлення». */}
+        <StockAnalogsCard productId={product.id} />
 
         {/* Matches are derived from local cross-numbers, not independent cloud links. */}
         <Card>

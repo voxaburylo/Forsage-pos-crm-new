@@ -1,11 +1,12 @@
 import { isDesktopAccessLocked } from '@/lib/desktopAccessState'
 import { WEB_VIA_MAIN_PC_ROUTES, navigationAllowed } from '@/lib/navigationAccess'
+import { useWebWorkAccess } from '@/lib/webWorkAccess'
 import { useState, useEffect, useRef } from 'react'
 import { toast } from '@/components/ui/Toast'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import {
   Package, ShoppingCart,
-  Truck, BarChart2, Settings, Zap, LogOut, ClipboardList,
+  Truck, BarChart2, Settings, Zap, LogOut, ClipboardList, Activity,
   ChevronDown, Tag, UserCog, Users,
   X, PackagePlus, Sparkles,
 } from 'lucide-react'
@@ -98,6 +99,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/ai-agent', icon: <Sparkles size={18} />, label: 'Перевірка каталогу', roles: ['owner','admin'] },
       { to: '/staff',               icon: <UserCog size={18} />,         label: 'Працівники',          roles: ['owner','admin'] },
       { to: '/settings',            icon: <Settings size={18} />,        label: 'Налаштування',         roles: ['owner','admin'] },
+      { to: '/system',              icon: <Activity size={18} />,        label: 'Стан системи',         roles: ['owner','admin'], webOnly: true },
     ],
   },
 ]
@@ -169,11 +171,12 @@ function NavSection({
   onClose: () => void
 }) {
   const location = useLocation()
+  const viaWeb = useWebWorkAccess()
 
   const visibleItems = group.items.filter(
     (item) => navigationAllowed(item.to, isDesktopRuntime()) && !(item.webOnly && isDesktopRuntime()) && (!item.roles || item.roles.includes(role))
-      // 22.11.2026: через головний ПК із вебу працюють лише власник, адміністратор і менеджер.
-      && (isDesktopRuntime() || !WEB_VIA_MAIN_PC_ROUTES.has(item.to) || ['owner', 'admin', 'manager'].includes(role)),
+      // 22.11.2026: через головний ПК із вебу працюють власник, адміністратор і менеджер; 23.11 — і касир із дозволом.
+      && (isDesktopRuntime() || !WEB_VIA_MAIN_PC_ROUTES.has(item.to) || viaWeb),
   )
 
   const isGroupActive = visibleItems.some((item) => location.pathname.startsWith(item.to))

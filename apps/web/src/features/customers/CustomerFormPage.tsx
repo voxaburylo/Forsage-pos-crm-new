@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { cardCodeFromParam } from './cardBatchModel'
 import { Car, Save } from 'lucide-react'
 import { customerApi } from './customerApi'
 import { pricingApi } from '@/features/admin/pricingApi'
@@ -55,7 +56,9 @@ function CustomerForm() {
   const canEdit = canEditCustomerCard(role)
   const canManageStatus = canManageCustomerStatus(role)
 
-  const [form, setForm]     = useState<FormData>(EMPTY)
+  // План B2 (23.11.2026): «Новий клієнт із цією карткою» — каса передає код вільної картки в адресі.
+  const cardFromLink = cardCodeFromParam(new URLSearchParams(useLocation().search).get('card'))
+  const [form, setForm]     = useState<FormData>(() => cardFromLink ? { ...EMPTY, card_barcode: cardFromLink } : EMPTY)
   const [tiers, setTiers]   = useState<PriceTier[]>([])
   const userId = useAuthStore((s) => s.session?.user.id ?? '')
   const action = useScopedAction(`new:${userId}:${role ?? ''}`)

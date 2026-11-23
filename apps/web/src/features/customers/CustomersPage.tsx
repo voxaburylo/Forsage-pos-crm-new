@@ -268,11 +268,13 @@ export default function CustomersPage() {
   return (
     <Layout
       title={`Клієнти${total ? ` (${total})` : ''}`}
-      actions={
-        canEditCard && <Button icon={<Plus size={16} />} onClick={() => navigation.open('/customers/new')}>
+      actions={<>
+        {/* План B2 (23.11.2026): пачка нових штрихкодів карток для друкарні — власник чи адміністратор. */}
+        {['owner', 'admin'].includes(role) && writable && <Button variant="secondary" icon={<Barcode size={16} />} onClick={() => navigation.open('/customers/cards')}>Картки для друку</Button>}
+        {canEditCard && <Button icon={<Plus size={16} />} onClick={() => navigation.open('/customers/new')}>
           Новий клієнт
-        </Button>
-      }
+        </Button>}
+      </>}
     >
       {/* Групи (таби) */}
       {groups.length > 0 && (

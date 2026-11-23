@@ -6,6 +6,7 @@ import { tillBeat } from '../services/tillLinkService.js'
 import { claimRpc, finishRpc, rpcResultSchema } from '../services/tillRpcService.js'
 import { exportServerOnlyData } from '../services/serverDataExport.js'
 import { devicePushSchema, pushFromMainPc } from '../services/tillDevicePush.js'
+import { saveStatusReport } from '../services/systemStatusService.js'
 
 /**
  * Зв'язок головного ПК власним ключем (див. tillDeviceService): програма забирає запити вебу й тоді,
@@ -38,6 +39,9 @@ async function requireTillDevice(req: DeviceRequest, _res: Response, next: NextF
 tillDeviceRouter.post('/beat', requireTillDevice, async (req: DeviceRequest, res, next) => {
   try {
     res.setHeader('Cache-Control', 'no-store')
+    // 23.11.2026 (план T2): раз на кілька хвилин каса додає відомості про себе для екрана «Стан системи».
+    // Окремо й без права зупинити зв'язок: це довідка для власника.
+    if (req.body?.status) void saveStatusReport(req.tillDevice!.tenant_id, req.body.status).catch(() => undefined)
     res.json({ data: await tillBeat(req.tillDevice!.tenant_id, req.tillDevice!.device_id, req.body?.outbox) })
   } catch (err) { next(err) }
 })

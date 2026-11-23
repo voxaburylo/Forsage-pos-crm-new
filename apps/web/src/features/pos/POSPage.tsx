@@ -23,6 +23,7 @@ import { FavoritesPanel } from './FavoritesPanel'
 import { CrossSellPanel } from './CrossSellPanel'
 import { ReadyOrdersPanel } from './ReadyOrdersPanel'
 import { QuickChargeModal } from './QuickChargeModal'
+import { FreeCardModal } from './FreeCardModal'
 import { HelpModal } from './HelpModal'
 import { posHotkeyAction } from './posHotkeys'
 import { SuspendModal } from './SuspendModal'
@@ -953,6 +954,7 @@ export default function POSPage() {
 
       <FavoritesPanel open={quickOpen} onClose={() => setQuickOpen(false)} />
       {cashierSwitchOpen && <CashierSwitchModal currentName={cashierName} onClose={() => setCashierSwitchOpen(false)} />}
+      <FreeCardModal />
       <QuickChargeModal
         open={quickCharge !== null}
         kind={quickCharge ?? 'free_sale'}

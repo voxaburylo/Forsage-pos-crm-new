@@ -17,7 +17,7 @@ export function ExternalBackupReminder() {
   return (
     <p role="alert" className="mb-6 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
       {text}{' '}
-      <button type="button" className="font-medium underline" onClick={() => navigate('/settings?tab=network')}>Налаштування копій</button>
+      <button type="button" className="font-medium underline" onClick={() => navigate('/settings?tab=pc')}>Налаштування копій</button>
     </p>
   )
 }
