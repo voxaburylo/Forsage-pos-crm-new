@@ -85,7 +85,7 @@ try {
   const base=server.resolvedUrls.local[0]
   const route=(page,value)=>page.waitForFunction(value=>document.querySelector('[data-testid=route]')?.textContent===value,value)
   async function setup(mode){
-    const page=await browser.newPage();page.setDefaultTimeout(6000)
+    const page=await browser.newPage();page.setDefaultTimeout(process.env.CI ? 30000 : 6000)
     page.on('pageerror',error=>errors.push(error.message))
     await page.route('**/*',request=>new URL(request.request().url()).origin===new URL(base).origin
       ?request.continue():(blocked.push(request.request().url()),request.abort()))

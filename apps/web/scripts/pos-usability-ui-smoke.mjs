@@ -58,7 +58,7 @@ try {
   const base = server.resolvedUrls.local[0]
   async function setup(screen = 'finder', mode = 'ready', offline = false, bonus = {}) {
     const page = await browser.newPage({ viewport: { width: 1366, height: 768 } })
-    page.setDefaultTimeout(8000)
+    page.setDefaultTimeout(process.env.CI ? 30000 : 8000)
     page.on('pageerror', error => { errors.push(error.message); console.error(error.message) })
     await page.route('**/*', route => new URL(route.request().url()).origin === new URL(base).origin ? route.continue() : (blocked.push(route.request().url()), route.abort()))
     await page.addInitScript(({ screen, mode, offline, bonus }) => { window.testScreen = screen; window.testMode = mode; window.testOffline = offline; window.testBonus = bonus }, { screen, mode, offline, bonus })
