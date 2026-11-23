@@ -10,9 +10,13 @@ export function BuildBadge({ className = '' }: { className?: string }) {
   useEffect(() => {
     if (!isDesktopRuntime()) return
     let stopped = false
-    const load = () => desktopBridge()?.getRuntimeInfo().then(info => {
-      if (!stopped) setLabel(buildLabel({ desktop: true, build: info.build, stagedUpdateReleaseId: info.stagedUpdateReleaseId, managerPc: info.lan?.mode === 'client' }))
-    }).catch(() => undefined)
+    // Підпис не має права зламати сторінку: старий міст або міст без getRuntimeInfo — просто без підпису.
+    const load = async () => {
+      try {
+        const info = await desktopBridge()?.getRuntimeInfo?.()
+        if (info && !stopped) setLabel(buildLabel({ desktop: true, build: info.build, stagedUpdateReleaseId: info.stagedUpdateReleaseId, managerPc: info.lan?.mode === 'client' }))
+      } catch { /* без підпису */ }
+    }
     void load()
     // ПК менеджера завантажує оновлення у фоні — підпис «оновлення готове» має з'явитись без перезапуску.
     const timer = window.setInterval(() => { void load() }, 5 * 60_000)
