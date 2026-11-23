@@ -6,6 +6,7 @@ import { resolvePortableExecutable } from './updates/installedPortable'
 import { PinRoster } from './security/pinRoster'
 import { webRpcChannelAllowed } from './lan/webRpcChannels'
 import { TillDeviceLink } from './link/tillDeviceLink'
+import { serverDataDue, storeServerData } from './backup/serverDataCopy'
 import { isExpectedCommandFailure } from './diagnostics/expectedCommandFailure'
 import { RendererRecovery } from './rendererRecovery'
 import { deferQuitForMainWindow, NativeCloseController, requestUnloadScript } from './nativeClose'
@@ -91,14 +92,28 @@ import { MANAGER_DEPOSIT_ONLY, MANAGER_SALE_DENIED, managerCanSell, managerCanTa
 import { employeePricing, setEmployeePricing } from './security/employeePricing'
 import { activeSession } from './security/activeSession'
 import { customerWritePayload } from './security/customerWritePolicy'
+import { BACKGROUND_TASK, clearHandoff, decideStart, handoffRequested, isBackgroundLaunch, releaseOwner, writeOwner } from './background/tillOwner'
+import { spawn } from 'node:child_process'
 
 // Keep the existing encryption profile stable across package/product renames.
-app.setPath('userData', path.join(app.getPath('appData'), 'desktop'))
+// Перевірки (смоки) запускають справжню програму поруч із робочою касою — їм окремий профіль; у зібраній програмі цього немає.
+app.setPath('userData', !app.isPackaged && process.env.FORSAGE_TEST_USER_DATA ? process.env.FORSAGE_TEST_USER_DATA : path.join(app.getPath('appData'), 'desktop'))
 // This business UI/thermal rasterizer does not require 3D acceleration.
 // Avoid the hardware-driver path on Windows, including remote desktop sessions.
 if (process.platform === 'win32') app.disableHardwareAcceleration()
-const gotSingleInstanceLock = app.requestSingleInstanceLock()
+/**
+ * 22.11.2026, рішення власника: база головного ПК працює у фоні одразу після ввімкнення ПК, ще до входу у Windows,
+ * щоб веб працював, навіть коли касу не відкрито. Фонова копія (--background) — без вікна; вікно каси при запуску
+ * просить її відпустити базу й чекає, а закриваючись — запускає фон знову. Базу тримає лише одна копія (background/tillOwner).
+ */
+const backgroundMode = isBackgroundLaunch(process.argv)
+const ownerDataRoot = process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Forsage') : app.getPath('userData')
+let startDecision: ReturnType<typeof decideStart> = { action: 'start' }
+try { mkdirSync(ownerDataRoot, { recursive: true }); startDecision = decideStart(ownerDataRoot, backgroundMode) }
+catch { /* без файла власника — звичайний запуск, як до 22.11.2026 */ }
+const gotSingleInstanceLock = startDecision.action === 'start' && app.requestSingleInstanceLock()
 if (!gotSingleInstanceLock) app.quit()
+else { try { writeOwner(ownerDataRoot, backgroundMode ? 'background' : 'window') } catch { /* не заважає запуску */ } }
 const blackBox = gotSingleInstanceLock ? new BlackBox(path.join(
   process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Forsage') : app.getPath('userData'), 'logs', 'blackbox',
 )) : null
@@ -1162,7 +1177,7 @@ function openLocalDatabaseOrExplain(dataRoot: string): LocalDatabaseOpenResult |
       buildVersion: error.buildVersion,
       executable: process.execPath,
     })
-    dialog.showErrorBox('Запущено стару версію Форсажу', [
+    if (!backgroundMode) dialog.showErrorBox('Запущено стару версію Форсажу', [
       error.message,
       '',
       `Запущено: ${process.execPath}`,
@@ -1266,6 +1281,16 @@ app.whenReady().then(async () => {
   shiftBackups.start()
   // Зв'язок головного ПК із сервером власним ключем: веб працює через ПК і тоді, коли в програмі ніхто не увійшов.
   getTillDeviceLink().start()
+  // Раз на добу — копія даних, що живуть лише в хмарі, у власну базу: так вони є в кожній копії бази.
+  const copyServerData = async () => {
+    const db = localDatabase
+    if (!db || databaseMaintenance || !isMainTill() || !serverDataDue(db, new Date())) return
+    const data = await getTillDeviceLink().serverData()
+    if (!data || !localDatabase || databaseMaintenance) return
+    blackBox?.record('server-data-copy', storeServerData(localDatabase, data, new Date()))
+  }
+  setTimeout(() => { void copyServerData().catch(error => writeDesktopDiagnostic('server-data-copy-failed', error)) }, 3 * 60_000).unref()
+  setInterval(() => { void copyServerData().catch(error => writeDesktopDiagnostic('server-data-copy-failed', error)) }, 60 * 60_000).unref()
   // 20.11.2026: однакове написання одиниць у картках (шт/компл/…), один раз після оновлення; спершу копія бази.
   const unitTidyDb = localDatabase
   setTimeout(() => {
@@ -2406,11 +2431,18 @@ app.whenReady().then(async () => {
   try { assertLanIdentityConnection(localDatabase, localNetwork.getStatus()); safeNetworkConfig = true }
   catch (error) { writeDesktopDiagnostic('lan-client-config-blocked', error) }
   if (safeNetworkConfig) await localNetwork.startConfigured()
+  if (backgroundMode) {
+    // Фон: вікна немає. Щойно хтось відкрив касу на екрані — коректно закриваємось і віддаємо базу вікну.
+    blackBox?.record('background-started')
+    clearHandoff(dataRoot)
+    setInterval(() => { if (handoffRequested(dataRoot)) { blackBox?.record('background-handoff'); app.quit() } }, 1_000).unref()
+    return
+  }
   await createWindow()
 }).catch((error: unknown) => {
   writeDesktopDiagnostic('startup-failed', error)
   console.error('Forsage desktop startup failed', safeDiagnosticDetails(error))
-  dialog.showErrorBox(
+  if (!backgroundMode) dialog.showErrorBox(
     'Forsage не запустився',
     error instanceof LocalDatabaseOpenError
       ? `${error.message}\n\n${error.databasePath}\n\nПричину записано у локальний журнал помилок.`
@@ -2438,7 +2470,8 @@ app.on('child-process-gone', (_event, details) => {
   }
 })
 
-app.on('window-all-closed', () => app.quit())
+// Фон вікон не має; допоміжні вікна друку, закриваючись, не мають зупиняти базу.
+app.on('window-all-closed', () => { if (!backgroundMode) app.quit() })
 app.on('before-quit', (event) => {
   if (deferQuitForMainWindow(event, mainWindow)) return
   if (quitAfterCleanup) return
@@ -2477,6 +2510,16 @@ app.on('before-quit', (event) => {
       }
     } catch (error) { writeDesktopDiagnostic('database-close-failed', error) }
     finally {
+      // Базу відпущено. Закрилось вікно головного ПК — знову запускаємо фон (якщо власник його налаштував),
+      // щоб веб і далі працював через цей ПК. Фон дочекається, поки цей процес повністю завершиться.
+      if (gotSingleInstanceLock) {
+        try {
+          if (!backgroundMode && process.platform === 'win32' && localNetwork?.getStatus().mode !== 'client') {
+            writeOwner(ownerDataRoot, 'window-closing')
+            spawn('schtasks.exe', ['/Run', '/TN', BACKGROUND_TASK], { detached: true, stdio: 'ignore', windowsHide: true }).on('error', () => undefined).unref()
+          } else releaseOwner(ownerDataRoot)
+        } catch (error) { writeDesktopDiagnostic('background-restart-failed', error) }
+      }
       quitAfterCleanup = true
       await blackBox?.close()
       app.quit()

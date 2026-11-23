@@ -59,13 +59,17 @@ const WEB_TILL_RPC_PATH = '/api/v1/till-rpc'
  * 22.11.2026: ШІ-помічник у вебі. Розмова й пропозиції лише читають дані; застосувати дію (накладна, замовлення)
  * веб може тільки через головний ПК. Правила помічника — налаштування, що не стосуються залишків і грошей.
  */
-const WEB_AI_READ_PATHS = new Set(['/api/v1/ai/chat', '/api/v1/ai/catalog-review'])
+// 22.11.2026: пошук фото товару й читання VIN з фото теж лише читають — саму картку чи замовлення змінює головний ПК.
+const WEB_AI_READ_PATHS = new Set(['/api/v1/ai/chat', '/api/v1/ai/catalog-review', '/api/v1/ai/product-photos', '/api/v1/vin/ocr'])
 const WEB_AI_MEMORY_PATH = '/api/v1/ai/memory'
 /**
  * 22.11.2026 (рішення власника: «зміна тієї інформації, яка не вплине на залишки»): дані, що живуть лише на сервері —
  * у базі каси їх немає взагалі, тож задвоїтись нема чому: лист очікування, сповіщення та їх шаблони, канали, чати.
+ * 22.11.2026 (огляд кнопок вебу): сюди ж — посилання на прайс для клієнта, групи клієнтів і підключення бота власника:
+ * таблиць price_list_links, customer_groups(+members) і номера чату власника в базі каси немає.
  */
-const SERVER_ONLY_DATA_PREFIXES = ['/api/v1/waitlist/', '/api/v1/notifications/', '/api/v1/channels', '/api/v1/chats/', '/api/v1/settings/owner-alerts']
+const SERVER_ONLY_DATA_PREFIXES = ['/api/v1/waitlist/', '/api/v1/notifications/', '/api/v1/channels', '/api/v1/chats/', '/api/v1/settings/owner-alerts',
+  '/api/v1/price-links', '/api/v1/customer-groups', '/api/v1/settings/telegram-connect']
 
 export function isStaffSecretChange(method: string, path: string): boolean {
   return (method === 'POST' && path === '/api/v1/auth/set-pin') || (method === 'PUT' && /^\/api\/v1\/admin\/users\/[0-9a-f-]{36}\/password$/.test(path))

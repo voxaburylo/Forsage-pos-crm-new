@@ -4,6 +4,7 @@ import { supabaseAdmin } from '../db/supabaseAdmin.js'
 import { AppError } from './errorHandler.js'
 import { logger } from '../lib/logger.js'
 import { acquireTenantMutationGuard, getTenantSyncGeneration } from '../services/syncGeneration.js'
+import { selfCheckIdentity } from '../services/selfCheckAccess.js'
 
 interface SupabaseJwtPayload {
   sub: string
@@ -70,6 +71,14 @@ export async function requireAuth(
   res: Response,
   next: NextFunction,
 ): Promise<void> {
+  // Самоперевірка сервера: він сам читає власні сторінки від імені власника. Лише GET, лише поки триває
+  // прохід, пропуск не покидає пам'ять процесу (див. selfCheckAccess).
+  const selfCheck = selfCheckIdentity(req)
+  if (selfCheck) {
+    req.user = selfCheck
+    return next()
+  }
+
   const authHeader = req.headers.authorization
   if (!authHeader?.startsWith('Bearer ')) {
     return next(new AppError('UNAUTHORIZED', 'Необхідна авторизація', 401))

@@ -145,6 +145,19 @@ describe('the main PC keeps its own link to the server', () => {
   })
 })
 
+describe('the main PC takes the cloud-only data for its own copies', () => {
+  it('asks with its key; without a key or a connection it simply waits for the next time', async () => {
+    const h = harness()
+    h.answer('/server-data', ok({ version: 1, tables: {} }))
+    await expect(h.link.serverData()).resolves.toEqual({ version: 1, tables: {} })
+    expect(h.calls.at(-1)).toMatchObject({ path: '/server-data', headers: { Authorization: `Device ${DEVICE}.${TOKEN}` } })
+    h.answer('/server-data', new Error('offline'))
+    await expect(h.link.serverData()).resolves.toBeNull()
+    await expect(harness({}, null).link.serverData()).resolves.toBeNull()
+    await expect(harness({ canRun: () => false }).link.serverData()).resolves.toBeNull()
+  })
+})
+
 describe('the link actions belong to this PC only', () => {
   it('the web and the manager PC can never call them; the key is brought only by the owner', () => {
     for (const channel of ['desktop:link:status', 'desktop:link:wake', 'desktop:link:register', 'desktop:link:commands-taken']) {

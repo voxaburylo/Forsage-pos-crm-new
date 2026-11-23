@@ -8,6 +8,11 @@ const isDesktopBuild = process.env.FORSAGE_DESKTOP_BUILD === '1'
 
 export default defineConfig({
   base: isDesktopBuild ? './' : '/',
+  // 22.11.2026 (прохання власника): номер збірки видно вгорі екрана — щоб бачити, чи оновився ПК менеджера чи веб.
+  define: {
+    __WEB_BUILT_AT__: JSON.stringify(new Date().toISOString()),
+    __WEB_COMMIT__: JSON.stringify(String(process.env.VERCEL_GIT_COMMIT_SHA ?? '').slice(0, 7)),
+  },
   plugins: [
     react(),
     tailwindcss(),

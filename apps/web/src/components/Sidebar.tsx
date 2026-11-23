@@ -17,6 +17,8 @@ import { PICKING_STATUSES } from '@/features/inventory/pickingApi'
 import { createReadPoller } from '@/lib/readPoller'
 import { AI_ASSISTANT_ROLES } from '@/features/ai/aiAccess'
 import { confirmUnsavedDeparture } from '@/hooks/useUnsavedChanges'
+import { BrandLogo } from '@/components/BrandLogo'
+import { BuildBadge } from '@/components/BuildBadge'
 
 interface NavItem {
   to: string
@@ -302,12 +304,10 @@ export function Sidebar({ isOpen = false, onClose = () => {} }: SidebarProps) {
       {/* Logo + close button */}
       <div className="px-4 py-4 border-b border-gray-100 flex items-center justify-between pt-safe">
         <div className="flex items-center gap-2">
-          <div className="w-8 h-8 bg-accent rounded-lg flex items-center justify-center shrink-0">
-            <Zap size={16} className="text-black" />
-          </div>
+          <BrandLogo size={32} />
           <div>
             <div className="font-bold text-gray-900 text-sm leading-tight">Форсаж</div>
-            <div className="text-xs text-gray-400 leading-tight">CRM / ERP</div>
+            <BuildBadge />
           </div>
         </div>
         <button

@@ -4,6 +4,7 @@ import { AppError } from '../middleware/errorHandler.js'
 import { authenticateTillDevice, parseDeviceAuthorization, registerTillDevice } from '../services/tillDeviceService.js'
 import { tillBeat } from '../services/tillLinkService.js'
 import { claimRpc, finishRpc, rpcResultSchema } from '../services/tillRpcService.js'
+import { exportServerOnlyData } from '../services/serverDataExport.js'
 
 /**
  * Зв'язок головного ПК власним ключем (див. tillDeviceService): програма забирає запити вебу й тоді,
@@ -49,5 +50,13 @@ tillDeviceRouter.post('/rpc/:id/result', requireTillDevice, async (req: DeviceRe
     const parsed = rpcResultSchema.safeParse(req.body?.outcome)
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Некоректна відповідь каси', 422)
     res.json({ data: await finishRpc(req.tillDevice!.tenant_id, req.tillDevice!.device_id, String(req.params.id), parsed.data) })
+  } catch (err) { next(err) }
+})
+
+// Дані, що живуть лише в хмарі: головний ПК раз на добу забирає їх у власну базу (без ключів і паролів служб).
+tillDeviceRouter.post('/server-data', requireTillDevice, async (req: DeviceRequest, res, next) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store')
+    res.json({ data: await exportServerOnlyData(req.tillDevice!.tenant_id) })
   } catch (err) { next(err) }
 })
