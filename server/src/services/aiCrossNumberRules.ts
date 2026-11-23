@@ -61,6 +61,36 @@ export function normalizedNameContains(name: string, catalogNumber: string): boo
 }
 
 /** Пропозиція крос-номерів: лише справжні каталожні номери з нормальним джерелом (не пошуковик/маркетплейс). */
+/** 23.11.2026: лише за оригіналом буває до 20 номерів (Hyundai, Kia, Mitsubishi…), плюс аналоги — 50 стало замало. */
+export const CROSS_NUMBERS_PER_PRODUCT = 120
+/** Скільки товарів за один пошук: менше товарів — глибший пошук по кожному. */
+export const CROSS_RESEARCH_PRODUCTS = 3
+/** Скільки пошуків в інтернеті на один виклик: кілька на кожен товар (OE по марках авто окремо від аналогів). */
+export function crossResearchSearches(products: number): number {
+  return Math.min(3 + 4 * Math.max(1, products), 15)
+}
+
+const brandKey = (brand: string) => brand.toLocaleLowerCase('uk-UA').replace(/[^\p{L}\p{N}]+/gu, '')
+
+/**
+ * 23.11.2026, слово власника: не «номер (Blue Print), номер (Blue Print)», а як у постачальників —
+ * «Hyundai: a, b, c; Kia: d, e; MANN: f» — бренд один раз, його номери через кому.
+ * Порядок брендів — як їх уперше назвав помічник (спершу оригінал, далі аналоги); «BLUE PRINT» і «Blue Print» — один бренд.
+ */
+export function groupCrossNumbersByBrand(numbers: ReadonlyArray<{ number: string; brand?: string | null }>): string {
+  const groups = new Map<string, { title: string; numbers: string[] }>()
+  for (const entry of numbers) {
+    const brand = typeof entry.brand === 'string' ? entry.brand.trim() : ''
+    const key = brand ? brandKey(brand) : ''
+    const group = groups.get(key) ?? { title: brand, numbers: [] }
+    if (!group.numbers.includes(entry.number)) group.numbers.push(entry.number)
+    groups.set(key, group)
+  }
+  const named = [...groups.entries()].filter(([key]) => key).map(([, group]) => group.title + ': ' + group.numbers.join(', '))
+  const unnamed = groups.get('')
+  return [...named, ...(unnamed ? [(named.length ? 'Інші: ' : '') + unnamed.numbers.join(', ')] : [])].join('; ')
+}
+
 export function cleanCrossProposal(raw: unknown): Array<{ product_id: string; numbers: Array<{ number: string; brand: string | null; source: string }> }> {
   const result: Array<{ product_id: string; numbers: Array<{ number: string; brand: string | null; source: string }> }> = []
   for (const item of Array.isArray(raw) ? raw.slice(0, 200) : []) {
@@ -68,7 +98,7 @@ export function cleanCrossProposal(raw: unknown): Array<{ product_id: string; nu
     if (!productId) continue
     const seen = new Set<string>()
     const numbers: Array<{ number: string; brand: string | null; source: string }> = []
-    for (const entry of Array.isArray(item?.numbers) ? item.numbers.slice(0, 50) : []) {
+    for (const entry of Array.isArray(item?.numbers) ? item.numbers.slice(0, CROSS_NUMBERS_PER_PRODUCT) : []) {
       const number = typeof entry?.number === 'string' ? entry.number.trim().slice(0, 100) : ''
       const key = safeCatalogNumber(number)
       const source = evidenceDomain(entry?.source_url)

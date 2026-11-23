@@ -20,9 +20,15 @@ interface Dependencies {
   now?: () => number
 }
 export const PIN_FAILURES_BEFORE_PASSWORD = 3
+/** 23.11.2026, рішення власника: за PIN — касири й менеджери; власник і адміністратор — лише паролем. */
+export const PIN_ROLES: readonly string[] = ['cashier', 'manager']
+/** Вхід за PIN без вибору працівника: стільки невірних PIN поспіль — і PIN на цьому ПК вимкнено на кілька хвилин. */
+export const PIN_FAILURES_BEFORE_PAUSE = 5
+export const PIN_PAUSE_MS = 5 * 60_000
 
 export class PinRoster {
   private failures = new Map<string, number>()
+  private anonymous = { failures: 0, pausedUntil: 0 }
   constructor(private readonly deps: Dependencies) {}
   private now() { return (this.deps.now ?? Date.now)() }
   private fingerprint(u: PinRosterUser) {
@@ -61,7 +67,7 @@ export class PinRoster {
   }
   /** Кого можна перемкнути PIN-ом: сьогодні входили паролем і мають PIN. Без хешів і телефонів. */
   list(): Array<{ id: string; full_name: string; role: string }> {
-    return this.live().filter(item => Boolean(item.user.pin_hash))
+    return this.live().filter(item => Boolean(item.user.pin_hash) && PIN_ROLES.includes(item.user.role))
       .map(item => ({ id: item.user.id, full_name: item.user.full_name, role: item.user.role }))
   }
   /** Перевіряє PIN через verify; true — можна завершити вхід цього працівника. */
@@ -81,6 +87,31 @@ export class PinRoster {
     this.failures.set(key, failures)
     throw new Error(result.error || 'Невірний PIN-код')
   }
+  /**
+   * 23.11.2026, рішення власника: «ввів свій PIN і зайшов — навіщо когось вибирати». Працівника визначає сам PIN
+   * серед тих, хто сьогодні вже входив паролем на цьому ПК. `owners` повертає id тих із переданих, чий це PIN.
+   */
+  loginByPin(owners: (candidateIds: string[]) => string[]): PinRosterUser {
+    const paused = 'Забагато невірних PIN. Увійдіть паролем або спробуйте через кілька хвилин.'
+    if (this.anonymous.pausedUntil > this.now()) throw new Error(paused)
+    const candidates = this.live().filter(item => Boolean(item.user.pin_hash) && PIN_ROLES.includes(item.user.role))
+    const matched = candidates.length ? owners(candidates.map(item => item.user.id)) : []
+    if (matched.length > 1) throw new Error('Цей PIN мають кілька працівників. Увійдіть паролем і змініть PIN.')
+    const item = matched.length === 1 ? candidates.find(candidate => candidate.user.id === matched[0]) : undefined
+    if (item) {
+      this.anonymous = { failures: 0, pausedUntil: 0 }
+      this.failures.delete(item.user.tenant_id + ':' + item.user.id)
+      return item.user
+    }
+    const failures = this.anonymous.failures + 1
+    if (failures >= PIN_FAILURES_BEFORE_PAUSE) {
+      this.anonymous = { failures: 0, pausedUntil: this.now() + PIN_PAUSE_MS }
+      throw new Error(paused)
+    }
+    this.anonymous = { failures, pausedUntil: 0 }
+    // Одна відповідь і на невірний PIN, і на «сьогодні ще не входив паролем»: не підказуємо, чий PIN існує.
+    throw new Error('PIN не підійшов. Якщо сьогодні ви ще не входили паролем — увійдіть паролем.')
+  }
   /** Серверна сесія цього працівника на сьогодні — щоб після PIN обмін із сервером ішов без пароля. */
   saveServerSession(id: string, tenant: string, tokens: ServerTokens) {
     const entries = this.live().map(item => item.entry)
@@ -94,5 +125,5 @@ export class PinRoster {
     if (!entry?.server) return null
     try { return checkedServerTokens(entry.server) } catch { return null }
   }
-  forgetAll() { this.failures.clear(); this.save([]) }
+  forgetAll() { this.failures.clear(); this.anonymous = { failures: 0, pausedUntil: 0 }; this.save([]) }
 }

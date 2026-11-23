@@ -466,7 +466,7 @@ export class LocalStaffRepository {
 
     if (matches.length > 1) {
       this.diagnose('password-only-ambiguous')
-      throw new Error('Цей пароль мають кілька працівників. Увійдіть з номером телефону й змініть пароль одному з них.')
+      throw new Error('Цей пароль мають кілька працівників. Власник має змінити пароль одному з них (Працівники).')
     }
     const row = matches[0]
     if (!row) {
@@ -506,6 +506,8 @@ export class LocalStaffRepository {
     const user = this.requireUser(userId, tenantId)
     if (user.role === 'tire_worker') throw new Error('Шиномонтажник не має доступу до програми')
     if (!/^\d{4}$/.test(pin)) throw new Error('PIN-код має складатися з 4 цифр')
+    // 23.11.2026, рішення власника: за PIN входять, не вибираючи себе зі списку, — тому PIN у кожного свій.
+    if (this.pinOwners(pin, tenantId).some(id => id !== userId)) throw new Error('Такий PIN уже має інший працівник. Виберіть інший PIN.')
     const timestamp = nowIso()
     const pinHash = hashSecret(pin)
     return this.db.transaction(() => {
@@ -520,6 +522,20 @@ export class LocalStaffRepository {
       }, timestamp)
       return { success: true }
     })
+  }
+  /**
+   * Чий це PIN (23.11.2026: вхід за PIN без вибору працівника). Лише звірка: лічильників спроб не чіпає —
+   * обмеження спроб веде той, хто викликає (PinRoster). `among` звужує пошук до дозволених працівників.
+   */
+  pinOwners(pin: string, tenantId = DEFAULT_TENANT_ID, among?: readonly string[]): string[] {
+    if (typeof pin !== 'string' || !/^\d{4}$/.test(pin)) return []
+    const rows = this.db.prepare(`
+      SELECT id, pin_hash FROM staff_users
+      WHERE tenant_id = ? AND is_active = 1 AND deleted_at IS NULL AND role <> 'tire_worker'
+        AND pin_hash IS NOT NULL AND pin_hash <> ''
+      ORDER BY id
+    `).all(tenantId) as Array<{ id: string; pin_hash: string }>
+    return rows.filter(row => (!among || among.includes(row.id)) && verifySecret(row.pin_hash, pin, row.id)).map(row => row.id)
   }
   verifyPin(userId: string, pin: string, tenantId = DEFAULT_TENANT_ID): { valid: boolean; error?: string } {
     if (!/^\d{4}$/.test(pin)) return { valid: false }

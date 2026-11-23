@@ -1335,6 +1335,8 @@ app.whenReady().then(async () => {
   }
   localNetwork = new LocalNetworkCoordinator(dataRoot, executeLanCommand, resolveLanSession, {
     authenticate: async (phone, password) => {
+      // Без номера телефону — вхід лише паролем (23.11.2026): працівника визначає сам пароль.
+      if (!phone) return requireLocalStaff().loginWithPasswordOnly(password)
       try {
         return requireLocalStaff().loginWithPassword(phone, password)
       } catch (error) {
@@ -1778,11 +1780,20 @@ app.whenReady().then(async () => {
   // ПК менеджера перевіряє вхід через головний ПК і далі входить з номером телефону.
   handleDesktopIpc('desktop:auth:login-password', async (_event, password: string) => {
     if (lanPairInProgress) throw new Error('Дочекайтеся завершення підключення до головного ПК')
-    if (localNetwork?.getStatus().mode === 'client' || hasLanIdentity(requireLocalDatabase())) {
-      throw new Error('На ПК менеджера вхід — з номером телефону')
-    }
     const generation = ++desktopLoginGeneration
-    const user = requireLocalStaff().loginWithPasswordOnly(password)
+    const network = localNetwork!
+    assertLanIdentityConnection(requireLocalDatabase(), network.getStatus())
+    const localLogin = () => requireLocalStaff().loginWithPasswordOnly(password)
+    // 23.11.2026, рішення власника «логін прибираємо, досить пароля»: ПК менеджера теж входить лише паролем —
+    // пароль перевіряє головний ПК і повертає, хто це; без зв'язку — за збереженим на цьому ПК входом.
+    const user = network.getStatus().mode === 'client'
+      ? await loginLanClient({
+        remote: () => network.loginRemote('', password),
+        cache: profile => {
+          if (generation !== desktopLoginGeneration) throw new Error('Спробу входу скасовано')
+          cacheLanIdentity(requireLocalDatabase(), profile, profile.phone, password, network.getStatus().accessKey)
+        }, local: localLogin,
+      }) : localLogin()
     if (generation !== desktopLoginGeneration) throw new Error('Спробу входу скасовано')
     completeDesktopLogin(user)
     return user
@@ -1809,13 +1820,13 @@ app.whenReady().then(async () => {
     if (lanPairInProgress || !pinLoginAvailable()) return []
     try { return getPinRoster().list() } catch { return [] }
   })
-  handleDesktopIpc('desktop:auth:login-pin', async (_event, userId: string, pin: string) => {
+  // 23.11.2026, рішення власника: PIN вводять, нікого не вибираючи, — працівника визначає сам PIN.
+  handleDesktopIpc('desktop:auth:login-pin', async (_event, pin: string) => {
     if (lanPairInProgress) throw new Error('Дочекайтеся завершення підключення до головного ПК')
-    if (!pinLoginAvailable()) throw new Error('На ПК менеджера вхід — з номером телефону')
-    if (typeof userId !== 'string' || typeof pin !== 'string') throw new Error('Невірний PIN-код')
+    if (!pinLoginAvailable()) throw new Error('На ПК менеджера вхід — паролем')
+    if (typeof pin !== 'string' || !/^\d{4}$/.test(pin)) throw new Error('PIN-код — 4 цифри')
     const generation = ++desktopLoginGeneration
-    const tenantId = rememberedUser(userId, DEFAULT_TENANT_ID)?.tenant_id ?? DEFAULT_TENANT_ID
-    const stored = getPinRoster().login(userId, tenantId, () => requireLocalStaff().verifyPin(userId, pin, tenantId))
+    const stored = getPinRoster().loginByPin(candidateIds => requireLocalStaff().pinOwners(pin, DEFAULT_TENANT_ID, candidateIds))
     if (generation !== desktopLoginGeneration) throw new Error('Спробу входу скасовано')
     const server = getPinRoster().serverSession(stored.id, stored.tenant_id)
     completeDesktopLogin(stored)

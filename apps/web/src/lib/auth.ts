@@ -254,7 +254,8 @@ export async function signIn(phone: string, password: string) {
 export async function canSignInByPassword(): Promise<boolean> {
   if (!isDesktopRuntime() || !desktopBridge()?.auth?.loginByPassword) return false
   const status = await readLanFirstRunStatus().catch(() => null)
-  return !lanNeedsSetup(status) && status?.mode !== 'client'
+  // 23.11.2026, рішення власника «логін прибираємо, досить пароля»: і ПК менеджера входить лише паролем.
+  return !lanNeedsSetup(status)
 }
 
 /**
@@ -268,7 +269,6 @@ export async function signInByPassword(password: string) {
   const status = await readLanFirstRunStatus()
   if (generation !== desktopServerLoginGeneration) throw new Error('Спробу входу скасовано')
   if (lanNeedsSetup(status)) throw new Error('Спочатку завершіть підключення цього ПК до головного ПК')
-  if (status?.mode === 'client') throw new Error('На ПК менеджера вхід — з номером телефону')
   const user = await login(password)
   if (generation !== desktopServerLoginGeneration) throw new Error('Спробу входу скасовано')
   const session = createDesktopSession(user)
@@ -289,11 +289,11 @@ export async function readPinRoster(): Promise<Array<{ id: string; full_name: st
  * Швидка зміна касира за PIN. Пароль цього дня вже перевірено на цьому ПК; серверну сесію працівника
  * головний ПК повертає сам (паролі не зберігаються), як і при відновленні входу.
  */
-export async function signInByPin(userId: string, pin: string) {
+export async function signInByPin(pin: string) {
   const generation = nextDesktopLoginGeneration()
   const login = desktopBridge()?.auth?.loginByPin
   if (!isDesktopRuntime() || !login) throw new Error('Вхід за PIN працює в програмі каси')
-  const user = await login(userId, pin)
+  const user = await login(pin)
   if (generation !== desktopServerLoginGeneration) throw new Error('Спробу входу скасовано')
   const session = createDesktopSession(user)
   useAuthStore.getState().setOfflineSession(session)

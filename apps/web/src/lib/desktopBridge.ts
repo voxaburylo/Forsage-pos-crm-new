@@ -543,7 +543,7 @@ export interface ForsageDesktopBridge {
     pinRoster?: () => Promise<Array<{ id: string; full_name: string; role: string }>>
     /** 22.11.2026: головний ПК виконує запит вебу від імені його працівника. */
     executeWebRequest?: (userId: string, channel: string, args: unknown[]) => Promise<unknown>
-    loginByPin?: (userId: string, pin: string) => Promise<{ id: string; tenant_id: string; full_name: string; role: string; phone: string; email: string; is_active: boolean; created_at?: string }>
+    loginByPin?: (pin: string) => Promise<{ id: string; tenant_id: string; full_name: string; role: string; phone: string; email: string; is_active: boolean; created_at?: string }>
     loginOnline: (phone: string, password: string) => Promise<{ user: { id: string; tenant_id: string; full_name: string; role: string; phone: string; email: string; is_active: boolean; created_at?: string }; access_token: string; refresh_token: string; expires_in: number }>
     logout: () => Promise<{ success: true }>
     rememberedStatus?: () => Promise<{ phone?: string; name?: string; expiresAt?: number; locked: boolean; available: boolean }>

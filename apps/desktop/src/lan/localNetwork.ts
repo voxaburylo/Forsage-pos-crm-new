@@ -247,7 +247,8 @@ export class LocalNetworkCoordinator {
   }
 
   async loginRemote(phone: string, password: string): Promise<LanPublicProfile> {
-    if (typeof phone !== 'string' || phone.length > 64 || !phone.trim() || typeof password !== 'string' || !password || password.length > 1024) throw new Error('Вкажіть номер телефону та пароль')
+    // Порожній номер — вхід лише паролем (23.11.2026): головний ПК сам визначає працівника.
+    if (typeof phone !== 'string' || phone.length > 64 || typeof password !== 'string' || !password || password.length > 1024) throw new Error('Введіть пароль')
     return this.secureClientRequest({ action: 'login', phone, password }) as Promise<LanPublicProfile>
   }
 
@@ -326,12 +327,12 @@ export class LocalNetworkCoordinator {
     }
     if (input.action === 'login') {
       if (!this.services.authenticate) throw new Error('Головний ПК не підтримує перший вхід без інтернету')
-      if (typeof input.phone !== 'string' || !input.phone.trim() || input.phone.length > 64 || typeof input.password !== 'string' || !input.password || input.password.length > 1024) throw new Error('Вкажіть номер телефону та пароль')
+      if (typeof input.phone !== 'string' || input.phone.length > 64 || typeof input.password !== 'string' || !input.password || input.password.length > 1024) throw new Error('Введіть пароль')
       if (!this.config.allowedUserId) throw new Error('Цей код підключення видано іншому працівнику')
       const profile = await this.services.authenticate(input.phone, input.password) as Partial<LanPublicProfile> | null
       const session = this.currentHubSession(profile?.id, profile?.tenant_id)
       if (!profile || profile.id !== session.id || profile.tenant_id !== session.tenant_id || profile.role !== session.role || profile.is_active !== true) throw new Error('Працівник не знайдений або заблокований на головному ПК')
-      return { ...session, full_name: typeof profile.full_name === 'string' ? profile.full_name.slice(0, 300) : '', phone: typeof profile.phone === 'string' ? profile.phone.slice(0, 64) : input.phone, is_active: true } satisfies LanPublicProfile
+      return { ...session, full_name: typeof profile.full_name === 'string' ? profile.full_name.slice(0, 300) : '', phone: typeof profile.phone === 'string' && profile.phone ? profile.phone.slice(0, 64) : input.phone, is_active: true } satisfies LanPublicProfile
     }
     if (typeof input.user_id !== 'string' || typeof input.tenant_id !== 'string') throw new Error('Потрібен вхід працівника')
     const session = this.currentHubSession(input.user_id, input.tenant_id)
