@@ -5,7 +5,7 @@
  */
 export interface ChatCrossItem { product_id?: unknown; numbers?: Array<{ number?: unknown; brand?: unknown; source?: unknown }> }
 export interface ChatCrossBridge {
-  changeCrossNumbers: (productId: string, change: { add?: string[]; source?: string }) => Promise<Array<{ id: string; number: string; source: string }>>
+  changeCrossNumbers: (productId: string, change: { add?: Array<string | { number: string; brand?: string | null }>; source?: string }) => Promise<Array<{ id: string; number: string; source: string }>>
 }
 
 export async function applyChatCrossNumbers(items: readonly ChatCrossItem[], bridge: ChatCrossBridge): Promise<{ products: number; numbers: number; skipped: Array<{ item: string; error: string }> }> {
@@ -13,8 +13,11 @@ export async function applyChatCrossNumbers(items: readonly ChatCrossItem[], bri
   for (const item of items) {
     const productId = typeof item?.product_id === 'string' ? item.product_id : ''
     const numbers = (Array.isArray(item?.numbers) ? item.numbers : [])
-      .map(entry => typeof entry?.number === 'string' ? entry.number.trim() : '')
-      .filter(number => number && number.length <= 120)
+      .map(entry => ({ number: typeof entry?.number === 'string' ? entry.number.trim() : '',
+        brand: typeof entry?.brand === 'string' && entry.brand.trim() ? entry.brand.trim().slice(0, 100) : null }))
+      .filter(entry => entry.number && entry.number.length <= 120)
+      // Бренд номера зберігається в картці («Hyundai: a, b; Kia: c»); без бренду — як і раніше, просто номер.
+      .map(entry => entry.brand ? entry : entry.number)
     if (!productId || !numbers.length) { result.skipped.push({ item: productId || '—', error: 'Немає номерів для додавання' }); continue }
     const sources = [...new Set((item.numbers ?? []).map(entry => typeof entry?.source === 'string' ? entry.source : '').filter(Boolean))]
     try {

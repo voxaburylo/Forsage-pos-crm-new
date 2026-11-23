@@ -598,22 +598,28 @@ export class LocalCatalogRepository {
     return product
   }
 
-  listCrossNumbers(productId: string, tenantId = DEFAULT_TENANT_ID): Array<{ id: string; number: string; source: string }> {
+  listCrossNumbers(productId: string, tenantId = DEFAULT_TENANT_ID): Array<{ id: string; number: string; source: string; brand: string | null }> {
     const rows = this.db.prepare(`
-      SELECT id, cross_number AS number, source
+      SELECT id, cross_number AS number, source, brand
       FROM product_cross_numbers
       WHERE tenant_id = ? AND product_id = ? AND deleted_at IS NULL
       ORDER BY created_at ASC
-    `).all(tenantId, productId) as Array<{ id: string; number: string; source: string }>
+    `).all(tenantId, productId) as Array<{ id: string; number: string; source: string; brand: string | null }>
     return rows
   }
 
   /** Delta edits retain other numbers and never rewrite prices, stock or barcodes. */
-  changeCrossNumbers(productId: string, change: { add?: string[]; removeId?: string; source?: string }, tenantId = DEFAULT_TENANT_ID) {
+  changeCrossNumbers(productId: string, change: { add?: Array<string | { number: string; brand?: string | null }>; removeId?: string; source?: string }, tenantId = DEFAULT_TENANT_ID) {
     if (!change || Boolean(change.add) === Boolean(change.removeId)) throw new Error('Вкажіть номери для додавання або номер для видалення')
     if (change.removeId !== undefined && (typeof change.removeId !== 'string' || !change.removeId.trim())) throw new Error('Невірний номер для видалення')
-    if (change.add && (!Array.isArray(change.add) || !change.add.length || change.add.length > 1000
-      || change.add.some(number => typeof number !== 'string' || !normalizeCatalogCode(number) || number.length > 120))) {
+    // 23.11.2026, слово власника: номери записуються з брендом («Hyundai: a, b; Kia: c»). Бренд необов'язковий.
+    const additions = Array.isArray(change.add)
+      ? change.add.map(entry => typeof entry === 'string' ? { number: entry, brand: null as string | null }
+        : { number: (entry as { number?: unknown })?.number, brand: (entry as { brand?: unknown })?.brand ?? null })
+      : null
+    if (change.add && (!additions || !additions.length || additions.length > 1000
+      || additions.some(entry => typeof entry.number !== 'string' || !normalizeCatalogCode(entry.number) || entry.number.length > 120
+        || (entry.brand !== null && (typeof entry.brand !== 'string' || entry.brand.length > 100))))) {
       throw new Error('Перевірте крос-номери: до 1000 номерів, не більше 120 символів у кожному')
     }
     const source = String(change.source ?? 'Внесено менеджером').trim()
@@ -625,17 +631,29 @@ export class LocalCatalogRepository {
       const timestamp = new Date(Math.max(Date.now(), Number.isFinite(previous) ? previous + 1 : 0)).toISOString()
       let changed = false
       if (change.add) {
-        const known = new Set(this.listCrossNumbers(productId, tenantId).map(row => normalizeCatalogCode(row.number)))
-        for (const value of change.add) {
-          const number = value.trim()
+        const existing = new Map(this.listCrossNumbers(productId, tenantId).map(row => [normalizeCatalogCode(row.number), row]))
+        const known = new Set(existing.keys())
+        for (const entry of additions!) {
+          const number = (entry.number as string).trim()
+          const brand = typeof entry.brand === 'string' && entry.brand.trim() ? entry.brand.trim() : null
           const key = normalizeCatalogCode(number)
-          if (known.has(key)) continue
+          if (known.has(key)) {
+            // Номер уже є: лише дописуємо бренд, якщо його ще не було (нічого не затираємо).
+            const row = existing.get(key)
+            if (brand && row && !row.brand) {
+              this.db.prepare('UPDATE product_cross_numbers SET brand = ?, updated_at = ? WHERE id = ? AND product_id = ? AND tenant_id = ?')
+                .run(brand, timestamp, row.id, productId, tenantId)
+              row.brand = brand
+              changed = true
+            }
+            continue
+          }
           this.db.prepare(`
-            INSERT INTO product_cross_numbers (id, tenant_id, product_id, cross_number, source, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO product_cross_numbers (id, tenant_id, product_id, cross_number, brand, source, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(tenant_id, product_id, cross_number) DO UPDATE SET
-              deleted_at = NULL, source = excluded.source, updated_at = excluded.updated_at
-          `).run(randomUUID(), tenantId, productId, number, source || 'Внесено менеджером', timestamp, timestamp)
+              deleted_at = NULL, source = excluded.source, brand = COALESCE(excluded.brand, brand), updated_at = excluded.updated_at
+          `).run(randomUUID(), tenantId, productId, number, brand, source || 'Внесено менеджером', timestamp, timestamp)
           known.add(key)
           changed = true
         }

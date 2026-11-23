@@ -397,7 +397,8 @@ try{
   console.log('PASS: a late reserve reply cannot change the next product card')
 
   await reset('detail')
-  const crossInput=()=>page.getByPlaceholder('Наприклад:\n96182220\n94788122\nOC90')
+  // 23.11.2026: підказка-приклад тепер у формі «Hyundai: …» — шукаємо поле за назвою, а не за прикладом.
+  const crossInput=()=>page.getByLabel('Крос-номери для додавання',{exact:true})
   await crossInput().fill('OC195, PH6607')
   await page.evaluate(()=>fixture.hold['cross-add']=true)
   await page.getByRole('button',{name:'Додати номери'}).evaluate(b=>{b.click();b.click()})
