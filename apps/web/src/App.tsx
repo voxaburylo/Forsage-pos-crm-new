@@ -3,6 +3,7 @@ import { Component, lazy, Suspense, useEffect, useState, type ErrorInfo, type Re
 import { createBrowserRouter, createHashRouter, RouterProvider, Routes, Route, Navigate, useLocation, useParams } from 'react-router-dom'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { MainPcWhenOnline, TillOnly, TillOrView } from '@/components/TillOnly'
+import { LiveCameraScanner } from '@/components/LiveCameraScanner'
 import { DesktopAccessGate } from '@/components/DesktopAccessGate'
 import { ToastContainer } from '@/components/ui'
 import { CommandPalette } from '@/components/CommandPalette'
@@ -297,6 +298,8 @@ function Workspace() {
         </Routes>
       </Suspense>
       </AppErrorBoundary>
+      {/* 23.11.2026 (план B1): постійний сканер камерою для вебу на телефоні — один на весь застосунок. */}
+      <LiveCameraScanner />
       <ToastContainer />
       <CommandPalette />
       </div>
