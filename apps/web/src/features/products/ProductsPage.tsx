@@ -1,3 +1,4 @@
+import { useWebDataRevision } from '@/hooks/useWebDataRevision'
 import { useListViewState, useViewNavigation } from '@/hooks/useViewNavigation'
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -307,6 +308,15 @@ export default function ProductsPage() {
   }, [debouncedSearch, lowStock, stockFilter, categoryFilter, brandFilter, page, sort, scopeKey])
   // Upload acknowledgements don't change local catalog contents. Reloading
   // on every background upload used to reorder the list during scrolling.
+  // 23.11.2026 (план C1): каса надіслала нові дані (продаж, прихід) — залишки на першій сторінці оновлюються самі.
+  // Коли користувач уже догрузив далі, список не чіпаємо: інакше скинулась би прокрутка.
+  const dataRevision = useWebDataRevision()
+  const productsLoadRef = useRef(load)
+  useEffect(() => { productsLoadRef.current = load }, [load])
+  const productsPageRef = useRef(page)
+  useEffect(() => { productsPageRef.current = page }, [page])
+  useEffect(() => { if (dataRevision > 0 && productsPageRef.current === 1) void productsLoadRef.current() }, [dataRevision])
+
   const filterKey = useMemo(() => JSON.stringify({
     debouncedSearch, lowStock, stockFilter, categoryFilter, brandFilter, sort,
   }), [debouncedSearch, lowStock, stockFilter, categoryFilter, brandFilter, sort])

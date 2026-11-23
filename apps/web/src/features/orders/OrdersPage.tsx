@@ -1,3 +1,4 @@
+import { useWebDataRevision } from '@/hooks/useWebDataRevision'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import { useListViewState, useViewNavigation } from '@/hooks/useViewNavigation'
@@ -1617,6 +1618,13 @@ export default function OrdersPage() {
       if (requestId === orderLoadRequestRef.current) setLoadingOrders(false)
     }
   }, [tab, offset, serverSearch, chatMode, setView])
+  // 23.11.2026 (план C1): каса надіслала нові дані — перша сторінка замовлень оновлюється тихо, без «завантаження».
+  const dataRevision = useWebDataRevision()
+  const ordersLoadRef = useRef(loadOrders)
+  useEffect(() => { ordersLoadRef.current = loadOrders }, [loadOrders])
+  const ordersOffsetRef = useRef(offset)
+  useEffect(() => { ordersOffsetRef.current = offset }, [offset])
+  useEffect(() => { if (dataRevision > 0 && ordersOffsetRef.current === 0) void ordersLoadRef.current(false) }, [dataRevision])
   useEffect(() => {
     let initial = true
     const poller = createReadPoller({ read: async () => { const first = initial; initial = false; await loadOrders(first) }, intervalMs: 15_000,
