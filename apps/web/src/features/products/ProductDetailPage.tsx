@@ -518,6 +518,7 @@ function ProductDetail() {
             {canWrite && <>
             <textarea
               value={crossPaste}
+              aria-label="Крос-номери для додавання"
               onChange={(event) => setCrossPaste(event.target.value)}
               rows={4}
               placeholder={'Наприклад:\nHyundai: 26300-35503, 26300-35504\nKia: 26300-35530\nMANN: W 811/80\nабо просто номери: 96182220, OC90'}
