@@ -1,4 +1,5 @@
 import { Link, useLocation } from 'react-router-dom'
+import { useStaffRights, type StaffRight } from '@/lib/staffRights'
 import { useAuthStore } from '@/stores/authStore'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { navigationAllowed } from '@/lib/navigationAccess'
@@ -7,6 +8,8 @@ interface TabItem {
   label: string
   to: string
   roles?: string[]
+  /** Право з картки працівника відкриває вкладку понад роль. */
+  right?: StaffRight
   serverOnly?: boolean
 }
 
@@ -18,10 +21,11 @@ interface SubNavTabsProps {
 export function SubNavTabs({ tabs, currentRole }: SubNavTabsProps) {
   const location = useLocation()
   const offlineMode = useAuthStore((state) => state.offlineMode)
+  const rights = useStaffRights()
 
   const visibleTabs = tabs.filter(
     (tab) => navigationAllowed(tab.to.split('?')[0], isDesktopRuntime())
-      && (!tab.serverOnly || !offlineMode) && (!tab.roles || !currentRole || tab.roles.includes(currentRole))
+      && (!tab.serverOnly || !offlineMode) && (!tab.roles || !currentRole || tab.roles.includes(currentRole) || Boolean(tab.right && rights[tab.right]))
   )
 
   if (visibleTabs.length <= 1) return null
@@ -118,7 +122,7 @@ export const INVENTORY_TABS = [
 ]
 
 export const ANALYTICS_TABS = [
-  { to: '/analytics/statistics', label: 'Статистика', roles: ['owner', 'admin', 'manager'] },
+  { to: '/analytics/statistics', label: 'Статистика', roles: ['owner', 'admin', 'manager'], right: 'reports' as const },
   { to: '/analytics/sales', label: 'Звіти про продажі', roles: ['owner', 'admin', 'manager', 'cashier'] },
   { to: '/analytics/control', label: 'Контроль', roles: ['owner', 'admin', 'manager'] },
   { to: '/analytics/recount', label: 'Перерахунок', roles: ['owner', 'admin', 'manager'] },

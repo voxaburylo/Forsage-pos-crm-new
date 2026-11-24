@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { toast } from '@/components/ui/Toast'
-import { roleRights, roleSwitches } from './staffRights'
+import { RIGHT_SWITCH_TEXT, roleRights, roleSwitches } from './staffRights'
+import { invalidateStaffRights } from '@/lib/staffRights'
 
 /**
  * 21.11.2026 (рішення власника): менеджер продає лише з дозволу власника.
@@ -130,6 +131,50 @@ export function ManagerSaleToggle({ userId }: { userId: string }) {
 }
 
 /**
+ * 24.11.2026 (рішення власника): право працівника, яке вмикає власник понад роль — замовлення, закупівельні ціни, звіти.
+ * Діє одразу, зберігається в базі головного ПК; у працівника — за хвилину або після повернення до вікна.
+ */
+export function StaffRightToggle({ userId, right }: { userId: string; right: 'orders' | 'purchase_prices' | 'reports' }) {
+  const staff = desktopBridge()?.staff
+  const text = RIGHT_SWITCH_TEXT[right]
+  const [allowed, setAllowed] = useState<boolean | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    setAllowed(null)
+    staff?.rights?.().then(all => { if (!cancelled) setAllowed(all[userId]?.[right] === true) }).catch(() => { if (!cancelled) setAllowed(false) })
+    return () => { cancelled = true }
+  }, [staff, userId, right])
+
+  if (!staff?.rights || !staff.setRight) return null
+
+  async function change(next: boolean) {
+    if (busy || !staff?.setRight) return
+    setBusy(true)
+    try {
+      const rights = await staff.setRight(userId, right, next)
+      setAllowed(rights[right] === true)
+      invalidateStaffRights()
+      toast.success(next ? text.on : text.off)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося змінити дозвіл')
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="flex items-start gap-3 pt-1">
+      <input type="checkbox" id={`right_${right}_${userId}`} checked={allowed === true} disabled={allowed === null || busy} data-staff-right={right}
+        onChange={(event) => void change(event.target.checked)} className="mt-0.5 w-4 h-4 shrink-0 rounded text-amber-500 focus:ring-amber-300" />
+      <label htmlFor={`right_${right}_${userId}`} className="text-sm text-gray-700">
+        <span className="font-medium">{text.title}</span>
+        <span className="block text-xs text-gray-500">{text.hint} Діє одразу.</span>
+      </label>
+    </div>
+  )
+}
+
+/**
  * 24.11.2026 (власник): блок «Права» в картці працівника — що дозволяє роль, що закрито, і перемикачі в одному місці.
  * Перемикачі зберігає головний ПК; без звʼязку з ним (веб у режимі перегляду) показуємо підказку замість них.
  */
@@ -160,6 +205,7 @@ export function StaffRightsBlock({ userId, role, savedRole }: { userId: string; 
             : !online
               ? <p className="text-xs text-amber-800">Перемикачі доступні, коли головний ПК увімкнено й на звʼязку.</p>
               : <>
+                {(['orders', 'purchase_prices', 'reports'] as const).filter(right => switches.includes(right)).map(right => <StaffRightToggle key={right} userId={userId} right={right} />)}
                 {switches.includes('web') && <WebWorkToggle userId={userId} />}
                 {switches.includes('sale') && <ManagerSaleToggle userId={userId} />}
                 {switches.includes('deposit') && <ManagerDepositToggle userId={userId} />}

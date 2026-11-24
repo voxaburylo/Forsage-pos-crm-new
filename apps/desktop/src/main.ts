@@ -101,6 +101,7 @@ import { customerWritePayload } from './security/customerWritePolicy'
 import { BACKGROUND_TASK, clearHandoff, decideStart, handoffRequested, isBackgroundLaunch, releaseOwner, writeOwner } from './background/tillOwner'
 import { spawn } from 'node:child_process'
 import { rehearsalRootFrom, runStartupRehearsal } from './diagnostics/startupRehearsal'
+import { allStaffRights, effectiveStaffRights, setStaffRight } from './security/staffRights'
 
 // Keep the existing encryption profile stable across package/product renames.
 // Перевірки (смоки) запускають справжню програму поруч із робочою касою — їм окремий профіль; у зібраній програмі цього немає.
@@ -2022,6 +2023,14 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:staff:web-access', () => webWorkAllowedIds(requireLocalDatabase()))
   handleDesktopIpc('desktop:staff:set-web-access', (_event, id: string, enabled: boolean) =>
     setWebWorkAccess(requireLocalDatabase(), id, enabled))
+  // 24.11.2026: права працівника перемикачами в картці (security/staffRights) — замовлення, закупівельні ціни, звіти.
+  handleDesktopIpc('desktop:staff:rights', () => allStaffRights(requireLocalDatabase()))
+  handleDesktopIpc('desktop:staff:set-right', (_event, id: string, right: string, enabled: boolean) =>
+    setStaffRight(requireLocalDatabase(), id, right, enabled))
+  handleDesktopIpc('desktop:staff:my-rights', () => {
+    const session = requireDesktopSession()
+    return effectiveStaffRights(requireLocalDatabase(), session.id, session.role)
+  })
   handleDesktopIpc('desktop:staff:employee-pricing', () => employeePricing(requireLocalDatabase()))
   handleDesktopIpc('desktop:staff:set-employee-pricing', (_event, id: string, value: unknown) =>
     setEmployeePricing(requireLocalDatabase(), id, value))

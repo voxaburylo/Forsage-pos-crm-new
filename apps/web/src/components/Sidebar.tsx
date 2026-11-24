@@ -1,5 +1,6 @@
 import { isDesktopAccessLocked } from '@/lib/desktopAccessState'
 import { WEB_VIA_MAIN_PC_ROUTES, navigationAllowed } from '@/lib/navigationAccess'
+import { useStaffRights, type StaffRight } from '@/lib/staffRights'
 import { useWebWorkAccess } from '@/lib/webWorkAccess'
 import { useState, useEffect, useRef } from 'react'
 import { toast } from '@/components/ui/Toast'
@@ -27,6 +28,8 @@ interface NavItem {
   icon: React.ReactNode
   label: string
   roles?: string[]
+  /** 24.11.2026: право з картки працівника показує пункт і тому, кому роль його не дає. */
+  right?: StaffRight
   /** Лише у веб-версії: на касі для цього є повний робочий екран. */
   webOnly?: boolean
 }
@@ -76,7 +79,7 @@ const NAV_GROUPS: NavGroup[] = [
     collapsible: false,
     items: [
       { to: '/customers',           icon: <Users size={18} />,           label: 'Клієнти' },
-      { to: '/orders',              icon: <ClipboardList size={18} />,   label: 'Замовлення',           roles: ['owner','admin','manager'] },
+      { to: '/orders',              icon: <ClipboardList size={18} />,   label: 'Замовлення',           roles: ['owner','admin','manager'], right: 'orders' },
       { to: '/inventory/picking',   icon: <ClipboardList size={18} />,   label: 'Збірка замовлень',     roles: ['owner','admin','manager','storekeeper'] },
       { to: '/waitlist',            icon: <Users size={18} />,           label: 'Очікування товару',    roles: ['owner','admin','manager'] },
     ],
@@ -175,9 +178,10 @@ function NavSection({
 }) {
   const location = useLocation()
   const viaWeb = useWebWorkAccess()
+  const rights = useStaffRights()
 
   const visibleItems = group.items.filter(
-    (item) => navigationAllowed(item.to, isDesktopRuntime()) && !(item.webOnly && isDesktopRuntime()) && (!item.roles || item.roles.includes(role))
+    (item) => navigationAllowed(item.to, isDesktopRuntime()) && !(item.webOnly && isDesktopRuntime()) && (!item.roles || item.roles.includes(role) || Boolean(item.right && rights[item.right]))
       // 22.11.2026: через головний ПК із вебу працюють власник, адміністратор і менеджер; 23.11 — і касир із дозволом.
       && (isDesktopRuntime() || !WEB_VIA_MAIN_PC_ROUTES.has(item.to) || viaWeb),
   )

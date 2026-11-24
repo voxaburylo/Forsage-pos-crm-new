@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { useStaffRights } from '@/lib/staffRights'
 import { useScopedAction } from '@/hooks/useScopedAction'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Save, Wand2 } from 'lucide-react'
@@ -56,7 +57,8 @@ export function ProductEditor({ embedded = false, disabled = false, onSaved, onB
   // Касир/менеджер її не бачать (сервер її й не віддає) і НЕ надсилають при
   // збереженні — інакше затерли б реальну закупівлю нулем.
   const role = useAuthStore((s) => (s.session?.user?.app_metadata?.role as string) ?? 'cashier')
-  const canSeeMargin = ['owner', 'admin', 'storekeeper'].includes(role)
+  // 24.11.2026: закупівельну ціну бачить роль або той, кому власник увімкнув «Бачить закупівельні ціни».
+  const canSeeMargin = useStaffRights().purchase_prices
   const scopeKey = JSON.stringify([id, cloneId, role])
   const writes = useScopedAction(scopeKey)
   const saving = writes.busy

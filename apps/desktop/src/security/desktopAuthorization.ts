@@ -112,6 +112,8 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   ['desktop:staff:tire-service-report', POS_ROLES],
   // 23.11.2026 (власник): зарплату наприкінці дня видає касир — лише у своїй зміні (перевіряє staffRepository).
   ['desktop:staff:payout-list', POS_ROLES],
+  // 24.11.2026: свої права питає кожен, хто увійшов; чужі й зміну — лише власник (загальне правило desktop:staff:).
+  ['desktop:staff:my-rights', ALL_ROLES],
   ['desktop:staff:daily-payout', POS_ROLES],
   ['desktop:staff:tire-cash-handover', POS_ROLES],
   ['desktop:inventory:create-session', RECEIVING_ROLES],

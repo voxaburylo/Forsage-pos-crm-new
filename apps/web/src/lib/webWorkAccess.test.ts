@@ -71,6 +71,6 @@ describe('web work access: the web asks the main PC about a cashier', () => {
     // 24.11.2026: перемикач переїхав у блок «Права» картки працівника (StaffRightsBlock); для касира — лише він.
     expect(staff).toContain('<StaffRightsBlock userId={selectedUser.id} role={editForm.role} savedRole={selectedUser.role}/>')
     expect(read('../features/staff/ManagerSaleToggle.tsx')).toContain("{switches.includes('web') && <WebWorkToggle userId={userId} />}")
-    expect(read('../features/staff/staffRights.ts')).toContain("if (role === 'cashier') return ['web']")
+    expect(read('../features/staff/staffRights.ts')).toContain("if (role === 'cashier') return ['orders', 'purchase_prices', 'reports', 'web']")
   })
 })

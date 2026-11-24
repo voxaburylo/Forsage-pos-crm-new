@@ -24,9 +24,10 @@ describe('rights block in the staff card', () => {
     expect(menuRoles('Аналітика')).not.toContain("'storekeeper'")
   })
 
-  it('shows the owner switches by role: web work for the cashier, sale and deposit for the manager', () => {
-    expect(roleSwitches('cashier')).toEqual(['web'])
-    expect(roleSwitches('manager')).toEqual(['sale', 'deposit'])
+  it('shows the owner switches by role', () => {
+    expect(roleSwitches('cashier')).toEqual(['orders', 'purchase_prices', 'reports', 'web'])
+    expect(roleSwitches('manager')).toEqual(['sale', 'deposit', 'purchase_prices'])
+    expect(roleSwitches('storekeeper')).toEqual(['orders'])
     expect(roleSwitches('owner')).toEqual([])
     expect(roleSwitches('tire_worker')).toEqual([])
   })
