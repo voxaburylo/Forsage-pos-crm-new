@@ -15,7 +15,7 @@ describe('app shell css does not override screen classes', () => {
 
   it('keeps the generic size rules inside the base layer', () => {
     expect(start).toBeGreaterThan(0)
-    expect(layered).toContain('.app-main :where(.grid > *, .flex > *) { min-width: 0; }')
+    expect(layered).toContain('.app-main :where(.grid > *, .flex > *):not(input, select, textarea, button, svg, img, canvas, video) { min-width: 0; }')
     expect(layered).toContain(':where(.app-main) > * { min-width: 0; max-width: 100%; }')
   })
 

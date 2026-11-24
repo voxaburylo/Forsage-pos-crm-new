@@ -147,7 +147,13 @@ html, body {
   /* Широка таблиця прокручується у власній рамці, а не разом зі сторінкою. */
   .app-main :where(div:has(> table)) { max-width: 100%; overflow-x: auto; }
   /* Довге слово чи широкий блок не розпирає сторінку — на будь-якому екрані. */
-  .app-main :where(.grid > *, .flex > *) { min-width: 0; }
+  /* Лише блоки з текстом. Галочки, поля, кнопки й значки не чіпаємо: без власної мінімальної ширини рядок стискає їх
+     до крапки — так зникла галочка «Працює через веб» у картці працівника (фото власника 24.11). */
+  .app-main :where(.grid > *, .flex > *):not(input, select, textarea, button, svg, img, canvas, video) { min-width: 0; }
+  /* Галочка й перемикач тримають свій розмір поруч із довгим підписом. */
+  .app-main :where(input[type="checkbox"], input[type="radio"]) { flex-shrink: 0; }
+  /* Вікна (Modal) живуть у body, поза робочою областю, — ті самі правила для них. */
+  .modal-layer :where(input[type="checkbox"], input[type="radio"]) { flex-shrink: 0; }
   .app-main :where(p, h1, h2, h3, h4, dd, label) { overflow-wrap: anywhere; }
   @media (max-width: 1023px) {
     .app-main :where(input, select, textarea) { max-width: 100%; }
@@ -156,6 +162,7 @@ html, body {
 @media (max-width: 1023px) {
   /* iPhone збільшує сторінку, коли в полі шрифт менший за 16px, — після цього вона «їздить». */
   .app-main :where(input, select, textarea) { font-size: max(16px, 1em); }
+  .modal-layer :where(input, select, textarea) { font-size: max(16px, 1em); }
   /* Кнопки під палець. */
   .app-main :where(button, [role="button"], a[href]) { touch-action: manipulation; }
 }
