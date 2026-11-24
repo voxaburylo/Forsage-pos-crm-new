@@ -9,6 +9,7 @@ import { Layout } from '@/components/Layout'
 import { Card, Button, Modal, Input } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { formatMoney, formatDateTime } from '@/lib/utils'
+import { moneyOnlyAtTill } from '@/lib/moneyOnlyAtTill'
 
 interface ExpenseCategory {
   id: string
@@ -112,13 +113,7 @@ export default function CashflowPage() {
           etype === 'in' ? 'other' : 'cashbox',
         )
       } else {
-        await api.post('/api/v1/cash-operations', {
-          shift_id: null,
-          type: etype,
-          amount: kopecks,
-          note: note.trim() || null,
-          expense_category_id: etype === 'out' ? categoryId : null,
-        })
+        await moneyOnlyAtTill()
       }
       toast.success('Операцію збережено')
       setModalOpen(false)

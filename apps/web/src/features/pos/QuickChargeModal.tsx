@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { useDialogEscape } from '@/hooks/useDialogEscape'
 import { X } from 'lucide-react'
-import { api } from '@/lib/api'
 import { usePOSStore } from '@/stores/posStore'
 import { toast } from '@/components/ui/Toast'
 import { searchProductsOffline } from '@/lib/offlineDB'
 import { useAuthStore } from '@/stores/authStore'
 import { requestDesktopSync } from '@/features/products/productApi'
 import { desktopBridge } from '@/lib/desktopBridge'
+import { moneyOnlyAtTill } from '@/lib/moneyOnlyAtTill'
 import { freeSaleLineName, freeSaleName, freeSaleSku, nextFreeSaleIndex, TIRE_SERVICE_SKU, tireChargeTotal, type TireChargeMode } from './quickChargeModel'
 import { formatMoney } from '@/lib/utils'
 
@@ -95,13 +95,8 @@ export function QuickChargeModal({
       } else {
         const cached = await searchProductsOffline(sku, 10, scopeKey).catch(() => [])
         data = cached.find((product) => product.sku === sku) ?? null
-        if (!data && !offline) {
-          const response = await api.post<{ data: NonNullable<typeof data> }>(
-            '/api/v1/sales/quick-item', { kind }, undefined,
-            { timeoutMs: 8_000, silent: true },
-          )
-          data = response.data
-        }
+        // 24.11.2026 (план T9): службову позицію каси створює лише каса — запису на сервер більше немає.
+        if (!data && !offline) moneyOnlyAtTill()
       }
       if (!data) throw new Error('Не вдалося створити службову позицію')
 

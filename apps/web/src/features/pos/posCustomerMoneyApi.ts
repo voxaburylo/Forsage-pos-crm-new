@@ -3,9 +3,9 @@ import { desktopBridge } from '@/lib/desktopBridge'
 import { requestDesktopSync } from '@/features/products/productApi'
 import { useAuthStore } from '@/stores/authStore'
 import { durableLocalRequest } from '@/lib/durableLocalRequest'
+import { moneyOnlyAtTill } from '@/lib/moneyOnlyAtTill'
 
 const READ_TIMEOUT_MS = 10_000
-const WRITE_TIMEOUT_MS = 20_000
 
 type Options = { silent?: boolean; timeoutMs?: number }
 type MoneyMethod = 'cash' | 'card' | 'transfer'
@@ -58,7 +58,7 @@ export const posCustomerMoneyApi = {
     })
   },
 
-  payDebt: async (customerId: string, body: { amount: number; method: MoneyMethod; shift_id?: string | null; notes?: string | null }, opts: Options = {}) => {
+  payDebt: async (customerId: string, body: { amount: number; method: MoneyMethod; shift_id?: string | null; notes?: string | null }, _opts: Options = {}) => {
     const local = localPos()
     if (local?.payDebt) {
       const payload = { ...body, customer_id: customerId, user_id: userId() }
@@ -66,13 +66,10 @@ export const posCustomerMoneyApi = {
       requestDesktopSync()
       return result
     }
-    return api.post(`/api/v1/customers/${customerId}/pay-debt`, body, undefined, {
-      silent: opts.silent ?? true,
-      timeoutMs: opts.timeoutMs ?? WRITE_TIMEOUT_MS,
-    })
+    return moneyOnlyAtTill()
   },
 
-  addDeposit: async (customerId: string, body: { amount: number; method: MoneyMethod; shift_id?: string | null; notes?: string | null }, opts: Options = {}) => {
+  addDeposit: async (customerId: string, body: { amount: number; method: MoneyMethod; shift_id?: string | null; notes?: string | null }, _opts: Options = {}) => {
     const local = localPos()
     if (local?.addCustomerDeposit) {
       const payload = { ...body, customer_id: customerId, user_id: userId() }
@@ -80,13 +77,10 @@ export const posCustomerMoneyApi = {
       requestDesktopSync()
       return result
     }
-    return api.post<{ data: { balance: number } }>(`/api/v1/customers/${customerId}/deposit`, body, undefined, {
-      silent: opts.silent ?? true,
-      timeoutMs: opts.timeoutMs ?? WRITE_TIMEOUT_MS,
-    })
+    return moneyOnlyAtTill()
   },
 
-  payOutDeposit: async (customerId: string, body: { payout_id?: string; amount: number; method: MoneyMethod; shift_id?: string | null; notes?: string | null }, opts: Options = {}) => {
+  payOutDeposit: async (customerId: string, body: { payout_id?: string; amount: number; method: MoneyMethod; shift_id?: string | null; notes?: string | null }, _opts: Options = {}) => {
     const local = localPos()
     if (local?.payOutCustomerDeposit) {
       const payload = { ...body, customer_id: customerId, user_id: userId() }
@@ -94,9 +88,6 @@ export const posCustomerMoneyApi = {
       requestDesktopSync()
       return result
     }
-    return api.post<{ data: { balance: number; replayed: boolean } }>(`/api/v1/customers/${customerId}/deposit/payout`, { ...body, payout_id: body.payout_id ?? crypto.randomUUID() }, undefined, {
-      silent: opts.silent ?? true,
-      timeoutMs: opts.timeoutMs ?? WRITE_TIMEOUT_MS,
-    })
+    return moneyOnlyAtTill()
   },
 }

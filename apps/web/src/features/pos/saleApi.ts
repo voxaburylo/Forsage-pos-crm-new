@@ -1,8 +1,7 @@
 import { api, type RequestOptions } from '@/lib/api'
 import type { Sale, PriceCalculation } from '@/types/sale'
 import { desktopBridge } from '@/lib/desktopBridge'
-import { getLocalSyncState } from '@/lib/offlineDB'
-import { useAuthStore } from '@/stores/authStore'
+import { moneyOnlyAtTill } from '@/lib/moneyOnlyAtTill'
 
 interface CreateSaleBody {
   shift_id: string
@@ -22,25 +21,10 @@ interface CreateSaleBody {
 type SaleRequestOptions = Pick<RequestOptions, 'silent' | 'timeoutMs'>
 
 const SALE_READ_TIMEOUT_MS = 10_000
-const SALE_WRITE_TIMEOUT_MS = 20_000
 
 export const saleApi = {
-  create: async (body: CreateSaleBody, idempotencyKey?: string) => {
-    const scopeKey = useAuthStore.getState().session?.user?.id ?? ''
-    const resetGeneration = scopeKey
-      ? (await getLocalSyncState(scopeKey)).reset_generation
-      : 0
-    const headers: Record<string, string> = {
-      'X-Sync-Reset-Generation': String(resetGeneration),
-      ...(idempotencyKey ? { 'X-Idempotency-Key': idempotencyKey } : {}),
-    }
-    // Таймаут, щоб вікно оплати не зависало назавжди. Достатньо для інтегрованого
-    // терміналу (агент чекає до ~2 хв) + запас. Повтор безпечний завдяки idempotency key.
-    const timeoutMs = body.payment_method === 'card' || body.payment_method === 'mixed'
-      ? 150_000
-      : 20_000
-    return api.post<{ data: Sale }>('/api/v1/sales', body, headers, { timeoutMs, silent: true })
-  },
+  // 24.11.2026 (план T9): продаж проводить лише каса (desktop.pos.checkout у usePOS); запису продажу на сервер немає.
+  create: async (_body: CreateSaleBody, _idempotencyKey?: string): Promise<{ data: Sale }> => moneyOnlyAtTill(),
 
   get: async (id: string, opts: SaleRequestOptions = {}) => {
     const local = desktopBridge()?.pos.getSale
@@ -76,19 +60,14 @@ export const saleApi = {
     items: Array<{ product_id: string; qty: number; unit_price: number; discount: number }>
     payment_method: 'cash' | 'card' | 'debt' | 'mixed' | 'transfer'
     notes?: string; pickup_cell?: string | null; expires_at?: string
-  }, idempotencyKey: string, opts: SaleRequestOptions = {}) => {
+  }, _idempotencyKey: string, _opts: SaleRequestOptions = {}) => {
     const local = desktopBridge()?.pos.suspendSale
     if (local) {
       const result = await local(body)
       window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
       return result as { data: Sale }
     }
-    return api.post<{ data: Sale }>(
-      '/api/v1/sales/suspend',
-      body,
-      { 'X-Idempotency-Key': idempotencyKey },
-      { timeoutMs: SALE_WRITE_TIMEOUT_MS, ...opts },
-    )
+    return moneyOnlyAtTill()
   },
 
   listSuspended: async (opts: SaleRequestOptions = {}) => {
@@ -103,29 +82,29 @@ export const saleApi = {
     return api.get<{ data: Sale | null }>(`/api/v1/sales/check-after-payment?shift_id=${shiftId}&after=${encodeURIComponent(after)}`, { timeoutMs: SALE_READ_TIMEOUT_MS, ...opts })
   },
 
-  resume: async (id: string, opts: SaleRequestOptions = {}) => {
+  resume: async (id: string, _opts: SaleRequestOptions = {}) => {
     const local = desktopBridge()?.pos.resumeSale
     if (local) return local(id) as Promise<{ data: Sale }>
-    return api.post<{ data: Sale }>(`/api/v1/sales/${id}/resume`, {}, undefined, { timeoutMs: SALE_WRITE_TIMEOUT_MS, ...opts })
+    return moneyOnlyAtTill()
   },
 
-  confirmResume: async (id: string, opts: SaleRequestOptions = {}) => {
+  confirmResume: async (id: string, _opts: SaleRequestOptions = {}) => {
     const local = desktopBridge()?.pos.confirmResumeSale
     if (local) {
       const result = await local(id)
       window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
       return result as { data: Pick<Sale, 'id' | 'sale_number' | 'total' | 'status'> }
     }
-    return api.post<{ data: Pick<Sale, 'id' | 'sale_number' | 'total' | 'status'> }>(`/api/v1/sales/${id}/resume/confirm`, {}, undefined, { timeoutMs: SALE_WRITE_TIMEOUT_MS, ...opts })
+    return moneyOnlyAtTill()
   },
 
-  discardSuspended: async (id: string, opts: SaleRequestOptions = {}) => {
+  discardSuspended: async (id: string, _opts: SaleRequestOptions = {}) => {
     const local = desktopBridge()?.pos.discardSuspendedSale
     if (local) {
       const result = await local(id)
       window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
       return result as { data: Pick<Sale, 'id' | 'sale_number' | 'total' | 'status'> }
     }
-    return api.delete<{ data: Pick<Sale, 'id' | 'sale_number' | 'total' | 'status'> }>(`/api/v1/sales/${id}/suspended`, { timeoutMs: SALE_WRITE_TIMEOUT_MS, ...opts })
+    return moneyOnlyAtTill()
   },
 }

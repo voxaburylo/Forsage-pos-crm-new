@@ -66,10 +66,11 @@ it('requires a signed-in local actor before writes', async () => {
   expect(fixture.local.createSalary).not.toHaveBeenCalled()
   expect(values.size).toBe(0)
 })
-it('leaves the server API path unchanged when there is no desktop bridge', async () => {
+// 24.11.2026 (план T9): без каси зарплата не пишеться на сервер — зрозуміла відмова, жодного запиту.
+it('refuses salary without the till and sends nothing to the server', async () => {
   fixture.local = undefined
-  fixture.post.mockResolvedValue({ data: salary })
-  expect(await staffApi.createSalary(payload)).toEqual({ data: salary })
-  expect(fixture.post).toHaveBeenCalledExactlyOnceWith('/api/v1/salary', payload)
+  await expect(staffApi.createSalary(payload)).rejects.toThrow(/лише на касі/)
+  await expect(staffApi.dailyPayout(payload)).rejects.toThrow(/лише на касі/)
+  expect(fixture.post).not.toHaveBeenCalled()
   expect(values.size).toBe(0)
 })

@@ -3,6 +3,7 @@ import { desktopBridge } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
 import type { Shift, ShiftReport } from '@/types/shift'
 import { parseExpectedCash } from './shiftCashData'
+import { moneyOnlyAtTill } from '@/lib/moneyOnlyAtTill'
 
 type ShiftRequestOptions = {
   silent?: boolean
@@ -10,8 +11,6 @@ type ShiftRequestOptions = {
 }
 
 const SHIFT_READ_TIMEOUT_MS = 10_000
-const SHIFT_WRITE_TIMEOUT_MS = 15_000
-const SHIFT_CLOSE_TIMEOUT_MS = 20_000
 
 export interface ExpectedCash {
   opening_cash: number
@@ -36,21 +35,16 @@ export const shiftApi = {
     })
   },
 
-  open: async (opening_cash: number, notes?: string, options?: ShiftRequestOptions) => {
+  open: async (opening_cash: number, notes?: string, _options?: ShiftRequestOptions) => {
     const local = desktopBridge()?.pos
     if (local) {
       const id = await local.openShift({ cashier_id: cashierId(), opening_cash, notes })
       return { data: await local.getOpenShift(cashierId()) ?? ({ id, cashier_id: cashierId(), status: 'open', opening_cash } as Shift) }
     }
-    return api.post<{ data: Shift }>(
-      '/api/v1/shifts/open',
-      { opening_cash, notes },
-      undefined,
-      { timeoutMs: SHIFT_WRITE_TIMEOUT_MS, ...options },
-    )
+    return moneyOnlyAtTill()
   },
 
-  close: async (shiftId: string, closing_cash: number, notes?: string, options?: ShiftRequestOptions) => {
+  close: async (shiftId: string, closing_cash: number, notes?: string, _options?: ShiftRequestOptions) => {
     const local = desktopBridge()?.pos
     if (local) {
       const current = await local.getOpenShift(cashierId())
@@ -58,12 +52,7 @@ export const shiftApi = {
       window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
       return { data: ({ ...(current?.id === shiftId ? current : {}), id: shiftId, status: 'closed', closing_cash, closed_at: new Date().toISOString() } as Shift) }
     }
-    return api.post<{ data: Shift }>(
-      `/api/v1/shifts/${shiftId}/close`,
-      { closing_cash, notes },
-      undefined,
-      { timeoutMs: SHIFT_CLOSE_TIMEOUT_MS, ...options },
-    )
+    return moneyOnlyAtTill()
   },
 
   get: async (shiftId: string, options?: ShiftRequestOptions) => {
