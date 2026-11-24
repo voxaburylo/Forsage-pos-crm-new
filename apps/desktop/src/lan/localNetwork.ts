@@ -168,6 +168,8 @@ export function isLanProxyChannel(channel: string): boolean {
     // Журнал проблем описує саме цей комп'ютер: його чергу, його принтер,
     // його базу. Проксіювати на головний ПК означало б показувати чужі збої.
     'desktop:problems:',
+    // 24.11.2026 (план C9): обслуговування бази — лише про ЦЕЙ компʼютер.
+    'desktop:maintenance:',
   ].some((prefix) => channel.startsWith(prefix))
 }
 

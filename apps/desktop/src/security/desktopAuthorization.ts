@@ -114,6 +114,8 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   ['desktop:staff:payout-list', POS_ROLES],
   // 24.11.2026: свої права питає кожен, хто увійшов; чужі й зміну — лише власник (загальне правило desktop:staff:).
   ['desktop:staff:my-rights', ALL_ROLES],
+  ['desktop:maintenance:outbox-preview', OWNER_ROLES],
+  ['desktop:maintenance:outbox-compact', OWNER_ROLES],
   ['desktop:staff:daily-payout', POS_ROLES],
   ['desktop:staff:tire-cash-handover', POS_ROLES],
   ['desktop:inventory:create-session', RECEIVING_ROLES],

@@ -102,6 +102,7 @@ import { BACKGROUND_TASK, clearHandoff, decideStart, handoffRequested, isBackgro
 import { spawn } from 'node:child_process'
 import { rehearsalRootFrom, runStartupRehearsal } from './diagnostics/startupRehearsal'
 import { allStaffRights, effectiveStaffRights, setStaffRight } from './security/staffRights'
+import { compactOutbox, previewOutboxCompaction } from './repositories/outboxCompaction'
 
 // Keep the existing encryption profile stable across package/product renames.
 // Перевірки (смоки) запускають справжню програму поруч із робочою касою — їм окремий профіль; у зібраній програмі цього немає.
@@ -2034,6 +2035,15 @@ app.whenReady().then(async () => {
     setWebWorkAccess(requireLocalDatabase(), id, enabled))
   // 24.11.2026: права працівника перемикачами в картці (security/staffRights) — замовлення, закупівельні ціни, звіти.
   handleDesktopIpc('desktop:staff:rights', () => allStaffRights(requireLocalDatabase()))
+  // 24.11.2026 (план C9): стиснення старого журналу відправлених операцій — лише кнопкою власника на головному ПК.
+  handleDesktopIpc('desktop:maintenance:outbox-preview', () => {
+    if (!isMainTill()) throw new Error('Журнал обслуговується лише на головному ПК')
+    return previewOutboxCompaction(requireLocalDatabase())
+  })
+  handleDesktopIpc('desktop:maintenance:outbox-compact', () => {
+    if (!isMainTill()) throw new Error('Журнал обслуговується лише на головному ПК')
+    return compactOutbox(requireLocalDatabase())
+  })
   handleDesktopIpc('desktop:staff:set-right', (_event, id: string, right: string, enabled: boolean) =>
     setStaffRight(requireLocalDatabase(), id, right, enabled))
   handleDesktopIpc('desktop:staff:my-rights', () => {

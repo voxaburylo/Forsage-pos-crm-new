@@ -164,6 +164,8 @@ export function createDesktopApi(ipcRenderer: DesktopInvoker) {
       webAccess: () => ipcRenderer.invoke('desktop:staff:web-access'),
       setWebAccess: (id: string, enabled: boolean) => ipcRenderer.invoke('desktop:staff:set-web-access', id, enabled),
       rights: () => ipcRenderer.invoke('desktop:staff:rights'),
+      outboxPreview: () => ipcRenderer.invoke('desktop:maintenance:outbox-preview'),
+      outboxCompact: () => ipcRenderer.invoke('desktop:maintenance:outbox-compact'),
       setRight: (id: string, right: string, enabled: boolean) => ipcRenderer.invoke('desktop:staff:set-right', id, right, enabled),
       myRights: () => ipcRenderer.invoke('desktop:staff:my-rights'),
       depositAccess: () => ipcRenderer.invoke('desktop:staff:deposit-access'),
