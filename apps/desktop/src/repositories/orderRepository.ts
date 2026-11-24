@@ -467,6 +467,50 @@ export class LocalOrderRepository {
     return { success: true }
   }
 
+  /**
+   * 24.11.2026 (план C2, рішення власника: «одне завантаження фото — одна пачка»): скасувати все, що створила одна
+   * загрузка блокнота, — одним рухом і цілком або ніяк. Лише замовлення з блокнота, по яких не було грошей, чека
+   * й виданих позицій (ті самі правила, що й для видалення одного). Клієнт, заведений цією загрузкою, прибирається
+   * лише тоді, коли в нього не лишилось жодного замовлення, чека й грошей; інакше лишається, і це видно у відповіді.
+   */
+  cancelNotebookBatch(input: { order_ids?: unknown; customer_ids?: unknown }, tenantId = DEFAULT_TENANT_ID): { orders: number; customers: number; kept_customers: number } {
+    const ids = (value: unknown, max: number, label: string): string[] => {
+      if (value === undefined || value === null) return []
+      if (!Array.isArray(value) || value.length > max) throw new Error(`Некоректний перелік: ${label}`)
+      const list = [...new Set(value)]
+      if (!list.every(id => typeof id === 'string' && /^[a-zA-Z0-9-]{1,128}$/.test(id))) throw new Error(`Некоректний перелік: ${label}`)
+      return list as string[]
+    }
+    const orderIds = ids(input?.order_ids, 100, 'замовлення')
+    const customerIds = ids(input?.customer_ids, 100, 'клієнти')
+    if (orderIds.length === 0) throw new Error('У пачці немає замовлень')
+    let customers = 0, kept = 0
+    this.db.transaction(() => {
+      for (const orderId of orderIds) {
+        const order = this.getOrder(orderId, tenantId)
+        if (!order) throw new Error('Замовлення з пачки не знайдено — можливо, його вже видалили. Нічого не змінено.')
+        if (!this.isNotebookOrder(orderId, tenantId)) throw new Error(`Замовлення № ${order.order_number} не з блокнота — пачку не скасовано.`)
+        try { this.deleteOrder(orderId, tenantId) } catch (error) {
+          throw new Error(`Замовлення № ${order.order_number}: ${error instanceof Error ? error.message : 'не видаляється'} Пачку не скасовано, нічого не змінено.`)
+        }
+      }
+      for (const customerId of customerIds) {
+        const customer = this.db.prepare('SELECT * FROM customers WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL').get(customerId, tenantId) as Record<string, unknown> | undefined
+        if (!customer) continue
+        const money = ['debt_balance', 'deposit_balance', 'bonus_balance'].some(column => Number(customer[column] ?? 0) !== 0)
+        const orders = this.db.prepare('SELECT 1 FROM customer_orders WHERE customer_id = ? AND tenant_id = ? AND deleted_at IS NULL LIMIT 1').get(customerId, tenantId)
+        const sales = this.db.prepare('SELECT 1 FROM sales WHERE customer_id = ? AND tenant_id = ? LIMIT 1').get(customerId, tenantId)
+        if (money || orders || sales) { kept++; continue }
+        const timestamp = nowIso()
+        this.db.prepare('UPDATE customers SET deleted_at = ?, dirty_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?').run(timestamp, timestamp, timestamp, customerId, tenantId)
+        this.db.prepare('UPDATE customer_vehicles SET deleted_at = ?, dirty_at = ?, updated_at = ? WHERE customer_id = ? AND tenant_id = ? AND deleted_at IS NULL').run(timestamp, timestamp, timestamp, customerId, tenantId)
+        this.addOutbox(tenantId, 'customer', customerId, 'customer.deleted', { id: customerId }, timestamp)
+        customers++
+      }
+    })
+    return { orders: orderIds.length, customers, kept_customers: kept }
+  }
+
   updateOrderStatus(orderId: string, status: string, tenantId = DEFAULT_TENANT_ID): any {
     return this.db.transaction(() => this.updateOrderStatusInTransaction(orderId, status, tenantId))
   }

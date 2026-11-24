@@ -21,6 +21,7 @@ import { Button, Card, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { aiApi } from './aiApi'
 import { aiProgressLabel } from './aiProgress'
+import { recognitionPriceHint } from './aiPriceHint'
 import type { AiChatResponse, AiStatus, AiPendingAction, AiChatMessage, AiActionChange, AiChatImage } from './aiApi'
 import { OrderConfirmModal } from './OrderConfirmModal'
 import { openAiInvoiceDraft } from './openAiInvoiceDraft'
@@ -1183,6 +1184,10 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
                 ? 'Фото → прихідна накладна. Перед збереженням перевіримо товари з вашою базою.'
                 : 'Фото → замовлення клієнта. Перед створенням перевірте розпізнані дані.'}
             </p>}
+            {/* 24.11.2026 (план C2): ціна розпізнавання до запуску — за досвідом саме цього магазину. */}
+            {(imageAttachments.length > 0 || attachment) && status?.usage && recognitionPriceHint(status.usage, imageAttachments.length) && (
+              <p className="w-full px-1 text-xs text-gray-500" data-ai-price-hint>{recognitionPriceHint(status.usage, imageAttachments.length)}</p>
+            )}
             <input
               ref={fileRef}
               type="file"
