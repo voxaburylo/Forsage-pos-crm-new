@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { toast } from '@/components/ui/Toast'
+import { roleRights, roleSwitches } from './staffRights'
 
 /**
  * 21.11.2026 (рішення власника): менеджер продає лише з дозволу власника.
@@ -124,6 +125,48 @@ export function ManagerSaleToggle({ userId }: { userId: string }) {
         <span className="font-medium">Може продавати</span>
         <span className="block text-xs text-gray-500">Каса, відкриття й закриття зміни, оплата замовлень, повернення. Діє одразу, і на ПК менеджера теж.</span>
       </label>
+    </div>
+  )
+}
+
+/**
+ * 24.11.2026 (власник): блок «Права» в картці працівника — що дозволяє роль, що закрито, і перемикачі в одному місці.
+ * Перемикачі зберігає головний ПК; без звʼязку з ним (веб у режимі перегляду) показуємо підказку замість них.
+ */
+export function StaffRightsBlock({ userId, role, savedRole }: { userId: string; role: string; savedRole: string }) {
+  const rights = roleRights(role)
+  const switches = roleSwitches(role)
+  const online = Boolean(desktopBridge()?.staff?.webAccess)
+  return (
+    <div className="bg-blue-50/60 rounded-xl p-4 space-y-3 border border-blue-100" data-staff-rights={role}>
+      <h4 className="text-sm font-bold text-gray-800">Права</h4>
+      {rights.can.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-emerald-800">Дозволено за роллю</p>
+          <ul className="mt-1 space-y-0.5 text-sm text-gray-700">{rights.can.map(line => <li key={line}>✓ {line}</li>)}</ul>
+        </div>
+      )}
+      {rights.cannot.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-gray-600">Закрито</p>
+          <ul className="mt-1 space-y-0.5 text-sm text-gray-500">{rights.cannot.map(line => <li key={line}>— {line}</li>)}</ul>
+        </div>
+      )}
+      {switches.length > 0 && (
+        <div className="space-y-2 border-t border-blue-100 pt-3">
+          <p className="text-xs font-semibold text-gray-700">Вмикає власник</p>
+          {role !== savedRole
+            ? <p className="text-xs text-amber-800">Спершу збережіть нову роль — перемикачі зʼявляться після збереження.</p>
+            : !online
+              ? <p className="text-xs text-amber-800">Перемикачі доступні, коли головний ПК увімкнено й на звʼязку.</p>
+              : <>
+                {switches.includes('web') && <WebWorkToggle userId={userId} />}
+                {switches.includes('sale') && <ManagerSaleToggle userId={userId} />}
+                {switches.includes('deposit') && <ManagerDepositToggle userId={userId} />}
+              </>}
+        </div>
+      )}
+      <p className="text-xs text-gray-500">Інші права дає роль: змініть «Роль» у профілі вище.</p>
     </div>
   )
 }
