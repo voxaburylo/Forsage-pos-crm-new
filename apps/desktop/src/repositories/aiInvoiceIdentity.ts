@@ -428,8 +428,16 @@ export class AiInvoiceMatcher {
         const weight = /^\d{5,}$/.test(token) ? 4 : /^\d{4}$/.test(token) ? 2 : 1
         for (const id of entries) scores.set(id, (scores.get(id) ?? 0) + weight)
       }
+      // 24.11.2026 (слово власника: «майже всі нові позиції червоні, а у списку — сміття, зовсім не схоже на товар»).
+      // Раніше «схожим» ставав будь-який товар із чотирма спільними словами («фильтр салона … Könner» — і фільтри всіх
+      // машин поспіль), тож новий товар не створювався сам. Тепер схожість рахується за РІДКІСНИМИ словами (модель,
+      // код, бренд), а загальні слова майже не важать; або в картці має бути код із артикула рядка.
+      const skuCodes = new Set((text(raw.sku ?? raw.article).match(/\d{4,}/g) ?? []))
       candidates = [...scores].filter(([id, score]) => score >= 4 && !incompatible(source, brand, this.products.get(id)!))
-        .sort((a,b) => b[1]-a[1] || a[0].localeCompare(b[0])).slice(0,8).map(([id]) => this.products.get(id)!)
+        .map(([id, score]) => ({ id, score, ...this.likeness(source, sku && !weakCode(rawSku) ? skuCodes : new Set<string>(), this.products.get(id)!) }))
+        .filter(item => item.code || (item.forward >= (sku && !weakCode(rawSku) ? 0.75 : 0.6) && item.backward >= 0.5))
+        .sort((a, b) => Number(b.code) - Number(a.code) || b.forward - a.forward || b.score - a.score || a.id.localeCompare(b.id))
+        .slice(0, 5).map(item => this.products.get(item.id)!)
       if (crossHits.length) {
         candidates = [...crossHits, ...candidates.filter(item => !crossHits.some(hit => hit.id === item.id))].slice(0, 8)
         return { ...result, status: 'review', reason: 'Артикул є серед крос-номерів картки (аналог) — виберіть її або створіть новий товар', candidates }
@@ -438,6 +446,23 @@ export class AiInvoiceMatcher {
     if (candidates.length) return { ...result, status: 'review', reason: ids.size > 1 ? 'Коди або повна назва належать кільком карткам — виберіть товар' : 'Є схожі товари — перевірте, щоб не створити дубль', candidates }
     return result
   }
+  /**
+   * Наскільки картка схожа на рядок накладної. forward — яку частку «ваги» слів рядка має картка; backward — навпаки.
+   * Вага слова тим більша, чим рідше воно трапляється в каталозі: «фильтр» є в тисячі карток і майже нічого не каже,
+   * «амулет» чи «8113» — кажуть багато. code — у картці є числовий код із артикула рядка (не менше 4 цифр).
+   */
+  private likeness(source: string, skuCodes: Set<string>, product: AiInvoiceCandidate): { forward: number; backward: number; code: boolean } {
+    const total = Math.max(1, this.products.size)
+    const weight = (token: string) => Math.log(1 + total / Math.max(1, this.tokens.get(token)?.size ?? 0))
+    const mine = new Set(words(source).filter(token => token.length >= 2))
+    const theirs = new Set(words(`${product.name} ${product.brand ?? ''}`).filter(token => token.length >= 2))
+    const cardTokens = new Set(words(`${product.name} ${product.sku}`))
+    let shared = 0, mineSum = 0, theirsSum = 0
+    for (const token of mine) { const value = weight(token); mineSum += value; if (theirs.has(token)) shared += value }
+    for (const token of theirs) theirsSum += weight(token)
+    return { forward: mineSum ? shared / mineSum : 0, backward: theirsSum ? shared / theirsSum : 0, code: [...skuCodes].some(digits => cardTokens.has(digits)) }
+  }
+
   preview(raw: Record<string, unknown>): AiInvoiceReview {
     const review = this.review(raw), errors: string[] = []
     const check = (fn: () => unknown) => { try { fn() } catch (error) { errors.push(error instanceof Error ? error.message : 'Перевірте рядок') } }
