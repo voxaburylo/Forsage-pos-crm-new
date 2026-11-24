@@ -23,7 +23,26 @@ export function findInvoiceIdentifierConflicts(items: Pick<LineItem, 'product_id
   const sameGoods = (a: typeof items[number], b: typeof items[number]) => a.product_id && b.product_id
     ? a.product_id === b.product_id : nameKey(a.product_name) === nameKey(b.product_name)
   const conflicts: InvoiceIdentifierConflict[] = []
+  // 24.11.2026: два рядки з ОДНІЄЮ карткою, але різними артикулами чи штрихкодами — це різні товари, привʼязані помилково
+  // (звичайний і вугільний фільтр KCF-8113 / KCF-8113-C). Те саме правило каса перевіряє під час проведення.
+  const firstByCard = new Map<string, number>()
   items.forEach((line, index) => {
+    const id = clean(line.product_id)
+    if (!id) return
+    const other = firstByCard.get(id)
+    if (other === undefined) { firstByCard.set(id, index); return }
+    for (const field of ['sku', 'barcode'] as const) {
+      const [mine, theirs] = field === 'barcode' ? [barcodeKey(line.barcode), barcodeKey(items[other].barcode)] : [skuKey(line.sku), skuKey(items[other].sku)]
+      if (!mine || !theirs || mine === theirs) continue
+      conflicts.push({ index, other, field, value: clean(line[field]),
+        message: `Рядки ${other + 1} і ${index + 1} привʼязані до однієї картки, але ${field === 'barcode' ? 'штрихкоди' : 'артикули'} в них різні: «${clean(items[other][field])}» і «${clean(line[field])}». `
+          + 'Якщо це різні товари — у цьому рядку приберіть вибрану картку (новий товар) або виберіть іншу; якщо той самий — зробіть однаковими.' })
+      break
+    }
+  })
+  const flagged = new Set(conflicts.map(conflict => conflict.index))
+  items.forEach((line, index) => {
+    if (flagged.has(index)) return
     for (const field of ['barcode', 'sku'] as const) {
       const key = field === 'barcode' ? barcodeKey(line.barcode) : skuKey(line.sku)
       if (!key) continue

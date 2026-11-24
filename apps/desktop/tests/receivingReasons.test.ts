@@ -72,3 +72,21 @@ describe('receiving failures carry a reason code without goods data', () => {
     expect(receivingLineReason('Кількість має бути більшою за нуль')).toBe('line-validation')
   })
 })
+
+// 24.11.2026 (накладна власника: звичайний і вугільний фільтр салона лягли в одну картку).
+describe('two rows bound to one card with different codes', () => {
+  it('is refused with both rows and both articles named', async () => {
+    const { findSameCardConflict, sameCardConflictText } = await import('../src/repositories/receivingCommit')
+    const found = findSameCardConflict([
+      line({ product_id: 'p1', product_name: 'Фильтр салона Амулет Könner', sku: 'KCF-8113' }),
+      line({ product_id: 'p1', product_name: 'Фильтр салона угольный Амулет Könner', sku: 'KCF-8113-C' }),
+    ])
+    expect(found).toEqual({ index: 1, other: 0, field: 'sku', value: 'KCF-8113-C', otherValue: 'KCF-8113' })
+    expect(sameCardConflictText(1, 0, 'sku', 'KCF-8113-C', 'KCF-8113')).toContain('Рядки 1 і 2 привʼязані до однієї картки, але артикули в них різні: «KCF-8113» і «KCF-8113-C»')
+  })
+  it('allows the same card repeated with the same or an empty code', async () => {
+    const { findSameCardConflict } = await import('../src/repositories/receivingCommit')
+    expect(findSameCardConflict([line({ product_id: 'p1', sku: 'x-1' }), line({ product_id: 'p1', sku: 'X-1' }), line({ product_id: 'p1', sku: '' })])).toBeNull()
+    expect(findSameCardConflict([line({ product_id: '', sku: 'a' }), line({ product_id: '', sku: 'b', product_name: 'Інша' })])).toBeNull()
+  })
+})
