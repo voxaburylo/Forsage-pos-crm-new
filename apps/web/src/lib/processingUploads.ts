@@ -1,5 +1,8 @@
 import { supabase } from './supabase'
 import { reportLocalError } from './localDiagnostics'
+import { uploadThroughMainPc } from './assistantViaMainPc'
+
+const storedByMainPc = new Set<string>()
 
 class ProcessingTimeoutError extends Error {
   readonly code = 'PROCESSING_TIMEOUT'
@@ -65,9 +68,15 @@ export async function uploadProcessingBlob(
   )
   if (sessionError) throw new Error('Не вдалося перевірити сесію. Увійдіть знову.')
   const userId = sessionData.session?.user.id
-  if (!userId) throw new Error('Сесія закінчилась. Увійдіть знову.')
-
   const mimeType = (blob.type || 'application/octet-stream').toLowerCase().split(';', 1)[0]
+  if (!userId) {
+    // 24.11.2026: на головному ПК без серверної сесії (вхід локальним паролем чи PIN) вкладення помічника
+    // передає сам ПК своїм ключем — другий пароль не потрібен.
+    const stored = await uploadThroughMainPc(blob, purpose, mimeType)
+    if (stored) { storedByMainPc.add(stored.path); return stored }
+    throw new Error('Сесія закінчилась. Увійдіть знову.')
+  }
+
   const extension = extensionForMimeType(mimeType)
   const path = `${userId}/${purpose}/${crypto.randomUUID()}.${extension}`
   try {
@@ -90,8 +99,9 @@ export async function uploadProcessingBlob(
 }
 
 export async function removeProcessingUploads(paths: readonly string[]): Promise<void> {
-  if (paths.length === 0) return
-  const unique = [...new Set(paths)]
+  // Файли, які поклав головний ПК, прибирає сервер після розбору; у цього працівника немає сесії сховища.
+  const unique = [...new Set(paths)].filter(path => !storedByMainPc.delete(path))
+  if (unique.length === 0) return
   try {
     const { error } = await withDeadline(
       supabase.storage.from(PROCESSING_UPLOAD_BUCKET).remove(unique), 5_000,

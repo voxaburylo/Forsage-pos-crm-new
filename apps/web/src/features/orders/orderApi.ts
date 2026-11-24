@@ -2,6 +2,7 @@ import { api, type RequestOptions } from '@/lib/api'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { durableLocalRequest } from '@/lib/durableLocalRequest'
 import { useAuthStore } from '@/stores/authStore'
+import { moneyOnlyAtTill } from '@/lib/moneyOnlyAtTill'
 
 // ---------- Типи ----------
 
@@ -217,14 +218,14 @@ export const orderApi = {
     if (local) return { data: await local(id) }
     return api.get<{ data: any[] }>(`/api/v1/customer-orders/${id}/payments`, { timeoutMs: ORDER_READ_TIMEOUT_MS, ...opts })
   },
-  complete: async (id: string, payload: { payment_method: string; is_fiscal: boolean; shift_id: string | null }, opts: OrderRequestOptions = {}) => {
+  complete: async (id: string, payload: { payment_method: string; is_fiscal: boolean; shift_id: string | null }, _opts: OrderRequestOptions = {}) => {
     const local = desktopBridge()?.orders?.complete
     if (local) {
       const data = await local(id, payload)
       requestOrderSync()
       return data
     }
-    return api.post(`/api/v1/customer-orders/${id}/complete`, payload, undefined, { timeoutMs: ORDER_FINALIZE_TIMEOUT_MS, ...opts })
+    return moneyOnlyAtTill()
   },
 
   cancel: async (id: string, refund_prepayment: boolean, reason?: string | null, keep_as_credit?: boolean, opts: OrderRequestOptions = {}) => {

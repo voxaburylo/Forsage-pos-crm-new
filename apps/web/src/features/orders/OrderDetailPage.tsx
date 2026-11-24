@@ -16,7 +16,9 @@ import { QuickCustomerEditModal } from '@/features/customers/QuickCustomerEditMo
 import { customerApi } from '@/features/customers/customerApi'
 import type { Customer } from '@/types/customer'
 import type { Product } from '@/types/product'
-import { loadProductLabelSettings, printLabels } from '@/features/labels/LabelDesigner'
+import { loadProductLabelSettings, printLabels, printLabelDocument } from '@/features/labels/LabelDesigner'
+import { arrivalLinks, arrivalMessage, buildOrderLabelDocument } from './orderArrivalNotice'
+import { itemPhotoThumbnails, useOrderItemPhotos } from './orderItemPhotos'
 import { printInvoice, printDeliveryNote, orderMessengerText, loadSellerRequisites, hasSellerRequisites, loadOrderThumbnails, printOrderForm } from './orderDocuments'
 import { isTerminalOrderStatus } from './orderStatus'
 import { allowedOrderStatusTransitions } from './orderWorkflow'
@@ -141,6 +143,8 @@ export default function OrderDetailPage() {
 
   const [payments, setPayments] = useState<Payment[]>([])
   const [actionsOpen, setActionsOpen] = useState(false)
+  // 24.11.2026 (план C2): мініатюри позицій (зі скриншота кошика чи з довідника) — зберігає головний ПК.
+  const itemPhotos = useOrderItemPhotos(id, order?.updated_at)
 
   const [quickCustomer, setQuickCustomer] = useState<Customer | null>(null)
   const [customerEditorOpen, setCustomerEditorOpen] = useState(false)
@@ -365,7 +369,7 @@ export default function OrderDetailPage() {
                 <button
                   onClick={async () => {
                     setActionsOpen(false)
-                    const thumbnails = await loadOrderThumbnails(order, desktopBridge()?.catalog?.photoThumbnails)
+                    const thumbnails = { ...itemPhotoThumbnails(itemPhotos), ...await loadOrderThumbnails(order, desktopBridge()?.catalog?.photoThumbnails) }
                     try {
                       printOrderForm(order, loadSellerRequisites(), thumbnails)
                     } catch (err) {
@@ -563,6 +567,30 @@ export default function OrderDetailPage() {
                   <div className="text-gray-400">Клієнт не вказаний</div>
                 )}
 
+                {/* 23.11.2026 (план C3): товар прибув — повідомлення клієнту й наклейка «чий товар». */}
+                {['arrived', 'ready', 'called', 'no_answer'].includes(order.status) && (() => {
+                  const arrived = (order.items ?? []).filter(item => item.item_status === 'arrived')
+                  const message = arrivalMessage({ order_number: order.order_number ?? 0, customer_name: order.customer?.full_name, complete: order.status !== 'arrived' })
+                  const links = arrivalLinks(order.customer?.phone, message)
+                  return (
+                    <div className="flex flex-wrap gap-2 pt-1 text-xs" data-order-arrival-actions>
+                      <button type="button" className="rounded-md border border-gray-300 px-2 py-1 font-semibold text-gray-700 hover:bg-gray-50" onClick={() => {
+                        navigator.clipboard.writeText(message).then(() => toast.success('Текст скопійовано — вставте в Viber чи SMS'), () => toast.error('Не вдалося скопіювати текст'))
+                      }}>Скопіювати «прибуло»</button>
+                      {links && <a href={links.viber} className="rounded-md border border-violet-300 px-2 py-1 font-semibold text-violet-700 hover:bg-violet-50">Viber</a>}
+                      {links && <a href={links.sms} className="rounded-md border border-gray-300 px-2 py-1 font-semibold text-gray-700 hover:bg-gray-50">SMS</a>}
+                      {isDesktopRuntime() && arrived.length > 0 && (
+                        <button type="button" className="rounded-md border border-gray-300 px-2 py-1 font-semibold text-gray-700 hover:bg-gray-50" onClick={() => {
+                          void loadProductLabelSettings().catch(() => ({}))
+                            .then(size => printLabelDocument(buildOrderLabelDocument([{ order_number: order.order_number ?? 0, customer_name: order.customer?.full_name ?? null,
+                              customer_phone: order.customer?.phone ?? null, items: arrived.map(item => ({ name: item.name, qty: Number(item.qty) || 0 })) }], size as { width_mm?: number; height_mm?: number })))
+                            .catch(error => toast.error(error instanceof Error ? error.message : 'Не вдалося надрукувати наклейку'))
+                        }}>Наклейка на товар</button>
+                      )}
+                    </div>
+                  )
+                })()}
+
                 {/* Автомобіль замовлення */}
                 {order.vehicle_info && (
                   <div className="space-y-1">
@@ -626,6 +654,7 @@ export default function OrderDetailPage() {
                   <div key={item.id} className="flex flex-col md:flex-row md:items-center justify-between bg-gray-50 rounded-xl p-4 text-sm gap-3 shadow-sm border border-gray-100/50">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-start gap-2 flex-wrap">
+                        {itemPhotos[item.id] && <img src={itemPhotos[item.id]} alt="" loading="lazy" draggable={false} data-order-item-photo className="h-10 w-10 shrink-0 rounded border border-gray-100 bg-white object-contain" />}
                         <span className="font-semibold text-gray-900 leading-snug">{item.name}</span>
                         {item.sku && <span className="text-gray-400 text-xs font-mono bg-white px-1.5 py-0.5 rounded border border-gray-100">{item.sku}</span>}
                       </div>

@@ -5,6 +5,7 @@ import { Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
 import path from 'node:path'
+import { backupPartsOf, backupPartSuffix, MAX_CHUNKED_BACKUP_BYTES } from './cloudParts'
 
 /**
  * Аварійне відновлення: найсвіжіша перевірена копія з хмарного сховища → файл у папці резервних копій цього ПК.
@@ -26,6 +27,8 @@ export interface CloudBackupRequest {
   size_bytes: number
   /** Формат архіву; у копій, зроблених до 22.11.2026, його немає — це gz. */
   format?: ArchiveFormat
+  /** 24.11.2026 (план C10): велика копія — адреси частин по порядку замість однієї url. */
+  urls?: string[]
 }
 
 function formatOf(request: Pick<CloudBackupRequest, 'format'>): ArchiveFormat {
@@ -34,16 +37,19 @@ function formatOf(request: Pick<CloudBackupRequest, 'format'>): ArchiveFormat {
   return request.format
 }
 
-/** Підписана адреса має вести рівно на цей файл у приватному сховищі нашого сервера. */
-export function assertCloudBackupUrl(request: CloudBackupRequest, trustedOrigin: string): URL {
+/** Підписана адреса має вести рівно на цей файл (чи цю частину) у приватному сховищі нашого сервера. */
+export function assertCloudBackupUrl(request: CloudBackupRequest, trustedOrigin: string, part?: number): URL {
+  const parts = backupPartsOf(Number(request.size_bytes))
   if (![request.tenant_id, request.device_id, request.id].every(value => UUID.test(String(value)))
     || !/^[a-f0-9]{64}$/.test(String(request.sha256))
-    || !Number.isSafeInteger(request.size_bytes) || request.size_bytes < 1 || request.size_bytes > MAX_CLOUD_ARCHIVE_BYTES)
+    || !Number.isSafeInteger(request.size_bytes) || request.size_bytes < 1
+    || request.size_bytes > (part ? MAX_CHUNKED_BACKUP_BYTES : MAX_CLOUD_ARCHIVE_BYTES)
+    || (part !== undefined && (parts < 2 || !Number.isInteger(part) || part < 1 || part > parts)))
     throw new Error('Некоректні параметри копії')
   let url: URL
-  try { url = new URL(request.url) } catch { throw new Error('Неприпустима адреса копії') }
+  try { url = new URL(part ? String(request.urls?.[part - 1] ?? '') : request.url) } catch { throw new Error('Неприпустима адреса копії') }
   const expectedPath = '/storage/v1/object/sign/' + CLOUD_BACKUP_BUCKET + '/'
-    + [request.tenant_id, request.device_id, request.id + '-' + request.sha256 + '.db.' + formatOf(request)].map(encodeURIComponent).join('/')
+    + [request.tenant_id, request.device_id, request.id + '-' + request.sha256 + '.db.' + formatOf(request) + (part ? backupPartSuffix(part) : '')].map(encodeURIComponent).join('/')
   if (url.protocol !== 'https:' || url.origin !== new URL(trustedOrigin).origin || decodeURI(url.pathname) !== decodeURI(expectedPath))
     throw new Error('Неприпустима адреса копії')
   return url
@@ -78,7 +84,10 @@ export interface FetchCloudBackupOptions {
 
 /** Скачує, звіряє SHA-256 архіву, розпаковує у файл копії й перевіряє його. Повертає ім'я файлу. */
 export async function fetchCloudBackup(request: CloudBackupRequest, options: FetchCloudBackupOptions): Promise<{ fileName: string; filePath: string; sizeBytes: number }> {
-  const url = assertCloudBackupUrl(request, options.trustedOrigin)
+  // 24.11.2026 (план C10): велика копія приходить частинами — усі адреси перевіряються наперед, до першого байта.
+  const parts = Array.isArray(request.urls) && request.urls.length ? request.urls.length : 1
+  if (parts > 1 && parts !== backupPartsOf(Number(request.size_bytes))) throw new Error('Некоректні параметри копії')
+  const urls = parts > 1 ? Array.from({ length: parts }, (_, index) => assertCloudBackupUrl(request, options.trustedOrigin, index + 1)) : [assertCloudBackupUrl(request, options.trustedOrigin)]
   const fileName = cloudBackupFileName(request, options.now)
   mkdirSync(options.backupsDir, { recursive: true })
   const finalPath = path.join(options.backupsDir, fileName)
@@ -88,14 +97,16 @@ export async function fetchCloudBackup(request: CloudBackupRequest, options: Fet
   const archivePath = finalPath + '.' + format + '.partial'
   const dbPath = finalPath + '.partial'
   try {
-    const response = await (options.fetchImpl ?? fetch)(url, { redirect: 'error', signal: AbortSignal.timeout(300_000) } as RequestInit)
-    if (!response.ok || !response.body) throw new Error('Сервер не віддав копію: HTTP ' + response.status)
-
     const hash = createHash('sha256')
     let received = 0
-    const limit = new SizeLimit(MAX_CLOUD_ARCHIVE_BYTES, 'Архів копії завеликий')
-    limit.on('data', (chunk: Buffer) => { hash.update(chunk); received += chunk.length })
-    await pipeline(Readable.fromWeb(response.body as any), limit, createWriteStream(archivePath, { flags: 'wx' }))
+    for (const [index, url] of urls.entries()) {
+      const response = await (options.fetchImpl ?? fetch)(url, { redirect: 'error', signal: AbortSignal.timeout(300_000) } as RequestInit)
+      if (!response.ok || !response.body) throw new Error('Сервер не віддав копію: HTTP ' + response.status)
+      const limit = new SizeLimit(parts > 1 ? MAX_CHUNKED_BACKUP_BYTES - received : MAX_CLOUD_ARCHIVE_BYTES, 'Архів копії завеликий')
+      limit.on('data', (chunk: Buffer) => { hash.update(chunk); received += chunk.length })
+      // Частини дописуються в один архів по черзі; сума рахується від усього архіву.
+      await pipeline(Readable.fromWeb(response.body as any), limit, createWriteStream(archivePath, { flags: index === 0 ? 'wx' : 'a' }))
+    }
     if (received !== request.size_bytes) throw new Error('Копію завантажено не повністю')
     if (hash.digest('hex') !== request.sha256) throw new Error('Контрольна сума копії не збігається. Файл не використано.')
 

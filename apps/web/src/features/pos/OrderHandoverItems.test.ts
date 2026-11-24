@@ -23,7 +23,8 @@ describe('order items at handover (stage 5, owner decision 22.11.2026: handover 
   })
   it('is shown in both layouts of the handover panel and only reads data', () => {
     const panel = readFileSync(new URL('./ReadyOrdersPanel.tsx', import.meta.url), 'utf8')
-    expect(panel.split('<OrderHandoverItems items={order.items ?? []} />').length - 1).toBe(2)
+    // 24.11.2026 (план C2): разом із позиціями — мініатюри позицій замовлення (orderId).
+    expect(panel.split('<OrderHandoverItems items={order.items ?? []} orderId={order.id} />').length - 1).toBe(2)
     const source = readFileSync(new URL('./OrderHandoverItems.tsx', import.meta.url), 'utf8')
     for (const banned of ['addPayment', 'complete(', 'updateItemStatus', 'save(']) expect(source).not.toContain(banned)
   })

@@ -68,6 +68,9 @@ describe('web work access: the web asks the main PC about a cashier', () => {
     // Сервер пропускає касира до головного ПК; чи можна — вирішує головний ПК.
     expect(read('../../../../server/src/services/tillRpcService.ts')).toContain("export const WEB_RPC_ROLES = ['owner', 'admin', 'manager', 'cashier'] as const")
     const staff = read('../features/staff/StaffPage.tsx')
-    expect(staff).toContain("{selectedUser.role==='cashier'&&editForm.role==='cashier'&&<WebWorkToggle userId={selectedUser.id}/>}")
+    // 24.11.2026: перемикач переїхав у блок «Права» картки працівника (StaffRightsBlock); для касира — лише він.
+    expect(staff).toContain('<StaffRightsBlock userId={selectedUser.id} role={editForm.role} savedRole={selectedUser.role}/>')
+    expect(read('../features/staff/ManagerSaleToggle.tsx')).toContain("{switches.includes('web') && <WebWorkToggle userId={userId} />}")
+    expect(read('../features/staff/staffRights.ts')).toContain("if (role === 'cashier') return ['orders', 'purchase_prices', 'reports', 'web']")
   })
 })

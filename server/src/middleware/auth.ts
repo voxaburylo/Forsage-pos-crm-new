@@ -79,6 +79,13 @@ export async function requireAuth(
     return next()
   }
 
+  // 24.11.2026: головний ПК власним ключем — ключ уже перевірено в routes/tillDevice.ts (requireTillDevice),
+  // поле ставить лише сервер; із запиту клієнта воно прийти не може.
+  if (req.tillDeviceActor) {
+    req.user = req.tillDeviceActor
+    return next()
+  }
+
   const authHeader = req.headers.authorization
   if (!authHeader?.startsWith('Bearer ')) {
     return next(new AppError('UNAUTHORIZED', 'Необхідна авторизація', 401))

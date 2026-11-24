@@ -1,12 +1,9 @@
-import { OrderArrivalModal } from '@/features/orders/OrderArrivalModal'
 import { Component, lazy, Suspense, useEffect, useState, type ErrorInfo, type ReactNode } from 'react'
 import { createBrowserRouter, createHashRouter, RouterProvider, Routes, Route, Navigate, useLocation, useParams } from 'react-router-dom'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { MainPcWhenOnline, TillOnly, TillOrView } from '@/components/TillOnly'
-import { LiveCameraScanner } from '@/components/LiveCameraScanner'
 import { DesktopAccessGate } from '@/components/DesktopAccessGate'
 import { ToastContainer } from '@/components/ui'
-import { CommandPalette } from '@/components/CommandPalette'
 import { LocalSyncAgent } from '@/components/LocalSyncAgent'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
@@ -37,6 +34,8 @@ const NegativeStockPage    = lazyPage(() => import('@/features/analytics/Negativ
 const AdminPage            = lazyPage(() => import('@/features/admin/AdminPage'))
 const SettingsPage         = lazyPage(() => import('@/features/settings/SettingsPage'))
 const SystemStatusPage     = lazyPage(() => import('@/features/system/SystemStatusPage'))
+const SitePage             = lazyPage(() => import('@/features/site/SitePage'))
+import { SiteGate } from '@/features/site/siteAccess'
 // CommissionRulesPage merged
 const SuppliersPage        = lazyPage(() => import('@/features/suppliers/SuppliersPage'))
 const SupplierFormPage     = lazyPage(() => import('@/features/suppliers/SupplierFormPage'))
@@ -56,6 +55,7 @@ const InternalConsumptionsPage = lazyPage(() => import('@/features/inventory/Int
 const ABCAnalysis          = lazyPage(() => import('@/features/analytics/ABCAnalysis'))
 const StaffAnalytics       = lazyPage(() => import('@/features/analytics/StaffAnalytics'))
 const WaitlistPage         = lazyPage(() => import('@/features/waitlist/WaitlistPage'))
+const SupplierOrderPage    = lazyPage(() => import('@/features/orders/SupplierOrderPage'))
 const SettingsChannels     = lazyPage(() => import('@/features/chats/SettingsChannels'))
 const InventoryPage        = lazyPage(() => import('@/features/inventory/InventoryPage'))
 const ActiveSession        = lazyPage(() => import('@/features/inventory/ActiveSession'))
@@ -94,10 +94,12 @@ const CatalogAgentPage = lazyPage(() => import('@/features/ai/CatalogAgentPage')
 const CatalogCleanupPage = lazyPage(() => import('@/features/admin/CatalogCleanupPage'))
 const AiAssistantPage       = lazyPage(() => import('@/features/ai/AiAssistantPage'))
 import { AI_ASSISTANT_ROLES } from '@/features/ai/aiAccess'
+import { useStaffRights } from '@/lib/staffRights'
 
 function AnalyticsHome() {
   const role = (useAuthStore((state) => state.session)?.user?.app_metadata?.role as string | undefined) ?? ''
-  return <Navigate to={role === 'cashier' ? '/analytics/sales' : '/analytics/statistics'} replace />
+  const rights = useStaffRights()
+  return <Navigate to={role === 'cashier' && !rights.reports ? '/analytics/sales' : '/analytics/statistics'} replace />
 }
 
 function CanonicalCard({ kind }: { kind: 'products' | 'customers' }) {
@@ -123,6 +125,12 @@ function isRouteChunkError(error: unknown): boolean {
 }
 
 import { reportLocalError } from './lib/localDiagnostics'
+
+// 24.11.2026 (план C1, «тяжкі модулі на вимогу»): глобальні вікна, потрібні не з першої секунди, вантажаться окремо —
+// стартовий файл менший, вхід і перша сторінка швидші. Подія чи клавіша, що їх відкриває, чекає мить на завантаження.
+const OrderArrivalModal = lazy(() => import('@/features/orders/OrderArrivalModal').then(module => ({ default: module.OrderArrivalModal })))
+const LiveCameraScanner = lazy(() => import('@/components/LiveCameraScanner').then(module => ({ default: module.LiveCameraScanner })))
+const CommandPalette = lazy(() => import('@/components/CommandPalette').then(module => ({ default: module.CommandPalette })))
 
 type AppErrorBoundaryState = { error: Error | null }
 
@@ -209,7 +217,7 @@ function Workspace() {
     <>
       <div id="desktop-workspace">
       <NavigationGuard />
-      <OrderArrivalModal />
+      <Suspense fallback={null}><OrderArrivalModal /></Suspense>
       <LocalSyncAgent />
       <AppErrorBoundary>
       <Suspense fallback={<Loader />}>
@@ -217,7 +225,7 @@ function Workspace() {
           <Route path="/login" element={<LoginPage />} />
 
           <Route path="/analytics"            element={<AnalyticsHome />} />
-          <Route path="/analytics/statistics" element={<ProtectedRoute roles={OFFICE_ROLES}><DashboardPage /></ProtectedRoute>} />
+          <Route path="/analytics/statistics" element={<ProtectedRoute roles={OFFICE_ROLES} right="reports"><DashboardPage /></ProtectedRoute>} />
           <Route path="/analytics/sales"      element={<ProtectedRoute roles={REPORT_ROLES}><DailyReport /></ProtectedRoute>} />
           <Route path="/analytics/control"    element={<ProtectedRoute roles={OFFICE_ROLES}><ControlReportPage /></ProtectedRoute>} />
           <Route path="/analytics/recount"    element={<ProtectedRoute roles={OFFICE_ROLES}><MainPcWhenOnline><NegativeStockPage /></MainPcWhenOnline></ProtectedRoute>} />
@@ -243,10 +251,13 @@ function Workspace() {
           <Route path="/reports"  element={<Navigate to="/analytics/sales" replace />} />
           <Route path="/abc"        element={<ProtectedRoute roles={ADMIN_ROLES}><ABCAnalysis /></ProtectedRoute>} />
           <Route path="/waitlist"   element={<TillOnly what="Очікування товару"><ProtectedRoute roles={OFFICE_ROLES}><WaitlistPage /></ProtectedRoute></TillOnly>} />
-          <Route path="/needs-action" element={<TillOnly what="Робота із замовленнями"><ProtectedRoute roles={OFFICE_ROLES}><NeedsActionPage /></ProtectedRoute></TillOnly>} />
+          {/* 23.11.2026 (план C3): що з замовлень ще треба замовити в постачальника. */}
+          <Route path="/supplier-order" element={<TillOnly what="Замовити в постачальника"><ProtectedRoute roles={OFFICE_ROLES} right="orders"><SupplierOrderPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/needs-action" element={<TillOnly what="Робота із замовленнями"><ProtectedRoute roles={OFFICE_ROLES} right="orders"><NeedsActionPage /></ProtectedRoute></TillOnly>} />
           <Route path="/staff-analytics" element={<ProtectedRoute roles={ADMIN_ROLES}><StaffAnalytics /></ProtectedRoute>} />
           <Route path="/admin"    element={<TillOnly what="Адміністрування"><ProtectedRoute roles={ADMIN_ROLES}><AdminPage /></ProtectedRoute></TillOnly>} />
           {/* План T2 (23.11.2026): стан системи читається із сервера — працює й тоді, коли головний ПК не на звʼязку. */}
+          <Route path="/site" element={<ProtectedRoute><SiteGate><SitePage /></SiteGate></ProtectedRoute>} />
           <Route path="/system" element={<ProtectedRoute roles={ADMIN_ROLES}><SystemStatusPage /></ProtectedRoute>} />
           <Route path="/settings" element={<TillOnly what="Налаштування"><ProtectedRoute roles={ADMIN_ROLES}><SettingsPage /></ProtectedRoute></TillOnly>} />
           <Route path="/settings/draft-nomenclature" element={<TillOnly what="Номенклатура постачальника"><ProtectedRoute roles={ADMIN_ROLES}><SupplierPricesPage /></ProtectedRoute></TillOnly>} />
@@ -289,16 +300,16 @@ function Workspace() {
           <Route path="/inventory/writeoffs/:id" element={<TillOnly what="Списання"><ProtectedRoute roles={WAREHOUSE_ROLES}><WriteoffDetailPage /></ProtectedRoute></TillOnly>} />
 
           {/* Чат-боти — окремий розділ (той самий компонент у режимі chatMode) */}
-          <Route path="/chats" element={<TillOnly what="Замовлення"><ProtectedRoute roles={OFFICE_ROLES}><OrdersPage /></ProtectedRoute></TillOnly>} />
-          <Route path="/orders"          element={<ProtectedRoute roles={OFFICE_ROLES}><MainPcWhenOnline view={<OrdersViewPage />}><OrdersPage /></MainPcWhenOnline></ProtectedRoute>} />
-          <Route path="/orders/new"      element={<ProtectedRoute roles={OFFICE_ROLES}><MainPcWhenOnline view={<WebOrderFormPage />}><OrderFormPage /></MainPcWhenOnline></ProtectedRoute>} />
-          <Route path="/orders/:id/add"  element={<ProtectedRoute roles={OFFICE_ROLES}><MainPcWhenOnline view={<WebOrderAppendPage />}><OrderDetailPage /></MainPcWhenOnline></ProtectedRoute>} />
-          <Route path="/orders/:id"      element={<ProtectedRoute roles={OFFICE_ROLES}><MainPcWhenOnline view={<OrdersViewPage />}><OrderDetailPage /></MainPcWhenOnline></ProtectedRoute>} />
-          <Route path="/orders/:id/edit" element={<TillOnly what="Редагування замовлення"><ProtectedRoute roles={OFFICE_ROLES}><OrderFormPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/chats" element={<TillOnly what="Замовлення"><ProtectedRoute roles={OFFICE_ROLES} right="orders"><OrdersPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/orders"          element={<ProtectedRoute roles={OFFICE_ROLES} right="orders"><MainPcWhenOnline view={<OrdersViewPage />}><OrdersPage /></MainPcWhenOnline></ProtectedRoute>} />
+          <Route path="/orders/new"      element={<ProtectedRoute roles={OFFICE_ROLES} right="orders"><MainPcWhenOnline view={<WebOrderFormPage />}><OrderFormPage /></MainPcWhenOnline></ProtectedRoute>} />
+          <Route path="/orders/:id/add"  element={<ProtectedRoute roles={OFFICE_ROLES} right="orders"><MainPcWhenOnline view={<WebOrderAppendPage />}><OrderDetailPage /></MainPcWhenOnline></ProtectedRoute>} />
+          <Route path="/orders/:id"      element={<ProtectedRoute roles={OFFICE_ROLES} right="orders"><MainPcWhenOnline view={<OrdersViewPage />}><OrderDetailPage /></MainPcWhenOnline></ProtectedRoute>} />
+          <Route path="/orders/:id/edit" element={<TillOnly what="Редагування замовлення"><ProtectedRoute roles={OFFICE_ROLES} right="orders"><OrderFormPage /></ProtectedRoute></TillOnly>} />
 
           <Route path="/quotes"          element={<Navigate to="/orders" replace />} />
-          <Route path="/quotes/new"      element={<TillOnly what="Створення прорахунку"><ProtectedRoute roles={OFFICE_ROLES}><QuickDraftPage /></ProtectedRoute></TillOnly>} />
-          <Route path="/quotes/:id"      element={<TillOnly what="Прорахунок"><ProtectedRoute roles={OFFICE_ROLES}><QuickDraftPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/quotes/new"      element={<TillOnly what="Створення прорахунку"><ProtectedRoute roles={OFFICE_ROLES} right="orders"><QuickDraftPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/quotes/:id"      element={<TillOnly what="Прорахунок"><ProtectedRoute roles={OFFICE_ROLES} right="orders"><QuickDraftPage /></ProtectedRoute></TillOnly>} />
 
           <Route path="/" element={<Navigate to="/analytics" replace />} />
           <Route path="*" element={<Navigate to="/analytics" replace />} />
@@ -306,9 +317,9 @@ function Workspace() {
       </Suspense>
       </AppErrorBoundary>
       {/* 23.11.2026 (план B1): постійний сканер камерою для вебу на телефоні — один на весь застосунок. */}
-      <LiveCameraScanner />
+      <Suspense fallback={null}><LiveCameraScanner /></Suspense>
       <ToastContainer />
-      <CommandPalette />
+      <Suspense fallback={null}><CommandPalette /></Suspense>
       </div>
       <DesktopAccessGate />
     </>

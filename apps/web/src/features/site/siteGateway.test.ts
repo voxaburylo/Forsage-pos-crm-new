@@ -1,0 +1,92 @@
+import { readFileSync } from 'node:fs'
+import { describe, expect, it } from 'vitest'
+import { exactProductMatch, fitSide, groupPhotoFiles, isoToLocalInput, localInputToIso, photoFileKey, siteOrderToProgramOrder, type SiteOrder } from './siteGateway'
+import { BANNERS, CATEGORIES, PAGES, PROMOS, formProblem, formToPayload, rowToForm } from './SiteCrudTab'
+import { SITE_SETTING_FIELDS, completeHomeBlocks } from './SiteSimpleTabs'
+import { specsFromText, specsToText } from './SiteProductsTab'
+import { SITE_TABS } from './SitePage'
+
+const read = (file: string) => readFileSync(new URL(file, import.meta.url), 'utf8')
+const P1 = '7b1f0c1e-2a3b-4c4d-8e5f-0123456789ab'
+
+// 24.11.2026: розділ «Сайт» керує сайтом forsage-tires.com через шлюз (контракт розробника сайту).
+describe('site section through the gateway', () => {
+  const order: SiteOrder = { id: 'A-102', created_at: '2026-11-24T10:00:00Z', status: 'new', customer_name: ' Іван ', customer_phone: '+38 (050) 123-45-67',
+    delivery_method: 'Нова пошта', city: 'Київ', warehouse: '№12', comment: 'після 18', total: 1500,
+    items: [{ program_product_id: P1, title: 'Олива 5W-40', qty: 2, price: 450.5 }, { program_product_id: null, title: 'Шина 205/55 R16', qty: 4, price: 150 }] }
+
+  it('a site order becomes a program order form: catalog goods as rows in kopecks, tyres as a note, no money', () => {
+    const { payload, textOnly } = siteOrderToProgramOrder(order)
+    expect(payload.items).toEqual([{ name: 'Олива 5W-40', qty: 2, sell_price: 45050, product_id: P1 }])
+    expect(payload).toMatchObject({ customer_phone: '380501234567', customer_name: 'Іван', author: 'Сайт' })
+    expect(payload.comment).toContain('Замовлення із сайту № A-102')
+    expect(payload.comment).toContain('Доставка: Нова пошта, Київ, №12')
+    expect(payload.comment).toContain('Шина 205/55 R16 — 4 шт')
+    expect(textOnly).toHaveLength(1)
+    expect(JSON.stringify(payload)).not.toMatch(/prepay|payment|paid/)
+    expect(siteOrderToProgramOrder({ ...order, customer_phone: '123', items: [] }).payload).toMatchObject({ customer_phone: null, items: [] })
+  })
+
+  it('creating in the program goes the same safe way as a phone order, never by writing to the cloud', () => {
+    const tab = read('./SiteOrdersTab.tsx')
+    expect(tab).toContain("command: 'order.save'")
+    expect(tab).toContain('tillOrderToCreate(checked, null, operationId')
+    expect(tab).not.toMatch(/customer_orders|supabase/)
+  })
+
+  it('photos keep proportions, are never enlarged, and file names map to an article or barcode', () => {
+    expect(fitSide(4000, 3000, 1000)).toEqual({ width: 1000, height: 750 })
+    expect(fitSide(300, 600, 400)).toEqual({ width: 200, height: 400 })
+    expect(fitSide(200, 100, 1000)).toEqual({ width: 200, height: 100 })
+    for (const [name, key] of [['WB-1065.jpg', 'WB-1065'], ['WB-1065_2.JPG', 'WB-1065'], ['WB-1065 (3).png', 'WB-1065'], ['C:\\фото\\4820001.webp', '4820001'], ['BP-12502.jpeg', 'BP-12502']])
+      expect(photoFileKey(name), name).toBe(key)
+    const groups = groupPhotoFiles([{ name: 'wb-1065_2.jpg' }, { name: 'readme.txt' }, { name: 'WB-1065.jpg' }, { name: '4820001.png' }])
+    expect([...groups.keys()]).toEqual(['4820001', 'wb-1065'])
+    expect(groups.get('wb-1065')!.map(file => file.name)).toEqual(['WB-1065.jpg', 'wb-1065_2.jpg'])
+  })
+
+  it('a photo goes only to an exact article or barcode match, never to a similar or ambiguous card', () => {
+    const cards = [{ id: 'a', sku: 'WB-1065', barcode: null }, { id: 'b', sku: 'WB-10650', barcode: '4820001' }]
+    expect(exactProductMatch('wb-1065', cards)?.id).toBe('a')
+    expect(exactProductMatch('4820001', cards)?.id).toBe('b')
+    expect(exactProductMatch('WB-106', cards)).toBeNull()
+    expect(exactProductMatch('x', [{ sku: 'X' }, { sku: 'x' }])).toBeNull()
+  })
+
+  it('forms send numbers as numbers, dates as ISO, lists as lists and catch what is missing', () => {
+    const form = rowToForm(PROMOS.fields, { id: 'p1', title: 'Зима', discount_percent: 7, target_type: 'brand', target_ids: ['b1', 'b2'], is_active: false, starts_at: '2026-11-24T10:00:00.000Z' })
+    expect(form).toMatchObject({ id: 'p1', discount_percent: '7', target_ids: 'b1, b2', is_active: false })
+    expect(localInputToIso(String(form.starts_at))).toBe('2026-11-24T10:00:00.000Z')
+    expect(formToPayload(PROMOS.fields, { ...form, discount_percent: '7,5', target_ids: 'b1; b2 b3', ends_at: '' })).toMatchObject({ id: 'p1', discount_percent: 7.5, target_ids: ['b1', 'b2', 'b3'], ends_at: null, starts_at: '2026-11-24T10:00:00.000Z' })
+    expect(formProblem(BANNERS.fields, rowToForm(BANNERS.fields, BANNERS.empty()))).toBe('Заповніть поле «Заголовок»')
+    expect(formProblem(PROMOS.fields, { title: 'x', discount_percent: 'abc' })).toContain('потрібне число')
+    expect(formProblem(BANNERS.fields, { title: 'x', starts_at: '2026-12-02T10:00', ends_at: '2026-12-01T10:00' })).toBe('Дата початку пізніша за дату кінця')
+    expect(formProblem(BANNERS.fields, { title: 'x', starts_at: '2026-12-01T10:00', ends_at: '2026-12-02T10:00' })).toBe('')
+    expect(isoToLocalInput('nope')).toBe(''); expect(localInputToIso('')).toBeNull()
+    expect(formToPayload(CATEGORIES.fields, rowToForm(CATEGORIES.fields, { name: 'Інструмент', program_category_ids: ['c1', 'c2'] }))).toMatchObject({ name: 'Інструмент', program_category_ids: ['c1', 'c2'], parent_id: null, is_active: true })
+  })
+
+  it('info pages can only be edited; the home page keeps every block and unknown ones too', () => {
+    expect(PAGES.fixed?.({ type: 'info' })).toBe(true); expect(PAGES.fixed?.({ type: 'article' })).toBe(false)
+    const blocks = completeHomeBlocks([{ type: 'hits', enabled: true, title: 'Хіти' }, { type: 'new_block', enabled: 1 }, null, 'x'])
+    expect(blocks.slice(0, 2)).toEqual([{ type: 'hits', enabled: true, title: 'Хіти' }, { type: 'new_block', enabled: true }])
+    expect(blocks.map(block => block.type).sort()).toEqual(['articles', 'banners', 'benefits', 'categories', 'hits', 'new_block', 'promos', 'reviews', 'size_search'])
+    expect(completeHomeBlocks(undefined)).toHaveLength(8)
+  })
+
+  it('characteristics are typed one per line; the settings and tabs match the contract and the server list', () => {
+    expect(specsFromText('Вʼязкість: 5W-40\nбез двокрапки\n: порожній ключ\nОбʼєм:  4 л ')).toEqual({ 'Вʼязкість': '5W-40', 'Обʼєм': '4 л' })
+    expect(specsToText({ a: 1, b: 'x' })).toBe('a: 1\nb: x'); expect(specsToText(null)).toBe('')
+    const server = read('../../../../../server/src/services/siteGatewayService.ts')
+    for (const field of SITE_SETTING_FIELDS) expect(server, field.key).toContain(`'${field.key}'`)
+    expect(SITE_SETTING_FIELDS).toHaveLength(13)
+    expect(SITE_TABS.map(tab => tab.label)).toEqual(['Замовлення', 'Клієнти', 'Товари на сайті', 'Категорії', 'Банери', 'Акції', 'Головна сторінка', 'Сторінки і статті', 'Відгуки', 'Налаштування', 'Каталог для сайту', 'Доступ'])
+  })
+
+  it('the site key never reaches the window: it calls only its own server', () => {
+    for (const file of ['./siteGateway.ts', './SitePage.tsx', './SiteOrdersTab.tsx', './SiteCrudTab.tsx', './SiteSimpleTabs.tsx', './SiteProductsTab.tsx']) {
+      expect(read(file), file).not.toMatch(/x-site-key|SITE_API_KEY|functions\/v1\/site-api/)
+    }
+    expect(read('./siteGateway.ts')).toContain("'/api/v1/site-admin/gateway'")
+  })
+})

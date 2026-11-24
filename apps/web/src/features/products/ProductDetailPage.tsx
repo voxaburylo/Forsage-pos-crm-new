@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
+import { useStaffRights } from '@/lib/staffRights'
 import { useLatestRequest } from '@/hooks/useLatestRequest'
 import { useScopedAction } from '@/hooks/useScopedAction'
 import { useWritesToMainPc } from '@/lib/mainPcData'
@@ -83,7 +84,8 @@ function ProductDetail() {
   const canReserve = canWrite && role !== 'cashier'
   const reserveRecovery = useWarehouseRecovery('reserve', canReserve)
   const reserveRefresh = useLatestRequest([id, role, offlineMode])
-  const canSeeMargin = ['owner', 'admin', 'storekeeper'].includes(role)
+  // 24.11.2026: закупівельну ціну бачить роль або той, кому власник увімкнув «Бачить закупівельні ціни».
+  const canSeeMargin = useStaffRights().purchase_prices
   const canDeleteProduct = canWrite && canDeleteCatalog(role)
   // Веб лише переглядає; правку картки виконує каса в мережі (рішення власника 17.11.2026).
   // Без головного ПК на зв'язку — правка командою на касу (як і раніше); з ПК — звичайна правка вище.

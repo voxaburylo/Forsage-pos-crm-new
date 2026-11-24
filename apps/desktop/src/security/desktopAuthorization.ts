@@ -112,6 +112,10 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   ['desktop:staff:tire-service-report', POS_ROLES],
   // 23.11.2026 (власник): зарплату наприкінці дня видає касир — лише у своїй зміні (перевіряє staffRepository).
   ['desktop:staff:payout-list', POS_ROLES],
+  // 24.11.2026: свої права питає кожен, хто увійшов; чужі й зміну — лише власник (загальне правило desktop:staff:).
+  ['desktop:staff:my-rights', ALL_ROLES],
+  ['desktop:maintenance:outbox-preview', OWNER_ROLES],
+  ['desktop:maintenance:outbox-compact', OWNER_ROLES],
   ['desktop:staff:daily-payout', POS_ROLES],
   ['desktop:staff:tire-cash-handover', POS_ROLES],
   ['desktop:inventory:create-session', RECEIVING_ROLES],
@@ -160,6 +164,8 @@ const PREFIX_RULES: Array<[string, readonly DesktopRole[]]> = [
   ['desktop:link:commands-taken', ['owner', 'admin', 'manager', 'cashier']],
   // 23.11.2026: «передай зміни на сервер зараз» — будь-хто на касі; сама передача йде ключем ПК.
   ['desktop:link:push-outbox', ['owner', 'admin', 'manager', 'cashier', 'storekeeper']],
+  // 24.11.2026: помічник ключем ПК — тим самим ролям, яким сервер дозволяє помічника.
+  ['desktop:link:assistant', ['owner', 'admin', 'manager', 'cashier']],
   ['desktop:link:', OWNER_ROLES],
   // 22.11.2026: каса виконує запит вебу від імені того працівника, що в вебі (його права перевіряються окремо).
   ['desktop:web-rpc:', ['owner', 'admin', 'manager', 'cashier']],

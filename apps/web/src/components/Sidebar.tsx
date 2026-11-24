@@ -1,5 +1,6 @@
 import { isDesktopAccessLocked } from '@/lib/desktopAccessState'
 import { WEB_VIA_MAIN_PC_ROUTES, navigationAllowed } from '@/lib/navigationAccess'
+import { useStaffRights, type StaffRight } from '@/lib/staffRights'
 import { useWebWorkAccess } from '@/lib/webWorkAccess'
 import { useState, useEffect, useRef } from 'react'
 import { toast } from '@/components/ui/Toast'
@@ -8,9 +9,11 @@ import {
   Package, ShoppingCart,
   Truck, BarChart2, Settings, Zap, LogOut, ClipboardList, Activity,
   ChevronDown, Tag, UserCog, Users,
-  X, PackagePlus, Sparkles,
+  X, PackagePlus, Sparkles, Globe,
   Wallet,
 } from 'lucide-react'
+import { useSiteUnseenCount } from '@/features/site/siteGateway'
+import { useSiteSection } from '@/features/site/siteAccess'
 import { signOut } from '@/lib/auth'
 import { useAuthStore } from '@/stores/authStore'
 import { api } from '@/lib/api'
@@ -27,8 +30,12 @@ interface NavItem {
   icon: React.ReactNode
   label: string
   roles?: string[]
+  /** 24.11.2026: право з картки працівника показує пункт і тому, кому роль його не дає. */
+  right?: StaffRight
   /** Лише у веб-версії: на касі для цього є повний робочий екран. */
   webOnly?: boolean
+  /** 24.11.2026: пункт видно ще й тому, кому власник дав доступ поіменно (розділ «Сайт»). */
+  grant?: 'site'
 }
 
 interface NavGroup {
@@ -76,8 +83,10 @@ const NAV_GROUPS: NavGroup[] = [
     collapsible: false,
     items: [
       { to: '/customers',           icon: <Users size={18} />,           label: 'Клієнти' },
-      { to: '/orders',              icon: <ClipboardList size={18} />,   label: 'Замовлення',           roles: ['owner','admin','manager'] },
+      { to: '/orders',              icon: <ClipboardList size={18} />,   label: 'Замовлення',           roles: ['owner','admin','manager'], right: 'orders' },
       { to: '/inventory/picking',   icon: <ClipboardList size={18} />,   label: 'Збірка замовлень',     roles: ['owner','admin','manager','storekeeper'] },
+      // 23.11.2026 (план C3): позиції замовлень, які ще не замовлено, — за постачальниками.
+      { to: '/supplier-order',      icon: <Truck size={18} />,           label: 'Замовити в постачальника', roles: ['owner','admin','manager'], right: 'orders' },
       { to: '/waitlist',            icon: <Users size={18} />,           label: 'Очікування товару',    roles: ['owner','admin','manager'] },
     ],
   },
@@ -102,6 +111,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/ai-agent', icon: <Sparkles size={18} />, label: 'Перевірка каталогу', roles: ['owner','admin'] },
       { to: '/staff',               icon: <UserCog size={18} />,         label: 'Працівники',          roles: ['owner','admin'] },
       { to: '/settings',            icon: <Settings size={18} />,        label: 'Налаштування',         roles: ['owner','admin'] },
+      { to: '/site',                icon: <Globe size={18} />,           label: 'Сайт',                 roles: ['owner'], grant: 'site' },
       { to: '/system',              icon: <Activity size={18} />,        label: 'Стан системи',         roles: ['owner','admin'], webOnly: true },
     ],
   },
@@ -175,9 +185,11 @@ function NavSection({
 }) {
   const location = useLocation()
   const viaWeb = useWebWorkAccess()
+  const rights = useStaffRights()
+  const siteAllowed = useSiteSection().allowed === true
 
   const visibleItems = group.items.filter(
-    (item) => navigationAllowed(item.to, isDesktopRuntime()) && !(item.webOnly && isDesktopRuntime()) && (!item.roles || item.roles.includes(role))
+    (item) => navigationAllowed(item.to, isDesktopRuntime()) && !(item.webOnly && isDesktopRuntime()) && (!item.roles || item.roles.includes(role) || Boolean(item.right && rights[item.right]) || (item.grant === 'site' && siteAllowed))
       // 22.11.2026: через головний ПК із вебу працюють власник, адміністратор і менеджер; 23.11 — і касир із дозволом.
       && (isDesktopRuntime() || !WEB_VIA_MAIN_PC_ROUTES.has(item.to) || viaWeb),
   )
@@ -284,8 +296,11 @@ export function Sidebar({ isOpen = false, onClose = () => {} }: SidebarProps) {
     }
   }, [role, session?.user?.id])
 
+  // 24.11.2026: нові замовлення сайту — червоний значок на «Сайт» (лише власник; сайт питаємо раз на 45 с).
+  const siteUnseen = useSiteUnseenCount(useSiteSection().allowed === true)
   const badgeMap: Record<string, number> = {
     '/inventory/picking': pickingCount,
+    '/site': siteUnseen,
   }
 
   async function handleSignOut() {

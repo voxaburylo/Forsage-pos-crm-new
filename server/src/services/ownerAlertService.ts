@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { pool } from '../db/pg.js'
 import { db } from '../db/supabase.js'
 import { logger } from '../lib/logger.js'
-import { BACKUP_BUCKET, MAX_BACKUP_BYTES, VERIFIED_BACKUP_NAME } from './backupPolicy.js'
+import { BACKUP_BUCKET, MAX_CHUNKED_BACKUP_BYTES, VERIFIED_BACKUP_NAME } from './backupPolicy.js'
 
 /**
  * Тривоги власнику в Telegram (етап 11 плану, рішення власника 22.11.2026: «усі»).
@@ -131,10 +131,11 @@ export function planOwnerAlerts(facts: OwnerAlertFacts, now: Date, settings: Own
     })
   }
 
-  // 6. Копія бази підходить до ліміту файлу в хмарі — раз на місяць, поки так: є час зробити «копію частинами».
-  if (typeof facts.last_backup_bytes === 'number' && facts.last_backup_bytes >= MAX_BACKUP_BYTES * CLOUD_NEAR_LIMIT) alerts.push({
+  // 6. Копія бази підходить до межі — раз на місяць, поки так. 24.11.2026 (план C10): велика копія вже йде частинами
+  //    по 40 МБ, тож межа тепер — загальний розмір копії частинами (400 МБ), а не один файл.
+  if (typeof facts.last_backup_bytes === 'number' && facts.last_backup_bytes >= MAX_CHUNKED_BACKUP_BYTES * CLOUD_NEAR_LIMIT) alerts.push({
     key: `backup_size:${today.slice(0, 7)}`,
-    text: `🗄 Копія бази в хмарі вже ${megabytes(facts.last_backup_bytes)} МБ із ${megabytes(MAX_BACKUP_BYTES)} дозволених. Коли перевищить — хмарні копії перестануть завантажуватись. Потрібна доробка «копія частинами».`,
+    text: `🗄 Копія бази в хмарі вже ${megabytes(facts.last_backup_bytes)} МБ із ${megabytes(MAX_CHUNKED_BACKUP_BYTES)} дозволених (частинами). Варто стиснути старий журнал у Налаштуваннях → ПК і копії або збільшити межу.`,
   })
 
   // 7. Хмарна база заповнюється — раз на місяць, поки так.

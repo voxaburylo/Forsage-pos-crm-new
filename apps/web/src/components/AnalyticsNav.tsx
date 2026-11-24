@@ -1,10 +1,12 @@
 import { Link, useLocation } from 'react-router-dom'
+import { useStaffRights } from '@/lib/staffRights'
 import { activeAnalyticsLink, visibleAnalyticsGroups } from '@/features/analytics/analyticsNav'
 
 /** Два рядки навігації аналітики: групи і звіти вибраної групи. */
 export function AnalyticsNav({ role }: { role: string }) {
   const location = useLocation()
-  const groups = visibleAnalyticsGroups(role)
+  const rights = useStaffRights()
+  const groups = visibleAnalyticsGroups(role, rights)
   if (!groups.length) return null
   const active = activeAnalyticsLink(groups, location.pathname, location.search)
   const activeGroup = groups.find(group => active && group.links.includes(active)) ?? groups[0]

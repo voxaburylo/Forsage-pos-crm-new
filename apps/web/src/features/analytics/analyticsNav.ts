@@ -3,7 +3,7 @@
  * на яке вони відповідають. Адреси сторінок не змінено — група лише веде на наявні звіти/вкладки.
  * ABC-аналіз і «Прибутковість працівників» раніше відкривались лише за адресою — тепер у меню.
  */
-export type AnalyticsLink = { label: string; to: string; roles: string[] }
+export type AnalyticsLink = { label: string; to: string; roles: string[]; right?: 'reports' }
 export type AnalyticsGroup = { id: string; label: string; links: AnalyticsLink[] }
 
 const OFFICE = ['owner', 'admin', 'manager']
@@ -12,7 +12,7 @@ const REPORT = ['owner', 'admin', 'manager', 'cashier']
 
 export const ANALYTICS_GROUPS: AnalyticsGroup[] = [
   { id: 'overview', label: 'Огляд', links: [
-    { label: 'Статистика', to: '/analytics/statistics', roles: OFFICE },
+    { label: 'Статистика', to: '/analytics/statistics', roles: OFFICE, right: 'reports' },
   ] },
   { id: 'sales', label: 'Продажі', links: [
     { label: 'Підсумки', to: '/analytics/sales?tab=today', roles: ADMIN },
@@ -52,9 +52,10 @@ export function isAnalyticsPath(pathname: string): boolean {
   return ANALYTICS_GROUPS.some(group => group.links.some(link => pathOf(link.to) === pathname))
 }
 
-export function visibleAnalyticsGroups(role: string): AnalyticsGroup[] {
+/** rights — права з картки працівника (24.11.2026): «Бачить звіти» відкриває «Статистику» понад роль. */
+export function visibleAnalyticsGroups(role: string, rights: { reports?: boolean } = {}): AnalyticsGroup[] {
   return ANALYTICS_GROUPS
-    .map(group => ({ ...group, links: group.links.filter(link => link.roles.includes(role)) }))
+    .map(group => ({ ...group, links: group.links.filter(link => link.roles.includes(role) || Boolean(link.right && rights[link.right])) }))
     .filter(group => group.links.length > 0)
 }
 

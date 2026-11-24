@@ -39,6 +39,7 @@ import { tillRpcRouter } from './routes/tillRpc.js'
 import { systemRouter } from './routes/system.js'
 import { tillLinkRouter } from './routes/tillLink.js'
 import { tillDeviceRouter } from './routes/tillDevice.js'
+import { siteAdminRouter, siteRouter } from './routes/site.js'
 import customerOrdersRouter from './routes/customerOrders.js'
 import customerGroupsRouter from './routes/customerGroups.js'
 import salaryRouter from './routes/salary.js'
@@ -115,7 +116,13 @@ app.use('/api/v1/sync/push', express.json({ limit: '4mb' }))
 // 22.11.2026: веб через головний ПК — фото накладної/товару в запиті, великі списки у відповіді каси.
 app.use('/api/v1/till-rpc', express.json({ limit: '4mb' }))
 // Те саме, коли відповідь каси віддає сам головний ПК своїм ключем зв'язку.
+// 24.11.2026: помічник на головному ПК ключем ПК — ті самі обсяги, що й у звичайних адрес помічника.
+app.use('/api/v1/till-device/ai/chat', express.json({ limit: '25mb' }))
+app.use('/api/v1/till-device/assistant-upload', express.json({ limit: '18mb' }))
+app.use('/api/v1/till-device/vin/ocr', express.json({ limit: '10mb' }))
 app.use('/api/v1/till-device', express.json({ limit: '4mb' }))
+// 24.11.2026: розділ «Сайт» — тексти статей і сторінок довші за типові 100 КБ.
+app.use('/api/v1/site-admin/gateway', express.json({ limit: '1mb' }))
 app.use(express.json())
 
 // Глобальний rate limit: 300 запитів/хв (на IP)
@@ -200,6 +207,8 @@ app.use('/api/v1/system', systemRouter)
 app.use('/api/v1/till-link', tillLinkRouter)
 app.use('/api/v1/till-device', tillDeviceRouter)
 app.use('/api/v1/public', publicPriceRouter)
+app.use('/api/v1/site-admin', siteAdminRouter)
+app.use('/api/v1/site', siteRouter)
 app.use('/api/v1/customer-orders', customerOrdersRouter)
 app.use('/api/v1/reserves', reservesRouter)
 app.use('/api/v1/picking', pickingRouter)

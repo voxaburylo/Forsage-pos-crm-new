@@ -101,6 +101,8 @@ import { customerWritePayload } from './security/customerWritePolicy'
 import { BACKGROUND_TASK, clearHandoff, decideStart, handoffRequested, isBackgroundLaunch, releaseOwner, writeOwner } from './background/tillOwner'
 import { spawn } from 'node:child_process'
 import { rehearsalRootFrom, runStartupRehearsal } from './diagnostics/startupRehearsal'
+import { allStaffRights, effectiveStaffRights, setStaffRight } from './security/staffRights'
+import { compactOutbox, previewOutboxCompaction } from './repositories/outboxCompaction'
 
 // Keep the existing encryption profile stable across package/product renames.
 // Перевірки (смоки) запускають справжню програму поруч із робочою касою — їм окремий профіль; у зібраній програмі цього немає.
@@ -826,6 +828,7 @@ let tillDeviceLinkError = ''
 function getTillDeviceLink(): TillDeviceLink {
   tillDeviceLink ??= new TillDeviceLink({
     fetch: (url, init) => net.fetch(url, init as RequestInit),
+    request: (url, init) => net.fetch(url, init as RequestInit),
     apiUrl: () => { try { return requireTrustedAuthConfig().apiUrl ?? null } catch { return null } },
     deviceId: () => localDatabase?.deviceId ?? null,
     readKey: () => {
@@ -1538,8 +1541,8 @@ app.whenReady().then(async () => {
     customerHistory(requireLocalDatabase(), requireDesktopSession().tenant_id, id, kind, options))
   handleDesktopIpc('desktop:backup:pending', () => shiftBackups?.pending(requireDesktopSession().tenant_id) ?? [])
   handleDesktopIpc('desktop:backup:status', () => shiftBackups?.status(requireDesktopSession().tenant_id) ?? [])
-  handleDesktopIpc('desktop:backup:upload', (_event, id: string, url: string) =>
-    shiftBackups!.upload(requireDesktopSession().tenant_id, id, url, requireTrustedAuthConfig().supabaseUrl))
+  handleDesktopIpc('desktop:backup:upload', (_event, id: string, url: string, part?: number) =>
+    shiftBackups!.upload(requireDesktopSession().tenant_id, id, url, requireTrustedAuthConfig().supabaseUrl, part === undefined || part === null ? undefined : Number(part)))
   handleDesktopIpc('desktop:backup:confirmed', (_event, id: string, sha: string) =>
     shiftBackups!.confirmed(requireDesktopSession().tenant_id, id, sha))
   handleDesktopIpc('desktop:backup:failed', (_event, id: string, message: string) =>
@@ -1903,6 +1906,14 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:link:status', () => ({ ...getTillDeviceLink().status(), main_till: linkPossible() }))
   handleDesktopIpc('desktop:link:wake', async () => ({ ...(await getTillDeviceLink().wake()), main_till: linkPossible() }))
   handleDesktopIpc('desktop:link:commands-taken', () => { getTillDeviceLink().commandsTaken() })
+  // 24.11.2026: помічник без другого пароля — запит іде ключем головного ПК (див. TillDeviceLink.assistant).
+  // null — ключа ПК немає або це ПК менеджера: тоді екран працює по-старому, сесією працівника.
+  handleDesktopIpc('desktop:link:assistant', async (_event, input: { method?: unknown; path?: unknown; body?: unknown }) => {
+    const session = requireDesktopSession()
+    if (!isMainTill() || !getTillDeviceLink().available()) return null
+    return getTillDeviceLink().assistant({ method: String(input?.method ?? 'GET').toUpperCase(), path: String(input?.path ?? ''),
+      body: typeof input?.body === 'string' ? input.body : undefined, role: session.role, staffId: session.id })
+  })
   // Вікно програми просить передати зміни зараз. null — ключа ПК ще немає: тоді вікно надсилає по-старому, своєю сесією.
   handleDesktopIpc('desktop:link:push-outbox', () => getOutboxPusher().pushNow())
   // Ключ видає сервер власнику чи адміністратору; сюди його приносить вікно програми одразу після видачі.
@@ -2022,6 +2033,23 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:staff:web-access', () => webWorkAllowedIds(requireLocalDatabase()))
   handleDesktopIpc('desktop:staff:set-web-access', (_event, id: string, enabled: boolean) =>
     setWebWorkAccess(requireLocalDatabase(), id, enabled))
+  // 24.11.2026: права працівника перемикачами в картці (security/staffRights) — замовлення, закупівельні ціни, звіти.
+  handleDesktopIpc('desktop:staff:rights', () => allStaffRights(requireLocalDatabase()))
+  // 24.11.2026 (план C9): стиснення старого журналу відправлених операцій — лише кнопкою власника на головному ПК.
+  handleDesktopIpc('desktop:maintenance:outbox-preview', () => {
+    if (!isMainTill()) throw new Error('Журнал обслуговується лише на головному ПК')
+    return previewOutboxCompaction(requireLocalDatabase())
+  })
+  handleDesktopIpc('desktop:maintenance:outbox-compact', () => {
+    if (!isMainTill()) throw new Error('Журнал обслуговується лише на головному ПК')
+    return compactOutbox(requireLocalDatabase())
+  })
+  handleDesktopIpc('desktop:staff:set-right', (_event, id: string, right: string, enabled: boolean) =>
+    setStaffRight(requireLocalDatabase(), id, right, enabled))
+  handleDesktopIpc('desktop:staff:my-rights', () => {
+    const session = requireDesktopSession()
+    return effectiveStaffRights(requireLocalDatabase(), session.id, session.role)
+  })
   handleDesktopIpc('desktop:staff:employee-pricing', () => employeePricing(requireLocalDatabase()))
   handleDesktopIpc('desktop:staff:set-employee-pricing', (_event, id: string, value: unknown) =>
     setEmployeePricing(requireLocalDatabase(), id, value))
@@ -2208,6 +2236,17 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:orders:bulk-arrival', (_event, itemIds: string[], tenantId?: string) =>
     requireLocalOrders().bulkArrival(itemIds, tenantId),
   )
+  // 23.11.2026 (план C3): «Замовити в постачальника».
+  // 24.11.2026 (план C2): скасувати всю пачку одного завантаження блокнота.
+  // 24.11.2026 (план C2): мініатюри позицій замовлення (зі скриншота кошика чи з довідника).
+  handleDesktopIpc('desktop:orders:item-photos', (_event, orderId: string) =>
+    requireLocalOrders().listItemPhotos(orderId, requireDesktopSession().tenant_id))
+  handleDesktopIpc('desktop:orders:cancel-notebook-batch', (_event, input: { order_ids?: unknown; customer_ids?: unknown }) =>
+    requireLocalOrders().cancelNotebookBatch(input, requireDesktopSession().tenant_id))
+  handleDesktopIpc('desktop:orders:supplier-lines', () =>
+    requireLocalOrders().listSupplierOrderLines(requireDesktopSession().tenant_id))
+  handleDesktopIpc('desktop:orders:bulk-ordered', (_event, itemIds: string[]) =>
+    requireLocalOrders().bulkOrdered(itemIds, requireDesktopSession().tenant_id))
   handleDesktopIpc('desktop:orders:get', (_event, id: string, tenantId?: string) =>
     requireLocalOrders().getOrder(id, tenantId),
   )

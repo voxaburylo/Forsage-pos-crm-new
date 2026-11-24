@@ -1,4 +1,5 @@
 import { archiveFormatOf, archiveMime } from './archiveFormat'
+import { backupPartHashes, backupPartRange, backupPartsOf, backupPartSuffix } from './cloudParts'
 import { assertBackupSpace } from './backupSpace'
 import path from 'node:path'
 import { Worker } from 'node:worker_threads'
@@ -97,12 +98,17 @@ export class ShiftBackupService {
       worker.on('exit', code => { clearTimeout(timer); if (failure || code !== 0 || !result) reject(failure ?? new Error('Вивантаження перервано')); else resolve(result) })
     })
   }
-  pending(tenant: string) {
+  async pending(tenant: string) {
     const rows = this.db.prepare(`SELECT id, tenant_id, device_id, closed_at, captured_at, sha256, size_bytes, compressed_path
       FROM shift_backups WHERE tenant_id=? AND compressed_path IS NOT NULL AND cloud_completed_at IS NULL
-      ORDER BY closed_at,id LIMIT 1`).all(tenant) as Array<Record<string, unknown> & { compressed_path: string }>
+      ORDER BY closed_at,id LIMIT 1`).all(tenant) as Array<Record<string, unknown> & { compressed_path: string; size_bytes: number }>
     // Формат архіву (gz у старих копій, zst у нових) сервер бере з цього поля: від нього залежить ім'я файлу в хмарі.
-    return rows.map(({ compressed_path, ...row }) => ({ ...row, format: archiveFormatOf(compressed_path) ?? 'gz' }))
+    // 24.11.2026 (план C10): велика копія — частинами; для кожної частини — своя контрольна сума.
+    return Promise.all(rows.map(async ({ compressed_path, ...row }) => {
+      const parts = backupPartsOf(Number(row.size_bytes))
+      const part_sha256s = parts > 1 ? await backupPartHashes(compressed_path, Number(row.size_bytes)) : []
+      return { ...row, format: archiveFormatOf(compressed_path) ?? 'gz', parts, part_sha256s }
+    }))
   }
   status(tenant: string) {
     const rows = this.db.prepare(`SELECT id,closed_at,captured_at,export_directory,local_error,cloud_error,cloud_completed_at,local_path,compressed_path,sha256
@@ -125,27 +131,34 @@ export class ShiftBackupService {
         && existsSync(local_path) && existsSync(compressed_path)),
     } })
   }
-  async upload(tenant: string, id: string, signedUrl: string, trustedOrigin: string) {
+  async upload(tenant: string, id: string, signedUrl: string, trustedOrigin: string, part?: number) {
     const job = this.db.prepare('SELECT * FROM shift_backups WHERE id=? AND tenant_id=?').get(id,tenant) as unknown as ShiftBackupJob | undefined
     if (!job?.compressed_path || !job.sha256) throw new Error('Резервну копію ще не підготовлено')
     const url = new URL(signedUrl)
     const format = archiveFormatOf(job.compressed_path) ?? 'gz'
     const expectedPath = '/storage/v1/object/upload/sign/forsage-private-backups/' +
-      [job.tenant_id, job.device_id, job.id+'-'+job.sha256+'.db.'+format].map(encodeURIComponent).join('/')
+      [job.tenant_id, job.device_id, job.id+'-'+job.sha256+'.db.'+format+(part ? backupPartSuffix(part) : '')].map(encodeURIComponent).join('/')
+    // 24.11.2026 (план C10): частина — лише для великої копії й лише з допустимим номером.
+    const parts = backupPartsOf(Number(job.size_bytes))
+    if ((parts > 1) !== Boolean(part)) throw new Error(parts > 1 ? 'Велику копію надсилають частинами' : 'Ця копія надсилається одним файлом')
+    const range = part ? backupPartRange(Number(job.size_bytes), part) : null
     if (url.origin !== new URL(trustedOrigin).origin || url.protocol !== 'https:' || decodeURI(url.pathname) !== decodeURI(expectedPath))
       throw new Error('Неприпустима адреса резервування')
-    if (this.uploads.has(id)) throw new Error('Копія вже надсилається')
+    const uploadKey = id + (part ? backupPartSuffix(part) : '')
+    if (this.uploads.has(uploadKey)) throw new Error('Копія вже надсилається')
     const resolved = path.resolve(job.compressed_path)
     if (path.dirname(resolved) !== path.resolve(this.db.dataRoot, 'shift-backups')) throw new Error('Неприпустимий файл копії')
-    this.uploads.add(id)
+    this.uploads.add(uploadKey)
     try {
+      const body = range ? createReadStream(resolved, { start: range.start, end: range.end - 1 }) : createReadStream(resolved)
       const response = await fetch(url, {
-        method: 'PUT', body: createReadStream(resolved) as any, duplex: 'half',
-        headers: { 'Content-Type': archiveMime(format) }, redirect: 'error', signal: AbortSignal.timeout(90_000),
+        method: 'PUT', body: body as any, duplex: 'half',
+        headers: { 'Content-Type': archiveMime(format), ...(range ? { 'Content-Length': String(range.end - range.start) } : {}) },
+        redirect: 'error', signal: AbortSignal.timeout(180_000),
       } as RequestInit)
       if (!response.ok) throw new Error('Сервер не прийняв копію: HTTP '+response.status)
       return { ok: true }
-    } finally { this.uploads.delete(id) }
+    } finally { this.uploads.delete(uploadKey) }
   }
   confirmed(tenant: string, id: string, sha256: string) {
     this.db.prepare('UPDATE shift_backups SET cloud_completed_at=?,cloud_error=NULL WHERE id=? AND tenant_id=? AND sha256=?')

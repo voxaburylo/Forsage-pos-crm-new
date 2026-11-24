@@ -42,6 +42,15 @@ const ORDER_STATUS_TRANSITIONS: Record<string, string[]> = {
  * Лише при СТВОРЕННІ; гроші й залишки не зачіпаються: оплати приймає тільки каса.
  */
 const notebookOrderKey = (tenantId: string, orderId: string) => `notebook-order:${tenantId}:${orderId}`
+/**
+ * 24.11.2026 (план C2): мініатюра позиції замовлення (вирізана зі скриншота кошика або взята з довідника за артикулом).
+ * Живе лише на головному ПК (app_meta), без зміни схеми бази: відкат на попередню збірку лишається можливим,
+ * а на сервер мініатюри не їдуть — веб бачить їх через головний ПК.
+ */
+const itemPhotoKey = (tenantId: string, itemId: string) => `order-item-photo:${tenantId}:${itemId}`
+const ITEM_PHOTO_PATTERN = /^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/
+const ITEM_PHOTO_MAX_CHARS = 80_000
+const photoSkuKey = (value: unknown) => String(value ?? '').normalize('NFKC').toUpperCase().replace(/[^\p{L}\p{N}]/gu, '')
 const NOTEBOOK_INITIAL_STATUSES = new Set(['ordered', 'arrived', 'called', 'archived'])
 function initialOrderStatus(input: any): string {
   if (input?.initial_status === undefined || input.initial_status === null) return 'lead'
@@ -53,9 +62,14 @@ function canChangeOrderStatus(from: string, to: string): boolean {
   return from === to || (ORDER_STATUS_TRANSITIONS[from] ?? []).includes(to)
 }
 
-export interface OrderPartSuggestion { name: string; sku: string; buy_price: number; sell_price: number; supplier_id: string | null; supplier_name: string | null; last_used_at: string }
+export interface OrderPartSuggestion { name: string; sku: string; buy_price: number; sell_price: number; supplier_id: string | null; supplier_name: string | null; last_used_at: string; photo?: string | null }
 export interface InvoiceArrivalOrder { order_id: string; order_number: number; customer_name: string | null; customer_phone: string | null; items: Array<{ name: string; qty: number }>; complete: boolean }
 export interface InvoiceArrivalShortage { order_number: number; name: string; needed: number; available: number }
+/** 23.11.2026 (план C3): позиція замовлення, яку ще треба замовити в постачальника. */
+export interface SupplierOrderLine {
+  item_id: string; order_id: string; order_number: number; name: string; sku: string | null; qty: number
+  supplier_id: string | null; supplier_name: string | null; customer_name: string | null; customer_phone: string | null; created_at: string
+}
 type LocalOrderItemState = { item_status: string; sell_price: number; qty: number; core_deposit_amount: number }
 
 
@@ -369,6 +383,7 @@ export class LocalOrderRepository {
           item.core_deposit_amount, item.core_return_status, timestamp,
           item.created_at ?? timestamp, timestamp,
         )
+        this.storeItemPhoto(tenantId, id, itemId, item.sku, item.photo_data_url)
       }
       if (orderId) {
         const currentItems = this.db.prepare(`
@@ -465,6 +480,50 @@ export class LocalOrderRepository {
       this.addOutbox(tenantId, 'customer_order', orderId, 'order.deleted', fromNotebook ? { id: orderId, from_notebook: true } : { id: orderId }, timestamp)
     })
     return { success: true }
+  }
+
+  /**
+   * 24.11.2026 (план C2, рішення власника: «одне завантаження фото — одна пачка»): скасувати все, що створила одна
+   * загрузка блокнота, — одним рухом і цілком або ніяк. Лише замовлення з блокнота, по яких не було грошей, чека
+   * й виданих позицій (ті самі правила, що й для видалення одного). Клієнт, заведений цією загрузкою, прибирається
+   * лише тоді, коли в нього не лишилось жодного замовлення, чека й грошей; інакше лишається, і це видно у відповіді.
+   */
+  cancelNotebookBatch(input: { order_ids?: unknown; customer_ids?: unknown }, tenantId = DEFAULT_TENANT_ID): { orders: number; customers: number; kept_customers: number } {
+    const ids = (value: unknown, max: number, label: string): string[] => {
+      if (value === undefined || value === null) return []
+      if (!Array.isArray(value) || value.length > max) throw new Error(`Некоректний перелік: ${label}`)
+      const list = [...new Set(value)]
+      if (!list.every(id => typeof id === 'string' && /^[a-zA-Z0-9-]{1,128}$/.test(id))) throw new Error(`Некоректний перелік: ${label}`)
+      return list as string[]
+    }
+    const orderIds = ids(input?.order_ids, 100, 'замовлення')
+    const customerIds = ids(input?.customer_ids, 100, 'клієнти')
+    if (orderIds.length === 0) throw new Error('У пачці немає замовлень')
+    let customers = 0, kept = 0
+    this.db.transaction(() => {
+      for (const orderId of orderIds) {
+        const order = this.getOrder(orderId, tenantId)
+        if (!order) throw new Error('Замовлення з пачки не знайдено — можливо, його вже видалили. Нічого не змінено.')
+        if (!this.isNotebookOrder(orderId, tenantId)) throw new Error(`Замовлення № ${order.order_number} не з блокнота — пачку не скасовано.`)
+        try { this.deleteOrder(orderId, tenantId) } catch (error) {
+          throw new Error(`Замовлення № ${order.order_number}: ${error instanceof Error ? error.message : 'не видаляється'} Пачку не скасовано, нічого не змінено.`)
+        }
+      }
+      for (const customerId of customerIds) {
+        const customer = this.db.prepare('SELECT * FROM customers WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL').get(customerId, tenantId) as Record<string, unknown> | undefined
+        if (!customer) continue
+        const money = ['debt_balance', 'deposit_balance', 'bonus_balance'].some(column => Number(customer[column] ?? 0) !== 0)
+        const orders = this.db.prepare('SELECT 1 FROM customer_orders WHERE customer_id = ? AND tenant_id = ? AND deleted_at IS NULL LIMIT 1').get(customerId, tenantId)
+        const sales = this.db.prepare('SELECT 1 FROM sales WHERE customer_id = ? AND tenant_id = ? LIMIT 1').get(customerId, tenantId)
+        if (money || orders || sales) { kept++; continue }
+        const timestamp = nowIso()
+        this.db.prepare('UPDATE customers SET deleted_at = ?, dirty_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?').run(timestamp, timestamp, timestamp, customerId, tenantId)
+        this.db.prepare('UPDATE customer_vehicles SET deleted_at = ?, dirty_at = ?, updated_at = ? WHERE customer_id = ? AND tenant_id = ? AND deleted_at IS NULL').run(timestamp, timestamp, timestamp, customerId, tenantId)
+        this.addOutbox(tenantId, 'customer', customerId, 'customer.deleted', { id: customerId }, timestamp)
+        customers++
+      }
+    })
+    return { orders: orderIds.length, customers, kept_customers: kept }
   }
 
   updateOrderStatus(orderId: string, status: string, tenantId = DEFAULT_TENANT_ID): any {
@@ -664,6 +723,37 @@ export class LocalOrderRepository {
     })
     return this.getOrder(orderId, tenantId)
   }
+  /** Мініатюра позиції: лише картинка, не більша за 80 000 знаків; некоректна мовчки не зберігається (замовлення важливіше). */
+  private storeItemPhoto(tenantId: string, orderId: string, itemId: string, sku: unknown, dataUrl: unknown): void {
+    // null — людина прибрала мініатюру в бланку.
+    if (dataUrl === null) { this.db.prepare('DELETE FROM app_meta WHERE key = ?').run(itemPhotoKey(tenantId, itemId)); return }
+    if (typeof dataUrl !== 'string' || dataUrl.length > ITEM_PHOTO_MAX_CHARS || !ITEM_PHOTO_PATTERN.test(dataUrl)) return
+    this.db.prepare(`INSERT INTO app_meta(key, value_json, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`)
+      .run(itemPhotoKey(tenantId, itemId), JSON.stringify({ data_url: dataUrl, sku_key: photoSkuKey(sku), order_id: orderId }), nowIso())
+  }
+
+  /** Мініатюри позицій замовлення: { ідентифікатор позиції: картинка }. */
+  listItemPhotos(orderId: string, tenantId = DEFAULT_TENANT_ID): Record<string, string> {
+    if (typeof orderId !== 'string' || !/^[a-zA-Z0-9-]{1,128}$/.test(orderId)) throw new Error('Некоректне замовлення')
+    const items = this.db.prepare('SELECT id FROM customer_order_items WHERE order_id = ? AND tenant_id = ? AND deleted_at IS NULL').all(orderId, tenantId) as Array<{ id: string }>
+    const result: Record<string, string> = {}
+    for (const item of items) {
+      const row = this.db.prepare('SELECT value_json FROM app_meta WHERE key = ?').get(itemPhotoKey(tenantId, item.id)) as { value_json: string } | undefined
+      try { const value = row ? JSON.parse(row.value_json) as { data_url?: unknown } : null; if (typeof value?.data_url === 'string' && ITEM_PHOTO_PATTERN.test(value.data_url)) result[item.id] = value.data_url } catch { /* пропуск */ }
+    }
+    return result
+  }
+
+  /** Довідник запчастин: остання мініатюра, збережена для цього артикула (точний збіг, від 4 знаків). */
+  partPhoto(sku: unknown, tenantId = DEFAULT_TENANT_ID): string | null {
+    const key = photoSkuKey(sku)
+    if (key.length < 4) return null
+    const row = this.db.prepare(`SELECT value_json FROM app_meta WHERE key LIKE ? AND json_extract(value_json, '$.sku_key') = ?
+      ORDER BY updated_at DESC LIMIT 1`).get(`order-item-photo:${tenantId}:%`, key) as { value_json: string } | undefined
+    try { const value = row ? JSON.parse(row.value_json) as { data_url?: unknown } : null; return typeof value?.data_url === 'string' && ITEM_PHOTO_PATTERN.test(value.data_url) ? value.data_url : null } catch { return null }
+  }
+
   listPendingItems(supplierId: string, tenantId = DEFAULT_TENANT_ID): any[] {
     return this.db.prepare(`
       SELECT i.*, o.order_number, o.customer_id
@@ -673,6 +763,49 @@ export class LocalOrderRepository {
         AND o.deleted_at IS NULL AND i.item_status IN ('pending', 'ordered')
       ORDER BY o.created_at ASC
     `).all(tenantId, supplierId) as any[]
+  }
+
+  /**
+   * 23.11.2026 (план C3, етап 10): «Замовити в постачальника» — позиції відкритих замовлень, які ще не замовлено
+   * (не зі складу, не послуга, стан «чекає»). Порядок — черга замовлень; групує екран за постачальником.
+   */
+  listSupplierOrderLines(tenantId = DEFAULT_TENANT_ID): SupplierOrderLine[] {
+    return this.db.prepare(`
+      SELECT i.id AS item_id, i.order_id, o.order_number, i.name, i.sku, i.qty, i.supplier_id, s.name AS supplier_name,
+             c.full_name AS customer_name, c.phone AS customer_phone, i.created_at
+      FROM customer_order_items i
+      JOIN customer_orders o ON o.id = i.order_id AND o.tenant_id = i.tenant_id
+      LEFT JOIN suppliers s ON s.id = i.supplier_id
+      LEFT JOIN customers c ON c.id = o.customer_id AND c.tenant_id = o.tenant_id
+      WHERE i.tenant_id = ? AND i.deleted_at IS NULL AND o.deleted_at IS NULL
+        AND i.item_status = 'pending' AND i.source_type <> 'warehouse' AND i.item_type <> 'service'
+        AND o.status NOT IN ('completed', 'canceled', 'archived')
+      ORDER BY o.created_at ASC, i.created_at ASC
+      LIMIT 500
+    `).all(tenantId).map((row: any) => ({ ...row, qty: num(row.qty) })) as SupplierOrderLine[]
+  }
+
+  /** 23.11.2026 (план C3): відмітити позиції «замовлено в постачальника» одним рухом — усе або нічого. */
+  bulkOrdered(itemIds: string[], tenantId = DEFAULT_TENANT_ID): { updated: number } {
+    const uniqueIds = [...new Set(Array.isArray(itemIds) ? itemIds : [])].filter(id => typeof id === 'string' && id.length <= 128)
+    if (uniqueIds.length === 0) throw new Error('Оберіть хоча б одну позицію')
+    if (uniqueIds.length > 500) throw new Error('Забагато позицій за раз')
+    const placeholders = uniqueIds.map(() => '?').join(',')
+    const rows = this.db.prepare(`
+      SELECT id, order_id, item_status FROM customer_order_items
+      WHERE tenant_id = ? AND deleted_at IS NULL AND id IN (${placeholders})
+    `).all(tenantId, ...uniqueIds) as Array<{ id: string; order_id: string; item_status: string }>
+    if (rows.length !== uniqueIds.length) throw new Error('Одна або кілька позицій не знайдені у вашому магазині')
+    let updated = 0
+    this.db.transaction(() => {
+      for (const row of rows) {
+        // Уже замовлене чи прибуле не чіпаємо: інший ПК міг відмітити раніше.
+        if (row.item_status !== 'pending') continue
+        this.updateOrderItemStatus(row.order_id, row.id, 'ordered', tenantId)
+        updated++
+      }
+    })
+    return { updated }
   }
 
   bulkArrival(itemIds: string[], tenantId = DEFAULT_TENANT_ID): { updated: number } {
@@ -721,7 +854,7 @@ export class LocalOrderRepository {
       if (seen.has(key)) continue
       seen.add(key)
       result.push({ name: row.name.trim(), sku: String(row.sku ?? '').trim(), buy_price: Math.round(num(row.buy_price)), sell_price: Math.round(num(row.sell_price)),
-        supplier_id: row.supplier_id, supplier_name: row.supplier_name, last_used_at: row.updated_at })
+        supplier_id: row.supplier_id, supplier_name: row.supplier_name, last_used_at: row.updated_at, photo: this.partPhoto(row.sku, tenantId) })
       if (result.length >= Math.max(1, Math.min(20, limit))) break
     }
     return result

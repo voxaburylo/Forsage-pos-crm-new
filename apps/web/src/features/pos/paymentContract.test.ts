@@ -90,10 +90,10 @@ describe('desktop terminal safety', () => {
 })
 
 describe('web sale reset generation', () => {
-  it('sends the current local generation with every online sale', () => {
+  // 24.11.2026 (план T9): продаж через веб на сервер прибрано — продаж проводить лише каса (desktop.pos.checkout).
+  it('never sends a sale to the server from the web', () => {
     const source = readFileSync(new URL('./saleApi.ts', import.meta.url), 'utf8')
-    expect(source).toContain('await getLocalSyncState(scopeKey)')
-    expect(source).toContain("'X-Sync-Reset-Generation': String(resetGeneration)")
-    expect(source).toContain("'X-Idempotency-Key': idempotencyKey")
+    expect(source).toContain('create: async (_body: CreateSaleBody, _idempotencyKey?: string): Promise<{ data: Sale }> => moneyOnlyAtTill(),')
+    expect(source).not.toContain("'/api/v1/sales', body")
   })
 })

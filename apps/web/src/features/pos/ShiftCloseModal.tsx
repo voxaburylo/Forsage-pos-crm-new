@@ -143,22 +143,8 @@ export function ShiftCloseModal({
         await desktop.pos.closeShift(cashierId, cashReceived, comment.trim() || null, shiftId)
         window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
       } else {
-        try {
-          await shiftApi.close(shiftId, cashReceived, comment || undefined)
-        } catch (err) {
-          // Бек вимагає запис звірки каси перед закриттям. Фактичну суму касир
-          // щойно ввів у цій модалці — створюємо звірку з неї і повторюємо закриття.
-          if (err instanceof Error && /звірку каси/i.test(err.message)) {
-            const { api } = await import('@/lib/api')
-            await api.post('/api/v1/shifts/current/reconcile', {
-              actual_amount: cashReceived,
-              comment: comment.trim() || null,
-            })
-            await shiftApi.close(shiftId, cashReceived, comment || undefined)
-          } else {
-            throw err
-          }
-        }
+        // 24.11.2026 (план T9): зміну закриває лише каса; без неї — зрозуміла відмова (запис на сервер прибрано).
+        await shiftApi.close(shiftId, cashReceived, comment || undefined)
       }
       // Залишок на кінець зміни = початок наступної (та сама каса) → підставимо при відкритті
       try { localStorage.setItem(lastCloseCashKey(cashierId), (cashReceived / 100).toFixed(2)) } catch { /* ignore */ }

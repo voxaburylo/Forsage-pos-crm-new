@@ -175,7 +175,28 @@ export async function getUsageSummary(tenantId: string) {
     requests: rows.length,
     total_tokens: totalTokens,
     cost_usd: Number(totalCost.toFixed(4)),
+    ...(await typicalRequestCost(tenantId)),
   }
+}
+
+/**
+ * 24.11.2026 (план C2, «ціна розпізнавання до запуску»): скільки зазвичай коштує один запит саме в цьому магазині —
+ * за останні 30 днів: звичайний (медіана) і дорогий (9 із 10 дешевші). Помилка тут не ламає лічильник витрат.
+ */
+export async function typicalRequestCost(tenantId: string): Promise<{ typical_usd?: number; heavy_usd?: number; sample?: number }> {
+  try {
+    const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
+    const { data, error } = await db.from('ai_usage').select('cost_usd').eq('tenant_id', tenantId).gte('created_at', since).gt('cost_usd', 0).limit(5000)
+    if (error || !data?.length) return {}
+    return requestCostQuantiles(data.map(row => Number(row.cost_usd)))
+  } catch { return {} }
+}
+
+export function requestCostQuantiles(costs: readonly number[]): { typical_usd?: number; heavy_usd?: number; sample?: number } {
+  const sorted = costs.filter(value => Number.isFinite(value) && value > 0).sort((a, b) => a - b)
+  if (sorted.length < 3) return {}
+  const at = (share: number) => sorted[Math.min(sorted.length - 1, Math.floor(share * (sorted.length - 1)))]
+  return { typical_usd: Number(at(0.5).toFixed(4)), heavy_usd: Number(at(0.9).toFixed(4)), sample: sorted.length }
 }
 
 // ─── Інструменти (function-calling) ──────────────────────────────────────────
@@ -1045,6 +1066,7 @@ const SUPPLY_INVOICE_PHOTO_SCHEMA = {
           qty: { type: SchemaType.NUMBER },
           purchase_price_uah: { type: SchemaType.NUMBER },
           unit: { type: SchemaType.STRING },
+          image_box: { type: SchemaType.ARRAY, items: { type: SchemaType.NUMBER }, description: 'Лише коли запит просить мініатюри (скриншот кошика): межі картинки товару в рядку — [ліво, верх, ширина, висота] у відсотках від усього фото. Для накладних не заповнюй.' },
           line_total: { type: SchemaType.NUMBER, description: 'Сума товарного рядка, лише якщо надрукована. Не обчислюй її сам.' },
           source_name: { type: SchemaType.STRING },
         },

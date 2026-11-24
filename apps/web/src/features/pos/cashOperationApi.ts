@@ -4,6 +4,7 @@ import { durableLocalRequest } from '@/lib/durableLocalRequest'
 import { requestDesktopSync } from '@/features/products/productApi'
 import { useAuthStore } from '@/stores/authStore'
 import type { CashOperation, CashSummary, CashOperationType } from '@/types/cashOperation'
+import { moneyOnlyAtTill } from '@/lib/moneyOnlyAtTill'
 
 function userId(): string | undefined {
   return useAuthStore.getState().session?.user?.id ?? undefined
@@ -19,7 +20,7 @@ export const cashOperationApi = {
       requestDesktopSync()
       return { data: data as CashOperation }
     }
-    return api.post<{ data: CashOperation }>('/api/v1/cash-operations', { shift_id: shiftId, type, amount, note, source })
+    return moneyOnlyAtTill()
   },
 
   list: async (shiftId: string) => {

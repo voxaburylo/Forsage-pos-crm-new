@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { formatMoney } from '@/lib/utils'
+import { useOrderItemPhotos } from '@/features/orders/orderItemPhotos'
 
 export interface HandoverItem { id: string; product_id: string | null; sku: string | null; name: string; sell_price: number; qty: number; item_status: string; source_type?: 'warehouse' | 'supplier' }
 export interface HandoverRow { id: string; productId: string | null; name: string; sku: string; qty: number; total: number; state: 'here' | 'waiting' | 'handed' }
@@ -47,16 +48,18 @@ function usePhotos(productIds: readonly string[]): Record<string, string | null>
 }
 
 /** Список позицій із мініатюрами: касир бачить, що саме віддає клієнту. Лише читання. */
-export function OrderHandoverItems({ items, limit = 8 }: { items: readonly HandoverItem[]; limit?: number }) {
+export function OrderHandoverItems({ items, limit = 8, orderId }: { items: readonly HandoverItem[]; limit?: number; orderId?: string }) {
   const rows = handoverRows(items)
   const [expanded, setExpanded] = useState(false)
   const shown = expanded ? rows : rows.slice(0, limit)
   const photos = usePhotos(shown.flatMap(row => row.productId ? [row.productId] : []))
+  // 24.11.2026 (план C2): позиція без картки товару — мініатюра зі скриншота кошика чи з довідника.
+  const itemPhotos = useOrderItemPhotos(orderId)
   if (!rows.length) return null
   return (
     <ul className="mb-2 space-y-1">
       {shown.map(row => {
-        const photo = row.productId ? photos[row.productId] : null
+        const photo = (row.productId ? photos[row.productId] : null) ?? itemPhotos[row.id] ?? null
         return (
           <li key={row.id} className="flex items-center gap-2 text-[11px] text-gray-300">
             {photo

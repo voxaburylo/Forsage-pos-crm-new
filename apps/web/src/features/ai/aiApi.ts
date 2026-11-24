@@ -15,6 +15,10 @@ export interface AiUsage {
   requests: number
   total_tokens: number
   cost_usd: number
+  /** 24.11.2026: скільки зазвичай коштує запит у цьому магазині за 30 днів (медіана й «дорогий» — 90%). */
+  typical_usd?: number
+  heavy_usd?: number
+  sample?: number
 }
 
 export interface AiStatus {

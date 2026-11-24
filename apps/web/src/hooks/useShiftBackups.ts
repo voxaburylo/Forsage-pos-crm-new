@@ -22,11 +22,16 @@ export function useShiftBackups(serverOnline: boolean) {
         const [job] = await backup!.pending()
         if (!job || stopped) { delayUntil = Date.now() + 120_000; return }
         id = job.id
-        const prepared = await api.post<{ data: { signed_url?: string; already_uploaded?: boolean } }>('/api/v1/backups/prepare', job)
-        if (stopped) return
-        if (!prepared.data.already_uploaded) {
-          if (!prepared.data.signed_url) throw new Error('Сервер не повернув адресу резервування')
-          await backup!.upload(id, prepared.data.signed_url)
+        // 24.11.2026 (план C10): велика копія (понад 45 МБ) іде частинами по 40 МБ, кожна — зі своєю сумою.
+        const parts = Number(job.parts) > 1 ? Number(job.parts) : 1
+        for (let part = 1; part <= parts; part += 1) {
+          const body = parts > 1 ? { ...job, part, part_sha256: job.part_sha256s?.[part - 1] } : job
+          const prepared = await api.post<{ data: { signed_url?: string; already_uploaded?: boolean } }>('/api/v1/backups/prepare', body)
+          if (stopped) return
+          if (!prepared.data.already_uploaded) {
+            if (!prepared.data.signed_url) throw new Error('Сервер не повернув адресу резервування')
+            await backup!.upload(id, prepared.data.signed_url, parts > 1 ? part : undefined)
+          }
         }
         const checked = await api.post<{ data: { sha256: string } }>('/api/v1/backups/verify', job, undefined, { timeoutMs: 120_000 })
         if (checked.data.sha256 !== job.sha256) throw new Error('Контрольна сума серверної копії не збігається')

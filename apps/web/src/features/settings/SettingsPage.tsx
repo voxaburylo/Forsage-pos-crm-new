@@ -23,6 +23,7 @@ import { ServerCopyStatusCard } from './ServerCopyStatusCard'
 import { FiscalSettingsCard } from './FiscalSettingsCard'
 import { LanSettingsCard } from './LanSettingsCard'
 import { LiteModeCard } from './LiteModeCard'
+import { OutboxJournalCard } from './OutboxJournalCard'
 import { LabelPrinterCard } from './LabelPrinterCard'
 import { SettingsLinksCard } from './SettingsLinksCard'
 import { CatalogDictionaries } from '@/features/admin/AdminPage'
@@ -1102,6 +1103,12 @@ export default function SettingsPage() {
           hint="Вимикає анімації, щоб програма йшла швидше на слабкому комп’ютері.">
         <LiteModeCard />
         </SettingsSection>
+        {(currentRole === 'owner' || currentRole === 'admin') && (
+        <SettingsSection tab="pc" rare title="Журнал відправлених операцій місце в базі стиснути"
+          hint="Стискає старі відправлені записи каси (понад 90 днів), щоб база не росла даремно.">
+        <OutboxJournalCard />
+        </SettingsSection>
+        )}
       </div>
 
 

@@ -8,6 +8,7 @@ import type {
   SaleForReturn,
   CreateReturnBody,
 } from '@/types/return'
+import { moneyOnlyAtTill } from '@/lib/moneyOnlyAtTill'
 
 function currentUserId(): string {
   return useAuthStore.getState().session?.user?.id ?? 'local'
@@ -71,7 +72,6 @@ export const returnApi = {
       return { data: data as CustomerReturn }
     }
     if (desktop) throw new Error('Локальне повернення недоступне. Оновіть програму — операцію на сервер не відправлено.')
-    const headers = operationId ? { 'X-Idempotency-Key': operationId } : undefined
-    return api.post<{ data: CustomerReturn }>('/api/v1/returns', body, headers)
+    return moneyOnlyAtTill()
   },
 }

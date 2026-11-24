@@ -4,6 +4,7 @@ import { desktopBridge } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
 import { collectSalaryHistory } from './salaryHistory'
 import { submitSalaryRequest, type SalaryRequestKind } from './salaryRequest'
+import { moneyOnlyAtTill } from '@/lib/moneyOnlyAtTill'
 
 export interface EmployeeSummary { employee_id:string; employee_name:string; salary:number; bonus:number; advance:number; penalty:number; earned:number; paid:number; balance:number; total:number }
 export interface SalaryPayment { id:string; employee_id:string; employee_name:string; amount:number; type:'salary'|'bonus'|'advance'|'penalty'; source?:string|null; method:'cash'|'card'|'transfer'; period:string; note:string|null; created_at:string; work_date?:string|null }
@@ -128,7 +129,7 @@ export const staffApi = {
       window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
       return { data: data as { amount: number } }
     }
-    return api.post<{ data: { amount: number } }>('/api/v1/salary/tire-cash-handover', body)
+    return moneyOnlyAtTill()
   },  async setPin(userId: string, pin: string): Promise<void> {
     const local = localStaff()?.setPin
     if (local) { await local(userId, pin); return }
@@ -137,14 +138,14 @@ export const staffApi = {
   async createSalary(body: any): Promise<{ data: SalaryPayment }> {
     const local = localStaff()
     if (local?.createSalary) return { data: await localSalaryRequest('salary', body, local, local.createSalary) as unknown as SalaryPayment }
-    return api.post<{ data: SalaryPayment }>('/api/v1/salary', body)
+    return moneyOnlyAtTill()
   },
   async dailyPayout(body: DailyPayoutInput): Promise<{ data: { amount: number; fund_source?: SalaryFundSource } }> {
     const local = localStaff()
     if (local?.dailyPayout) {
       return { data: await localSalaryRequest('daily-salary', body, local, local.dailyPayout) as { amount: number; fund_source?: SalaryFundSource } }
     }
-    return api.post<{ data: { amount: number; fund_source?: SalaryFundSource } }>('/api/v1/salary/daily-payout', body)
+    return moneyOnlyAtTill()
   },
   /** 23.11.2026: кому скільки видати сьогодні — для касира. Лише на касі. */
   async payoutList(workDate?: string): Promise<PayoutRow[]> {
@@ -155,6 +156,6 @@ export const staffApi = {
   async deleteSalary(id: string): Promise<void> {
     const local = localStaff()?.deleteSalary
     if (local) { await local(id); return }
-    await api.delete(`/api/v1/salary/${id}`)
+    await moneyOnlyAtTill()
   },
 }

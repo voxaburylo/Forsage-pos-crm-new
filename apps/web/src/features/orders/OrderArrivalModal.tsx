@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Button, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { desktopBridge } from '@/lib/desktopBridge'
+import { arrivalLinks, arrivalMessage, buildOrderLabelDocument } from './orderArrivalNotice'
 
 type Arrival = NonNullable<Awaited<ReturnType<NonNullable<NonNullable<ReturnType<typeof desktopBridge>>['orders']>['arrivalFromInvoice'] & object>>>
 const EVENT = 'forsage:order-arrival'
@@ -49,6 +50,24 @@ export function OrderArrivalModal() {
     } finally { setBusy('') }
   }
 
+  async function copyMessage(text: string) {
+    try { await navigator.clipboard.writeText(text); toast.success('Текст скопійовано — вставте в Viber чи SMS') }
+    catch { toast.error('Не вдалося скопіювати текст') }
+  }
+
+  // 23.11.2026 (план C3): наклейка на пришедший товар — чий він. Розмір — як у цінника.
+  async function printLabels() {
+    if (!arrival?.orders.length || busy) return
+    setBusy('labels')
+    try {
+      const { loadProductLabelSettings, printLabelDocument } = await import('@/features/labels/LabelDesigner')
+      const size = await loadProductLabelSettings().catch(() => ({}))
+      await printLabelDocument(buildOrderLabelDocument(arrival.orders, size as { width_mm?: number; height_mm?: number }))
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося надрукувати наклейки')
+    } finally { setBusy('') }
+  }
+
   if (!arrival) return null
   return (
     <Modal open onClose={() => setArrival(null)} title="Прибуло для замовлень">
@@ -66,6 +85,17 @@ export function OrderArrivalModal() {
                 <div className={`mt-1 text-xs font-semibold ${order.complete ? 'text-emerald-700' : 'text-amber-700'}`}>
                   {order.complete ? 'Усе замовлення прибуло — можна видавати' : 'Прибула частина замовлення'}
                 </div>
+                {(() => {
+                  const message = arrivalMessage(order)
+                  const links = arrivalLinks(order.customer_phone, message)
+                  return (
+                    <div className="mt-2 flex flex-wrap gap-2 text-xs" data-arrival-message={order.order_id}>
+                      <button type="button" className="rounded-md border border-gray-300 px-2 py-1 font-semibold text-gray-700 hover:bg-gray-50" onClick={() => void copyMessage(message)}>Скопіювати повідомлення</button>
+                      {links && <a href={links.viber} className="rounded-md border border-violet-300 px-2 py-1 font-semibold text-violet-700 hover:bg-violet-50">Viber</a>}
+                      {links && <a href={links.sms} className="rounded-md border border-gray-300 px-2 py-1 font-semibold text-gray-700 hover:bg-gray-50">SMS</a>}
+                    </div>
+                  )
+                })()}
               </div>
               {order.complete && (called[order.order_id]
                 ? <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">Подзвонили ✓</span>
@@ -83,7 +113,10 @@ export function OrderArrivalModal() {
             </ul>
           </div>
         )}
-        <div className="flex justify-end"><Button onClick={() => setArrival(null)}>Зрозуміло</Button></div>
+        <div className="flex flex-wrap justify-end gap-2">
+          {arrival.orders.length > 0 && <Button variant="secondary" loading={busy === 'labels'} disabled={Boolean(busy)} onClick={() => void printLabels()}>Наклейки на товар ({arrival.orders.length})</Button>}
+          <Button onClick={() => setArrival(null)}>Зрозуміло</Button>
+        </div>
       </div>
     </Modal>
   )

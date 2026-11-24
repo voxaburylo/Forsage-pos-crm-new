@@ -532,6 +532,8 @@ export interface ForsageDesktopBridge {
     commandsTaken: () => Promise<void>
     /** 23.11.2026: передати зміни каси на сервер ключем ПК. null — ключа ще немає (тоді вікно надсилає своєю сесією). */
     pushOutbox?: () => Promise<{ pushed: number; failed: number; pending: number; resetRequired: boolean } | null>
+    /** 24.11.2026: запит помічника ключем головного ПК (без пароля працівника). null — ключа немає або це не головний ПК. */
+    assistant?: (input: { method: string; path: string; body?: string }) => Promise<{ status: number; content_type: string; text: string } | null>
   }
   diagnostics?: {
     reportError: (kind: 'renderer-error' | 'renderer-rejection', message: string, stack: string) => void
@@ -577,9 +579,9 @@ export interface ForsageDesktopBridge {
   }
   backupNow: () => Promise<string>
   shiftBackups?: {
-    pending: () => Promise<Array<{ id: string; tenant_id: string; device_id: string; closed_at: string; captured_at: string; sha256: string; size_bytes: number; format?: 'gz' | 'zst' }>>
+    pending: () => Promise<Array<{ id: string; tenant_id: string; device_id: string; closed_at: string; captured_at: string; sha256: string; size_bytes: number; format?: 'gz' | 'zst'; parts?: number; part_sha256s?: string[] }>>
     status: () => Promise<Array<{ id: string; closed_at: string; captured_at: string | null; export_directory: string | null; local_ready?: boolean; exports_ready?: boolean; local_error: string | null; cloud_error: string | null; cloud_completed_at: string | null }>>
-    upload: (id: string, url: string) => Promise<{ ok: true }>
+    upload: (id: string, url: string, part?: number) => Promise<{ ok: true }>
     confirmed: (id: string, sha: string) => Promise<void>
     failed: (id: string, message: string) => Promise<void>
   }
@@ -587,7 +589,7 @@ export interface ForsageDesktopBridge {
   /** Ставить копію на місце й перезапускає програму — відповіді можна не чекати. */
   restoreBackup?: (fileName: string) => Promise<DesktopDatabaseBackup>
   /** Аварійне відновлення: скачати перевірену хмарну копію у папку копій цього ПК (заміна бази — restoreBackup). */
-  fetchCloudBackup?: (request: { url: string; tenant_id: string; device_id: string; id: string; sha256: string; size_bytes: number; format?: 'gz' | 'zst' }) => Promise<{ fileName: string; sizeBytes: number }>
+  fetchCloudBackup?: (request: { url: string; tenant_id: string; device_id: string; id: string; sha256: string; size_bytes: number; format?: 'gz' | 'zst'; urls?: string[] }) => Promise<{ fileName: string; sizeBytes: number }>
   /** Друга копія на флешці / зовнішньому диску. */
   externalBackup?: {
     status: () => Promise<ExternalBackupStatus>
@@ -696,6 +698,13 @@ export interface ForsageDesktopBridge {
     /** 23.11.2026: касири, яким власник дозволив працювати через веб (лише головний ПК). */
     webAccess?: () => Promise<string[]>
     setWebAccess?: (id: string, enabled: boolean) => Promise<string[]>
+    /** 24.11.2026: права працівника перемикачами (замовлення, закупівельні ціни, звіти) — зберігає головний ПК. */
+    rights?: () => Promise<Record<string, { orders: boolean; purchase_prices: boolean; reports: boolean }>>
+    /** 24.11.2026 (план C9): стиснення старого журналу відправлених операцій (лише власник, головний ПК). */
+    outboxPreview?: () => Promise<{ rows: number; bytes: number; older_than: string; journal_rows: number; journal_bytes: number }>
+    outboxCompact?: () => Promise<{ rows: number; bytes: number }>
+    setRight?: (id: string, right: string, enabled: boolean) => Promise<{ orders: boolean; purchase_prices: boolean; reports: boolean }>
+    myRights?: () => Promise<{ orders: boolean; purchase_prices: boolean; reports: boolean }>
     /** 22.11.2026: менеджери, яким власник дозволив лише приймати задаток за замовленнями. */
     depositAccess?: () => Promise<string[]>
     setDepositAccess?: (id: string, enabled: boolean) => Promise<string[]>
@@ -776,8 +785,16 @@ export interface ForsageDesktopBridge {
     cancel?: (id: string, input?: any) => Promise<any>
     pendingItems?: (supplierId: string, tenantId?: string) => Promise<any[]>
     bulkArrival?: (itemIds: string[], tenantId?: string) => Promise<{ updated: number }>
+    /** 23.11.2026 (план C3): позиції відкритих замовлень, які ще треба замовити в постачальника. */
+    supplierLines?: () => Promise<Array<{ item_id: string; order_id: string; order_number: number; name: string; sku: string | null; qty: number
+      supplier_id: string | null; supplier_name: string | null; customer_name: string | null; customer_phone: string | null; created_at: string }>>
+    bulkOrdered?: (itemIds: string[]) => Promise<{ updated: number }>
+    /** 24.11.2026 (план C2): скасувати всі замовлення (і заведених клієнтів) одного завантаження блокнота. */
+    cancelNotebookBatch?: (input: { order_ids: string[]; customer_ids: string[] }) => Promise<{ orders: number; customers: number; kept_customers: number }>
+    /** 24.11.2026 (план C2): мініатюри позицій замовлення { позиція: картинка }. */
+    itemPhotos?: (orderId: string) => Promise<Record<string, string>>
     /** 22.11.2026: довідник запчастин «під замовлення» — те, що вже замовляли клієнтам (ціни в копійках). */
-    suggestParts?: (query: string) => Promise<Array<{ name: string; sku: string; buy_price: number; sell_price: number; supplier_id: string | null; supplier_name: string | null; last_used_at: string }>>
+    suggestParts?: (query: string) => Promise<Array<{ name: string; sku: string; buy_price: number; sell_price: number; supplier_id: string | null; supplier_name: string | null; last_used_at: string; photo?: string | null }>>
     /** 22.11.2026: проведена накладна відмічає «прибуло» в замовленнях і повертає список «кому подзвонити». */
     arrivalFromInvoice?: (invoiceId: string) => Promise<{
       orders: Array<{ order_id: string; order_number: number; customer_name: string | null; customer_phone: string | null; items: Array<{ name: string; qty: number }>; complete: boolean }>

@@ -3,9 +3,9 @@ import { desktopBridge } from '@/lib/desktopBridge'
 import { durableLocalRequest } from '@/lib/durableLocalRequest'
 import { requestDesktopSync } from '@/features/products/productApi'
 import { useAuthStore } from '@/stores/authStore'
+import { moneyOnlyAtTill } from '@/lib/moneyOnlyAtTill'
 
 const READ_TIMEOUT_MS = 10_000
-const WRITE_TIMEOUT_MS = 30_000
 
 type Options = { silent?: boolean; timeoutMs?: number }
 
@@ -38,7 +38,7 @@ export const posOrderApi = {
     return api.get<{ data: any[] }>(`/api/v1/customer-orders/${orderId}/payments`, { silent: opts.silent ?? true, timeoutMs: opts.timeoutMs ?? READ_TIMEOUT_MS })
   },
 
-  addPayment: async (orderId: string, body: any, opts: Options = {}) => {
+  addPayment: async (orderId: string, body: any, _opts: Options = {}) => {
     const local = localOrders()
     if (local?.addPayment) {
       const { payment_id: _transientId, ...details } = body
@@ -49,16 +49,16 @@ export const posOrderApi = {
       requestDesktopSync()
       return result
     }
-    return api.post(`/api/v1/customer-orders/${orderId}/payments`, body, undefined, { silent: opts.silent ?? true, timeoutMs: opts.timeoutMs ?? WRITE_TIMEOUT_MS })
+    return moneyOnlyAtTill()
   },
 
-  complete: async (orderId: string, body: any, opts: Options = {}) => {
+  complete: async (orderId: string, body: any, _opts: Options = {}) => {
     const local = localOrders()
     if (local?.complete) {
       const result = await local.complete(orderId, { ...body, user_id: userId() })
       requestDesktopSync()
       return result
     }
-    return api.post(`/api/v1/customer-orders/${orderId}/complete`, body, undefined, { silent: opts.silent ?? true, timeoutMs: opts.timeoutMs ?? WRITE_TIMEOUT_MS })
+    return moneyOnlyAtTill()
   },
 }

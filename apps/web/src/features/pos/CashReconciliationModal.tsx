@@ -3,11 +3,11 @@ import { useDialogEscape } from '@/hooks/useDialogEscape'
 import { shiftApi, type ExpectedCash } from './shiftApi'
 import { parseCountedCash } from './shiftCashData'
 import { X, DollarSign } from 'lucide-react'
-import { api } from '@/lib/api'
 import { formatMoney } from '@/lib/utils'
 import { toast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/stores/authStore'
 import { desktopBridge } from '@/lib/desktopBridge'
+import { moneyOnlyAtTill } from '@/lib/moneyOnlyAtTill'
 
 interface Props {
   open: boolean
@@ -67,10 +67,7 @@ export function CashReconciliationModal({ open, onClose }: Props) {
       if (desktop && cashierId) {
         await desktop.pos.reconcile(cashierId, actualKopecks, comment.trim() || null)
       } else {
-        await api.post('/api/v1/shifts/current/reconcile', {
-          actual_amount: actualKopecks,
-          comment: comment.trim() || null,
-        })
+        await moneyOnlyAtTill()
       }
       toast.success(`Звірку каси збережено. Різниця: ${formatMoney(Math.abs(difference))}${difference > 0 ? ' надлишок' : difference < 0 ? ' нестача' : ''}`)
       onClose()

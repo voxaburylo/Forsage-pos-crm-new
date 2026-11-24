@@ -22,6 +22,8 @@ export const DEVICE_ANSWER_RETRY_MS = [1_000, 3_000, 8_000, 20_000, 40_000]
 export interface DeviceLinkResponse { ok: boolean; status: number; json(): Promise<unknown> }
 export interface TillDeviceLinkDeps {
   fetch(url: string, init: { method: 'POST'; headers: Record<string, string>; body: string; signal: AbortSignal }): Promise<DeviceLinkResponse>
+  /** 24.11.2026: запит помічника — будь-який метод, відповідь текстом (хід роботи ШІ приходить рядками). */
+  request?(url: string, init: { method: string; headers: Record<string, string>; body?: string; signal: AbortSignal }): Promise<{ status: number; headers: { get(name: string): string | null }; text(): Promise<string> }>
   /** Адреса сервера без кінцевої риски; null — у цій збірці сервер не налаштовано. */
   apiUrl(): string | null
   deviceId(): string | null
@@ -136,6 +138,25 @@ export class TillDeviceLink {
     }
   }
 
+  /**
+   * 24.11.2026 (власник: «прибери пароль у ШІ-помічнику»): запит помічника на сервер ключем ПК. Працівника вже
+   * перевірила каса; серверу передається лише його роль. Відповідь повертається як є (код, тип, текст) — помилки
+   * помічника показує екран. Лише адреси помічника: /ai/…, /vin/… і завантаження вкладення.
+   */
+  async assistant(input: { method: string; path: string; body?: string; role: string; staffId?: string }): Promise<{ status: number; content_type: string; text: string }> {
+    const key = this.currentKey(), base = this.deps.apiUrl(), deviceId = this.deps.deviceId()
+    if (!key || !base || !deviceId || !this.available()) throw new Error('Зв\'язок головного ПК не налаштовано')
+    if (!isAssistantRequest(input.method, input.path)) throw new Error('Ця адреса не належить помічнику')
+    if (!this.deps.request) throw new Error('Зв\'язок головного ПК не налаштовано')
+    const response = await this.deps.request(base.replace(/\/$/, '') + '/api/v1/till-device' + input.path, {
+      method: input.method,
+      headers: { 'Content-Type': 'application/json', Authorization: `Device ${deviceId}.${key.token}`, 'X-Forsage-Client': 'desktop', 'X-Forsage-Staff-Role': input.role, ...(input.staffId ? { 'X-Forsage-Staff-Id': input.staffId } : {}) },
+      ...(input.method === 'GET' ? {} : { body: input.body ?? '{}' }),
+      signal: AbortSignal.timeout(280_000),
+    })
+    return { status: response.status, content_type: response.headers.get('content-type') ?? '', text: await response.text() }
+  }
+
   private currentKey() {
     if (this.key === undefined) { try { this.key = this.deps.readKey() } catch { this.key = null } }
     return this.key
@@ -218,4 +239,14 @@ export class TillDeviceLink {
     const payload = await response.json() as { data?: unknown } | null
     return payload?.data ?? null
   }
+}
+
+/** Адреси помічника, які каса передає ключем ПК. Ключ ШІ (/ai/config, /ai/test) сюди не входить. */
+export function isAssistantRequest(method: string, path: string): boolean {
+  // 24.11.2026: розділ «Сайт» власника — теж ключем ПК (сервер пускає туди лише власника).
+  if (['GET', 'POST', 'PUT', 'DELETE'].includes(method) && /^\/site-admin(?:\/[a-z][a-z-]{0,40})?$/.test(path)) return true
+  if (!['GET', 'POST', 'DELETE'].includes(method)) return false
+  if (path === '/assistant-upload') return method === 'POST'
+  if (/^\/ai\/(config|test)(?:[/?]|$)/.test(path)) return false
+  return /^\/(?:ai|vin)\/[a-z0-9][a-z0-9\/_-]{0,120}(?:\?[a-zA-Z0-9=&%._-]{0,300})?$/.test(path)
 }
