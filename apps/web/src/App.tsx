@@ -1,12 +1,9 @@
-import { OrderArrivalModal } from '@/features/orders/OrderArrivalModal'
 import { Component, lazy, Suspense, useEffect, useState, type ErrorInfo, type ReactNode } from 'react'
 import { createBrowserRouter, createHashRouter, RouterProvider, Routes, Route, Navigate, useLocation, useParams } from 'react-router-dom'
 import ProtectedRoute from '@/components/ProtectedRoute'
 import { MainPcWhenOnline, TillOnly, TillOrView } from '@/components/TillOnly'
-import { LiveCameraScanner } from '@/components/LiveCameraScanner'
 import { DesktopAccessGate } from '@/components/DesktopAccessGate'
 import { ToastContainer } from '@/components/ui'
-import { CommandPalette } from '@/components/CommandPalette'
 import { LocalSyncAgent } from '@/components/LocalSyncAgent'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
@@ -127,6 +124,12 @@ function isRouteChunkError(error: unknown): boolean {
 
 import { reportLocalError } from './lib/localDiagnostics'
 
+// 24.11.2026 (план C1, «тяжкі модулі на вимогу»): глобальні вікна, потрібні не з першої секунди, вантажаться окремо —
+// стартовий файл менший, вхід і перша сторінка швидші. Подія чи клавіша, що їх відкриває, чекає мить на завантаження.
+const OrderArrivalModal = lazy(() => import('@/features/orders/OrderArrivalModal').then(module => ({ default: module.OrderArrivalModal })))
+const LiveCameraScanner = lazy(() => import('@/components/LiveCameraScanner').then(module => ({ default: module.LiveCameraScanner })))
+const CommandPalette = lazy(() => import('@/components/CommandPalette').then(module => ({ default: module.CommandPalette })))
+
 type AppErrorBoundaryState = { error: Error | null }
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBoundaryState> {
@@ -212,7 +215,7 @@ function Workspace() {
     <>
       <div id="desktop-workspace">
       <NavigationGuard />
-      <OrderArrivalModal />
+      <Suspense fallback={null}><OrderArrivalModal /></Suspense>
       <LocalSyncAgent />
       <AppErrorBoundary>
       <Suspense fallback={<Loader />}>
@@ -311,9 +314,9 @@ function Workspace() {
       </Suspense>
       </AppErrorBoundary>
       {/* 23.11.2026 (план B1): постійний сканер камерою для вебу на телефоні — один на весь застосунок. */}
-      <LiveCameraScanner />
+      <Suspense fallback={null}><LiveCameraScanner /></Suspense>
       <ToastContainer />
-      <CommandPalette />
+      <Suspense fallback={null}><CommandPalette /></Suspense>
       </div>
       <DesktopAccessGate />
     </>
