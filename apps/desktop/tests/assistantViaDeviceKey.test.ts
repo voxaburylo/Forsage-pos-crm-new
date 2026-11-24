@@ -26,6 +26,14 @@ describe('assistant requests go with the main PC key', () => {
     }
   })
 
+  // 24.11.2026: розділ «Сайт» власника ходить тим самим ключем; сама адреса сайту (/site/…) — ні.
+  it('the owner site section passes, the site address itself does not', () => {
+    for (const [method, path] of [['GET', '/site-admin'], ['PUT', '/site-admin'], ['POST', '/site-admin/key'], ['DELETE', '/site-admin/key'], ['GET', '/site-admin/orders']])
+      expect(isAssistantRequest(method, path), method + ' ' + path).toBe(true)
+    for (const [method, path] of [['POST', '/site/orders'], ['GET', '/site-adminx'], ['GET', '/site-admin/../sync/push'], ['PATCH', '/site-admin']])
+      expect(isAssistantRequest(method, path), method + ' ' + path).toBe(false)
+  })
+
   it('sends the PC key and the employee role, and returns the answer as it is', async () => {
     const { instance, request } = link()
     const answer = await instance.assistant({ method: 'POST', path: '/ai/chat', body: '{"messages":[]}', role: 'cashier' })

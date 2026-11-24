@@ -31,7 +31,12 @@ export const STAFF_SECRET_COMMAND = 'staff.secret'
 export const STAFF_SECRET_TTL_SECONDS = 7 * 24 * 60 * 60
 export const QUEUED_COMMANDS: readonly string[] = [QUEUED_COMMAND, INVOICE_DRAFT_COMMAND, STAFF_SECRET_COMMAND]
 const isQueued = (command: string) => QUEUED_COMMANDS.includes(command)
-export const PENDING_COMMAND_TTL_SQL = `make_interval(secs => CASE WHEN command = 'staff.secret' THEN 604800 WHEN command IN ('${QUEUED_COMMAND}', '${INVOICE_DRAFT_COMMAND}') THEN ${QUEUE_TTL_SECONDS} ELSE ${COMMAND_TTL_SECONDS} END)`
+/**
+ * 24.11.2026: замовлення із сайту (автор «Сайт») чекає касу до 7 днів — сайт приймає замовлення й у вихідні.
+ * Це той самий бланк order.save, тож каса вміє його без оновлення.
+ */
+export const SITE_ORDER_AUTHOR = 'Сайт'
+export const PENDING_COMMAND_TTL_SQL = `make_interval(secs => CASE WHEN command = 'staff.secret' THEN 604800 WHEN command = '${QUEUED_COMMAND}' AND payload->>'author' = '${SITE_ORDER_AUTHOR}' THEN 604800 WHEN command IN ('${QUEUED_COMMAND}', '${INVOICE_DRAFT_COMMAND}') THEN ${QUEUE_TTL_SECONDS} ELSE ${COMMAND_TTL_SECONDS} END)`
 export const WEB_COMMAND_ROLES = ['owner', 'admin', 'manager'] as const
 export const TILL_ROLES = ['owner', 'admin', 'manager', 'cashier'] as const
 

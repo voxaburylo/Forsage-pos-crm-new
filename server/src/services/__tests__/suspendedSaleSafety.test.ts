@@ -45,7 +45,9 @@ describe('suspended sale transaction safety', () => {
   })
 
   it('reuses one browser operation key across a timeout retry', () => {
-    expect(saleApiSource).toContain("{ 'X-Idempotency-Key': idempotencyKey }")
+    // 24.11.2026 (план T9): відкладений чек створює лише каса; запису на сервер із вебу більше немає.
+    expect(saleApiSource).not.toContain("api.post<{ data: Sale }>('/api/v1/sales/suspend'")
+    expect(saleApiSource).toContain('return moneyOnlyAtTill()')
     expect(suspendModalSource).toContain('const operationKeyRef = useRef<string | null>(null)')
     expect(suspendModalSource).toContain('operationKeyRef.current ?? crypto.randomUUID()')
     expect(suspendModalSource).toContain('`suspend:${operationKey}`')

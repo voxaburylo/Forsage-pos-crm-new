@@ -23,8 +23,8 @@ describe('settings layout: six tabs by meaning', () => {
   })
 
   it('every block is on a real tab and says in one line what it is for', () => {
-    expect(sections).toHaveLength(25)
-    expect(page.match(/<SettingsSection /g)).toHaveLength(25)
+    expect(sections).toHaveLength(26)
+    expect(page.match(/<SettingsSection /g)).toHaveLength(26)
     const known = new Set<string>([...SETTINGS_TABS.map(tab => tab.id), 'catalog', 'audit'])
     for (const section of sections) {
       expect(known.has(section.tab), section.title).toBe(true)
@@ -47,7 +47,7 @@ describe('settings layout: six tabs by meaning', () => {
   })
 
   it('rare and dangerous blocks stay folded until asked for, but the search finds them', () => {
-    expect(sections.filter(section => section.rare).map(section => section.title.slice(0, 20))).toEqual(['Відновлення з хмарно', 'Полегшений режим ста'])
+    expect(sections.filter(section => section.rare).map(section => section.title.slice(0, 20))).toEqual(['Відновлення з хмарно', 'Полегшений режим ста', 'Журнал відправлених '])
     const restore = { tab: 'pc' as const, title: 'Відновлення з хмарної копії', rare: true }
     expect(settingsSectionVisible(restore, 'pc', '')).toBe(false)
     expect(settingsSectionVisible(restore, 'pc', '', true)).toBe(true)

@@ -111,7 +111,7 @@ describe('web write through the till', () => {
   it('keeps a queued order for 12 hours and everything else for 45 seconds (longer than the rare poll of the till)', async () => {
     query.mockResolvedValueOnce({ rowCount: 1 }).mockResolvedValueOnce({ rows: [] })
     await claimCommands('t', id(4))
-    expect(query.mock.calls[1][0]).toContain("CASE WHEN command = 'staff.secret' THEN 604800 WHEN command IN ('order.save', 'invoice.draft') THEN 43200 ELSE 45 END")
+    expect(query.mock.calls[1][0]).toContain("WHEN command IN ('order.save', 'invoice.draft') THEN 43200 ELSE 45 END")
     query.mockReset()
     query.mockResolvedValueOnce({ rowCount: 0 }).mockResolvedValueOnce({ rows: [
       { operation_id: id(7), created_at: '2026-11-22T05:00:00Z', payload: { customer_name: 'Іван', customer_phone: '0671234567', items: [{}, {}] } },

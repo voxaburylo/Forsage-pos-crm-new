@@ -9,7 +9,7 @@ import {
   Package, ShoppingCart,
   Truck, BarChart2, Settings, Zap, LogOut, ClipboardList, Activity,
   ChevronDown, Tag, UserCog, Users,
-  X, PackagePlus, Sparkles,
+  X, PackagePlus, Sparkles, Globe,
   Wallet,
 } from 'lucide-react'
 import { signOut } from '@/lib/auth'
@@ -107,6 +107,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/ai-agent', icon: <Sparkles size={18} />, label: 'Перевірка каталогу', roles: ['owner','admin'] },
       { to: '/staff',               icon: <UserCog size={18} />,         label: 'Працівники',          roles: ['owner','admin'] },
       { to: '/settings',            icon: <Settings size={18} />,        label: 'Налаштування',         roles: ['owner','admin'] },
+      { to: '/site',                icon: <Globe size={18} />,           label: 'Сайт',                 roles: ['owner'] },
       { to: '/system',              icon: <Activity size={18} />,        label: 'Стан системи',         roles: ['owner','admin'], webOnly: true },
     ],
   },

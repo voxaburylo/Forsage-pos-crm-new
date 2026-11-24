@@ -9,6 +9,7 @@ import { devicePushSchema, pushFromMainPc } from '../services/tillDevicePush.js'
 import { saveStatusReport } from '../services/systemStatusService.js'
 import { storeProcessingUpload } from '../services/processingUploadService.js'
 import { assistantActor, DEVICE_AI_DENIED } from '../services/tillAssistantActor.js'
+import { siteAdminRouter } from './site.js'
 import aiRouter from './ai.js'
 import vinRouter from './vin.js'
 
@@ -112,3 +113,5 @@ tillDeviceRouter.use('/ai', requireTillDevice, actAsTillStaff, (req, _res, next)
   next()
 }, aiRouter)
 tillDeviceRouter.use('/vin', requireTillDevice, actAsTillStaff, vinRouter)
+// 24.11.2026: розділ «Сайт» на головному ПК — тим самим ключем; пускає лише власника (requireRole у самому розділі).
+tillDeviceRouter.use('/site-admin', requireTillDevice, actAsTillStaff, siteAdminRouter)

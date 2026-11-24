@@ -243,6 +243,8 @@ export class TillDeviceLink {
 
 /** Адреси помічника, які каса передає ключем ПК. Ключ ШІ (/ai/config, /ai/test) сюди не входить. */
 export function isAssistantRequest(method: string, path: string): boolean {
+  // 24.11.2026: розділ «Сайт» власника — теж ключем ПК (сервер пускає туди лише власника).
+  if (['GET', 'POST', 'PUT', 'DELETE'].includes(method) && /^\/site-admin(?:\/[a-z][a-z-]{0,40})?$/.test(path)) return true
   if (!['GET', 'POST', 'DELETE'].includes(method)) return false
   if (path === '/assistant-upload') return method === 'POST'
   if (/^\/ai\/(config|test)(?:[/?]|$)/.test(path)) return false

@@ -1,4 +1,4 @@
-const WEB_ROUTES = new Set(['/products', '/customers', '/analytics', '/analytics/statistics', '/analytics/sales', '/analytics/payroll', '/analytics/control', '/reports', '/dashboard', '/sales', '/abc', '/staff-analytics', '/orders', '/invoice-photo', '/system'])
+const WEB_ROUTES = new Set(['/products', '/customers', '/analytics', '/analytics/statistics', '/analytics/sales', '/analytics/payroll', '/analytics/control', '/reports', '/dashboard', '/sales', '/abc', '/staff-analytics', '/orders', '/invoice-photo', '/system', '/site'])
 /**
  * 22.11.2026, рішення власника «веб повний, але тільки через головний ПК»: ці розділи у вебі відкриваються,
  * коли головний ПК на звʼязку (див. TillOnly), і кожна дія виконується на ньому. Каса (продаж) і друк — лише на касі.

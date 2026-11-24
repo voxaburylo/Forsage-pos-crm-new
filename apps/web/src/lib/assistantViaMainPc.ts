@@ -8,6 +8,8 @@ import { desktopBridge, isDesktopRuntime } from './desktopBridge'
  * Ключ ШІ та його перевірка (/ai/config, /ai/test) цим шляхом не ходять: їх змінює власник зі своїм входом.
  */
 export function isAssistantPath(path: string): boolean {
+  // 24.11.2026: розділ «Сайт» власника ходить тим самим шляхом.
+  if (/^\/api\/v1\/site-admin(?:\/|$)/.test(path)) return true
   return /^\/api\/v1\/(?:ai|vin)\//.test(path) && !/^\/api\/v1\/ai\/(?:config|test)(?:[/?]|$)/.test(path)
 }
 

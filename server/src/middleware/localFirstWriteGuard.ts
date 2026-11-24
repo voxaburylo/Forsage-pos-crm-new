@@ -69,7 +69,9 @@ const WEB_AI_MEMORY_PATH = '/api/v1/ai/memory'
  * таблиць price_list_links, customer_groups(+members) і номера чату власника в базі каси немає.
  */
 const SERVER_ONLY_DATA_PREFIXES = ['/api/v1/waitlist/', '/api/v1/notifications/', '/api/v1/channels', '/api/v1/chats/', '/api/v1/settings/owner-alerts',
-  '/api/v1/price-links', '/api/v1/customer-groups', '/api/v1/settings/telegram-connect']
+  '/api/v1/price-links', '/api/v1/customer-groups', '/api/v1/settings/telegram-connect',
+  // 24.11.2026: сайт магазину — налаштування власника й замовлення, які надсилає сам сайт своїм ключем (у базі каси цих таблиць немає).
+  '/api/v1/site-admin', '/api/v1/site/']
 
 export function isStaffSecretChange(method: string, path: string): boolean {
   return (method === 'POST' && path === '/api/v1/auth/set-pin') || (method === 'PUT' && /^\/api\/v1\/admin\/users\/[0-9a-f-]{36}\/password$/.test(path))
