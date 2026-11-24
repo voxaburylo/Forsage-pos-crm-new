@@ -2392,11 +2392,13 @@ app.whenReady().then(async () => {
     const session = requireDesktopSession()
     return requireLocalPos().reconcileShift(session.id, actualAmount, comment, session.tenant_id)
   })
-  handleDesktopIpc('desktop:pos:close-shift', (_event, cashierId: string, actualAmount: number, comment: string | null, shiftId: string) => {
+  handleDesktopIpc('desktop:pos:close-shift', (_event, cashierId: string, actualAmount: number, comment: string | null, shiftId: string, keepInDrawer?: number | null) => {
     const session = requireDesktopSession()
     // Власник/адміністратор може закрити забуту зміну іншого касира; касир — лише свою, як і раніше.
     const foreign = typeof cashierId === 'string' && cashierId !== session.id && (session.role === 'owner' || session.role === 'admin')
-    const result = requireLocalPos().closeShift(foreign ? cashierId : session.id, actualAmount, comment, shiftId, session.tenant_id, session.role, session.id)
+    // 24.11.2026: keepInDrawer — скільки лишили на розмін; решта записується як «здано власнику».
+    const result = requireLocalPos().closeShift(foreign ? cashierId : session.id, actualAmount, comment, shiftId, session.tenant_id, session.role, session.id,
+      keepInDrawer === undefined || keepInDrawer === null ? null : Number(keepInDrawer))
     setImmediate(() => { void shiftBackups?.tick() })
     return result
   })

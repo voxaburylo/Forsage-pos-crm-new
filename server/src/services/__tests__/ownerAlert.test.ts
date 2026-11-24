@@ -38,6 +38,22 @@ describe('owner alerts in Telegram (stage 11, owner decision 22.11.2026: all ale
     expect(keys(alerts)).toEqual(['shift_open:s1:2026-11-22'])
     expect(alerts[0].text).toContain('Зміну не закрито вже 171 год')
   })
+  // 24.11.2026 (слово власника: «у сповіщеннях бота немає, хто закрив зміну»).
+  it('says who closed the shift and whose shift is still open; old closings are not reported', () => {
+    const closed = facts({ closed_shifts: [
+      { id: 'new', closed_at: at('11:31').toISOString(), cash_variance: 0, cashier_name: 'Олексій', closing_cash: 50_000 },
+      { id: 'old', closed_at: new Date('2026-11-21T19:00:00+02:00').toISOString(), cash_variance: 0, cashier_name: 'Никита', closing_cash: 0 },
+      { id: 'nameless', closed_at: at('11:40').toISOString(), cash_variance: null },
+    ] })
+    const alerts = planOwnerAlerts(closed, at('12:00'))
+    expect(keys(alerts)).toEqual(['shift_closed:new', 'shift_closed:nameless'])
+    expect(alerts[0].text).toMatch(/^✅ Зміну закрито: Олексій, .*11:31. У касі лишилось 500.00 грн.$/)
+    expect(alerts[1].text).toContain('Зміну закрито: касир,')
+    const open = planOwnerAlerts(facts({ open_shifts: [{ id: 's1', opened_at: new Date('2026-11-15T09:00:00+02:00').toISOString(), cashier_name: 'Никита' }] }), at('12:00'))
+    expect(open[0].text).toContain('год: Никита (відкрита')
+    const diff = planOwnerAlerts(facts({ closed_shifts: [{ id: 'a', closed_at: at('10:00').toISOString(), cash_variance: -25_000, cashier_name: 'Олексій' }] }), at('12:00'))
+    expect(diff.find(alert => alert.key === 'cash_diff:a')!.text).toContain('(Олексій, ')
+  })
   it('reports a cash difference at shift close from the threshold, once per shift', () => {
     const closed = facts({ closed_shifts: [
       { id: 'a', closed_at: at('10:00').toISOString(), cash_variance: -25_000 },
@@ -45,7 +61,7 @@ describe('owner alerts in Telegram (stage 11, owner decision 22.11.2026: all ale
       { id: 'c', closed_at: at('11:00').toISOString(), cash_variance: null },
       { id: 'd', closed_at: at('11:30').toISOString(), cash_variance: 20_000 },
     ] })
-    const alerts = planOwnerAlerts(closed, at('12:00'))
+    const alerts = planOwnerAlerts(closed, at('12:00')).filter(alert => alert.key.startsWith('cash_diff:'))
     expect(keys(alerts)).toEqual(['cash_diff:a', 'cash_diff:d'])
     expect(alerts[0].text).toContain('недостача 250.00 грн')
     expect(alerts[1].text).toContain('надлишок 200.00 грн')
@@ -84,7 +100,7 @@ describe('owner alerts in Telegram (stage 11, owner decision 22.11.2026: all ale
       if (sql.includes('FROM shop_settings')) return { rows: [{ tenant_id: 't', owner_telegram_chat_id: 42, owner_alerts: null }] }
       if (sql.includes('FROM till_presence')) return { rows: [{ seen_at: at('11:58').toISOString() }] }
       if (sql.includes("status = 'open'")) return { rows: [] }
-      if (sql.includes("status = 'closed'")) return { rows: [{ id: 'a', closed_at: at('10:00').toISOString(), cash_variance: -25_000 }] }
+      if (sql.includes("status = 'closed'")) return { rows: [{ id: 'a', closed_at: at('08:30').toISOString(), cash_variance: -25_000 }] }
       if (sql.includes('FROM products')) return { rows: [] }
       if (sql.startsWith('INSERT INTO owner_alert_log')) { const key = String(params[1]); if (reserved.has(key)) return { rowCount: 0 }; reserved.add(key); return { rowCount: 1 } }
       if (sql.startsWith('DELETE FROM owner_alert_log WHERE tenant_id')) { for (const key of params[1] as string[]) reserved.delete(key); return { rowCount: 1 } }

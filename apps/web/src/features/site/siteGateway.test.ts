@@ -117,5 +117,8 @@ describe('site section is readable and the menu is not cluttered', () => {
     expect(page).not.toContain('max-w-4xl')
     expect(read('../../components/Sidebar.tsx')).not.toMatch(/to: '\/internal'/)
     expect(read('../../components/SubNavTabs.tsx')).toMatch(/to: '\/internal', label: 'Для потреб магазину'/)
+    // «Автозакупівля» — так само: не пункт меню, а вкладка в «Постачальники».
+    expect(read('../../components/Sidebar.tsx')).not.toMatch(/to: '\/auto-purchase'/)
+    expect(read('../../components/SubNavTabs.tsx')).toMatch(/to: '\/auto-purchase', label: 'Автозакупівля'/)
   })
 })

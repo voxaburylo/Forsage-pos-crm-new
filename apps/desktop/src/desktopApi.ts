@@ -331,8 +331,8 @@ export function createDesktopApi(ipcRenderer: DesktopInvoker) {
       shiftReport: (cashierId: string) => ipcRenderer.invoke('desktop:pos:shift-report', cashierId),
       reconcile: (cashierId: string, actualAmount: number, comment: string | null) =>
         ipcRenderer.invoke('desktop:pos:reconcile', cashierId, actualAmount, comment),
-      closeShift: (cashierId: string, actualAmount: number, comment: string | null, shiftId: string) =>
-        ipcRenderer.invoke('desktop:pos:close-shift', cashierId, actualAmount, comment, shiftId),
+      closeShift: (cashierId: string, actualAmount: number, comment: string | null, shiftId: string, keepInDrawer?: number | null) =>
+        ipcRenderer.invoke('desktop:pos:close-shift', cashierId, actualAmount, comment, shiftId, keepInDrawer ?? null),
     },
     sync: {
       listPending: (limit?: number) =>

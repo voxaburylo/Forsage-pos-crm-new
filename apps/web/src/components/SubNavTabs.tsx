@@ -106,6 +106,8 @@ export const FINANCE_TABS = [
 export const SUPPLIERS_TABS = [
   { to: '/suppliers', label: 'Постачальники', roles: ['owner', 'admin', 'manager'] },
   { to: '/suppliers/pos', label: 'Замовлення постачальникам', serverOnly: true },
+  // 24.11.2026: раніше окремий пункт меню; правила «коли товару мало — підготувати накладну постачальнику».
+  { to: '/auto-purchase', label: 'Автозакупівля', roles: ['owner', 'admin'] },
 ]
 
 // Поступлення товарів — єдиний дім для приходу, щоб не дублювати

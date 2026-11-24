@@ -64,6 +64,24 @@ export function lastCloseCashKey(cashierId: string): string {
   return 'forsage_last_shift_close_cash:' + cashierId
 }
 
+/**
+ * 24.11.2026 (рішення власника): при закритті касир каже, скільки лишає в шухляді на розмін; решта — «здано власнику».
+ * Повертає суми в копійках або причину, чому так не можна. Порожнє поле «на розмін» — лишити 0 (здати все).
+ */
+export function closingHandover(countedKopecks: number, keepText: string): { keep: number; handover: number } | { error: string } {
+  const keep = keepText.trim() === '' ? 0 : parseCountedCash(keepText)
+  if (keep === null) return { error: 'Суму «на розмін» введено неправильно. Приклад: 500 або 500.50' }
+  if (keep > countedKopecks) return { error: 'На розмін не можна лишити більше, ніж є в касі.' }
+  return { keep, handover: countedKopecks - keep }
+}
+
+/** Скільки запропонувати «на розмін»: те, що лишали минулого разу, але не більше, ніж є зараз. */
+export function suggestedKeep(lastKeepText: string | null, countedKopecks: number): string {
+  const last = lastKeepText === null ? null : parseCountedCash(lastKeepText)
+  if (last === null) return ''
+  return (Math.min(last, Math.max(0, countedKopecks)) / 100).toFixed(2)
+}
+
 export function parseCountedCash(value: string): number | null {
   const text = value.trim()
   if (!/^\d+(?:[.,]\d{1,2})?$/.test(text)) return null

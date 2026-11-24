@@ -1,6 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useRef } from 'react'
 import { useDialogEscape } from '@/hooks/useDialogEscape'
-import { closeBlockReason, initialCountedCash, lastCloseCashKey, parseClosingSnapshot, parseCountedCash } from './shiftCashData'
+import { closeBlockReason, closingHandover, initialCountedCash, lastCloseCashKey, parseClosingSnapshot, parseCountedCash, suggestedKeep } from './shiftCashData'
 import { shiftApi } from './shiftApi'
 import type { ShiftReport } from '@/types/shift'
 import type { ExpectedCash } from './shiftApi'
@@ -37,6 +37,8 @@ export function ShiftCloseModal({
   const [cashBreakdown, setCashBreakdown] = useState<ExpectedCash | null>(null)
   const [cashInput, setCashInput]       = useState('')
   const [comment, setComment]           = useState('')
+  // Скільки лишити в шухляді на розмін; решта записується як «здано власнику».
+  const [keepInput, setKeepInput]       = useState('')
   const [loading, setLoading]           = useState(false)
   const [closing, setClosing]           = useState(false)
   const closeInFlight = useRef(false)
@@ -65,6 +67,7 @@ export function ShiftCloseModal({
           setReport(localReport)
           setCashBreakdown(localReport.cash_breakdown)
           setCashInput(initialCountedCash(localReport.cash_breakdown.expected_amount))
+          try { setKeepInput(suggestedKeep(localStorage.getItem(lastCloseCashKey(cashierId)), localReport.cash_breakdown.expected_amount)) } catch { setKeepInput('') }
           setLoadedShiftId(shiftId)
         })
         .catch(() => { if (!cancelled) { setLoadError(true); toast.error('Помилка завантаження локальних даних зміни') } })
@@ -117,6 +120,7 @@ export function ShiftCloseModal({
   const variance     = validCash ? cashReceived - expectedCash : null
   const needsComment = isOwnerOrAdmin && variance !== null && Math.abs(variance) > VARIANCE_THRESHOLD
   const cashierAmountMismatch = !isOwnerOrAdmin && variance !== null && variance !== 0
+  const handover = validCash ? closingHandover(cashReceived, keepInput) : null
 
   async function handleClose() {
     if (closeInFlight.current || closing || !canClose) return
@@ -136,18 +140,20 @@ export function ShiftCloseModal({
       toast.error('Розбіжність > 10 грн — поясніть у коментарі')
       return
     }
+    if (handover && 'error' in handover) { toast.error(handover.error); return }
+    const keep = handover && !('error' in handover) ? handover.keep : cashReceived
     closeInFlight.current = true
     setClosing(true)
     try {
       if (desktop && cashierId) {
-        await desktop.pos.closeShift(cashierId, cashReceived, comment.trim() || null, shiftId)
+        await desktop.pos.closeShift(cashierId, cashReceived, comment.trim() || null, shiftId, keep)
         window.dispatchEvent(new Event('forsage:desktop-sync-requested'))
       } else {
         // 24.11.2026 (план T9): зміну закриває лише каса; без неї — зрозуміла відмова (запис на сервер прибрано).
         await shiftApi.close(shiftId, cashReceived, comment || undefined)
       }
-      // Залишок на кінець зміни = початок наступної (та сама каса) → підставимо при відкритті
-      try { localStorage.setItem(lastCloseCashKey(cashierId), (cashReceived / 100).toFixed(2)) } catch { /* ignore */ }
+      // На початок наступної зміни підставиться лише розмін, що лишився в шухляді, а не вся виручка (24.11.2026).
+      try { localStorage.setItem(lastCloseCashKey(cashierId), (keep / 100).toFixed(2)) } catch { /* ignore */ }
       toast.success(
         tireWorkersDue > 0
           ? 'Зміну закрито. Шиномонтажникам до виплати: ' + formatMoney(tireWorkersDue)
@@ -338,6 +344,22 @@ export function ShiftCloseModal({
                 className="w-full bg-[#2C2C2C] text-white text-2xl font-bold text-center rounded-xl px-4 py-3 border border-gray-700 focus:outline-none focus:border-[#FFD000]"
               />
             </div>
+
+            {/* 24.11.2026: розмін лишається, решту здають власнику — так видно, скільки забрано і скільки справді в шухляді. */}
+            {isDesktop && (
+              <div className="rounded-xl border border-gray-700 bg-[#2C2C2C] p-4 space-y-3" data-shift-handover>
+                <div>
+                  <label className="text-gray-400 text-xs mb-1 block">Лишити в касі на розмін (₴)</label>
+                  <input type="text" inputMode="decimal" aria-label="Лишити в касі на розмін" value={keepInput} disabled={closing}
+                    onChange={(e) => setKeepInput(e.target.value)} placeholder="0.00"
+                    className="w-full bg-[#1A1A1A] text-white text-lg font-semibold text-center rounded-xl px-4 py-2 border border-gray-700 focus:outline-none focus:border-[#FFD000]" />
+                </div>
+                {handover && ('error' in handover
+                  ? <p role="alert" className="text-sm text-red-300">{handover.error}</p>
+                  : <div className="flex justify-between text-sm"><span className="text-gray-300">Здати власнику:</span><strong className="text-[#FFD000]" data-shift-handover-sum>{formatMoney(handover.handover)}</strong></div>)}
+                <p className="text-[11px] leading-4 text-gray-500">Здане запишеться як видача з каси. Наступну зміну програма запропонує відкрити із сумою розміну.</p>
+              </div>
+            )}
 
             {/* Варіанс */}
             {isOwnerOrAdmin && variance !== null && (
