@@ -16,7 +16,8 @@ import { QuickCustomerEditModal } from '@/features/customers/QuickCustomerEditMo
 import { customerApi } from '@/features/customers/customerApi'
 import type { Customer } from '@/types/customer'
 import type { Product } from '@/types/product'
-import { loadProductLabelSettings, printLabels } from '@/features/labels/LabelDesigner'
+import { loadProductLabelSettings, printLabels, printLabelDocument } from '@/features/labels/LabelDesigner'
+import { arrivalLinks, arrivalMessage, buildOrderLabelDocument } from './orderArrivalNotice'
 import { printInvoice, printDeliveryNote, orderMessengerText, loadSellerRequisites, hasSellerRequisites, loadOrderThumbnails, printOrderForm } from './orderDocuments'
 import { isTerminalOrderStatus } from './orderStatus'
 import { allowedOrderStatusTransitions } from './orderWorkflow'
@@ -562,6 +563,30 @@ export default function OrderDetailPage() {
                 ) : (
                   <div className="text-gray-400">Клієнт не вказаний</div>
                 )}
+
+                {/* 23.11.2026 (план C3): товар прибув — повідомлення клієнту й наклейка «чий товар». */}
+                {['arrived', 'ready', 'called', 'no_answer'].includes(order.status) && (() => {
+                  const arrived = (order.items ?? []).filter(item => item.item_status === 'arrived')
+                  const message = arrivalMessage({ order_number: order.order_number ?? 0, customer_name: order.customer?.full_name, complete: order.status !== 'arrived' })
+                  const links = arrivalLinks(order.customer?.phone, message)
+                  return (
+                    <div className="flex flex-wrap gap-2 pt-1 text-xs" data-order-arrival-actions>
+                      <button type="button" className="rounded-md border border-gray-300 px-2 py-1 font-semibold text-gray-700 hover:bg-gray-50" onClick={() => {
+                        navigator.clipboard.writeText(message).then(() => toast.success('Текст скопійовано — вставте в Viber чи SMS'), () => toast.error('Не вдалося скопіювати текст'))
+                      }}>Скопіювати «прибуло»</button>
+                      {links && <a href={links.viber} className="rounded-md border border-violet-300 px-2 py-1 font-semibold text-violet-700 hover:bg-violet-50">Viber</a>}
+                      {links && <a href={links.sms} className="rounded-md border border-gray-300 px-2 py-1 font-semibold text-gray-700 hover:bg-gray-50">SMS</a>}
+                      {isDesktopRuntime() && arrived.length > 0 && (
+                        <button type="button" className="rounded-md border border-gray-300 px-2 py-1 font-semibold text-gray-700 hover:bg-gray-50" onClick={() => {
+                          void loadProductLabelSettings().catch(() => ({}))
+                            .then(size => printLabelDocument(buildOrderLabelDocument([{ order_number: order.order_number ?? 0, customer_name: order.customer?.full_name ?? null,
+                              customer_phone: order.customer?.phone ?? null, items: arrived.map(item => ({ name: item.name, qty: Number(item.qty) || 0 })) }], size as { width_mm?: number; height_mm?: number })))
+                            .catch(error => toast.error(error instanceof Error ? error.message : 'Не вдалося надрукувати наклейку'))
+                        }}>Наклейка на товар</button>
+                      )}
+                    </div>
+                  )
+                })()}
 
                 {/* Автомобіль замовлення */}
                 {order.vehicle_info && (

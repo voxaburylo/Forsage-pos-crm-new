@@ -56,6 +56,11 @@ function canChangeOrderStatus(from: string, to: string): boolean {
 export interface OrderPartSuggestion { name: string; sku: string; buy_price: number; sell_price: number; supplier_id: string | null; supplier_name: string | null; last_used_at: string }
 export interface InvoiceArrivalOrder { order_id: string; order_number: number; customer_name: string | null; customer_phone: string | null; items: Array<{ name: string; qty: number }>; complete: boolean }
 export interface InvoiceArrivalShortage { order_number: number; name: string; needed: number; available: number }
+/** 23.11.2026 (план C3): позиція замовлення, яку ще треба замовити в постачальника. */
+export interface SupplierOrderLine {
+  item_id: string; order_id: string; order_number: number; name: string; sku: string | null; qty: number
+  supplier_id: string | null; supplier_name: string | null; customer_name: string | null; customer_phone: string | null; created_at: string
+}
 type LocalOrderItemState = { item_status: string; sell_price: number; qty: number; core_deposit_amount: number }
 
 
@@ -717,6 +722,49 @@ export class LocalOrderRepository {
         AND o.deleted_at IS NULL AND i.item_status IN ('pending', 'ordered')
       ORDER BY o.created_at ASC
     `).all(tenantId, supplierId) as any[]
+  }
+
+  /**
+   * 23.11.2026 (план C3, етап 10): «Замовити в постачальника» — позиції відкритих замовлень, які ще не замовлено
+   * (не зі складу, не послуга, стан «чекає»). Порядок — черга замовлень; групує екран за постачальником.
+   */
+  listSupplierOrderLines(tenantId = DEFAULT_TENANT_ID): SupplierOrderLine[] {
+    return this.db.prepare(`
+      SELECT i.id AS item_id, i.order_id, o.order_number, i.name, i.sku, i.qty, i.supplier_id, s.name AS supplier_name,
+             c.full_name AS customer_name, c.phone AS customer_phone, i.created_at
+      FROM customer_order_items i
+      JOIN customer_orders o ON o.id = i.order_id AND o.tenant_id = i.tenant_id
+      LEFT JOIN suppliers s ON s.id = i.supplier_id
+      LEFT JOIN customers c ON c.id = o.customer_id AND c.tenant_id = o.tenant_id
+      WHERE i.tenant_id = ? AND i.deleted_at IS NULL AND o.deleted_at IS NULL
+        AND i.item_status = 'pending' AND i.source_type <> 'warehouse' AND i.item_type <> 'service'
+        AND o.status NOT IN ('completed', 'canceled', 'archived')
+      ORDER BY o.created_at ASC, i.created_at ASC
+      LIMIT 500
+    `).all(tenantId).map((row: any) => ({ ...row, qty: num(row.qty) })) as SupplierOrderLine[]
+  }
+
+  /** 23.11.2026 (план C3): відмітити позиції «замовлено в постачальника» одним рухом — усе або нічого. */
+  bulkOrdered(itemIds: string[], tenantId = DEFAULT_TENANT_ID): { updated: number } {
+    const uniqueIds = [...new Set(Array.isArray(itemIds) ? itemIds : [])].filter(id => typeof id === 'string' && id.length <= 128)
+    if (uniqueIds.length === 0) throw new Error('Оберіть хоча б одну позицію')
+    if (uniqueIds.length > 500) throw new Error('Забагато позицій за раз')
+    const placeholders = uniqueIds.map(() => '?').join(',')
+    const rows = this.db.prepare(`
+      SELECT id, order_id, item_status FROM customer_order_items
+      WHERE tenant_id = ? AND deleted_at IS NULL AND id IN (${placeholders})
+    `).all(tenantId, ...uniqueIds) as Array<{ id: string; order_id: string; item_status: string }>
+    if (rows.length !== uniqueIds.length) throw new Error('Одна або кілька позицій не знайдені у вашому магазині')
+    let updated = 0
+    this.db.transaction(() => {
+      for (const row of rows) {
+        // Уже замовлене чи прибуле не чіпаємо: інший ПК міг відмітити раніше.
+        if (row.item_status !== 'pending') continue
+        this.updateOrderItemStatus(row.order_id, row.id, 'ordered', tenantId)
+        updated++
+      }
+    })
+    return { updated }
   }
 
   bulkArrival(itemIds: string[], tenantId = DEFAULT_TENANT_ID): { updated: number } {

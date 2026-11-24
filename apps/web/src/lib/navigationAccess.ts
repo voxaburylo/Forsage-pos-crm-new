@@ -4,7 +4,7 @@ const WEB_ROUTES = new Set(['/products', '/customers', '/analytics', '/analytics
  * коли головний ПК на звʼязку (див. TillOnly), і кожна дія виконується на ньому. Каса (продаж) і друк — лише на касі.
  */
 export const WEB_VIA_MAIN_PC_ROUTES = new Set(['/suppliers/invoices', '/inventory', '/suppliers', '/auto-purchase', '/internal',
-  '/inventory/picking', '/waitlist', '/ai-assistant', '/ai-agent', '/staff', '/settings'])
+  '/inventory/picking', '/waitlist', '/supplier-order', '/ai-assistant', '/ai-agent', '/staff', '/settings'])
 export function navigationAllowed(path: string, desktop: boolean): boolean {
   return desktop || WEB_ROUTES.has(path) || WEB_VIA_MAIN_PC_ROUTES.has(path)
 }

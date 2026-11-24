@@ -81,6 +81,8 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/customers',           icon: <Users size={18} />,           label: 'Клієнти' },
       { to: '/orders',              icon: <ClipboardList size={18} />,   label: 'Замовлення',           roles: ['owner','admin','manager'], right: 'orders' },
       { to: '/inventory/picking',   icon: <ClipboardList size={18} />,   label: 'Збірка замовлень',     roles: ['owner','admin','manager','storekeeper'] },
+      // 23.11.2026 (план C3): позиції замовлень, які ще не замовлено, — за постачальниками.
+      { to: '/supplier-order',      icon: <Truck size={18} />,           label: 'Замовити в постачальника', roles: ['owner','admin','manager'], right: 'orders' },
       { to: '/waitlist',            icon: <Users size={18} />,           label: 'Очікування товару',    roles: ['owner','admin','manager'] },
     ],
   },

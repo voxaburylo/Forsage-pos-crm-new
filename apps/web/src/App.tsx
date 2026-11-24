@@ -56,6 +56,7 @@ const InternalConsumptionsPage = lazyPage(() => import('@/features/inventory/Int
 const ABCAnalysis          = lazyPage(() => import('@/features/analytics/ABCAnalysis'))
 const StaffAnalytics       = lazyPage(() => import('@/features/analytics/StaffAnalytics'))
 const WaitlistPage         = lazyPage(() => import('@/features/waitlist/WaitlistPage'))
+const SupplierOrderPage    = lazyPage(() => import('@/features/orders/SupplierOrderPage'))
 const SettingsChannels     = lazyPage(() => import('@/features/chats/SettingsChannels'))
 const InventoryPage        = lazyPage(() => import('@/features/inventory/InventoryPage'))
 const ActiveSession        = lazyPage(() => import('@/features/inventory/ActiveSession'))
@@ -245,6 +246,8 @@ function Workspace() {
           <Route path="/reports"  element={<Navigate to="/analytics/sales" replace />} />
           <Route path="/abc"        element={<ProtectedRoute roles={ADMIN_ROLES}><ABCAnalysis /></ProtectedRoute>} />
           <Route path="/waitlist"   element={<TillOnly what="Очікування товару"><ProtectedRoute roles={OFFICE_ROLES}><WaitlistPage /></ProtectedRoute></TillOnly>} />
+          {/* 23.11.2026 (план C3): що з замовлень ще треба замовити в постачальника. */}
+          <Route path="/supplier-order" element={<TillOnly what="Замовити в постачальника"><ProtectedRoute roles={OFFICE_ROLES} right="orders"><SupplierOrderPage /></ProtectedRoute></TillOnly>} />
           <Route path="/needs-action" element={<TillOnly what="Робота із замовленнями"><ProtectedRoute roles={OFFICE_ROLES} right="orders"><NeedsActionPage /></ProtectedRoute></TillOnly>} />
           <Route path="/staff-analytics" element={<ProtectedRoute roles={ADMIN_ROLES}><StaffAnalytics /></ProtectedRoute>} />
           <Route path="/admin"    element={<TillOnly what="Адміністрування"><ProtectedRoute roles={ADMIN_ROLES}><AdminPage /></ProtectedRoute></TillOnly>} />

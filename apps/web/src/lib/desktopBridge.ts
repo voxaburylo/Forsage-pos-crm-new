@@ -782,6 +782,10 @@ export interface ForsageDesktopBridge {
     cancel?: (id: string, input?: any) => Promise<any>
     pendingItems?: (supplierId: string, tenantId?: string) => Promise<any[]>
     bulkArrival?: (itemIds: string[], tenantId?: string) => Promise<{ updated: number }>
+    /** 23.11.2026 (план C3): позиції відкритих замовлень, які ще треба замовити в постачальника. */
+    supplierLines?: () => Promise<Array<{ item_id: string; order_id: string; order_number: number; name: string; sku: string | null; qty: number
+      supplier_id: string | null; supplier_name: string | null; customer_name: string | null; customer_phone: string | null; created_at: string }>>
+    bulkOrdered?: (itemIds: string[]) => Promise<{ updated: number }>
     /** 22.11.2026: довідник запчастин «під замовлення» — те, що вже замовляли клієнтам (ціни в копійках). */
     suggestParts?: (query: string) => Promise<Array<{ name: string; sku: string; buy_price: number; sell_price: number; supplier_id: string | null; supplier_name: string | null; last_used_at: string }>>
     /** 22.11.2026: проведена накладна відмічає «прибуло» в замовленнях і повертає список «кому подзвонити». */
