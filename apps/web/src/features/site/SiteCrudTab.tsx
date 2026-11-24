@@ -29,7 +29,8 @@ export interface CrudConfig {
   title: (row: Row) => string
   subtitle?: (row: Row) => string
   addLabel: string
-  intro?: string
+  /** Що написати, коли список порожній: навіщо це і що натиснути. */
+  emptyText: string
   /** Запис, який можна лише редагувати (інфо-сторінки сайту). */
   fixed?: (row: Row) => boolean
 }
@@ -205,13 +206,12 @@ export function SiteCrudTab({ config }: { config: CrudConfig }) {
 
   return (
     <Card>
-      {config.intro && <p className="mb-3 text-xs text-gray-500">{config.intro}</p>}
       <div className="mb-3 flex flex-wrap gap-2">
         <Button icon={<Plus size={14} />} onClick={() => setEditing(config.empty())} data-site-add={config.name}>{config.addLabel}</Button>
         <Button variant="secondary" icon={<RefreshCw size={14} />} loading={loading} onClick={() => void reload()}>Оновити</Button>
       </div>
       {error && <p role="alert" className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">{error}</p>}
-      {!error && !loading && rows.length === 0 && <p className="py-6 text-center text-sm text-gray-500">Поки порожньо.</p>}
+      {!error && !loading && rows.length === 0 && <p data-site-empty className="mx-auto max-w-xl py-8 text-center text-sm text-gray-500">{config.emptyText}</p>}
       <ul className="divide-y divide-gray-100" data-site-list={config.name}>
         {rows.map((row, index) => (
           <li key={String(row.id ?? index)} className="flex flex-wrap items-center justify-between gap-2 py-2.5 text-sm">
@@ -237,7 +237,7 @@ const day = (value: unknown) => typeof value === 'string' && value ? new Date(va
 
 export const BANNERS: CrudConfig = {
   name: 'banners', list: 'banners.list', upsert: 'banners.upsert', remove: 'banners.delete', addLabel: 'Додати банер',
-  intro: 'Слайдер на головній сторінці. Картинки програма сама обрізає й стискає: для ПК 1600×500, для телефона 800×600.',
+  emptyText: 'Банерів ще немає — на головній сторінці сайту слайдер порожній. Натисніть «Додати банер»: заголовок, картинка і дати показу.',
   empty: () => ({ is_active: true, sort_order: 0 }),
   title: row => String(row.title ?? ''),
   subtitle: row => `${day(row.starts_at)} — ${day(row.ends_at)}${row.link ? ' · ' + String(row.link) : ''}`,
@@ -258,7 +258,7 @@ export const BANNERS: CrudConfig = {
 const PROMO_TARGET = [{ value: 'all', label: 'Усі товари' }, { value: 'category', label: 'Категорії' }, { value: 'brand', label: 'Бренди' }, { value: 'product', label: 'Окремі товари' }]
 export const PROMOS: CrudConfig = {
   name: 'promos', list: 'promos.list', upsert: 'promos.upsert', remove: 'promos.delete', addLabel: 'Додати акцію',
-  intro: 'Акція діє лише на сайті: сайт сам показує стару й нову ціну та «−N%». Ціну в програмі акція не змінює. Перед запуском перевірте, що ціна зі знижкою не нижча за закупку.',
+  emptyText: 'Акцій зараз немає. Натисніть «Додати акцію», вкажіть знижку у відсотках і на що вона діє. Перед запуском перевірте, що ціна зі знижкою не нижча за закупку.',
   empty: () => ({ is_active: true, target_type: 'all', discount_percent: 5 }),
   title: row => String(row.title ?? ''),
   subtitle: row => `−${Number(row.discount_percent) || 0}% · ${PROMO_TARGET.find(option => option.value === row.target_type)?.label ?? ''} · ${day(row.starts_at)} — ${day(row.ends_at)}`,
@@ -274,12 +274,15 @@ export const PROMOS: CrudConfig = {
   ],
 }
 
+export const INFO_PAGE_NAME: Record<string, string> = { delivery: 'Доставка', warranty: 'Гарантія', about: 'Про нас', contacts: 'Контакти', faq: 'Питання й відповіді', payment: 'Оплата', returns: 'Повернення' }
+
 export const PAGES: CrudConfig = {
   name: 'pages', list: 'pages.list', upsert: 'pages.upsert', remove: 'pages.delete', addLabel: 'Додати статтю',
-  intro: 'Статті можна додавати й видаляти. Інфо-сторінки (доставка, гарантія, про нас, контакти, питання) — лише редагувати. У тексті: порожній рядок — новий абзац, короткий рядок без крапки — підзаголовок.',
+  emptyText: 'Сторінок ще немає. Натисніть «Додати статтю».',
   empty: () => ({ type: 'article' }),
-  title: row => String(row.title ?? ''),
-  subtitle: row => (row.type === 'info' ? 'Інфо-сторінка' : 'Стаття') + (row.slug ? ' · /' + String(row.slug) : ''),
+  // Інфо-сторінка без власного заголовка — сайт показує типовий текст; називаємо її зрозуміло, а не «Без назви».
+  title: row => String(row.title ?? '') || INFO_PAGE_NAME[String(row.slug ?? row.id ?? '')] || '',
+  subtitle: row => (row.type === 'info' ? (row.content ? 'Інфо-сторінка · ваш текст' : 'Інфо-сторінка · поки типовий текст сайту — натисніть «Змінити», щоб написати свій') : 'Стаття') + (row.slug ? ' · /' + String(row.slug) : ''),
   fixed: row => row.type === 'info',
   fields: [
     { key: 'type', label: 'Вид', type: 'select', lockedOnEdit: true, options: [{ value: 'article', label: 'Стаття' }, { value: 'info', label: 'Інфо-сторінка' }] },
@@ -291,13 +294,14 @@ export const PAGES: CrudConfig = {
 
 export const CATEGORIES: CrudConfig = {
   name: 'categories', list: 'categories.list', upsert: 'categories.upsert', remove: 'categories.delete', addLabel: 'Додати категорію сайту',
-  intro: 'Категорії сайту — свої. У кожній відмічаєте, які категорії програми в ній показувати: кілька можна обʼєднати в одну (наприклад «Инструмент ручной» і «Інструмент ручний»).',
+  emptyText: 'Категорій сайту ще немає. Натисніть «Додати категорію сайту» й відмітьте, які категорії програми в ній показувати.',
   empty: () => ({ is_active: true, sort_order: 0, program_category_ids: [] }),
-  title: row => String(row.name ?? ''),
-  subtitle: row => `категорій програми: ${Array.isArray(row.program_category_ids) ? row.program_category_ids.length : 0}${row.slug ? ' · /' + String(row.slug) : ''}`,
+  title: row => String(row.name ?? '') + (row.id != null ? ' (№ ' + String(row.id) + ')' : ''),
+  subtitle: row => (row.kind === 'tyre' ? 'шини — цей розділ веде сам сайт' : `категорій програми: ${Array.isArray(row.program_category_ids) ? row.program_category_ids.length : 0}`)
+    + (row.parent_id != null ? ' · всередині № ' + String(row.parent_id) : '') + (row.slug ? ' · /' + String(row.slug) : ''),
   fields: [
     { key: 'name', label: 'Назва на сайті', type: 'text', required: true },
-    { key: 'parent_id', label: 'Код батьківської категорії сайту', type: 'text', hint: 'Порожньо — категорія верхнього рівня.' },
+    { key: 'parent_id', label: 'Усередині якої категорії (її №)', type: 'number', hint: 'Номер із дужок у списку. Порожньо — категорія верхнього рівня.' },
     { key: 'icon', label: 'Значок', type: 'text' },
     { key: 'sort_order', label: 'Порядок (менше — раніше)', type: 'number' },
     { key: 'is_active', label: 'Показувати на сайті', type: 'bool' },

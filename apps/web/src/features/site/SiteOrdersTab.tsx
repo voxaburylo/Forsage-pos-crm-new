@@ -133,7 +133,7 @@ export function SiteOrdersTab() {
         <Button variant="secondary" icon={<RefreshCw size={14} />} loading={loading} onClick={() => void reload()}>Оновити</Button>
       </div>
       {error && <p role="alert" className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">{error}</p>}
-      {!error && !loading && orders.length === 0 && <p className="py-6 text-center text-sm text-gray-500">Замовлень немає.</p>}
+      {!error && !loading && orders.length === 0 && <p data-site-empty className="mx-auto max-w-xl py-8 text-center text-sm text-gray-500">Замовлень із сайту за цим відбором немає. Нове замовлення зʼявиться тут само, а на «Сайт» у меню загориться червоний значок.</p>}
       <ul className="divide-y divide-gray-100" data-site-orders>
         {orders.map(order => (
           <li key={order.id}>

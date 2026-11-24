@@ -75,7 +75,8 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/suppliers',           icon: <Truck size={18} />,           label: 'Постачальники',        roles: ['owner','admin','manager','storekeeper'] },
       // 21.11.2026 (план «порядок»): раніше відкривались лише за адресою.
       { to: '/auto-purchase',       icon: <PackagePlus size={18} />,     label: 'Автозакупівля',        roles: ['owner','admin','manager'] },
-      { to: '/internal',            icon: <Package size={18} />,         label: 'Внутрішнє споживання', roles: ['owner','admin','manager'] },
+      // 24.11.2026 (слово власника: «навіщо її постійно під рукою тримати»): «Внутрішнє споживання» — рідкісна дія, тепер це
+      // вкладка «Для потреб магазину» всередині «Інвентаризація» (components/SubNavTabs.tsx), а не окремий пункт меню.
     ],
   },
   {

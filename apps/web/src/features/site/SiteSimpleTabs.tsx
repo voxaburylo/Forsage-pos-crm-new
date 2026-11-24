@@ -25,7 +25,7 @@ export function SiteCustomersTab() {
         <Button variant="secondary" icon={<RefreshCw size={14} />} loading={loading} onClick={() => void reload()}>Оновити</Button>
       </div>
       <Problem text={error} />
-      {!error && !loading && rows.length === 0 && <p className="py-6 text-center text-sm text-gray-500">Клієнтів сайту ще немає.</p>}
+      {!error && !loading && rows.length === 0 && <p data-site-empty className="mx-auto max-w-xl py-8 text-center text-sm text-gray-500">На сайті ще ніхто не зареєструвався.</p>}
       <ul className="divide-y divide-gray-100">
         {rows.map(row => (
           <li key={row.id} className="flex flex-wrap items-baseline justify-between gap-x-3 py-2.5 text-sm">
@@ -63,7 +63,7 @@ export function SiteReviewsTab() {
         ))}
       </div>
       <Problem text={error} />
-      {!error && !loading && rows.length === 0 && <p className="py-6 text-center text-sm text-gray-500">Відгуків немає.</p>}
+      {!error && !loading && rows.length === 0 && <p data-site-empty className="mx-auto max-w-xl py-8 text-center text-sm text-gray-500">{filter === 'wait' ? 'Нових відгуків, що чекають вашої перевірки, немає. Коли покупець залишить відгук, він зʼявиться тут.' : 'Відгуків за цим відбором немає.'}</p>}
       <ul className="divide-y divide-gray-100">
         {rows.map(row => (
           <li key={row.id} className="py-3 text-sm">
