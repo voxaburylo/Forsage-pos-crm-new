@@ -176,30 +176,47 @@ async function writeOffers(tenantId: string, connectionId: string, offers: Offer
 }
 
 /**
- * Привʼязати товари постачальника до наших карток. Лише однозначний збіг І той самий бренд:
- *  - артикул картки = артикул постачальника, а бренд постачальника — бренд картки або є в її назві;
- *  - або номер постачальника (від 6 знаків) є в назві картки разом із брендом постачальника.
- * Без бренду не привʼязуємо: на пробі «28.0110» Adriauto лягав у подовжувач HANS «2801-10». Карткою складу товар не стає.
+ * Чи той самий це товар: наша картка і товар постачальника. Лише однозначний збіг І той самий бренд:
+ *  - артикул картки = номер постачальника, або номер (від 6 знаків) стоїть окремим словом у назві картки;
+ *  - бренд постачальника — бренд картки або є в її назві. Без бренду не привʼязуємо: на пробі «28.0110» Adriauto
+ *    лягав у подовжувач HANS «2801-10».
+ */
+export function matchOffers(ours: Array<{ id: string; sku: string; name: string; brand: string | null }>, offers: Array<{ external_id: string; number_code: string; brand: string | null }>): Map<string, string> {
+  const bySku = new Map<string, string[]>(), byToken = new Map<string, string[]>()
+  const cards = new Map<string, { brand: string; name: string }>()
+  const add = (map: Map<string, string[]>, key: string, id: string) => { if (!key) return; const ids = map.get(key); if (ids) { if (!ids.includes(id)) ids.push(id) } else map.set(key, [id]) }
+  for (const card of ours) {
+    cards.set(card.id, { brand: code(card.brand), name: code(card.name) })
+    add(bySku, code(card.sku), card.id)
+    for (const token of String(card.name).split(/\s+/)) { const key = code(token); if (key.length >= 6 && /\d/.test(key)) add(byToken, key, card.id) }
+  }
+  const links = new Map<string, string>()
+  for (const offer of offers) {
+    const brand = code(offer.brand)
+    if (brand.length < 2 || !offer.number_code) continue
+    const found = new Set<string>([...(bySku.get(offer.number_code) ?? []), ...(offer.number_code.length >= 6 ? byToken.get(offer.number_code) ?? [] : [])])
+    const fitting = [...found].filter(id => { const card = cards.get(id)!; return card.brand === brand || card.name.includes(brand) })
+    if (fitting.length === 1) links.set(offer.external_id, fitting[0])
+  }
+  return links
+}
+
+/**
+ * Привʼязати товари постачальника до наших карток (у памʼяті сервера: 17 тис. карток × 80 тис. товарів запитом до бази
+ * не вкладались у час — 24.11.2026 перший прохід через це не завершувався). Карткою складу товар не стає.
  */
 export async function linkOffers(tenantId: string, connectionId: string) {
-  await pool.query(
-    `WITH ours AS (
-       SELECT p.id, upper(regexp_replace(p.sku, '[^A-Za-zА-Яа-яІЇЄҐіїєґ0-9]', '', 'g')) AS sku_code,
-              upper(regexp_replace(coalesce(b.name, ''), '[^A-Za-zА-Яа-яІЇЄҐіїєґ0-9]', '', 'g')) AS brand_code,
-              upper(regexp_replace(p.name, '[^A-Za-zА-Яа-яІЇЄҐіїєґ0-9]', '', 'g')) AS name_code
-         FROM products p LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
-        WHERE p.tenant_id = $1 AND p.deleted_at IS NULL AND p.is_active),
-     offers AS (
-       SELECT o.external_id, o.number_code, upper(regexp_replace(coalesce(o.brand, ''), '[^A-Za-zА-Яа-яІЇЄҐіїєґ0-9]', '', 'g')) AS brand_code
-         FROM supplier_offers o WHERE o.tenant_id = $1 AND o.connection_id = $2),
-     hits AS (
-       SELECT DISTINCT o.external_id, ours.id
-         FROM offers o JOIN ours ON o.brand_code <> '' AND (ours.brand_code = o.brand_code OR position(o.brand_code IN ours.name_code) > 0)
-          AND (ours.sku_code = o.number_code OR (length(o.number_code) >= 6 AND position(o.number_code IN ours.name_code) > 0))),
-     single AS (SELECT external_id, min(id::text)::uuid AS product_id FROM hits GROUP BY external_id HAVING count(*) = 1)
-     UPDATE supplier_offers o SET product_id = s.product_id FROM single s
-      WHERE o.connection_id = $2 AND o.external_id = s.external_id AND o.product_id IS DISTINCT FROM s.product_id`,
-    [tenantId, connectionId])
+  const ours = (await pool.query(`SELECT p.id, p.sku, p.name, b.name AS brand FROM products p LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
+     WHERE p.tenant_id = $1 AND p.deleted_at IS NULL AND p.is_active`, [tenantId])).rows
+  const offers = (await pool.query('SELECT external_id, number_code, brand, product_id FROM supplier_offers WHERE connection_id = $1', [connectionId])).rows
+  const links = matchOffers(ours, offers)
+  const changes = offers.filter((offer: any) => (links.get(offer.external_id) ?? null) !== (offer.product_id ?? null))
+    .map((offer: any) => ({ external_id: offer.external_id as string, product_id: links.get(offer.external_id) ?? null }))
+  for (let from = 0; from < changes.length; from += 5000) {
+    await pool.query(`UPDATE supplier_offers o SET product_id = x.product_id FROM jsonb_to_recordset($2::jsonb) AS x(external_id text, product_id uuid)
+       WHERE o.connection_id = $1 AND o.external_id = x.external_id`, [connectionId, JSON.stringify(changes.slice(from, from + 5000))])
+  }
+  return { linked: links.size, changed: changes.length }
 }
 
 /**
@@ -328,9 +345,11 @@ export async function syncConnectionStep(connection: { id: string; tenant_id: st
   if (done) {
     // Чого в цьому проході не було — того в постачальника вже немає: залишок 0 (рядок лишається для історії й сайту).
     await pool.query(`UPDATE supplier_offers SET stock = '[]'::jsonb, total_qty = 0, updated_at = now() WHERE connection_id = $1 AND seen_at < $2 AND total_qty > 0`, [connection.id, passStarted.toISOString()])
-    await linkOffers(connection.tenant_id, connection.id)
-    await categorizeOffers(connection.tenant_id, connection.id)
-    await pool.query(`UPDATE supplier_api_connections SET sync_page = 1, sync_started_at = NULL, last_full_sync_at = now(), last_error = NULL, total_offers = $2, updated_at = now() WHERE id = $1`, [connection.id, total])
+    // Привʼязка й категорії — доповнення: їх збій не має лишати прохід прайсу незавершеним (причина — в last_error).
+    let afterError: string | null = null
+    try { await linkOffers(connection.tenant_id, connection.id) } catch (error) { afterError = 'Привʼязка до карток: ' + (error instanceof Error ? error.message : 'помилка') }
+    try { await categorizeOffers(connection.tenant_id, connection.id) } catch (error) { afterError = (afterError ? afterError + '; ' : '') + 'Категорії: ' + (error instanceof Error ? error.message : 'помилка') }
+    await pool.query(`UPDATE supplier_api_connections SET sync_page = 1, sync_started_at = NULL, last_full_sync_at = now(), last_error = $3, total_offers = COALESCE($2, total_offers), updated_at = now() WHERE id = $1`, [connection.id, total || null, afterError ? afterError.slice(0, 500) : null])
   } else {
     await pool.query('UPDATE supplier_api_connections SET sync_page = $2, sync_started_at = $3, last_error = NULL, total_offers = COALESCE($4, total_offers), updated_at = now() WHERE id = $1', [connection.id, page, passStarted.toISOString(), total || null])
   }

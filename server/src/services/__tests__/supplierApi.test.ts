@@ -43,7 +43,7 @@ describe('Omega supplier', () => {
     const sql = query.mock.calls.map(call => String(call[0]))
     expect(sql.some(text => text.includes('INSERT INTO supplier_offers'))).toBe(true)
     expect(sql.some(text => text.includes("stock = '[]'::jsonb, total_qty = 0"))).toBe(true)
-    expect(sql.some(text => text.includes('UPDATE supplier_offers o SET product_id'))).toBe(true)
+    expect(sql.some(text => text.includes('SELECT external_id, number_code, brand, product_id FROM supplier_offers'))).toBe(true)
     expect(sql.some(text => text.includes('INSERT INTO products'))).toBe(false)
     expect((await syncConnectionStep({ id: 'c', tenant_id: 't', api_key: 'K', sync_page: 1, sync_started_at: null, last_full_sync_at: new Date().toISOString() }, { fetchImpl })).ran).toBe(false)
   })
@@ -108,5 +108,29 @@ describe('Omega photos and the request limit', () => {
     expect(await syncPhotosStep({ id: 'c', tenant_id: 't', api_key: 'K' }, { fetchImpl, upload })).toEqual({ saved: 1, none: 1, stopped: 'limit' })
     expect(upload).toHaveBeenCalledWith('t/c/-1.jpg', expect.anything(), 'image/jpeg')
     expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+})
+
+// 24.11.2026: привʼязка до наших карток — у памʼяті сервера (запит до бази не вкладався в час і прохід не завершувався).
+describe('linking supplier goods to our cards', () => {
+  it('links only with the same brand and only unambiguously; fast on the real size', async () => {
+    const { matchOffers } = await import('../supplierApiService.js')
+    const ours = [
+      { id: 'ert', sku: '79001', name: 'Ремкомплект супорта ERT 400142 Audi 60mm', brand: null },
+      { id: 'hans', sku: '2801-10', name: 'Подовжувач 1/4" 250 мм гнучкий HANS 2801-10', brand: null },
+      { id: 'tp', sku: 'TP.1576509', name: 'Радіатор опалювача Лачетті', brand: 'Tempest' },
+      { id: 'd1', sku: 'X-100500', name: 'Фільтр Bosch X100500', brand: null }, { id: 'd2', sku: '85000', name: 'Фільтр Bosch X-100500 (інша упаковка)', brand: null },
+    ]
+    const links = matchOffers(ours, [
+      { external_id: '1', number_code: '400142', brand: 'ERT' }, { external_id: '2', number_code: '280110', brand: 'Adriauto' },
+      { external_id: '3', number_code: 'TP1576509', brand: 'TEMPEST' }, { external_id: '4', number_code: 'X100500', brand: 'BOSCH' },
+      { external_id: '5', number_code: '400142', brand: null }, { external_id: '6', number_code: '', brand: 'ERT' },
+    ])
+    expect([...links]).toEqual([['1', 'ert'], ['3', 'tp']])
+    const big = Array.from({ length: 17_000 }, (_, i) => ({ id: 'p' + i, sku: String(70000 + i), name: 'Товар BRAND' + (i % 50) + ' NUM' + (100000 + i), brand: null }))
+    const offers = Array.from({ length: 80_000 }, (_, i) => ({ external_id: String(i), number_code: 'NUM' + (100000 + i), brand: 'BRAND' + (i % 50) }))
+    const started = Date.now()
+    expect(matchOffers(big, offers).size).toBe(17_000)
+    expect(Date.now() - started).toBeLessThan(5000)
   })
 })
