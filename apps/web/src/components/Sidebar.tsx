@@ -12,6 +12,7 @@ import {
   X, PackagePlus, Sparkles, Globe,
   Wallet,
 } from 'lucide-react'
+import { useSiteUnseenCount } from '@/features/site/siteGateway'
 import { signOut } from '@/lib/auth'
 import { useAuthStore } from '@/stores/authStore'
 import { api } from '@/lib/api'
@@ -291,8 +292,11 @@ export function Sidebar({ isOpen = false, onClose = () => {} }: SidebarProps) {
     }
   }, [role, session?.user?.id])
 
+  // 24.11.2026: нові замовлення сайту — червоний значок на «Сайт» (лише власник; сайт питаємо раз на 45 с).
+  const siteUnseen = useSiteUnseenCount(role === 'owner')
   const badgeMap: Record<string, number> = {
     '/inventory/picking': pickingCount,
+    '/site': siteUnseen,
   }
 
   async function handleSignOut() {

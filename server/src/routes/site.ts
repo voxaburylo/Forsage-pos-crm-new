@@ -2,6 +2,7 @@ import { Router, type NextFunction, type Request, type Response } from 'express'
 import { rateLimit } from 'express-rate-limit'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
+import { siteGatewayAction } from '../services/siteGatewayService.js'
 import {
   createSiteOrder, issueSiteKey, listSiteAdminCategories, listSiteOrders, readSiteAdmin, revokeSiteKey, saveSiteAdmin, siteAccess, siteAdminUpdateSchema,
   siteCategories, siteInfo, siteOrderStatus, siteProductById, siteProducts, type SiteAccess,
@@ -29,6 +30,13 @@ siteAdminRouter.post('/key', async (req, res, next) => {
 })
 siteAdminRouter.delete('/key', async (req, res, next) => {
   try { res.json({ data: await revokeSiteKey(req.user!.tenant_id, req.user!.id) }) } catch (err) { next(err) }
+})
+// Шлюз сайту forsage-tires.com: кожна дія розділу «Сайт» іде сюди, а сервер додає ключ сайту й пише журнал.
+siteAdminRouter.post('/gateway', async (req, res, next) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store')
+    res.json({ data: await siteGatewayAction(req.user!, req.body?.action, req.body?.params) })
+  } catch (err) { next(err) }
 })
 siteAdminRouter.get('/categories', async (req, res, next) => {
   try { res.json({ data: await listSiteAdminCategories(req.user!.tenant_id) }) } catch (err) { next(err) }

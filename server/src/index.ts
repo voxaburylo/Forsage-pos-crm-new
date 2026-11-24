@@ -121,6 +121,8 @@ app.use('/api/v1/till-device/ai/chat', express.json({ limit: '25mb' }))
 app.use('/api/v1/till-device/assistant-upload', express.json({ limit: '18mb' }))
 app.use('/api/v1/till-device/vin/ocr', express.json({ limit: '10mb' }))
 app.use('/api/v1/till-device', express.json({ limit: '4mb' }))
+// 24.11.2026: розділ «Сайт» — тексти статей і сторінок довші за типові 100 КБ.
+app.use('/api/v1/site-admin/gateway', express.json({ limit: '1mb' }))
 app.use(express.json())
 
 // Глобальний rate limit: 300 запитів/хв (на IP)
