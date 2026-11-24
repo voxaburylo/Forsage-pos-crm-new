@@ -19,12 +19,12 @@ describe('settings layout: six tabs by meaning', () => {
     .map(match => ({ tab: match[1], rare: Boolean(match[2]), title: match[3], hint: match[4] }))
 
   it('six tabs instead of eight', () => {
-    expect(SETTINGS_TABS.map(tab => tab.label)).toEqual(['Магазин', 'Ціни і знижки', 'Каса і друк', 'Telegram', 'ПК і копії', 'ШІ'])
+    expect(SETTINGS_TABS.map(tab => tab.label)).toEqual(['Магазин', 'Ціни і знижки', 'Каса і друк', 'Telegram', 'ПК і копії', 'ШІ', 'API-ключі'])
   })
 
   it('every block is on a real tab and says in one line what it is for', () => {
-    expect(sections).toHaveLength(26)
-    expect(page.match(/<SettingsSection /g)).toHaveLength(26)
+    expect(sections).toHaveLength(27)
+    expect(page.match(/<SettingsSection /g)).toHaveLength(27)
     const known = new Set<string>([...SETTINGS_TABS.map(tab => tab.id), 'catalog', 'audit'])
     for (const section of sections) {
       expect(known.has(section.tab), section.title).toBe(true)

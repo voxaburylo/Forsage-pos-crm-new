@@ -24,6 +24,7 @@ import { FiscalSettingsCard } from './FiscalSettingsCard'
 import { LanSettingsCard } from './LanSettingsCard'
 import { LiteModeCard } from './LiteModeCard'
 import { OutboxJournalCard } from './OutboxJournalCard'
+import { SupplierApiCard } from './SupplierApiCard'
 import { LabelPrinterCard } from './LabelPrinterCard'
 import { SettingsLinksCard } from './SettingsLinksCard'
 import { CatalogDictionaries } from '@/features/admin/AdminPage'
@@ -1109,6 +1110,10 @@ export default function SettingsPage() {
         <OutboxJournalCard />
         </SettingsSection>
         )}
+        <SettingsSection tab="api" title="Постачальники з API ключем Омега товари під замовлення"
+          hint="Товари постачальника для замовлень: ціна, склад, залишок. На склад магазину не додаються.">
+        {currentRole === 'owner' ? <SupplierApiCard /> : <p className="text-sm text-gray-500">Підключення постачальників налаштовує власник.</p>}
+        </SettingsSection>
       </div>
 
 

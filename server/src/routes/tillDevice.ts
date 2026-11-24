@@ -10,6 +10,7 @@ import { saveStatusReport } from '../services/systemStatusService.js'
 import { storeProcessingUpload } from '../services/processingUploadService.js'
 import { assistantActor, DEVICE_AI_DENIED } from '../services/tillAssistantActor.js'
 import { siteAdminRouter } from './site.js'
+import { supplierApiRouter, supplierOffersRouter } from './supplierApi.js'
 import { callSiteGateway } from '../services/siteGatewayService.js'
 import aiRouter from './ai.js'
 import vinRouter from './vin.js'
@@ -125,3 +126,6 @@ tillDeviceRouter.get('/site-photos', requireTillDevice, async (req: DeviceReques
 })
 // 24.11.2026: розділ «Сайт» на головному ПК — тим самим ключем; пускає лише власника (requireRole у самому розділі).
 tillDeviceRouter.use('/site-admin', requireTillDevice, actAsTillStaff, siteAdminRouter)
+// 24.11.2026: товари постачальників під замовлення — на головному ПК тим самим ключем.
+tillDeviceRouter.use('/supplier-offers', requireTillDevice, actAsTillStaff, supplierOffersRouter)
+tillDeviceRouter.use('/supplier-api', requireTillDevice, actAsTillStaff, supplierApiRouter)

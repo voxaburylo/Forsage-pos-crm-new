@@ -40,6 +40,7 @@ import { systemRouter } from './routes/system.js'
 import { tillLinkRouter } from './routes/tillLink.js'
 import { tillDeviceRouter } from './routes/tillDevice.js'
 import { siteAdminRouter, siteRouter } from './routes/site.js'
+import { supplierApiRouter, supplierOffersRouter } from './routes/supplierApi.js'
 import customerOrdersRouter from './routes/customerOrders.js'
 import customerGroupsRouter from './routes/customerGroups.js'
 import salaryRouter from './routes/salary.js'
@@ -208,6 +209,8 @@ app.use('/api/v1/till-link', tillLinkRouter)
 app.use('/api/v1/till-device', tillDeviceRouter)
 app.use('/api/v1/public', publicPriceRouter)
 app.use('/api/v1/site-admin', siteAdminRouter)
+app.use('/api/v1/supplier-api', supplierApiRouter)
+app.use('/api/v1/supplier-offers', supplierOffersRouter)
 app.use('/api/v1/site', siteRouter)
 app.use('/api/v1/customer-orders', customerOrdersRouter)
 app.use('/api/v1/reserves', reservesRouter)
