@@ -24,13 +24,15 @@ const modules = {
 }
 const entry = `
 import React from 'react';import{createRoot}from'react-dom/client';import{MemoryRouter}from'react-router-dom';
-import{Layout}from'/src/components/Layout.tsx';import'/src/index.css';
+import{Layout}from'/src/components/Layout.tsx';import{Modal}from'/src/components/ui/Modal.tsx';import'/src/index.css';
 const wide='ДУЖЕДОВГЕСЛОВОБЕЗПРОБІЛІВ'.repeat(12);
 function Page(){return <Layout title="Статистика дуже довга назва сторінки для перевірки" actions={<button>Дія</button>}>
   <div className="grid grid-cols-2 gap-3"><div className="rounded bg-white p-3"><p>{wide}</p></div><div className="rounded bg-white p-3"><input defaultValue="поле" className="text-xs" data-field /></div></div>
   <div className="mt-3 rounded bg-white" data-table-frame><table style={{minWidth:1400}}><thead><tr>{Array.from({length:14},(_,i)=><th key={i} className="px-4 py-2">Колонка {i}</th>)}</tr></thead>
     <tbody>{Array.from({length:60},(_,r)=><tr key={r}>{Array.from({length:14},(_,i)=><td key={i} className="px-4 py-2 whitespace-nowrap">значення {r}-{i}</td>)}</tr>)}</tbody></table></div>
+  <div className="flex items-start gap-3" style={{maxWidth:260}}><input type="checkbox" data-check className="mt-0.5 w-4 h-4" /><label className="text-sm"><span>Працює через веб</span><span className="block text-xs">З телефона чи з дому, коли головний ПК увімкнено: прихід, ревізія, товари, клієнти — те саме, що йому дозволено на касі.</span></label></div>
   <p data-bottom>кінець</p>
+  {new URLSearchParams(location.search).has('modal') && <Modal open onClose={()=>{document.body.dataset.modalClosed='1'}} title="Картка працівника" size="xl">{Array.from({length:40},(_,i)=><p key={i} className="py-2">рядок {i}</p>)}<button data-modal-last>Зберегти</button></Modal>}
 </Layout>}
 createRoot(document.getElementById('root')).render(<MemoryRouter initialEntries={['/analytics/statistics']}><Page/></MemoryRouter>);
 `
@@ -82,7 +84,7 @@ try {
             shellHeight: Math.round(shell.getBoundingClientRect().height), headerTop: Math.round(header.getBoundingClientRect().top), headerBottom: Math.round(header.getBoundingClientRect().bottom),
             mainScrollLeftMax: main.scrollWidth - main.clientWidth, mainOverflowX: getComputedStyle(main).overflowX,
             frameScrolls: frame.scrollWidth > frame.clientWidth, frameWidth: Math.round(frame.getBoundingClientRect().width), mainWidth: main.clientWidth,
-            fieldFont: parseFloat(getComputedStyle(field).fontSize), overscroll: getComputedStyle(document.body).overscrollBehaviorY,
+            fieldFont: parseFloat(getComputedStyle(field).fontSize), checkWidth: Math.round(document.querySelector('[data-check]').getBoundingClientRect().width), overscroll: getComputedStyle(document.body).overscrollBehaviorY,
           }
         })
         const label = `${channel ?? 'chromium'} ${size.name} ${size.width}x${size.height}`
@@ -96,6 +98,8 @@ try {
         // Широка таблиця прокручується у власній рамці, рамка не ширша за робочу область.
         assert.ok(top.frameScrolls, `${label}: широка таблиця не має власної прокрутки`)
         assert.ok(top.frameWidth <= top.mainWidth, `${label}: рамка таблиці ширша за робочу область`)
+        // 24.11.2026: галочка поруч із довгим підписом не стискається до крапки.
+        assert.ok(top.checkWidth >= 16, `${label}: галочка стиснута до ${top.checkWidth}px`)
         assert.equal(top.overscroll, 'none', `${label}: «потягнути вниз» не вимкнено`)
         if (size.width < 1024) assert.ok(top.fieldFont >= 16, `${label}: поле з шрифтом ${top.fieldFont}px — iPhone збільшить сторінку`)
         // Прокрутили робочу область униз і вбік-пальцем: шапка з вкладками там само, сторінка не зсунулась.
@@ -104,6 +108,22 @@ try {
         assert.equal(bottom.headerTop, top.headerTop, `${label}: шапка поїхала після прокрутки`)
         assert.ok(bottom.headerTop >= 0 && bottom.headerBottom > 0, `${label}: шапки не видно`)
         assert.deepEqual(await page.evaluate(() => [window.scrollX, window.scrollY]), [0, 0], `${label}: документ зсунувся`)
+        // 24.11.2026 (фото власника): вікно картки не ховає хрестик під верхню панель і вміщається у видимий екран.
+        await page.goto(base + 'responsive-shell-test?modal=1')
+        await page.getByRole('dialog').waitFor()
+        await page.waitForFunction(() => document.querySelector('[role=dialog]').getAnimations().every(item => item.playState === 'finished'))
+        const modal = await page.evaluate(() => {
+          const dialog = document.querySelector('[role=dialog]'), close = dialog.querySelector('button[aria-label="Закрити"]'), box = close.getBoundingClientRect(), frame = dialog.getBoundingClientRect()
+          const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)
+          return { inBody: dialog.parentElement.parentElement === document.body, closeOnTop: close.contains(hit), closeTop: Math.round(box.top), top: Math.round(frame.top), bottom: Math.round(frame.bottom), viewHeight: window.innerHeight }
+        })
+        assert.ok(modal.inBody, `${label}: вікно намальоване всередині робочої області`)
+        assert.ok(modal.closeOnTop && modal.closeTop >= 0, `${label}: хрестик вікна перекрито або він за екраном`)
+        assert.ok(modal.top >= 0 && modal.bottom <= modal.viewHeight, `${label}: вікно не вміщається в екран (${modal.top}..${modal.bottom} з ${modal.viewHeight})`)
+        await page.getByRole('dialog').getByRole('button', { name: 'Закрити' }).click()
+        assert.equal(await page.evaluate(() => document.body.dataset.modalClosed), '1', `${label}: хрестик не закриває вікно`)
+        await page.locator('[data-modal-last]').scrollIntoViewIfNeeded()
+        assert.ok(await page.locator('[data-modal-last]').isVisible(), `${label}: до низу вікна не докрутити`)
         assert.deepEqual(errors, [], label)
         results.push(label)
         await context.close()

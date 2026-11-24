@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 import { useDialogEscape } from '@/hooks/useDialogEscape'
 
@@ -50,8 +51,11 @@ export function Modal({ open, onClose, title, children, size = 'md' }: Props) {
 
   if (!open) return null
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-3 sm:p-4">
+  // 24.11.2026: вікно малюється прямо в body, а не всередині робочої області. На телефоні (Safari/Chrome iOS)
+  // область із власною прокруткою обрізає «fixed»-вікно: шапка з хрестиком ховалась під верхню панель (фото власника).
+  // Відступи — з урахуванням вирізів екрана, щоб хрестик і низ вікна не потрапляли під панелі телефона.
+  return createPortal(
+    <div className="modal-layer fixed inset-0 z-50 flex items-end sm:items-center justify-center p-3 sm:p-4" data-modal-layer>
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
       <div
         ref={dialogRef}
@@ -74,6 +78,7 @@ export function Modal({ open, onClose, title, children, size = 'md' }: Props) {
         </div>
         <div className="px-5 py-4 overflow-y-auto flex-1">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
