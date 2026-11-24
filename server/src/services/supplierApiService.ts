@@ -152,7 +152,19 @@ async function retailFor(tenantId: string) {
   return (purchase: number) => Math.max(purchase, applyMarkup(purchase, rules, 30, rounding))
 }
 
-async function writeOffers(tenantId: string, connectionId: string, offers: OfferRow[]) {
+/**
+ * Ціна продажу — для КОЖНОГО товару КОЖНОГО постачальника (слово власника 24.11.2026: «для всіх товарів від постачальників,
+ * які не в нас лежать, бо підключатиму багато різних постачальників по API»). Рахується тут, у спільному місці запису,
+ * а не в розборі прайсу окремого постачальника: новий постачальник не може записати товар без ціни продажу чи з ціною
+ * нижче закупки, хоч би що повернув його розбір. Товар без закупівельної ціни не записується взагалі.
+ */
+export function pricedOffers(offers: readonly OfferRow[], retail: (purchase: number) => number): OfferRow[] {
+  return offers.filter(offer => Number.isFinite(offer.purchase_price) && offer.purchase_price > 0)
+    .map(offer => ({ ...offer, retail_price: Math.max(offer.purchase_price, Math.round(retail(offer.purchase_price)) || 0) }))
+}
+
+async function writeOffers(tenantId: string, connectionId: string, rawOffers: OfferRow[], retail: (purchase: number) => number) {
+  const offers = pricedOffers(rawOffers, retail)
   if (!offers.length) return
   await pool.query(
     `INSERT INTO supplier_offers (tenant_id, connection_id, external_id, number, number_code, brand, name, barcode, image_url, purchase_price, retail_price, stock, total_qty, seen_at, updated_at)
@@ -332,7 +344,7 @@ export async function syncConnectionStep(connection: { id: string; tenant_id: st
       const { items, total: reported } = await omegaPage(connection.api_key, page, deps)
       total = reported
       const offers = items.map(item => omegaOffer(item, retail)).filter((offer): offer is OfferRow => Boolean(offer))
-      await writeOffers(connection.tenant_id, connection.id, offers)
+      await writeOffers(connection.tenant_id, connection.id, offers, retail)
       fetched += items.length
       if (!items.length || page * OMEGA_PAGE_SIZE >= reported) { done = true; break }
       page += 1
