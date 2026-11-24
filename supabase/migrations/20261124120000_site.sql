@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS public.site_settings (
   api_key_hash   text UNIQUE CHECK (api_key_hash IS NULL OR api_key_hash ~ '^[a-f0-9]{64}$'),
   api_key_hint   text CHECK (api_key_hint IS NULL OR char_length(api_key_hint) <= 12),
   key_created_at timestamptz,
+  -- Кому власник дав доступ до розділу «Сайт» (крім себе).
+  access_user_ids uuid[] NOT NULL DEFAULT '{}',
   updated_by     uuid,
   updated_at     timestamptz NOT NULL DEFAULT now()
 );

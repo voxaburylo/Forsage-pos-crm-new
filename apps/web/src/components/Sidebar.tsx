@@ -13,6 +13,7 @@ import {
   Wallet,
 } from 'lucide-react'
 import { useSiteUnseenCount } from '@/features/site/siteGateway'
+import { useSiteSection } from '@/features/site/siteAccess'
 import { signOut } from '@/lib/auth'
 import { useAuthStore } from '@/stores/authStore'
 import { api } from '@/lib/api'
@@ -33,6 +34,8 @@ interface NavItem {
   right?: StaffRight
   /** Лише у веб-версії: на касі для цього є повний робочий екран. */
   webOnly?: boolean
+  /** 24.11.2026: пункт видно ще й тому, кому власник дав доступ поіменно (розділ «Сайт»). */
+  grant?: 'site'
 }
 
 interface NavGroup {
@@ -108,7 +111,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/ai-agent', icon: <Sparkles size={18} />, label: 'Перевірка каталогу', roles: ['owner','admin'] },
       { to: '/staff',               icon: <UserCog size={18} />,         label: 'Працівники',          roles: ['owner','admin'] },
       { to: '/settings',            icon: <Settings size={18} />,        label: 'Налаштування',         roles: ['owner','admin'] },
-      { to: '/site',                icon: <Globe size={18} />,           label: 'Сайт',                 roles: ['owner'] },
+      { to: '/site',                icon: <Globe size={18} />,           label: 'Сайт',                 roles: ['owner'], grant: 'site' },
       { to: '/system',              icon: <Activity size={18} />,        label: 'Стан системи',         roles: ['owner','admin'], webOnly: true },
     ],
   },
@@ -183,9 +186,10 @@ function NavSection({
   const location = useLocation()
   const viaWeb = useWebWorkAccess()
   const rights = useStaffRights()
+  const siteAllowed = useSiteSection().allowed === true
 
   const visibleItems = group.items.filter(
-    (item) => navigationAllowed(item.to, isDesktopRuntime()) && !(item.webOnly && isDesktopRuntime()) && (!item.roles || item.roles.includes(role) || Boolean(item.right && rights[item.right]))
+    (item) => navigationAllowed(item.to, isDesktopRuntime()) && !(item.webOnly && isDesktopRuntime()) && (!item.roles || item.roles.includes(role) || Boolean(item.right && rights[item.right]) || (item.grant === 'site' && siteAllowed))
       // 22.11.2026: через головний ПК із вебу працюють власник, адміністратор і менеджер; 23.11 — і касир із дозволом.
       && (isDesktopRuntime() || !WEB_VIA_MAIN_PC_ROUTES.has(item.to) || viaWeb),
   )
@@ -293,7 +297,7 @@ export function Sidebar({ isOpen = false, onClose = () => {} }: SidebarProps) {
   }, [role, session?.user?.id])
 
   // 24.11.2026: нові замовлення сайту — червоний значок на «Сайт» (лише власник; сайт питаємо раз на 45 с).
-  const siteUnseen = useSiteUnseenCount(role === 'owner')
+  const siteUnseen = useSiteUnseenCount(useSiteSection().allowed === true)
   const badgeMap: Record<string, number> = {
     '/inventory/picking': pickingCount,
     '/site': siteUnseen,

@@ -1912,7 +1912,7 @@ app.whenReady().then(async () => {
     const session = requireDesktopSession()
     if (!isMainTill() || !getTillDeviceLink().available()) return null
     return getTillDeviceLink().assistant({ method: String(input?.method ?? 'GET').toUpperCase(), path: String(input?.path ?? ''),
-      body: typeof input?.body === 'string' ? input.body : undefined, role: session.role })
+      body: typeof input?.body === 'string' ? input.body : undefined, role: session.role, staffId: session.id })
   })
   // Вікно програми просить передати зміни зараз. null — ключа ПК ще немає: тоді вікно надсилає по-старому, своєю сесією.
   handleDesktopIpc('desktop:link:push-outbox', () => getOutboxPusher().pushNow())

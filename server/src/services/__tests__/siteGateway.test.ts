@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 const query = vi.hoisted(() => vi.fn())
 vi.mock('../../db/pg.js', () => ({ pool: { query } }))
-import { SITE_ACTIONS, auditSummary, callSiteGateway, checkSiteCall, notifyNewSiteOrder, siteGatewayAction } from '../siteGatewayService.js'
+import { SITE_ACTIONS, auditSummary, callSiteGateway, checkSiteCall, forgetSiteKey, notifyNewSiteOrder, readSiteKey, siteGatewayAction } from '../siteGatewayService.js'
 
 const user = { id: 'u1', tenant_id: 't1' }
 const answer = (body: unknown, status = 200) => vi.fn(async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch
@@ -19,7 +19,7 @@ describe('site gateway proxy', () => {
     expect(() => checkSiteCall('promos.upsert', { items: [{ min_price: 1 }] })).toThrow('на сайт не передаються')
     expect(() => checkSiteCall('settings.set', { values: { contact_phone1: '1', admin_password: 'x' } })).toThrow('Невідоме налаштування сайту: admin_password')
     expect(checkSiteCall('settings.set', { values: { contact_phone1: '1' } }).changes).toBe(true)
-    expect(Object.keys(SITE_ACTIONS)).toHaveLength(28)
+    expect(Object.keys(SITE_ACTIONS)).toHaveLength(29)
   })
 
   it('adds the key on the server and sends the action in the body', async () => {
@@ -32,7 +32,6 @@ describe('site gateway proxy', () => {
   })
 
   it('says in plain words what went wrong', async () => {
-    await expect(callSiteGateway('orders.list', {}, { key: '' })).rejects.toMatchObject({ code: 'SITE_GATEWAY_NOT_CONFIGURED', status: 503 })
     await expect(callSiteGateway('orders.list', {}, { key: 'k', fetchImpl: answer({ ok: false, error: 'Замовлення не знайдено' }) })).rejects.toThrow('Сайт відмовив: Замовлення не знайдено')
     await expect(callSiteGateway('orders.list', {}, { key: 'k', fetchImpl: answer({ ok: false }, 401) })).rejects.toMatchObject({ code: 'SITE_GATEWAY_KEY_REJECTED' })
     await expect(callSiteGateway('orders.list', {}, { key: 'k', fetchImpl: vi.fn(async () => new Response('<html>', { status: 404 })) as unknown as typeof fetch })).rejects.toMatchObject({ code: 'SITE_GATEWAY_NOT_READY' })
@@ -52,6 +51,34 @@ describe('site gateway proxy', () => {
     expect(sql).toContain('INSERT INTO audit_log')
     expect(values.slice(0, 4)).toEqual(['t1', 'u1', 'SITE_ORDERS_UPDATE', 'o1'])
     expect(JSON.parse(values[4])).toEqual({ id: 'o1', status: 'shipped', tracking_number: '204500' })
+  })
+
+  // 24.11.2026 (доповнення розробника сайту): ключ лежить у хмарі програми, сервер бере його функцією й тримає в памʼяті.
+  it('reads the site key from the program cloud once, keeps it in memory, forgets it when the site rejects it', async () => {
+    forgetSiteKey()
+    query.mockResolvedValueOnce({ rows: [{ key: ' cloud-key ' }] })
+    const fetchImpl = answer({ ok: true, data: { site: 'forsage-tires.com' } })
+    expect(await callSiteGateway('ping', {}, { fetchImpl })).toEqual({ site: 'forsage-tires.com' })
+    await callSiteGateway('ping', {}, { fetchImpl })
+    expect(query).toHaveBeenCalledTimes(1)
+    expect(query.mock.calls[0][0]).toBe('SELECT public.site_link_get_key() AS key')
+    expect((fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[1][1].headers['x-site-key']).toBe('cloud-key')
+    expect(await readSiteKey(Date.now() + 5 * 60_000)).toBe('cloud-key')
+    await expect(callSiteGateway('ping', {}, { fetchImpl: answer({ ok: false }, 401) })).rejects.toMatchObject({ code: 'SITE_GATEWAY_KEY_REJECTED' })
+    query.mockResolvedValueOnce({ rows: [{ key: 'new-key' }] })
+    expect(await readSiteKey()).toBe('new-key')
+    expect(query).toHaveBeenCalledTimes(2)
+  })
+
+  it('says the link is not set up when the cloud has no key, without leaking the database error', async () => {
+    forgetSiteKey()
+    query.mockRejectedValueOnce(new Error('function public.site_link_get_key() does not exist: secret'))
+    await expect(readSiteKey()).rejects.toMatchObject({ code: 'SITE_GATEWAY_NOT_CONFIGURED', status: 503 })
+    await expect(readSiteKey().catch(error => String(error.message))).resolves.not.toContain('secret')
+    forgetSiteKey()
+    query.mockResolvedValueOnce({ rows: [{ key: '' }] })
+    await expect(readSiteKey()).rejects.toMatchObject({ code: 'SITE_GATEWAY_NOT_CONFIGURED' })
+    expect(checkSiteCall('ping', {})).toEqual({ action: 'ping', params: {}, changes: false })
   })
 
   it('a change that could not be logged is reported, long texts are cut in the log, the bot hook does nothing yet', async () => {

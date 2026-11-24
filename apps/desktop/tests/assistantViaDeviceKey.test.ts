@@ -63,6 +63,6 @@ describe('assistant requests go with the main PC key', () => {
     expect(webRpcChannelAllowed('desktop:link:assistant')).toBe(false)
     const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
     // Роль береться із сесії каси, а не з того, що надіслав екран.
-    expect(main).toContain("if (!isMainTill() || !getTillDeviceLink().available()) return null\n    return getTillDeviceLink().assistant({ method: String(input?.method ?? 'GET').toUpperCase(), path: String(input?.path ?? ''),\n      body: typeof input?.body === 'string' ? input.body : undefined, role: session.role })")
+    expect(main).toContain("if (!isMainTill() || !getTillDeviceLink().available()) return null\n    return getTillDeviceLink().assistant({ method: String(input?.method ?? 'GET').toUpperCase(), path: String(input?.path ?? ''),\n      body: typeof input?.body === 'string' ? input.body : undefined, role: session.role, staffId: session.id })")
   })
 })

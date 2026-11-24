@@ -21,6 +21,9 @@ const modules = {
   '@/components/ui/Toast': `export const toast={error(){},success(){},warning(){}};`,
   '@/components/DataFreshness': `export function DataFreshness(){return null}`,
   '@/components/BuildBadge': `export function BuildBadge(){return null}`,
+  // 24.11.2026: меню питає сервер про розділ «Сайт» — у цій перевірці сервера немає.
+  '@/features/site/siteGateway': `export function useSiteUnseenCount(){return 0}`,
+  '@/features/site/siteAccess': `export function useSiteSection(){return{allowed:false,owner:false}}`,
 }
 const entry = `
 import React from 'react';import{createRoot}from'react-dom/client';import{MemoryRouter}from'react-router-dom';

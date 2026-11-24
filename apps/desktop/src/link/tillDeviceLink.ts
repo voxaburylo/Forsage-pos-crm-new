@@ -143,14 +143,14 @@ export class TillDeviceLink {
    * перевірила каса; серверу передається лише його роль. Відповідь повертається як є (код, тип, текст) — помилки
    * помічника показує екран. Лише адреси помічника: /ai/…, /vin/… і завантаження вкладення.
    */
-  async assistant(input: { method: string; path: string; body?: string; role: string }): Promise<{ status: number; content_type: string; text: string }> {
+  async assistant(input: { method: string; path: string; body?: string; role: string; staffId?: string }): Promise<{ status: number; content_type: string; text: string }> {
     const key = this.currentKey(), base = this.deps.apiUrl(), deviceId = this.deps.deviceId()
     if (!key || !base || !deviceId || !this.available()) throw new Error('Зв\'язок головного ПК не налаштовано')
     if (!isAssistantRequest(input.method, input.path)) throw new Error('Ця адреса не належить помічнику')
     if (!this.deps.request) throw new Error('Зв\'язок головного ПК не налаштовано')
     const response = await this.deps.request(base.replace(/\/$/, '') + '/api/v1/till-device' + input.path, {
       method: input.method,
-      headers: { 'Content-Type': 'application/json', Authorization: `Device ${deviceId}.${key.token}`, 'X-Forsage-Client': 'desktop', 'X-Forsage-Staff-Role': input.role },
+      headers: { 'Content-Type': 'application/json', Authorization: `Device ${deviceId}.${key.token}`, 'X-Forsage-Client': 'desktop', 'X-Forsage-Staff-Role': input.role, ...(input.staffId ? { 'X-Forsage-Staff-Id': input.staffId } : {}) },
       ...(input.method === 'GET' ? {} : { body: input.body ?? '{}' }),
       signal: AbortSignal.timeout(280_000),
     })

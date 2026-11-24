@@ -28,10 +28,13 @@ describe('site section', () => {
     expect(rows.map(row => row.id).sort()).toEqual(['a', 'b', 'c', 'x', 'y'])
   })
 
-  it('only the owner sees the section: menu, route and the server', () => {
-    expect(read('../../components/Sidebar.tsx')).toMatch(/to: '\/site',[^\n]*label: 'Сайт',\s+roles: \['owner'\] \}/)
-    expect(read('../../App.tsx')).toContain(`<Route path="/site" element={<ProtectedRoute roles={['owner']}><SitePage /></ProtectedRoute>} />`)
-    expect(read('../../../../../server/src/routes/site.ts')).toContain("siteAdminRouter.use(requireAuth, requireRole('owner'))")
+  it('the owner and those the owner allowed see the section; the server checks it itself', () => {
+    expect(read('../../components/Sidebar.tsx')).toMatch(/to: '\/site',[^\n]*label: 'Сайт',\s+roles: \['owner'\], grant: 'site' \}/)
+    expect(read('../../App.tsx')).toContain(`<Route path="/site" element={<ProtectedRoute><SiteGate><SitePage /></SiteGate></ProtectedRoute>} />`)
+    const routes = read('../../../../../server/src/routes/site.ts')
+    // Сервер сам перевіряє доступ: шлюз — власник і ті, кому він дозволив; ключ, каталог і список доступу — лише власник.
+    expect(routes).toContain("siteAdminRouter.post('/gateway', requireSiteSection,")
+    for (const line of ["put('/', ownerOnly", "post('/key', ownerOnly", "delete('/key', ownerOnly", "put('/access', ownerOnly", "get('/access', ownerOnly"]) expect(routes, line).toContain('siteAdminRouter.' + line)
     expect(navigationAllowed('/site', false)).toBe(true)
   })
 

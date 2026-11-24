@@ -4,7 +4,8 @@ import { AppError } from '../middleware/errorHandler.js'
 /**
  * Шлюз сайту forsage-tires.com (24.11.2026, контракт розробника сайту).
  * Сайт живе у своїй базі; програма керує ним через одну серверну функцію сайту — «шлюз».
- * Ключ шлюзу (SITE_API_KEY) є лише тут, на сервері програми: ні каса, ні веб його не бачать.
+ * Ключ шлюзу лежить у хмарі програми (функція public.site_link_get_key, її створив сайт) і читається лише тут,
+ * на сервері: ні каса, ні веб його не бачать; у журнали й відповіді він не потрапляє.
  * У базу сайту напряму не пишемо. Кожну зміну записуємо в журнал аудиту програми.
  */
 export const SITE_GATEWAY_URL_DEFAULT = 'https://zzxueclhkhvwdmxflmyx.supabase.co/functions/v1/site-api'
@@ -12,6 +13,8 @@ export const SITE_GATEWAY_TIMEOUT_MS = 15_000
 
 /** Дозволені дії: true — змінює щось на сайті (іде в журнал аудиту), false — лише читає. */
 export const SITE_ACTIONS: Readonly<Record<string, boolean>> = {
+  // Перевірка звʼязку: сайт відповідає { site, time, catalog_sync }.
+  'ping': false,
   'orders.list': false, 'orders.update': true, 'orders.unseen_count': false,
   'customers.list': false,
   'reviews.list': false, 'reviews.moderate': true, 'reviews.delete': true,
@@ -58,11 +61,27 @@ export function checkSiteCall(action: unknown, params: unknown): { action: strin
 
 export interface SiteGatewayDeps { fetchImpl?: typeof fetch; key?: string; url?: string }
 
+/** Ключ тримаємо в памʼяті сервера 10 хвилин; якщо сайт його не прийняв — забуваємо й наступного разу читаємо знову. */
+const KEY_TTL_MS = 10 * 60_000
+let cachedKey: { value: string; at: number } | null = null
+export function forgetSiteKey(): void { cachedKey = null }
+
+export async function readSiteKey(now = Date.now()): Promise<string> {
+  if (cachedKey && now - cachedKey.at < KEY_TTL_MS) return cachedKey.value
+  let value: unknown
+  try { value = (await pool.query('SELECT public.site_link_get_key() AS key')).rows[0]?.key } catch {
+    // Текст помилки бази навмисно не показуємо й не пишемо: у ньому не має опинитись нічого зайвого.
+    throw new AppError('SITE_GATEWAY_NOT_CONFIGURED', 'Звʼязок із сайтом ще не налаштовано: у хмарі програми немає ключа сайту (функція site_link_get_key).', 503)
+  }
+  if (typeof value !== 'string' || !value.trim()) throw new AppError('SITE_GATEWAY_NOT_CONFIGURED', 'Звʼязок із сайтом ще не налаштовано: ключ сайту порожній.', 503)
+  cachedKey = { value: value.trim(), at: now }
+  return cachedKey.value
+}
+
 /** Запит на шлюз сайту. Помилки — людською мовою: їх бачить менеджер у розділі «Сайт». */
 export async function callSiteGateway(action: string, params: Record<string, unknown>, deps: SiteGatewayDeps = {}): Promise<unknown> {
-  const key = deps.key ?? process.env.SITE_API_KEY ?? ''
+  const key = deps.key ?? await readSiteKey()
   const url = deps.url ?? process.env.SITE_API_URL ?? SITE_GATEWAY_URL_DEFAULT
-  if (!key) throw new AppError('SITE_GATEWAY_NOT_CONFIGURED', 'Звʼязок із сайтом ще не налаштовано: на сервері програми немає ключа сайту (SITE_API_KEY).', 503)
   let response: Response
   try {
     response = await (deps.fetchImpl ?? fetch)(url, {
@@ -77,7 +96,10 @@ export async function callSiteGateway(action: string, params: Record<string, unk
   }
   type Answer = { ok?: unknown; data?: unknown; error?: unknown }
   const body = await response.json().then(value => value as Answer | null, () => null)
-  if (response.status === 401 || response.status === 403) throw new AppError('SITE_GATEWAY_KEY_REJECTED', 'Сайт не прийняв ключ. Перевірте SITE_API_KEY на сервері програми.', 502)
+  if (response.status === 401 || response.status === 403) {
+    forgetSiteKey()
+    throw new AppError('SITE_GATEWAY_KEY_REJECTED', 'Сайт не прийняв ключ. Спробуйте ще раз; якщо повторюється — ключ сайту в хмарі програми застарів.', 502)
+  }
   if (response.status === 404 && !body) throw new AppError('SITE_GATEWAY_NOT_READY', 'Шлюз сайту ще не працює (адреса не відповідає).', 502)
   if (!body || typeof body !== 'object') throw new AppError('SITE_GATEWAY_BAD_ANSWER', `Сайт відповів незрозуміло (код ${response.status}).`, 502)
   if (body.ok !== true) throw new AppError('SITE_GATEWAY_REFUSED', 'Сайт відмовив: ' + (typeof body.error === 'string' && body.error ? body.error.slice(0, 300) : `код ${response.status}`), 409)

@@ -113,6 +113,36 @@ export async function revokeSiteKey(tenantId: string, userId: string) {
   return readSiteAdmin(tenantId)
 }
 
+/**
+ * Доступ до розділу «Сайт» (слово власника 24.11.2026: «ролі доступу до сайту я також можу надати»).
+ * Власник бачить розділ завжди; іншим працівникам доступ дає він сам, поіменно. Ключ сайту, доступ до каталогу
+ * і сам список доступу лишаються лише власнику.
+ */
+export async function siteSectionAllowed(user: { id: string; role: string; tenant_id: string }, staffId?: string | null): Promise<boolean> {
+  if (user.role === 'owner') return true
+  const id = staffId ?? user.id
+  if (!z.string().uuid().safeParse(id).success) return false
+  const { rows } = await pool.query('SELECT 1 FROM site_settings WHERE tenant_id = $1 AND $2::uuid = ANY(access_user_ids)', [user.tenant_id, id])
+  return rows.length > 0
+}
+
+export async function readSiteAccessIds(tenantId: string): Promise<string[]> {
+  const row = (await pool.query('SELECT access_user_ids FROM site_settings WHERE tenant_id = $1', [tenantId])).rows[0]
+  return Array.isArray(row?.access_user_ids) ? row.access_user_ids as string[] : []
+}
+
+export const siteAccessSchema = z.object({ user_ids: z.array(z.string().uuid()).max(50) }).strict()
+
+export async function saveSiteAccessIds(tenantId: string, ownerId: string, userIds: string[]): Promise<string[]> {
+  const ids = [...new Set(userIds)]
+  await pool.query(
+    `INSERT INTO site_settings (tenant_id, access_user_ids, updated_by) VALUES ($1, $2::uuid[], $3)
+     ON CONFLICT (tenant_id) DO UPDATE SET access_user_ids = EXCLUDED.access_user_ids`,
+    [tenantId, ids, ownerId],
+  )
+  return ids
+}
+
 /** Усі розділи каталогу — власник відмічає, які сховати від сайту. */
 export async function listSiteAdminCategories(tenantId: string) {
   const { rows } = await pool.query('SELECT id, parent_id, name FROM categories WHERE tenant_id = $1 AND deleted_at IS NULL ORDER BY sort_order, name', [tenantId])

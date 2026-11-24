@@ -35,6 +35,7 @@ const AdminPage            = lazyPage(() => import('@/features/admin/AdminPage')
 const SettingsPage         = lazyPage(() => import('@/features/settings/SettingsPage'))
 const SystemStatusPage     = lazyPage(() => import('@/features/system/SystemStatusPage'))
 const SitePage             = lazyPage(() => import('@/features/site/SitePage'))
+import { SiteGate } from '@/features/site/siteAccess'
 // CommissionRulesPage merged
 const SuppliersPage        = lazyPage(() => import('@/features/suppliers/SuppliersPage'))
 const SupplierFormPage     = lazyPage(() => import('@/features/suppliers/SupplierFormPage'))
@@ -256,7 +257,7 @@ function Workspace() {
           <Route path="/staff-analytics" element={<ProtectedRoute roles={ADMIN_ROLES}><StaffAnalytics /></ProtectedRoute>} />
           <Route path="/admin"    element={<TillOnly what="Адміністрування"><ProtectedRoute roles={ADMIN_ROLES}><AdminPage /></ProtectedRoute></TillOnly>} />
           {/* План T2 (23.11.2026): стан системи читається із сервера — працює й тоді, коли головний ПК не на звʼязку. */}
-          <Route path="/site" element={<ProtectedRoute roles={['owner']}><SitePage /></ProtectedRoute>} />
+          <Route path="/site" element={<ProtectedRoute><SiteGate><SitePage /></SiteGate></ProtectedRoute>} />
           <Route path="/system" element={<ProtectedRoute roles={ADMIN_ROLES}><SystemStatusPage /></ProtectedRoute>} />
           <Route path="/settings" element={<TillOnly what="Налаштування"><ProtectedRoute roles={ADMIN_ROLES}><SettingsPage /></ProtectedRoute></TillOnly>} />
           <Route path="/settings/draft-nomenclature" element={<TillOnly what="Номенклатура постачальника"><ProtectedRoute roles={ADMIN_ROLES}><SupplierPricesPage /></ProtectedRoute></TillOnly>} />

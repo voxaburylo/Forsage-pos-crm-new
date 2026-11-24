@@ -5,7 +5,7 @@ vi.mock('../../db/pg.js', () => ({ pool: { query, connect: async () => ({ query:
 vi.mock('../tillWake.js', () => ({ wakeTill: vi.fn(async () => undefined) }))
 import {
   DEFAULT_SITE_SETTINGS, SITE_KEY_PATTERN, createSiteOrder, newSiteKey, readSiteSettings, siteAccess, siteAdminUpdateSchema,
-  siteKeyHash, sitePhone, sitePrice, siteProducts, type SiteAccess,
+  siteAccessSchema, siteKeyHash, sitePhone, sitePrice, siteProducts, siteSectionAllowed, type SiteAccess,
 } from '../siteService.js'
 import { PENDING_COMMAND_TTL_SQL, SITE_ORDER_AUTHOR, orderSavePayload } from '../tillCommandService.js'
 import { isWriteAllowed } from '../../middleware/localFirstWriteGuard.js'
@@ -117,6 +117,23 @@ describe('shop site', () => {
     const order = await createSiteOrder(access(), { external_id: 'S-9', customer_name: 'Іван', customer_phone: '0501234567', items: [{ product_id: P1, qty: 1 }] })
     expect(order).toMatchObject({ state: 'in_program', order_number: '412' })
     expect(clientQuery).not.toHaveBeenCalled()
+  })
+
+  // 24.11.2026 (власник: «ролі доступу до сайту я також можу надати»).
+  it('the section is open to the owner and to staff the owner named; nobody else, and a bad id never reaches the database', async () => {
+    const staff = '00000000-0000-4000-8000-0000000000cc'
+    expect(await siteSectionAllowed({ id: 'o', role: 'owner', tenant_id: 't' })).toBe(true)
+    expect(await siteSectionAllowed({ id: 'nope', role: 'manager', tenant_id: 't' })).toBe(false)
+    expect(query).not.toHaveBeenCalled()
+    query.mockResolvedValueOnce({ rows: [{}] })
+    expect(await siteSectionAllowed({ id: staff, role: 'manager', tenant_id: 't' })).toBe(true)
+    expect(query.mock.calls[0][1]).toEqual(['t', staff])
+    query.mockResolvedValueOnce({ rows: [] })
+    // На головному ПК запит іде від імені видавця ключа — перевіряється той, кого назвала каса.
+    expect(await siteSectionAllowed({ id: 'o', role: 'cashier', tenant_id: 't' }, staff)).toBe(false)
+    expect(query.mock.calls[1][1]).toEqual(['t', staff])
+    expect(siteAccessSchema.safeParse({ user_ids: [staff] }).success).toBe(true)
+    expect(siteAccessSchema.safeParse({ user_ids: ['x'] }).success).toBe(false)
   })
 
   it('a site order waits for the till for 7 days; the site may post orders and the owner may save settings from the web', () => {
