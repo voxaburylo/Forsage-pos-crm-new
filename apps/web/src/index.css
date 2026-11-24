@@ -135,7 +135,6 @@ html, body {
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
-  -webkit-overflow-scrolling: touch;
   padding-bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
 }
 /*
@@ -159,6 +158,12 @@ html, body {
   .app-main :where(input, select, textarea) { font-size: max(16px, 1em); }
   /* Кнопки під палець. */
   .app-main :where(button, [role="button"], a[href]) { touch-action: manipulation; }
+}
+
+/* 24.11.2026: вікно (Modal) не заходить під виріз і панелі телефона (висоту не задаємо: при масштабі Windows 125–150% вона б вийшла за екран). */
+.modal-layer {
+  padding-top: max(0.75rem, env(safe-area-inset-top, 0px));
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom, 0px));
 }
 
 /* iPhone Safe Area insets */
