@@ -23,6 +23,7 @@ import { buildMessengerText, printInvoice, printDeliveryNote, loadSellerRequisit
 import { toast } from '@/components/ui/Toast'
 import { OrderProductResults } from './OrderProductResults'
 import { OrderPartSuggestions, type OrderPartSuggestion } from './OrderPartSuggestions'
+import { readOrderItemPhotos } from './orderItemPhotos'
 import { availableStock, orderNumber, stockFirst, validateOrderRows, replaceOrderProduct } from './orderUx'
 import { readOrderFormDraft, writeOrderFormDraft, removeOrderFormDraft } from './orderFormDraft'
 import { beginOrderSaveAttempt, checkOrderSaveAttempt, clearOrderSaveAttempt, readOrderSaveAttempt } from './orderSaveAttempt'
@@ -180,6 +181,8 @@ interface ItemRow {
   item_status?: CustomerOrder['items'][number]['item_status']
   buy_price?:  string
   source_type?: 'warehouse' | 'supplier'
+  /** 24.11.2026 (план C2): мініатюра зі скриншота кошика чи з довідника — зберігає головний ПК. '' — прибрати збережену. */
+  photo_data_url?: string
 }
 
 /** Колонки таблиці позицій на широкому екрані: №, назва, артикул, к-сть, закупка+націнка, продаж, сума, джерело, дії. */
@@ -505,6 +508,10 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
             buy_price: item.buy_price ? (item.buy_price / 100).toString() : '0',
             source_type: item.source_type ?? (item.product_id ? 'warehouse' : 'supplier'),
           })))
+          // 24.11.2026 (план C2): збережені мініатюри позицій — щоб їх було видно й можна було прибрати.
+          void readOrderItemPhotos(o.id).then(photos => {
+            if (Object.keys(photos).length) setItems(rows => rows.map(row => row.id && photos[row.id] && row.photo_data_url === undefined ? { ...row, photo_data_url: photos[row.id] } : row))
+          })
         }
         // Редагування: клієнт і авто вже відомі — одразу переходимо до позицій,
         // щоб не показувати екран вибору клієнта «з нуля» (плутало користувачів)
@@ -1005,8 +1012,10 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
     const order = buildOrderForDocs()
     if (kind === 'form') {
       // Бланк замовлення з мініатюрами (23.11.2026, план 4.3); реквізити продавця тут не обов'язкові.
+      // 24.11.2026 (план C2): мініатюри позицій зі скриншота кошика чи довідника — теж на бланку.
+      const drafts = Object.fromEntries(items.filter((r) => r.name.trim()).flatMap((row, index) => row.photo_data_url ? [['item:' + (row.id ?? String(index)), row.photo_data_url]] : []))
       void loadOrderThumbnails(order, desktopBridge()?.catalog?.photoThumbnails).then(thumbnails => {
-        try { printOrderForm(order, seller, thumbnails) }
+        try { printOrderForm(order, seller, { ...drafts, ...thumbnails }) }
         catch { toast.error('Не вдалося сформувати бланк. Перевірте, чи не заблоковані спливаючі вікна.') }
       })
       return
@@ -1029,19 +1038,29 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
   // Вставка Ctrl+V будь-де на бланку, перетягування файла або невелика кнопка біля списку позицій.
   const [cartBusy, setCartBusy] = useState(false)
   const cartBusyRef = useRef(false)
-  async function addCartScreenshot(file: File | null) {
-    if (!file || cartBusyRef.current || savingRef.current) return
+  // 24.11.2026 (рішення власника): одне завантаження фото додає всі товари в це замовлення; ще фото в те саме
+  // замовлення — ще товари (нічого не замінюється). Кілька фото за раз розбираються по черзі.
+  async function addCartScreenshot(input: File | File[] | null) {
+    const files = (Array.isArray(input) ? input : input ? [input] : []).filter((file) => file.type.startsWith('image/')).slice(0, 10)
+    if (!files.length || cartBusyRef.current || savingRef.current) return
     cartBusyRef.current = true
     setCartBusy(true)
     try {
       const { recognizeCartScreenshot } = await import('./orderCartScreenshot')
-      const { rows, skipped } = await recognizeCartScreenshot(file)
-      if (!rows.length) { toast.error('На скриншоті не знайдено позицій. Спробуйте чіткіший знімок кошика.'); return }
-      setItems((current) => [
-        ...current.filter((row) => row.name.trim() || row.sku.trim()),
-        ...rows.map((row) => ({ ...EMPTY_ITEM, local_key: crypto.randomUUID(), source_type: 'supplier' as const, ...row })),
-      ])
-      toast.success(`Додано ${rows.length} поз. зі скриншота${skipped ? `; пропущено без назви: ${skipped}` : ''}. Перевірте кількість і поставте ціни продажу.`)
+      let added = 0, skipped = 0, empty = 0
+      for (const file of files) {
+        const result = await recognizeCartScreenshot(file)
+        skipped += result.skipped
+        if (!result.rows.length) { empty += 1; continue }
+        added += result.rows.length
+        setItems((current) => [
+          ...current.filter((row) => row.name.trim() || row.sku.trim()),
+          ...result.rows.map((row) => ({ ...EMPTY_ITEM, local_key: crypto.randomUUID(), source_type: 'supplier' as const, ...row })),
+        ])
+      }
+      if (!added) { toast.error('На скриншоті не знайдено позицій. Спробуйте чіткіший знімок кошика.'); return }
+      const photos = files.length > 1 ? ` з ${files.length} фото` : ' зі скриншота'
+      toast.success(`Додано ${added} поз.${photos}${empty ? `; без позицій: ${empty} фото` : ''}${skipped ? `; пропущено без назви: ${skipped}` : ''}. Перевірте кількість і поставте ціни продажу.`)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося розпізнати скриншот')
     } finally {
@@ -1053,10 +1072,10 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
   useEffect(() => { addCartScreenshotRef.current = addCartScreenshot })
   useEffect(() => {
     const onPaste = (event: ClipboardEvent) => {
-      const file = Array.from(event.clipboardData?.items ?? []).find((item) => item.kind === 'file' && item.type.startsWith('image/'))?.getAsFile()
-      if (!file) return // звичайний текст вставляється в поле як завжди
+      const files = Array.from(event.clipboardData?.items ?? []).filter((item) => item.kind === 'file' && item.type.startsWith('image/')).map((item) => item.getAsFile()).filter((file): file is File => Boolean(file))
+      if (!files.length) return // звичайний текст вставляється в поле як завжди
       event.preventDefault()
-      void addCartScreenshotRef.current(file)
+      void addCartScreenshotRef.current(files)
     }
     window.addEventListener('paste', onPaste)
     return () => window.removeEventListener('paste', onPaste)
@@ -1066,6 +1085,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
     setItems((rows) => [...rows.filter((row) => row.name.trim() || row.sku.trim()), {
       ...EMPTY_ITEM, local_key: crypto.randomUUID(), source_type: 'supplier',
       name: part.name, sku: part.sku, supplier_id: part.supplier_id ?? '',
+      ...(part.photo ? { photo_data_url: part.photo } : {}),
       buy_price: part.buy_price > 0 ? kopecksToHryvnia(part.buy_price) : '0',
       sell_price: part.sell_price > 0 ? kopecksToHryvnia(part.sell_price) : '0',
     }])
@@ -1172,6 +1192,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
         source_type: row.source_type ?? (row.product_id ? 'warehouse' : 'supplier'),
         item_type: row.item_type ?? 'product', item_status: row.item_status,
         expected_date: row.source_type === 'supplier' && row.expected_date ? row.expected_date : null,
+        ...(row.photo_data_url !== undefined ? { photo_data_url: row.photo_data_url || null } : {}),
       })),
     }
     try {
@@ -1742,11 +1763,11 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
                 <div className="flex items-center gap-3">
                   <label title="Скриншот кошика постачальника: вставте (Ctrl+V), перетягніть сюди або виберіть файл"
                     onDragOver={(event) => event.preventDefault()}
-                    onDrop={(event) => { event.preventDefault(); void addCartScreenshot(Array.from(event.dataTransfer.files).find((file) => file.type.startsWith('image/')) ?? null) }}
+                    onDrop={(event) => { event.preventDefault(); void addCartScreenshot(Array.from(event.dataTransfer.files)) }}
                     className={`text-xs font-semibold ${cartBusy ? 'text-gray-400' : 'cursor-pointer text-blue-600 hover:text-blue-700'}`}>
                     {cartBusy ? 'Розпізнаю скриншот…' : '📎 Скрин кошика'}
-                    <input type="file" accept="image/*" className="hidden" disabled={cartBusy}
-                      onChange={(event) => { const file = event.target.files?.[0] ?? null; event.target.value = ''; void addCartScreenshot(file) }} />
+                    <input type="file" accept="image/*" multiple className="hidden" disabled={cartBusy}
+                      onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; void addCartScreenshot(files) }} />
                   </label>
                   <span className="text-xs text-gray-400">{items.filter((r) => r.name.trim()).length} шт</span>
                 </div>
@@ -1791,7 +1812,18 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
                         <div className="grid grid-cols-2 gap-3 lg:contents">
                           <label className="col-span-2 lg:col-span-1">
                             <span className="mb-1 block text-xs text-gray-600 lg:sr-only">Назва запчастини, бренд *</span>
-                            <input value={row.name} onChange={(e) => updateItem(idx, 'name', e.target.value)} placeholder="Назва та бренд запчастини" className={fieldClass} />
+                            <span className="flex items-center gap-1.5">
+                              {/* 24.11.2026 (план C2): мініатюра зі скриншота кошика чи довідника; невдалу можна прибрати. */}
+                              {row.photo_data_url && (
+                                <span className="relative shrink-0" data-order-form-photo>
+                                  <img src={row.photo_data_url} alt="" draggable={false} className="h-9 w-9 rounded border border-gray-200 bg-white object-contain" />
+                                  <button type="button" aria-label="Прибрати мініатюру" title="Прибрати мініатюру"
+                                    onClick={(event) => { event.preventDefault(); setItems((rows) => rows.map((item, index) => index === idx ? { ...item, photo_data_url: '' } : item)) }}
+                                    className="absolute -right-1.5 -top-1.5 rounded-full border border-gray-200 bg-white px-1 text-[10px] leading-4 text-gray-500 hover:text-red-600">×</button>
+                                </span>
+                              )}
+                              <input value={row.name} onChange={(e) => updateItem(idx, 'name', e.target.value)} placeholder="Назва та бренд запчастини" className={fieldClass} />
+                            </span>
                           </label>
                           <label>
                             <span className="mb-1 block text-xs text-gray-600 lg:sr-only">Артикул / OEM</span>

@@ -42,6 +42,15 @@ const ORDER_STATUS_TRANSITIONS: Record<string, string[]> = {
  * Лише при СТВОРЕННІ; гроші й залишки не зачіпаються: оплати приймає тільки каса.
  */
 const notebookOrderKey = (tenantId: string, orderId: string) => `notebook-order:${tenantId}:${orderId}`
+/**
+ * 24.11.2026 (план C2): мініатюра позиції замовлення (вирізана зі скриншота кошика або взята з довідника за артикулом).
+ * Живе лише на головному ПК (app_meta), без зміни схеми бази: відкат на попередню збірку лишається можливим,
+ * а на сервер мініатюри не їдуть — веб бачить їх через головний ПК.
+ */
+const itemPhotoKey = (tenantId: string, itemId: string) => `order-item-photo:${tenantId}:${itemId}`
+const ITEM_PHOTO_PATTERN = /^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/
+const ITEM_PHOTO_MAX_CHARS = 80_000
+const photoSkuKey = (value: unknown) => String(value ?? '').normalize('NFKC').toUpperCase().replace(/[^\p{L}\p{N}]/gu, '')
 const NOTEBOOK_INITIAL_STATUSES = new Set(['ordered', 'arrived', 'called', 'archived'])
 function initialOrderStatus(input: any): string {
   if (input?.initial_status === undefined || input.initial_status === null) return 'lead'
@@ -53,7 +62,7 @@ function canChangeOrderStatus(from: string, to: string): boolean {
   return from === to || (ORDER_STATUS_TRANSITIONS[from] ?? []).includes(to)
 }
 
-export interface OrderPartSuggestion { name: string; sku: string; buy_price: number; sell_price: number; supplier_id: string | null; supplier_name: string | null; last_used_at: string }
+export interface OrderPartSuggestion { name: string; sku: string; buy_price: number; sell_price: number; supplier_id: string | null; supplier_name: string | null; last_used_at: string; photo?: string | null }
 export interface InvoiceArrivalOrder { order_id: string; order_number: number; customer_name: string | null; customer_phone: string | null; items: Array<{ name: string; qty: number }>; complete: boolean }
 export interface InvoiceArrivalShortage { order_number: number; name: string; needed: number; available: number }
 /** 23.11.2026 (план C3): позиція замовлення, яку ще треба замовити в постачальника. */
@@ -374,6 +383,7 @@ export class LocalOrderRepository {
           item.core_deposit_amount, item.core_return_status, timestamp,
           item.created_at ?? timestamp, timestamp,
         )
+        this.storeItemPhoto(tenantId, id, itemId, item.sku, item.photo_data_url)
       }
       if (orderId) {
         const currentItems = this.db.prepare(`
@@ -713,6 +723,37 @@ export class LocalOrderRepository {
     })
     return this.getOrder(orderId, tenantId)
   }
+  /** Мініатюра позиції: лише картинка, не більша за 80 000 знаків; некоректна мовчки не зберігається (замовлення важливіше). */
+  private storeItemPhoto(tenantId: string, orderId: string, itemId: string, sku: unknown, dataUrl: unknown): void {
+    // null — людина прибрала мініатюру в бланку.
+    if (dataUrl === null) { this.db.prepare('DELETE FROM app_meta WHERE key = ?').run(itemPhotoKey(tenantId, itemId)); return }
+    if (typeof dataUrl !== 'string' || dataUrl.length > ITEM_PHOTO_MAX_CHARS || !ITEM_PHOTO_PATTERN.test(dataUrl)) return
+    this.db.prepare(`INSERT INTO app_meta(key, value_json, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`)
+      .run(itemPhotoKey(tenantId, itemId), JSON.stringify({ data_url: dataUrl, sku_key: photoSkuKey(sku), order_id: orderId }), nowIso())
+  }
+
+  /** Мініатюри позицій замовлення: { ідентифікатор позиції: картинка }. */
+  listItemPhotos(orderId: string, tenantId = DEFAULT_TENANT_ID): Record<string, string> {
+    if (typeof orderId !== 'string' || !/^[a-zA-Z0-9-]{1,128}$/.test(orderId)) throw new Error('Некоректне замовлення')
+    const items = this.db.prepare('SELECT id FROM customer_order_items WHERE order_id = ? AND tenant_id = ? AND deleted_at IS NULL').all(orderId, tenantId) as Array<{ id: string }>
+    const result: Record<string, string> = {}
+    for (const item of items) {
+      const row = this.db.prepare('SELECT value_json FROM app_meta WHERE key = ?').get(itemPhotoKey(tenantId, item.id)) as { value_json: string } | undefined
+      try { const value = row ? JSON.parse(row.value_json) as { data_url?: unknown } : null; if (typeof value?.data_url === 'string' && ITEM_PHOTO_PATTERN.test(value.data_url)) result[item.id] = value.data_url } catch { /* пропуск */ }
+    }
+    return result
+  }
+
+  /** Довідник запчастин: остання мініатюра, збережена для цього артикула (точний збіг, від 4 знаків). */
+  partPhoto(sku: unknown, tenantId = DEFAULT_TENANT_ID): string | null {
+    const key = photoSkuKey(sku)
+    if (key.length < 4) return null
+    const row = this.db.prepare(`SELECT value_json FROM app_meta WHERE key LIKE ? AND json_extract(value_json, '$.sku_key') = ?
+      ORDER BY updated_at DESC LIMIT 1`).get(`order-item-photo:${tenantId}:%`, key) as { value_json: string } | undefined
+    try { const value = row ? JSON.parse(row.value_json) as { data_url?: unknown } : null; return typeof value?.data_url === 'string' && ITEM_PHOTO_PATTERN.test(value.data_url) ? value.data_url : null } catch { return null }
+  }
+
   listPendingItems(supplierId: string, tenantId = DEFAULT_TENANT_ID): any[] {
     return this.db.prepare(`
       SELECT i.*, o.order_number, o.customer_id
@@ -813,7 +854,7 @@ export class LocalOrderRepository {
       if (seen.has(key)) continue
       seen.add(key)
       result.push({ name: row.name.trim(), sku: String(row.sku ?? '').trim(), buy_price: Math.round(num(row.buy_price)), sell_price: Math.round(num(row.sell_price)),
-        supplier_id: row.supplier_id, supplier_name: row.supplier_name, last_used_at: row.updated_at })
+        supplier_id: row.supplier_id, supplier_name: row.supplier_name, last_used_at: row.updated_at, photo: this.partPhoto(row.sku, tenantId) })
       if (result.length >= Math.max(1, Math.min(20, limit))) break
     }
     return result

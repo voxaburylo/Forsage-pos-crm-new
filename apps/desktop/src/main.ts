@@ -2227,6 +2227,12 @@ app.whenReady().then(async () => {
     requireLocalOrders().bulkArrival(itemIds, tenantId),
   )
   // 23.11.2026 (план C3): «Замовити в постачальника».
+  // 24.11.2026 (план C2): скасувати всю пачку одного завантаження блокнота.
+  // 24.11.2026 (план C2): мініатюри позицій замовлення (зі скриншота кошика чи з довідника).
+  handleDesktopIpc('desktop:orders:item-photos', (_event, orderId: string) =>
+    requireLocalOrders().listItemPhotos(orderId, requireDesktopSession().tenant_id))
+  handleDesktopIpc('desktop:orders:cancel-notebook-batch', (_event, input: { order_ids?: unknown; customer_ids?: unknown }) =>
+    requireLocalOrders().cancelNotebookBatch(input, requireDesktopSession().tenant_id))
   handleDesktopIpc('desktop:orders:supplier-lines', () =>
     requireLocalOrders().listSupplierOrderLines(requireDesktopSession().tenant_id))
   handleDesktopIpc('desktop:orders:bulk-ordered', (_event, itemIds: string[]) =>

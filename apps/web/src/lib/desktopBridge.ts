@@ -786,8 +786,12 @@ export interface ForsageDesktopBridge {
     supplierLines?: () => Promise<Array<{ item_id: string; order_id: string; order_number: number; name: string; sku: string | null; qty: number
       supplier_id: string | null; supplier_name: string | null; customer_name: string | null; customer_phone: string | null; created_at: string }>>
     bulkOrdered?: (itemIds: string[]) => Promise<{ updated: number }>
+    /** 24.11.2026 (план C2): скасувати всі замовлення (і заведених клієнтів) одного завантаження блокнота. */
+    cancelNotebookBatch?: (input: { order_ids: string[]; customer_ids: string[] }) => Promise<{ orders: number; customers: number; kept_customers: number }>
+    /** 24.11.2026 (план C2): мініатюри позицій замовлення { позиція: картинка }. */
+    itemPhotos?: (orderId: string) => Promise<Record<string, string>>
     /** 22.11.2026: довідник запчастин «під замовлення» — те, що вже замовляли клієнтам (ціни в копійках). */
-    suggestParts?: (query: string) => Promise<Array<{ name: string; sku: string; buy_price: number; sell_price: number; supplier_id: string | null; supplier_name: string | null; last_used_at: string }>>
+    suggestParts?: (query: string) => Promise<Array<{ name: string; sku: string; buy_price: number; sell_price: number; supplier_id: string | null; supplier_name: string | null; last_used_at: string; photo?: string | null }>>
     /** 22.11.2026: проведена накладна відмічає «прибуло» в замовленнях і повертає список «кому подзвонити». */
     arrivalFromInvoice?: (invoiceId: string) => Promise<{
       orders: Array<{ order_id: string; order_number: number; customer_name: string | null; customer_phone: string | null; items: Array<{ name: string; qty: number }>; complete: boolean }>

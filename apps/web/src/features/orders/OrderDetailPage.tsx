@@ -18,6 +18,7 @@ import type { Customer } from '@/types/customer'
 import type { Product } from '@/types/product'
 import { loadProductLabelSettings, printLabels, printLabelDocument } from '@/features/labels/LabelDesigner'
 import { arrivalLinks, arrivalMessage, buildOrderLabelDocument } from './orderArrivalNotice'
+import { itemPhotoThumbnails, useOrderItemPhotos } from './orderItemPhotos'
 import { printInvoice, printDeliveryNote, orderMessengerText, loadSellerRequisites, hasSellerRequisites, loadOrderThumbnails, printOrderForm } from './orderDocuments'
 import { isTerminalOrderStatus } from './orderStatus'
 import { allowedOrderStatusTransitions } from './orderWorkflow'
@@ -142,6 +143,8 @@ export default function OrderDetailPage() {
 
   const [payments, setPayments] = useState<Payment[]>([])
   const [actionsOpen, setActionsOpen] = useState(false)
+  // 24.11.2026 (план C2): мініатюри позицій (зі скриншота кошика чи з довідника) — зберігає головний ПК.
+  const itemPhotos = useOrderItemPhotos(id, order?.updated_at)
 
   const [quickCustomer, setQuickCustomer] = useState<Customer | null>(null)
   const [customerEditorOpen, setCustomerEditorOpen] = useState(false)
@@ -366,7 +369,7 @@ export default function OrderDetailPage() {
                 <button
                   onClick={async () => {
                     setActionsOpen(false)
-                    const thumbnails = await loadOrderThumbnails(order, desktopBridge()?.catalog?.photoThumbnails)
+                    const thumbnails = { ...itemPhotoThumbnails(itemPhotos), ...await loadOrderThumbnails(order, desktopBridge()?.catalog?.photoThumbnails) }
                     try {
                       printOrderForm(order, loadSellerRequisites(), thumbnails)
                     } catch (err) {
@@ -651,6 +654,7 @@ export default function OrderDetailPage() {
                   <div key={item.id} className="flex flex-col md:flex-row md:items-center justify-between bg-gray-50 rounded-xl p-4 text-sm gap-3 shadow-sm border border-gray-100/50">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-start gap-2 flex-wrap">
+                        {itemPhotos[item.id] && <img src={itemPhotos[item.id]} alt="" loading="lazy" draggable={false} data-order-item-photo className="h-10 w-10 shrink-0 rounded border border-gray-100 bg-white object-contain" />}
                         <span className="font-semibold text-gray-900 leading-snug">{item.name}</span>
                         {item.sku && <span className="text-gray-400 text-xs font-mono bg-white px-1.5 py-0.5 rounded border border-gray-100">{item.sku}</span>}
                       </div>

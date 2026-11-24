@@ -356,7 +356,7 @@ export function orderFormHtml(order: CustomerOrder, seller: SellerRequisites, th
     return `
       <tr>
         <td class="c">${index + 1}</td>
-        <td class="c">${thumbHtml(item.product_id ? thumbnails[item.product_id] : undefined)}</td>
+        <td class="c">${thumbHtml((item.product_id ? thumbnails[item.product_id] : undefined) ?? thumbnails['item:' + item.id])}</td>
         <td><div class="strong">${esc(item.name)}</div>${item.sku ? `<div class="muted">${esc(item.sku)}</div>` : ''}</td>
         <td class="c">${item.qty}</td>
         <td class="r">${money(item.sell_price / 100)}</td>

@@ -26,7 +26,7 @@ export class LanOrderClient {
     }
     if (channel === 'desktop:orders:list') return this.queue.list(hub, session, args[0])
     if (channel === 'desktop:orders:get') return this.queue.get(hub, session, args[0])
-    if (channel.startsWith('desktop:orders:') && !['desktop:orders:count', 'desktop:orders:list-ready', 'desktop:orders:pending-items', 'desktop:orders:supplier-lines', 'desktop:orders:list-payments', 'desktop:orders:list-payments-period'].includes(channel)) {
+    if (channel.startsWith('desktop:orders:') && !['desktop:orders:count', 'desktop:orders:list-ready', 'desktop:orders:pending-items', 'desktop:orders:supplier-lines', 'desktop:orders:item-photos', 'desktop:orders:list-payments', 'desktop:orders:list-payments-period'].includes(channel)) {
       this.queue.assertNoPending(hub, session, typeof args[0] === 'string' ? args[0] : undefined)
     }
     return this.network.invoke(channel, args, session)

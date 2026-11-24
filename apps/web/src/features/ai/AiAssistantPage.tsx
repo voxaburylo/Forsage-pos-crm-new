@@ -22,6 +22,7 @@ import { toast } from '@/components/ui/Toast'
 import { aiApi } from './aiApi'
 import { aiProgressLabel } from './aiProgress'
 import { recognitionPriceHint } from './aiPriceHint'
+import { batchOf, forgetBatchOrders, readBatchOrders, rememberBatchOrder } from './aiOrderBatch'
 import type { AiChatResponse, AiStatus, AiPendingAction, AiChatMessage, AiActionChange, AiChatImage } from './aiApi'
 import { OrderConfirmModal } from './OrderConfirmModal'
 import { openAiInvoiceDraft } from './openAiInvoiceDraft'
@@ -283,6 +284,9 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
   const [applyErrors, setApplyErrors] = useState<Record<string, Array<{ item: string; error: string }>>>(savedChat.applyErrors ?? {})
   const [applyStatus, setApplyStatus] = useState<Record<string, 'ok' | 'warn'>>(savedChat.applyStatus ?? {})
   const [applyingId, setApplyingId] = useState<string | null>(null)
+  // 24.11.2026 (план C2): що створила кожна загрузка блокнота — для «Скасувати всю пачку».
+  const [batchOrders, setBatchOrders] = useState(() => readBatchOrders(storageKey, localStorage))
+  const [cancellingBatch, setCancellingBatch] = useState('')
   const [dragOver, setDragOver] = useState(false)
   const [modalAction, setModalAction] = useState<AiPendingAction | null>(null)
 
@@ -813,6 +817,8 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
         const num = r?.order_number != null ? `#${r.order_number}` : ''
         const where = r?.status === 'completed' ? 'в архіві (Виконані)' : 'у розділі «Замовлення»'
         const msg = `Замовлення ${num} створено — ${where}` + (r?.customer_created ? ', клієнта заведено' : '')
+        rememberBatchOrder(storageKey, localStorage, action.id, r)
+        setBatchOrders(readBatchOrders(storageKey, localStorage))
         if (markSaved(msg, 'ok')) toast.success(msg)
         return true
       }
@@ -853,6 +859,29 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
       applyBusy.current = false
       if (isCurrentContext()) setApplyingId(null)
     }
+  }
+
+  // 24.11.2026 (план C2): одна загрузка фото блокнота — одна пачка; скасувати її одним рухом, цілком або ніяк.
+  async function cancelBatch(entryKey: string, actionIds: string[]) {
+    const cancel = desktopBridge()?.orders?.cancelNotebookBatch
+    const batch = batchOf(actionIds, batchOrders)
+    if (!cancel || cancellingBatch || batch.order_ids.length === 0) return
+    const numbers = batch.numbers.length ? ' (№ ' + batch.numbers.join(', ') + ')' : ''
+    const customers = batch.customer_ids.length ? ` і заведених клієнтів: ${batch.customer_ids.length} (якщо в них немає інших замовлень, чеків чи грошей)` : ''
+    if (!window.confirm(`Скасувати всю пачку з цих фото? Буде видалено замовлень: ${batch.order_ids.length}${numbers}${customers}. Якщо хоч одне вже оплачене чи видане — нічого не зміниться.`)) return
+    setCancellingBatch(entryKey)
+    try {
+      const result = await cancel({ order_ids: batch.order_ids, customer_ids: batch.customer_ids })
+      forgetBatchOrders(storageKey, localStorage, batch.actionIds)
+      setBatchOrders(readBatchOrders(storageKey, localStorage))
+      const note = `Пачку скасовано: видалено замовлень ${result.orders}` + (result.customers ? `, клієнтів ${result.customers}` : '') + (result.kept_customers ? `; клієнтів лишено (є інші записи): ${result.kept_customers}` : '')
+      setApplyMsg(prev => ({ ...prev, ...Object.fromEntries(batch.actionIds.map(id => [id, note])) }))
+      setApplyStatus(prev => ({ ...prev, ...Object.fromEntries(batch.actionIds.map(id => [id, 'warn' as const])) }))
+      requestDesktopSync()
+      toast.success(note)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося скасувати пачку')
+    } finally { setCancellingBatch('') }
   }
 
   function onKeyDown(e: React.KeyboardEvent) {
@@ -1099,6 +1128,19 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
                     </Card>
                   )
                 })}
+
+                {(() => {
+                  const ids = (entry.actions ?? []).filter(action => action.tool === 'create_order').map(action => action.id)
+                  const batch = batchOf(ids, batchOrders)
+                  if (batch.order_ids.length === 0 || !desktopBridge()?.orders?.cancelNotebookBatch) return null
+                  const entryKey = ids.join('|')
+                  return (
+                    <Button type="button" variant="secondary" className="text-xs" data-ai-batch-cancel loading={cancellingBatch === entryKey}
+                      disabled={Boolean(cancellingBatch) || !!applyingId || sending} onClick={() => void cancelBatch(entryKey, ids)}>
+                      Скасувати всю пачку ({batch.order_ids.length} замовл.)
+                    </Button>
+                  )
+                })()}
 
                 {entry.role === 'model' && entry.cost !== undefined && entry.cost > 0 && (
                   <span className="text-[10px] text-gray-300 px-1">≈ ${entry.cost.toFixed(5)}</span>

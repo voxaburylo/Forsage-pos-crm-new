@@ -499,7 +499,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                     )}
                   </div>
                 </div>
-                <OrderHandoverItems items={order.items ?? []} />
+                <OrderHandoverItems items={order.items ?? []} orderId={order.id} />
                 {renderOrderActions(order, 'mobile')}
               </div>
             )
@@ -754,7 +754,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                       )}
                     </div>
                   </div>
-                <OrderHandoverItems items={order.items ?? []} />
+                <OrderHandoverItems items={order.items ?? []} orderId={order.id} />
                 {renderOrderActions(order, 'desktop')}
                 </div>
               )

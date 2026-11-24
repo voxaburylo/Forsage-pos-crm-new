@@ -1066,6 +1066,7 @@ const SUPPLY_INVOICE_PHOTO_SCHEMA = {
           qty: { type: SchemaType.NUMBER },
           purchase_price_uah: { type: SchemaType.NUMBER },
           unit: { type: SchemaType.STRING },
+          image_box: { type: SchemaType.ARRAY, items: { type: SchemaType.NUMBER }, description: 'Лише коли запит просить мініатюри (скриншот кошика): межі картинки товару в рядку — [ліво, верх, ширина, висота] у відсотках від усього фото. Для накладних не заповнюй.' },
           line_total: { type: SchemaType.NUMBER, description: 'Сума товарного рядка, лише якщо надрукована. Не обчислюй її сам.' },
           source_name: { type: SchemaType.STRING },
         },

@@ -243,6 +243,8 @@ export function createDesktopApi(ipcRenderer: DesktopInvoker) {
       pendingItems: (supplierId: string, tenantId?: string) => ipcRenderer.invoke('desktop:orders:pending-items', supplierId, tenantId),
       bulkArrival: (itemIds: string[], tenantId?: string) => ipcRenderer.invoke('desktop:orders:bulk-arrival', itemIds, tenantId),
       supplierLines: () => ipcRenderer.invoke('desktop:orders:supplier-lines'),
+      cancelNotebookBatch: (input: { order_ids: string[]; customer_ids: string[] }) => ipcRenderer.invoke('desktop:orders:cancel-notebook-batch', input),
+      itemPhotos: (orderId: string) => ipcRenderer.invoke('desktop:orders:item-photos', orderId),
       bulkOrdered: (itemIds: string[]) => ipcRenderer.invoke('desktop:orders:bulk-ordered', itemIds),
       arrivalFromInvoice: (invoiceId: string) => ipcRenderer.invoke('desktop:orders:arrival-from-invoice', invoiceId),
       suggestParts: (query: string) => ipcRenderer.invoke('desktop:orders:suggest-parts', query),

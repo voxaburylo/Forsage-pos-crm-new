@@ -1,9 +1,10 @@
 import { api } from '@/lib/api'
 import { dataUrlToBlob, removeProcessingUploads, uploadProcessingBlob } from '@/lib/processingUploads'
 import { prepareImageDataUrl } from '@/lib/prepareImage'
+import { cropThumbnail, loadImage, readImageBox } from './cartThumbnails'
 
 /** Рядок, розпізнаний зі скриншота кошика постачальника (22.11.2026, етап 2 плану). */
-export interface CartScreenshotRow { name: string; sku: string; qty: string; buy_price: string }
+export interface CartScreenshotRow { name: string; sku: string; qty: string; buy_price: string; photo_data_url?: string }
 
 const text = (value: unknown) => String(value ?? '').normalize('NFKC').replace(/\s+/g, ' ').trim()
 
@@ -34,7 +35,7 @@ export function cartScreenshotRows(products: unknown): { rows: CartScreenshotRow
   return { rows, skipped }
 }
 
-const INSTRUCTION = 'Це скриншот КОШИКА на сайті постачальника автозапчастин, а не накладна. Перенеси кожний рядок кошика: назву, артикул (код біля назви), бренд, кількість і ціну за одиницю як закупівельну. Колонки наявності по складах і підсумкову суму рядка не плутай із кількістю та ціною.'
+const INSTRUCTION = 'Це скриншот КОШИКА на сайті постачальника автозапчастин, а не накладна. Перенеси кожний рядок кошика: назву, артикул (код біля назви), бренд, кількість і ціну за одиницю як закупівельну. Колонки наявності по складах і підсумкову суму рядка не плутай із кількістю та ціною. Якщо в рядку є картинка товару, у image_box вкажи її межі: [ліво, верх, ширина, висота] у відсотках від усього скриншота; немає картинки — не заповнюй.'
 
 /** Розпізнає скриншот кошика через помічника (потрібен інтернет і ввімкнений ШІ). */
 export async function recognizeCartScreenshot(file: Blob): Promise<{ rows: CartScreenshotRow[]; skipped: number }> {
@@ -46,7 +47,15 @@ export async function recognizeCartScreenshot(file: Blob): Promise<{ rows: CartS
       message: INSTRUCTION,
       images: [{ mime_type: compressed.type === 'image/png' ? 'image/png' : compressed.type === 'image/webp' ? 'image/webp' : 'image/jpeg', storage_path: uploaded.path }],
     }, undefined, { timeoutMs: 180_000, silent: true })
-    return cartScreenshotRows(response.data.actions?.[0]?.payload?.products)
+    const products = response.data.actions?.[0]?.payload?.products
+    const result = cartScreenshotRows(products)
+    // 24.11.2026 (план C2): мініатюра товару зі скриншота — лише там, де ШІ показав правдоподібні межі.
+    const boxes = Array.isArray(products) ? products.filter(raw => String((raw as Record<string, unknown>)?.source_name ?? (raw as Record<string, unknown>)?.name ?? '').trim()).map(raw => readImageBox((raw as Record<string, unknown>)?.image_box)) : []
+    if (boxes.some(Boolean)) {
+      const image = await loadImage(compressed)
+      if (image) result.rows.forEach((row, index) => { const box = boxes[index]; const thumb = box ? cropThumbnail(image, box) : null; if (thumb) row.photo_data_url = thumb })
+    }
+    return result
   } finally {
     await removeProcessingUploads([uploaded.path]).catch(() => {})
   }
