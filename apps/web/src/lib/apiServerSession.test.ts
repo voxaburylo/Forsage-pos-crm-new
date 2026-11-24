@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-vi.mock('./desktopBridge', () => ({ isDesktopRuntime: () => true }))
+vi.mock('./desktopBridge', () => ({ isDesktopRuntime: () => true, desktopBridge: () => null }))
 vi.mock('./supabase', () => ({ supabase: { auth: {
   getSession: async () => ({ data: { session: null } }),
   refreshSession: async () => ({ data: { session: null }, error: Error('no session') }),

@@ -144,6 +144,8 @@ export function request<T>(path: string, options?: RequestOptions): Promise<T> {
     options?.timeoutMs ?? DEFAULT_API_REQUEST_TIMEOUT_MS, options?.signal)
 }
 
+import { assistantThroughMainPc } from './assistantViaMainPc'
+
 async function requestOnce<T>(path: string, options?: RequestOptions): Promise<T> {
   if (isWebReadOnlyRequest(path, options?.method)) {
     const error = new Error('Через веб можна тільки дивитися. Зміни робіть у локальній програмі на касі.')
@@ -157,8 +159,13 @@ async function requestOnce<T>(path: string, options?: RequestOptions): Promise<T
   delete fetchOptions.onProgressLine
   delete fetchOptions.timeoutMs
 
+  // 24.11.2026 (власник: «прибери пароль у ШІ-помічнику»): на головному ПК працівник входить локальним паролем чи PIN
+  // і серверної сесії не має — запит помічника йде ключем самого ПК (lib/assistantViaMainPc), без другого пароля.
+  const viaMainPcFirst = token ? null : await assistantThroughMainPc(path, fetchOptions.method, fetchOptions.body)
+  options?.signal?.throwIfAborted()
   let res: Response
-  try {
+  if (viaMainPcFirst) res = viaMainPcFirst
+  else try {
     res = await fetch(`${API_BASE_URL}${path}`, {
       ...fetchOptions,
       signal: fetchOptions.signal,
@@ -193,17 +200,24 @@ async function requestOnce<T>(path: string, options?: RequestOptions): Promise<T
     // Серверна авторизація не повинна закривати робочу локальну касу.
     // Після відновлення онлайн-сесії фоновий обмін повторить запит.
     if (isDesktopRuntime()) {
-      throw Object.assign(new Error('Серверна сесія ще не відновлена. Локальна програма продовжує працювати.'), {
-        status: 401, code: 'DESKTOP_SERVER_AUTH_REQUIRED',
-      })
+      // Сесія була, але сервер її вже не приймає — помічник іде ключем ПК; решта запитів чекає відновлення сесії.
+      const viaMainPc = viaMainPcFirst ? null : await assistantThroughMainPc(path, fetchOptions.method, fetchOptions.body)
+      options?.signal?.throwIfAborted()
+      if (!viaMainPc) {
+        throw Object.assign(new Error('Серверна сесія ще не відновлена. Локальна програма продовжує працювати.'), {
+          status: 401, code: 'DESKTOP_SERVER_AUTH_REQUIRED',
+        })
+      }
+      res = viaMainPc
+    } else {
+      // Refresh не вдався — виходимо на логін
+      try {
+        const { supabase } = await import('./supabase')
+        await supabase.auth.signOut()
+      } catch { /* ignore */ }
+      window.location.href = '/login'
+      throw new Error('Сесія закінчилась. Увійдіть знову.')
     }
-    // Refresh не вдався — виходимо на логін
-    try {
-      const { supabase } = await import('./supabase')
-      await supabase.auth.signOut()
-    } catch { /* ignore */ }
-    window.location.href = '/login'
-    throw new Error('Сесія закінчилась. Увійдіть знову.')
   }
 
   if (!res.ok) {

@@ -7,6 +7,10 @@ import { claimRpc, finishRpc, rpcResultSchema } from '../services/tillRpcService
 import { exportServerOnlyData } from '../services/serverDataExport.js'
 import { devicePushSchema, pushFromMainPc } from '../services/tillDevicePush.js'
 import { saveStatusReport } from '../services/systemStatusService.js'
+import { storeProcessingUpload } from '../services/processingUploadService.js'
+import { assistantActor, DEVICE_AI_DENIED } from '../services/tillAssistantActor.js'
+import aiRouter from './ai.js'
+import vinRouter from './vin.js'
 
 /**
  * Зв'язок головного ПК власним ключем (див. tillDeviceService): програма забирає запити вебу й тоді,
@@ -76,3 +80,35 @@ tillDeviceRouter.post('/server-data', requireTillDevice, async (req: DeviceReque
     res.json({ data: await exportServerOnlyData(req.tillDevice!.tenant_id) })
   } catch (err) { next(err) }
 })
+
+/**
+ * 24.11.2026 (власник: «прибери пароль у ШІ-помічнику»): помічник на головному ПК працює ключем самого ПК.
+ * Працівник входить на касі локальним паролем чи PIN — серверної сесії в нього немає, і помічник просив ще один
+ * пароль. Тепер каса, яка вже перевірила працівника, передає запит помічника своїм ключем і називає його роль.
+ * Дії на сервері записуються на користувача, що видав ключ ПК (власник). Ключ ШІ та його перевірка сюди не входять:
+ * їх змінює лише власник зі своїм входом.
+ */
+// Хто діє й що закрито — services/tillAssistantActor.ts.
+
+function actAsTillStaff(req: DeviceRequest, _res: Response, next: NextFunction): void {
+  try {
+    req.tillDeviceActor = assistantActor(req.tillDevice!, req.get('x-forsage-staff-role'))
+    next()
+  } catch (err) { next(err) }
+}
+
+tillDeviceRouter.post('/assistant-upload', requireTillDevice, actAsTillStaff, async (req: DeviceRequest, res, next) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store')
+    const purpose = req.body?.purpose === 'vin' ? 'vin' : req.body?.purpose === 'ai' ? 'ai' : null
+    const encoded = typeof req.body?.data_base64 === 'string' ? req.body.data_base64 : ''
+    if (!purpose || !encoded || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) throw new AppError('VALIDATION_ERROR', 'Некоректне вкладення', 422)
+    res.json({ data: await storeProcessingUpload({ userId: req.tillDeviceActor!.id, purpose, mimeType: String(req.body?.mime_type ?? '').toLowerCase(), buffer: Buffer.from(encoded, 'base64') }) })
+  } catch (err) { next(err) }
+})
+
+tillDeviceRouter.use('/ai', requireTillDevice, actAsTillStaff, (req, _res, next) => {
+  if (DEVICE_AI_DENIED.has(req.path)) return next(new AppError('FORBIDDEN', 'Ключ ШІ змінює лише власник зі своїм входом', 403))
+  next()
+}, aiRouter)
+tillDeviceRouter.use('/vin', requireTillDevice, actAsTillStaff, vinRouter)

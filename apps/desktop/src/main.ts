@@ -827,6 +827,7 @@ let tillDeviceLinkError = ''
 function getTillDeviceLink(): TillDeviceLink {
   tillDeviceLink ??= new TillDeviceLink({
     fetch: (url, init) => net.fetch(url, init as RequestInit),
+    request: (url, init) => net.fetch(url, init as RequestInit),
     apiUrl: () => { try { return requireTrustedAuthConfig().apiUrl ?? null } catch { return null } },
     deviceId: () => localDatabase?.deviceId ?? null,
     readKey: () => {
@@ -1904,6 +1905,14 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:link:status', () => ({ ...getTillDeviceLink().status(), main_till: linkPossible() }))
   handleDesktopIpc('desktop:link:wake', async () => ({ ...(await getTillDeviceLink().wake()), main_till: linkPossible() }))
   handleDesktopIpc('desktop:link:commands-taken', () => { getTillDeviceLink().commandsTaken() })
+  // 24.11.2026: помічник без другого пароля — запит іде ключем головного ПК (див. TillDeviceLink.assistant).
+  // null — ключа ПК немає або це ПК менеджера: тоді екран працює по-старому, сесією працівника.
+  handleDesktopIpc('desktop:link:assistant', async (_event, input: { method?: unknown; path?: unknown; body?: unknown }) => {
+    const session = requireDesktopSession()
+    if (!isMainTill() || !getTillDeviceLink().available()) return null
+    return getTillDeviceLink().assistant({ method: String(input?.method ?? 'GET').toUpperCase(), path: String(input?.path ?? ''),
+      body: typeof input?.body === 'string' ? input.body : undefined, role: session.role })
+  })
   // Вікно програми просить передати зміни зараз. null — ключа ПК ще немає: тоді вікно надсилає по-старому, своєю сесією.
   handleDesktopIpc('desktop:link:push-outbox', () => getOutboxPusher().pushNow())
   // Ключ видає сервер власнику чи адміністратору; сюди його приносить вікно програми одразу після видачі.

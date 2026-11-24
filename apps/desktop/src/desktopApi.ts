@@ -11,6 +11,7 @@ export function createDesktopApi(ipcRenderer: DesktopInvoker) {
       register: (token: string) => ipcRenderer.invoke('desktop:link:register', token),
       commandsTaken: () => ipcRenderer.invoke('desktop:link:commands-taken'),
       pushOutbox: () => ipcRenderer.invoke('desktop:link:push-outbox'),
+      assistant: (input: { method: string; path: string; body?: string }) => ipcRenderer.invoke('desktop:link:assistant', input),
     },
     auth: {
       login: (phone: string, password: string) => ipcRenderer.invoke('desktop:auth:login', phone, password),

@@ -532,6 +532,8 @@ export interface ForsageDesktopBridge {
     commandsTaken: () => Promise<void>
     /** 23.11.2026: передати зміни каси на сервер ключем ПК. null — ключа ще немає (тоді вікно надсилає своєю сесією). */
     pushOutbox?: () => Promise<{ pushed: number; failed: number; pending: number; resetRequired: boolean } | null>
+    /** 24.11.2026: запит помічника ключем головного ПК (без пароля працівника). null — ключа немає або це не головний ПК. */
+    assistant?: (input: { method: string; path: string; body?: string }) => Promise<{ status: number; content_type: string; text: string } | null>
   }
   diagnostics?: {
     reportError: (kind: 'renderer-error' | 'renderer-rejection', message: string, stack: string) => void

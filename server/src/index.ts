@@ -115,6 +115,10 @@ app.use('/api/v1/sync/push', express.json({ limit: '4mb' }))
 // 22.11.2026: веб через головний ПК — фото накладної/товару в запиті, великі списки у відповіді каси.
 app.use('/api/v1/till-rpc', express.json({ limit: '4mb' }))
 // Те саме, коли відповідь каси віддає сам головний ПК своїм ключем зв'язку.
+// 24.11.2026: помічник на головному ПК ключем ПК — ті самі обсяги, що й у звичайних адрес помічника.
+app.use('/api/v1/till-device/ai/chat', express.json({ limit: '25mb' }))
+app.use('/api/v1/till-device/assistant-upload', express.json({ limit: '18mb' }))
+app.use('/api/v1/till-device/vin/ocr', express.json({ limit: '10mb' }))
 app.use('/api/v1/till-device', express.json({ limit: '4mb' }))
 app.use(express.json())
 

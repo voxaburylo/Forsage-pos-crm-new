@@ -1,6 +1,6 @@
 import {beforeEach,afterEach,describe,expect,it,vi} from 'vitest'
 const fixture=vi.hoisted(()=>({local:null as any,online:null as any,restore:vi.fn()}))
-vi.mock('./desktopBridge',()=>({isDesktopRuntime:()=>true}))
+vi.mock('./desktopBridge',()=>({isDesktopRuntime:()=>true,desktopBridge:()=>null}))
 vi.mock('./supabase',()=>({supabase:{auth:{getSession:async()=>({data:{session:fixture.online}}),refreshSession:async()=>({data:{session:null}})}}}))
 vi.mock('./desktopServerSession',()=>({restoreDesktopServerSession:fixture.restore}))
 vi.mock('@/stores/authStore',()=>({useAuthStore:{getState:()=>({session:fixture.local})}}))

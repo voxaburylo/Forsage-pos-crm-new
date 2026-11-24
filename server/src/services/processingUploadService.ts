@@ -72,3 +72,23 @@ export async function removeProcessingUploads(paths: readonly string[], userId: 
     throw new AppError('AI_PROCESSING_CLEANUP_FAILED', 'Не вдалося підтвердити очищення тимчасових вкладень.', 502)
   }
 }
+
+const STORED_UPLOAD_TYPES: Record<string, string> = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'application/pdf': 'pdf' }
+export const STORED_UPLOAD_MAX_BYTES = 12 * 1024 * 1024
+
+/**
+ * 24.11.2026: вкладення помічника від головного ПК власним ключем. У працівника, який увійшов на касі локальним
+ * паролем чи PIN, немає сесії сховища — файл кладе сервер у ту саму теку тимчасових файлів, з тими самими правилами
+ * шляху (власник шляху — користувач, від імені якого діє ключ ПК). Після розбору файл видаляється, як завжди.
+ */
+export async function storeProcessingUpload(options: { userId: string; purpose: 'ai' | 'vin'; mimeType: string; buffer: Buffer }): Promise<{ path: string; mimeType: string }> {
+  const extension = STORED_UPLOAD_TYPES[options.mimeType]
+  if (!extension) throw new AppError('UPLOAD_TYPE_NOT_ALLOWED', 'Цей тип файлу не підтримується', 422)
+  if (options.buffer.length === 0) throw new AppError('VALIDATION_ERROR', 'Файл порожній', 422)
+  if (options.buffer.length > STORED_UPLOAD_MAX_BYTES) throw new AppError('UPLOAD_TOO_LARGE', 'Файл завеликий для обробки', 413)
+  const path = options.userId + '/' + options.purpose + '/' + crypto.randomUUID() + '.' + extension
+  validateOwnedPath(path, options.userId, options.purpose)
+  const { error } = await db.storage.from(PROCESSING_UPLOAD_BUCKET).upload(path, options.buffer, { contentType: options.mimeType, cacheControl: '60', upsert: false })
+  if (error) throw new AppError('UPLOAD_FAILED', 'Не вдалося підготувати файл. Повторіть.', 502)
+  return { path, mimeType: options.mimeType }
+}
