@@ -210,6 +210,7 @@ export function createDesktopApi(ipcRenderer: DesktopInvoker) {
       suggestions: () => ipcRenderer.invoke('desktop:purchases:suggestions'),
       generateInvoices: (input: unknown) => ipcRenderer.invoke('desktop:purchases:generate-invoices', input),
       supplierNeeds: () => ipcRenderer.invoke('desktop:purchases:supplier-needs'),
+      restockNeeds: () => ipcRenderer.invoke('desktop:purchases:restock-needs'),
     },
     inventory: {
       scanOperationIds: true,

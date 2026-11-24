@@ -2012,6 +2012,8 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:purchases:suggestions', () => requireLocalPurchases().suggestions(requireDesktopSession().tenant_id))
   handleDesktopIpc('desktop:purchases:generate-invoices', (_event, input: any) => requireLocalPurchases().generateInvoices({ ...input, user_id: requireDesktopSession().id }))
   handleDesktopIpc('desktop:purchases:supplier-needs', () => requireLocalPurchases().supplierNeeds(requireDesktopSession().tenant_id))
+  // 24.11.2026: «Що закінчується» — товари з низьким залишком за постачальниками (лише читання).
+  handleDesktopIpc('desktop:purchases:restock-needs', () => requireLocalPurchases().restockNeeds(requireDesktopSession().tenant_id))
   handleDesktopIpc('desktop:staff:save-server-user', (_event, input: any, password?: string) =>
     requireLocalStaff().saveServerUser(input, password))
   handleDesktopIpc('desktop:staff:update-user', (_event, id: string, input: any) => {

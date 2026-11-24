@@ -751,6 +751,8 @@ export interface ForsageDesktopBridge {
     suggestions: () => Promise<any[]>
     generateInvoices: (input: any) => Promise<any>
     supplierNeeds: () => Promise<any[]>
+    /** 24.11.2026: товари з низьким залишком за постачальниками. У старій програмі цього немає. */
+    restockNeeds?: () => Promise<any[]>
   }
   inventory?: {
     scanOperationIds?: boolean
