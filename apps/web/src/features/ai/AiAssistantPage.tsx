@@ -39,6 +39,7 @@ import { useWritesToMainPc, writesToMainPc } from '@/lib/mainPcData'
 import { ReplyText } from './ReplyText'
 import { aiChatStorageKey, readAiChat, saveAiChat } from './aiChatStorage'
 import { aiRequestHistory } from './aiRequestHistory'
+import { clearPendingReply, isLostConnection, newAiRequestId, readPendingReply, waitForPendingReply, writePendingReply, type PendingAiReply } from './aiPendingReply'
 import { isOrderPhotoRequest, isSupplyRecognitionRequest, SUPPLY_PHOTO_INSTRUCTION } from './aiPhotoIntent'
 import { useLatestRequest } from '@/hooks/useLatestRequest'
 
@@ -254,6 +255,10 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
   })
   const [sending, setSending] = useState(false)
   const sendBusy = useRef(false)
+  // Номер запиту, що зараз іде; відповіді, які вже показано; номер, за яким зараз забираємо відповідь із сервера.
+  const activeSend = useRef<string | null>(null)
+  const finishedReplies = useRef(new Set<string>())
+  const collecting = useRef<string | null>(null)
   const attachmentBusy = useRef(0)
   const [processingAttachments, setProcessingAttachments] = useState(false)
   const [attachment, setAttachment] = useState<TextAttachment | null>(null)
@@ -484,6 +489,8 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
     try { if (directProducts?.length && sourceCurrency) directProducts = convertSupplyPrices(directProducts, importRate) }
     catch (error) { toast.error((error as Error).message); return }
     sendBusy.current = true
+    const sendToken = newAiRequestId()
+    activeSend.current = sendToken
 
     const history: AiChatMessage[] = aiRequestHistory(entries)
     const attachmentNote = [
@@ -516,11 +523,17 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
       await openInvoice(action, [...entries, userEntry, { role: 'model', text: 'Таблицю розібрано — відкрийте накладну.', actions: [action] }])
       setAttachment(null)
       sendBusy.current = false
+      activeSend.current = null
       return
     }
 
     setSending(true)
     const uploadedPaths: string[] = []
+    // Звичайне питання помічнику (не накладна, не великий файл частинами): номер запиту, щоб готову відповідь
+    // можна було забрати, якщо браузер згорнули чи пішли з вкладки.
+    const recoverable = !requestInvoice && fileParts.length <= 1
+    const pending: PendingAiReply | null = recoverable ? { id: sendToken, message, started_at: Date.now() } : null
+    if (pending) writePendingReply(storageKey, localStorage, pending)
 
     try {
       const responses = []
@@ -574,6 +587,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
               history: index === 0 && !requestInvoice ? history : undefined,
               file_text: partsToSend[index],
               images: index === 0 ? images : undefined,
+              ...(pending && index === 0 ? { request_id: pending.id } : {}),
             }, event => {
               if (!isCurrentContext()) return
               setSendingProgress(partsToSend.length > 1
@@ -592,7 +606,10 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
       await Promise.all(Array.from({ length: Math.min(3, partsToSend.length) }, async () => {
         while (nextPart < partsToSend.length && partFailures.size === 0) await runPart(nextPart++)
       }))
+      // Екран пішов — відповідь забере наступне відкриття помічника (номер запиту лишився в браузері).
       if (!isCurrentContext()) return
+      // Відповідь уже показано: її забрали за номером, поки це зʼєднання висіло (телефон згортав браузер).
+      if (pending && finishedReplies.current.has(pending.id)) return
       if (partFailures.size > 0) {
         failedAt = Math.min(...partFailures.keys())
         failureReason = partFailures.get(failedAt)
@@ -631,6 +648,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
           ? `Файл оброблено повністю: ${attachment?.rowCount ?? 0} рядків у ${responses.length} частинах. Перевірте підготовлені товари нижче та підтвердьте додавання.`
           : responses[0].reply
         : `Оброблено ${responses.length} із ${partsToSend.length} частин. Готові товари збережено нижче. Частина ${failedAt + 1} не відповіла вчасно; решта файлу залишилася прикріпленою — натисніть «Надіслати» ще раз, щоб продовжити без повторної обробки готових частин.`
+      if (pending) { finishedReplies.current.add(pending.id); clearPendingReply(storageKey, localStorage, pending.id) }
       setEntries((prev) => [...prev, { role: 'model', text: reply, actions, cost }])
       const invoiceAction = actions.find((action) => action.tool === 'create_supply_invoice_bulk')
       if (invoiceAction) await openInvoice(invoiceAction, [...entries, userEntry, { role: 'model', text: reply, actions, cost }])
@@ -656,6 +674,14 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
       } : s)
     } catch (e) {
       if (!isCurrentContext()) return
+      if (pending && finishedReplies.current.has(pending.id)) return
+      if (pending && isLostConnection(e)) {
+        // Зʼєднання обірвалось, а сервер, найімовірніше, відповідь дорахує — забираємо її за номером.
+        activeSend.current = null
+        void collectPendingReply(pending)
+        return
+      }
+      if (pending) clearPendingReply(storageKey, localStorage, pending.id)
       setInput(message)
       reportAiFailure('recognition', e)
       const problem = aiAvailabilityProblem(e)
@@ -665,11 +691,67 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
       }
       setEntries((prev) => [...prev, { role: 'model', text: '⚠️ ' + (e instanceof Error ? e.message : 'Помилка запиту') }])
     } finally {
-      sendBusy.current = false
-      if (isCurrentContext()) { setSendingProgress(''); setSending(false) }
+      // Лише свій запит: якщо відповідь уже забрано за номером чи почато новий запит — прапорці не чіпаємо.
+      if (activeSend.current === sendToken) {
+        activeSend.current = null
+        sendBusy.current = false
+        if (isCurrentContext()) { setSendingProgress(''); setSending(false) }
+      }
       await removeProcessingUploads(uploadedPaths).catch(() => {})
     }
   }
+
+  /** Забрати готову відповідь за номером запиту: після повернення на вкладку, розгортання браузера чи обриву. */
+  async function collectPendingReply(pending: PendingAiReply) {
+    if (collecting.current === pending.id || finishedReplies.current.has(pending.id)) return
+    collecting.current = pending.id
+    const ownsFlags = activeSend.current !== pending.id
+    if (ownsFlags) {
+      sendBusy.current = true
+      setSending(true)
+      setSendingProgress('Помічник ще працює над відповіддю — забираю її…')
+    }
+    try {
+      const outcome = await waitForPendingReply(pending, {
+        fetchResult: async id => (await aiApi.chatResult(id)).data,
+        shouldStop: () => !isCurrentContext() || finishedReplies.current.has(pending.id),
+      })
+      if (outcome.kind === 'stopped') return
+      finishedReplies.current.add(pending.id)
+      clearPendingReply(storageKey, localStorage, pending.id)
+      if (outcome.kind === 'reply') {
+        const cost = Number(outcome.data.usage?.cost_usd ?? 0) || 0
+        setEntries(prev => [...prev, { role: 'model', text: outcome.data.reply, actions: outcome.data.actions as AiPendingAction[], cost }])
+        void loadStatus()
+      } else {
+        setInput(current => current || pending.message)
+        setEntries(prev => [...prev, { role: 'model', text: '⚠️ ' + (outcome.kind === 'error'
+          ? outcome.message
+          : 'Відповідь помічника не надійшла: зʼєднання обірвалось. Повторіть запит — зміни не застосовано.') }])
+      }
+      // Відповідь забрано, поки старе зʼєднання ще висіло: звільняємо екран для нового запиту.
+      if (!ownsFlags && activeSend.current === pending.id) activeSend.current = null
+      sendBusy.current = false
+      setSendingProgress(''); setSending(false)
+    } finally {
+      if (collecting.current === pending.id) collecting.current = null
+    }
+  }
+
+  // Повернулись на вкладку помічника чи розгорнули браузер — забрати відповідь, якщо вона ще не показана.
+  useEffect(() => {
+    const resume = () => {
+      if (document.hidden) return
+      const pending = readPendingReply(storageKey, localStorage)
+      if (!pending || finishedReplies.current.has(pending.id)) return
+      // Живий запит цього екрана ще йде — забираємо паралельно (зʼєднання могло зависнути після згортання).
+      if (sendBusy.current && activeSend.current !== pending.id) return
+      void collectPendingReply(pending)
+    }
+    resume()
+    document.addEventListener('visibilitychange', resume)
+    return () => document.removeEventListener('visibilitychange', resume)
+  }, [storageKey])
 
   const draftBusy = useRef(false)
   async function openInvoice(action: AiPendingAction, history = entries) {

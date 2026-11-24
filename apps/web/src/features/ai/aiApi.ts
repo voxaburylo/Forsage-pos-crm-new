@@ -2,6 +2,7 @@ import { api } from '@/lib/api'
 import { writesToMainPc } from '@/lib/mainPcData'
 import { applyLocalAiAction } from './localAiAction'
 import { aiRequestHistory } from './aiRequestHistory'
+import type { StoredAiReply } from './aiPendingReply'
 
 export const AI_MODELS = ['claude-sonnet-5-5'] as const
 export type AiModel = (typeof AI_MODELS)[number]
@@ -95,7 +96,10 @@ export const aiApi = {
   test: (body?: { api_key?: string; model?: AiModel }) =>
     api.post<{ data: { ok: boolean } }>('/api/v1/ai/test', body ?? {}),
 
-  chat: (body: { message: string; history?: AiChatMessage[]; file_text?: string; images?: AiChatImage[] }, onProgress?: (event: AiChatProgress) => void) =>
+  /** Готова відповідь помічника за номером запиту (якщо зʼєднання обірвалось); null — ще немає. */
+  chatResult: (id: string) => api.get<{ data: StoredAiReply | null }>('/api/v1/ai/chat-result/' + encodeURIComponent(id), { silent: true, timeoutMs: 15_000 }),
+
+  chat: (body: { message: string; history?: AiChatMessage[]; file_text?: string; images?: AiChatImage[]; request_id?: string }, onProgress?: (event: AiChatProgress) => void) =>
     api.post<{ data: AiChatResponse }>('/api/v1/ai/chat', { ...body, history: body.history ? aiRequestHistory(body.history) : undefined },
       onProgress ? { 'X-AI-Progress': '1' } : undefined, {
       timeoutMs: 600000, silent: true,
