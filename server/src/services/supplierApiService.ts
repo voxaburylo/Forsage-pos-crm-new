@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { pool } from '../db/pg.js'
 import { applyMarkup, roundingFromSettings, type MarkupRule } from '../lib/markup.js'
 import { AppError } from '../middleware/errorHandler.js'
+import { guessCategory, learnCategories } from './supplierCategories.js'
 
 /**
  * Постачальники з API (рішення власника 24.11.2026). Перший — Омега (public.omega.page).
@@ -190,6 +191,26 @@ export async function linkOffers(tenantId: string, connectionId: string) {
     [tenantId, connectionId])
 }
 
+/**
+ * Розкласти товари постачальника по наших категоріях (рішення власника 24.11.2026). Модель вчиться на наших картках;
+ * невпевнене — без категорії. Категорію, поставлену людиною (category_source = 'manual'), не чіпаємо ніколи.
+ */
+export async function categorizeOffers(tenantId: string, connectionId: string) {
+  const products = (await pool.query('SELECT name, category_id FROM products WHERE tenant_id = $1 AND deleted_at IS NULL AND is_active AND category_id IS NOT NULL', [tenantId])).rows
+  const model = learnCategories(products)
+  const offers = (await pool.query(`SELECT external_id, name, category_id FROM supplier_offers WHERE connection_id = $1 AND category_source IS DISTINCT FROM 'manual'`, [connectionId])).rows
+  const changes = offers.map((offer: any) => ({ external_id: offer.external_id as string, category_id: guessCategory(model, offer.name), before: offer.category_id as string | null }))
+    .filter(change => change.category_id !== change.before)
+  for (let start = 0; start < changes.length; start += 5000) {
+    await pool.query(
+      `UPDATE supplier_offers o SET category_id = x.category_id, category_source = CASE WHEN x.category_id IS NULL THEN NULL ELSE 'auto' END, updated_at = now()
+         FROM jsonb_to_recordset($2::jsonb) AS x(external_id text, category_id uuid)
+        WHERE o.connection_id = $1 AND o.external_id = x.external_id AND o.category_source IS DISTINCT FROM 'manual'`,
+      [connectionId, JSON.stringify(changes.slice(start, start + 5000).map(({ external_id, category_id }) => ({ external_id, category_id })))])
+  }
+  return { changed: changes.length, categorized: offers.length - changes.filter(change => !change.category_id).length }
+}
+
 /** Одна порція прайсу (до PAGES_PER_RUN сторінок). Наприкінці повного проходу — зниклі товари обнуляються. */
 export async function syncConnectionStep(connection: { id: string; tenant_id: string; api_key: string; sync_page: number; sync_started_at: string | null; last_full_sync_at: string | null }, deps: OmegaDeps & { now?: number } = {}) {
   const now = deps.now ?? Date.now()
@@ -217,6 +238,7 @@ export async function syncConnectionStep(connection: { id: string; tenant_id: st
     // Чого в цьому проході не було — того в постачальника вже немає: залишок 0 (рядок лишається для історії й сайту).
     await pool.query(`UPDATE supplier_offers SET stock = '[]'::jsonb, total_qty = 0, updated_at = now() WHERE connection_id = $1 AND seen_at < $2 AND total_qty > 0`, [connection.id, passStarted.toISOString()])
     await linkOffers(connection.tenant_id, connection.id)
+    await categorizeOffers(connection.tenant_id, connection.id)
     await pool.query(`UPDATE supplier_api_connections SET sync_page = 1, sync_started_at = NULL, last_full_sync_at = now(), last_error = NULL, total_offers = $2, updated_at = now() WHERE id = $1`, [connection.id, total])
   } else {
     await pool.query('UPDATE supplier_api_connections SET sync_page = $2, sync_started_at = $3, last_error = NULL, total_offers = $4, updated_at = now() WHERE id = $1', [connection.id, page + 1, passStarted.toISOString(), total])
