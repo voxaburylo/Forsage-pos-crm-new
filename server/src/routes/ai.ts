@@ -322,6 +322,8 @@ const applySchema = z.discriminatedUnion('tool', [
       updates: z.array(z.object({
         product_id: z.string().uuid(),
         new_name: z.string().trim().min(1).max(500).optional(),
+        new_sku: optionalText(80),
+        cleanup: z.boolean().optional(),
         category_name: optionalText(200),
       })).min(1).max(500),
     }),

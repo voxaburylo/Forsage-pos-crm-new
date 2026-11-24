@@ -90,3 +90,35 @@ describe('site section through the gateway', () => {
     expect(read('./siteGateway.ts')).toContain("'/api/v1/site-admin/gateway'")
   })
 })
+
+// 24.11.2026 (слово власника: «вкладка мала, зверху повзунок, вкладки порожні й незрозумілі; „Внутрішні витрати“ зайві під рукою»).
+describe('site section is readable and the menu is not cluttered', () => {
+  it('every tab says what it is for; the link state is told in one line', async () => {
+    const { SITE_TAB_INTRO, siteLinkText } = await import('./SitePage')
+    for (const tab of SITE_TABS) expect(SITE_TAB_INTRO[tab.id].length, tab.id).toBeGreaterThan(40)
+    expect(siteLinkText({ site: 'forsage-tires.com', catalog_sync: { minutes_since_ok: 1, stale: false, last_error: null } }))
+      .toEqual({ state: 'ok', text: 'Сайт forsage-tires.com на звʼязку. Товари, ціни й залишки з програми забрав 1 хв тому.' })
+    expect(siteLinkText({ site: 'x', catalog_sync: { minutes_since_ok: 300, stale: true } })).toMatchObject({ state: 'stale' })
+    expect(siteLinkText({ site: 'x', catalog_sync: { minutes_since_ok: 300, stale: true } }).text).toContain('5 год тому')
+    expect(siteLinkText(null).state).toBe('down')
+  })
+  it('info pages have names even before the owner writes them; empty lists explain what to do', () => {
+    expect(PAGES.title({ id: 'delivery', type: 'info', slug: 'delivery', title: null })).toBe('Доставка')
+    expect(PAGES.title({ id: 'x', type: 'article', title: 'Як вибрати шини' })).toBe('Як вибрати шини')
+    for (const config of [BANNERS, PROMOS, PAGES, CATEGORIES]) expect(config.emptyText.length, config.name).toBeGreaterThan(25)
+    expect(CATEGORIES.subtitle?.({ id: 6, kind: 'tyre', parent_id: 1 })).toContain('веде сам сайт')
+    // Сайт нумерує категорії числами: «усередині якої» йде числом, а не рядком.
+    expect(formToPayload(CATEGORIES.fields, rowToForm(CATEGORIES.fields, { id: 20, name: 'Фільтри', parent_id: 1, program_category_ids: [] }))).toMatchObject({ id: 20, parent_id: 1 })
+  })
+  it('the section uses the page width, tabs wrap on a PC; internal consumption left the menu for the inventory tabs', () => {
+    const page = read('./SitePage.tsx')
+    expect(page).toContain('className="w-full space-y-4" data-site-body')
+    expect(page).toContain('max-md:overflow-x-auto md:flex-wrap')
+    expect(page).not.toContain('max-w-4xl')
+    expect(read('../../components/Sidebar.tsx')).not.toMatch(/to: '\/internal'/)
+    expect(read('../../components/SubNavTabs.tsx')).toMatch(/to: '\/internal', label: 'Для потреб магазину'/)
+    // «Автозакупівля» — так само: не пункт меню, а вкладка в «Постачальники».
+    expect(read('../../components/Sidebar.tsx')).not.toMatch(/to: '\/auto-purchase'/)
+    expect(read('../../components/SubNavTabs.tsx')).toMatch(/to: '\/auto-purchase', label: 'Автозакупівля'/)
+  })
+})

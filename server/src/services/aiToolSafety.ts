@@ -11,7 +11,7 @@ const schemas: Record<string, z.ZodTypeAny> = {
   list_brands: z.object({}).strict(),
   list_products_page: z.object({
     page: integer(10000, 1), per_page: integer(200, 200),
-    filter: z.enum(['all', 'russian_names', 'no_category']).default('all'),
+    filter: z.enum(['all', 'russian_names', 'messy_names', 'no_category']).default('all'),
   }).strict(),
   find_duplicate_products: z.object({ by: z.enum(['name', 'sku']).default('name'), limit: integer(40, 20) }).strict(),
 }

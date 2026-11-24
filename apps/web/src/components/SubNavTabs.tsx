@@ -106,6 +106,8 @@ export const FINANCE_TABS = [
 export const SUPPLIERS_TABS = [
   { to: '/suppliers', label: 'Постачальники', roles: ['owner', 'admin', 'manager'] },
   { to: '/suppliers/pos', label: 'Замовлення постачальникам', serverOnly: true },
+  // 24.11.2026: раніше окремий пункт меню; правила «коли товару мало — підготувати накладну постачальнику».
+  { to: '/auto-purchase', label: 'Автозакупівля', roles: ['owner', 'admin'] },
 ]
 
 // Поступлення товарів — єдиний дім для приходу, щоб не дублювати
@@ -119,6 +121,8 @@ export const INVENTORY_TABS = [
   { to: '/inventory/movements', label: 'Між комірками', roles: ['owner', 'admin', 'storekeeper'] },
   { to: '/inventory/reserves', label: 'Резерви замовлень', roles: ['owner', 'admin', 'manager', 'storekeeper'] },
   { to: '/inventory/writeoffs', label: 'Списання', roles: ['owner', 'admin', 'storekeeper'] },
+  // 24.11.2026: товар, узятий зі складу для потреб самого магазину (раніше — окремий пункт меню «Внутрішнє споживання»).
+  { to: '/internal', label: 'Для потреб магазину', roles: ['owner', 'admin', 'manager'] },
 ]
 
 export const ANALYTICS_TABS = [

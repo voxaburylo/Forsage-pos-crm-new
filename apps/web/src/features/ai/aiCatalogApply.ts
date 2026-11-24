@@ -1,13 +1,14 @@
 /**
  * Запис пачки «Змінити товари» (update_products_bulk) з чату помічника в локальну базу каси.
  * Каталог належить касі, тому зміни йдуть тим самим захищеним шляхом, що й «Помічник каталогу»:
- * відбиток картки (не змінена після пропозиції), лише назва й категорія, без зміни цифр і бренду,
+ * відбиток картки (не змінена після пропозиції), лише назва, категорія й артикул (з назви, замість порожнього), без зміни бренду;
+ * переклад не змінює цифр, а «наведення порядку» (cleanup) може прибрати зайве, але не вигадати нового,
  * резервна копія перед записом. Картки, які змінити не можна, пропускаються з причиною.
  */
-export interface ChatCatalogUpdate { product_id: string; new_name?: string; category_name?: string }
+export interface ChatCatalogUpdate { product_id: string; new_name?: string; category_name?: string; new_sku?: string; cleanup?: boolean }
 export interface ChatCatalogSkip { item: string; error: string }
-type Fingerprint = { product_id: string; fingerprint: string | null; name?: string; category_id?: string | null }
-type AgentItem = { product_id: string; fingerprint: string; changes: { name?: string; category_id?: string } }
+type Fingerprint = { product_id: string; fingerprint: string | null; name?: string; sku?: string; category_id?: string | null }
+type AgentItem = { product_id: string; fingerprint: string; changes: { name?: string; category_id?: string; sku?: string }; cleanup?: true }
 
 export interface ChatCatalogBridge {
   agentFingerprints: (ids: string[]) => Promise<Fingerprint[]>
@@ -37,6 +38,9 @@ export function planChatCatalogUpdates(
     const changes: AgentItem['changes'] = {}
     const name = typeof update.new_name === 'string' ? update.new_name.trim().replace(/\s+/g, ' ') : ''
     if (name && name !== current.name) changes.name = name
+    // Артикул із назви — у поле артикулу; чи можна (лише замість порожнього/службового, без дубля), вирішує каса.
+    const sku = typeof update.new_sku === 'string' ? update.new_sku.trim() : ''
+    if (sku && sku !== current.sku) changes.sku = sku
     if (typeof update.category_name === 'string' && update.category_name.trim()) {
       const categoryId = categoryIds.get(normalize(update.category_name))
       if (!categoryId) {
@@ -46,7 +50,7 @@ export function planChatCatalogUpdates(
       if (categoryId !== current.category_id) changes.category_id = categoryId
     }
     if (!Object.keys(changes).length) { unchanged += 1; continue }
-    items.push({ product_id: id, fingerprint: current.fingerprint, changes })
+    items.push({ product_id: id, fingerprint: current.fingerprint, changes, ...(update.cleanup === true && changes.name ? { cleanup: true as const } : {}) })
   }
   return { items, skipped, unchanged }
 }

@@ -5,7 +5,7 @@ import path from 'node:path'
 import { beforeEach, afterEach, describe, it, expect } from 'vitest'
 import { LocalDatabase } from '../src/db/localDatabase'
 import { LocalCatalogRepository } from '../src/repositories/catalogRepository'
-import { CatalogAgentRepository, agentFingerprint, preservesTechnicalName, skuFromName, gridAgentPrice, catalogCodeFromName } from '../src/repositories/catalogAgentRepository'
+import { CatalogAgentRepository, agentFingerprint, preservesTechnicalName, nameCleanupProblem, droppedFromName, skuFromName, gridAgentPrice, catalogCodeFromName } from '../src/repositories/catalogAgentRepository'
 import { isDesktopChannelAllowed } from '../src/security/desktopAuthorization'
 let db: LocalDatabase, catalog: LocalCatalogRepository, agent: CatalogAgentRepository, root: string
 const product = (name='Фильтр W811/80', sku='AUTO-TEST', qty=0) => catalog.saveProduct({id:randomUUID(),name,sku,unit:'шт',qty_on_hand:qty,purchase_price:10000,retail_price:11000})
@@ -50,7 +50,7 @@ describe('catalog agent safety',()=>{
   })
   it('chat batch (skip_invalid) writes valid cards, skips refused ones with a reason, and gives fingerprints',()=>{
     const a=product('(метал) 10W40 API SL/CF 1л (12)','62966'),b=product('Фильтр W811/80','AUTO-B'),c=product('Масло','AUTO-C')
-    expect(agent.fingerprints([a.id,'missing'])).toEqual([{product_id:a.id,fingerprint:agentFingerprint(a),name:a.name,category_id:null},{product_id:'missing',fingerprint:null}])
+    expect(agent.fingerprints([a.id,'missing'])).toEqual([{product_id:a.id,fingerprint:agentFingerprint(a),name:a.name,sku:a.sku,category_id:null},{product_id:'missing',fingerprint:null}])
     db.prepare('UPDATE products SET retail_price=12000 WHERE id=?').run(c.id)
     const input={operation_id:randomUUID(),skip_invalid:true,items:[patch(a,{name:'Моторна олива 10W40 API SL/CF 1л, метал (12)'}),patch(b,{name:'Фільтр W67/1'}),patch(c,{name:'Олива'})]}
     const result=agent.apply(input,'owner')
@@ -118,5 +118,31 @@ describe('catalog agent safety',()=>{
     expect(catalogCodeFromName('Деталь 0 451 103 292','0451103292')).toBe(true)
     for(const role of ['cashier','manager','storekeeper'])expect(isDesktopChannelAllowed('desktop:catalog:agent-apply',role)).toBe(false)
     expect(isDesktopChannelAllowed('desktop:catalog:agent-apply','owner')).toBe(true)
+  })
+
+  // 24.11.2026 (слово власника): «навести порядок у назвах — прибрати все зайве, лишити назву, бренд, обʼєм, артикул розподілити».
+  it('name cleanup may drop price-list junk but never invents a number, loses a size or drops the article', () => {
+    const junk = 'VALEO VL 700431 5 13348 40 Дросельна заслонка з електроприводом OPEL VIVARO A (X83) - 2.0 CDTI (F7) (2001.08 - 2014.07'
+    const clean = 'Дросельна заслонка з електроприводом OPEL VIVARO A VALEO 700431'
+    expect(preservesTechnicalName(junk, clean)).toBe(false)
+    expect(nameCleanupProblem(junk, clean, '700431')).toBeNull()
+    expect(droppedFromName(junk, clean)).toEqual(['5', '13348', '40', 'X83', '2.0', 'F7', '2001.08', '2014.07'])
+    expect(nameCleanupProblem(junk, 'Дросельна заслонка OPEL VIVARO A VALEO 700432', '700431')).toContain('700432')
+    expect(nameCleanupProblem(junk, 'Дросельна заслонка OPEL VIVARO A VALEO', '700431')).toContain('зник артикул')
+    expect(nameCleanupProblem('(метал) 10W40 API SL/CF 1л (12) 778 20', 'Моторна олива 10W40 API SL/CF 12л', null)).toContain('розмір')
+    expect(nameCleanupProblem('(метал) 10W40 API SL/CF 1л (12) 778 20', 'Моторна олива 10W40 API SL/CF (12)', null)).toContain('1 л')
+    expect(nameCleanupProblem('(метал) 10W40 API SL/CF 1л (12) 778 20', 'Моторна олива 10W40 API SL/CF 1л, метал (12)', null)).toBeNull()
+    expect(nameCleanupProblem('Фільтр 372 87', '372', null)).toContain('не лишилось назви')
+  })
+  it('a cleanup batch from the chat writes the tidy name and moves the article into its field; without the flag it is refused', () => {
+    const junk = 'KAVO KV FAF-10740 372 87 Фільтр повітряний FORD MONDEO V Знайдено за: OP-FAF10359 - OPTIMAL'
+    const a = product(junk, 'AUTO-A'), b = product(junk + ' ', 'AUTO-B')
+    const name = 'Фільтр повітряний FORD MONDEO V KAVO FAF-10740'
+    const strict = agent.apply({ operation_id: randomUUID(), skip_invalid: true, items: [patch(b, { name })] }, 'owner')
+    expect(strict).toMatchObject({ updated: 0, skipped: [{ error: 'Переклад змінює технічні номери або розміри' }] })
+    const result = agent.apply({ operation_id: randomUUID(), skip_invalid: true, items: [{ ...patch(a, { name, sku: 'FAF-10740' }), cleanup: true }] }, 'owner')
+    expect(result).toMatchObject({ updated: 1, skipped: [] })
+    expect(db.prepare('SELECT name, sku, qty_on_hand, purchase_price, retail_price FROM products WHERE id=?').get(a.id)).toEqual({ name, sku: 'FAF-10740', qty_on_hand: 0, purchase_price: 10000, retail_price: 11000 })
+    expect(agent.fingerprints([a.id])[0]).toMatchObject({ sku: 'FAF-10740', name })
   })
 })

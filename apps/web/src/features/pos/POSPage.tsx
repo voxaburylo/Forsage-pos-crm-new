@@ -126,7 +126,7 @@ function OpenShiftScreen({ onOpened, onBack }: { onOpened: (shift?: Shift) => vo
         </button>
         <Zap size={40} className="text-yellow-400 mx-auto mb-4" />
         <h1 className="text-white text-2xl font-bold mb-1">Відкрити зміну</h1>
-        <p className="text-gray-500 text-sm mb-6">Введіть початковий залишок готівки в касі</p>
+        <p className="text-gray-500 text-sm mb-6">Скільки готівки зараз у касі (розмін). Підставлено те, що ви лишили при минулому закритті, — перерахуйте й виправте, якщо не так.</p>
         <input
           type="number" min="0" step="0.01" autoFocus
           value={cash}

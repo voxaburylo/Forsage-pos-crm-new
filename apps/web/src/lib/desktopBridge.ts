@@ -751,6 +751,8 @@ export interface ForsageDesktopBridge {
     suggestions: () => Promise<any[]>
     generateInvoices: (input: any) => Promise<any>
     supplierNeeds: () => Promise<any[]>
+    /** 24.11.2026: товари з низьким залишком за постачальниками. У старій програмі цього немає. */
+    restockNeeds?: () => Promise<any[]>
   }
   inventory?: {
     scanOperationIds?: boolean
@@ -893,7 +895,7 @@ export interface ForsageDesktopBridge {
     expectedCash: (cashierId: string) => Promise<{ opening_cash: number; cash_sales: number; cash_returns: number; cash_in: number; cash_out: number; expected_amount: number } | null>
     shiftReport: (cashierId: string) => Promise<import('@/types/shift').ShiftReport | null>
     reconcile: (cashierId: string, actualAmount: number, comment: string | null) => Promise<{ ok: true }>
-    closeShift: (cashierId: string, actualAmount: number, comment: string | null, shiftId: string) => Promise<{ ok: true; id: string }>
+    closeShift: (cashierId: string, actualAmount: number, comment: string | null, shiftId: string, keepInDrawer?: number | null) => Promise<{ ok: true; id: string }>
   }
   sync: {
     listPending: (limit?: number) => Promise<DesktopSyncOutboxOperation[]>

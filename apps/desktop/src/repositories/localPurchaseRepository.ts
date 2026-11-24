@@ -72,6 +72,43 @@ export class LocalPurchaseRepository {
     })
   }
 
+  /**
+   * «Що закінчується» (слово власника 24.11.2026): товари з низьким залишком за постачальниками — для листа замовлення.
+   * Мінімумів у картках ніхто не вів, тому «мало» рахуємо з продажів: товар продавався за 90 днів, а залишку менше, ніж
+   * продано за 30 днів (або немає зовсім); якщо мінімум у картці є — теж беремо. Постачальник — від кого прийшло востаннє.
+   * Пропонуємо довезти до місячного продажу (чи до мінімуму), не менше 1. Лише читає.
+   */
+  restockNeeds(tenantId = DEFAULT_TENANT_ID, now = new Date()): any[] {
+    const day = 86_400_000
+    const from30 = new Date(now.getTime() - 30 * day).toISOString(), from90 = new Date(now.getTime() - 90 * day).toISOString()
+    const rows = this.db.prepare(`
+      WITH sold AS (
+        SELECT si.product_id, SUM(CASE WHEN s.created_at >= ? THEN si.qty ELSE 0 END) AS q30, SUM(si.qty) AS q90
+          FROM sale_items si JOIN sales s ON s.id = si.sale_id AND s.tenant_id = si.tenant_id
+         WHERE s.tenant_id = ? AND s.status = 'completed' AND s.deleted_at IS NULL AND si.deleted_at IS NULL AND si.product_id IS NOT NULL AND s.created_at >= ?
+         GROUP BY si.product_id),
+      last AS (
+        SELECT i.product_id, s.supplier_id, MAX(COALESCE(s.posted_at, s.created_at)) AS at
+          FROM supply_invoice_items i JOIN supply_invoices s ON s.id = i.invoice_id AND s.tenant_id = i.tenant_id
+         WHERE s.tenant_id = ? AND s.status = 'posted' AND i.deleted_at IS NULL GROUP BY i.product_id)
+      SELECT p.id AS product_id, p.sku, p.name, p.qty_on_hand, p.reorder_point, p.purchase_price,
+             COALESCE(sold.q30, 0) AS sold_30, COALESCE(sold.q90, 0) AS sold_90, last.supplier_id, sup.name AS supplier_name, last.at AS last_received_at
+        FROM products p LEFT JOIN sold ON sold.product_id = p.id LEFT JOIN last ON last.product_id = p.id
+        LEFT JOIN suppliers sup ON sup.id = last.supplier_id AND sup.tenant_id = p.tenant_id AND sup.deleted_at IS NULL
+       WHERE p.tenant_id = ? AND p.deleted_at IS NULL AND p.is_active = 1 AND p.is_service = 0
+         AND ((COALESCE(sold.q90, 0) > 0 AND p.qty_on_hand < CASE WHEN COALESCE(sold.q30, 0) > 0 THEN sold.q30 ELSE 1 END)
+           OR (p.reorder_point > 0 AND p.qty_on_hand <= p.reorder_point))
+       ORDER BY sup.name, p.name LIMIT 5000`).all(from30, tenantId, from90, tenantId, tenantId) as any[]
+    return rows.map(row => {
+      const stock = Math.max(0, Number(row.qty_on_hand) || 0), sold30 = Number(row.sold_30) || 0, min = Number(row.reorder_point) || 0
+      const target = Math.max(sold30, min > 0 ? min * 2 : 0, 1)
+      return { product_id: row.product_id, sku: row.sku ?? null, name: row.name, qty_on_hand: Number(row.qty_on_hand) || 0, reorder_point: min,
+        sold_30: sold30, sold_90: Number(row.sold_90) || 0, purchase_price: Number(row.purchase_price) || 0,
+        suggest_qty: Math.max(1, Math.ceil(target - stock)), supplier_id: row.supplier_id ?? null,
+        supplier_name: row.supplier_id ? row.supplier_name ?? null : null, last_received_at: row.last_received_at ?? null }
+    })
+  }
+
   supplierNeeds(tenantId = DEFAULT_TENANT_ID): any[] {
     const rows = this.db.prepare(`SELECT i.*, o.order_number, o.status order_status, o.created_at order_created,
       s.name supplier_name, s.phone supplier_phone FROM customer_order_items i

@@ -3,6 +3,7 @@ import { ShoppingBag, RefreshCw, Trash2, AlertTriangle, Plus, Search } from 'luc
 import { Layout } from '@/components/Layout'
 import { Button, Card, Modal, Input, ConfirmDialog } from '@/components/ui'
 import { purchaseApi } from './purchaseApi'
+import { RestockTab } from './RestockTab'
 import { useLatestRequest } from '@/hooks/useLatestRequest'
 import { stockQuantity } from '@/features/inventory/documentInput'
 import { toast } from '@/components/ui/Toast'
@@ -34,7 +35,8 @@ interface Rule {
 interface SupplierOption { id: string; name: string }
 
 export default function AutoPurchasePage() {
-  const [tab, setTab] = useState<'suggestions' | 'rules'>('suggestions')
+  // 24.11.2026: перша вкладка — «Що закінчується» (працює без правил і мінімумів); правила лишились для тих, хто їх веде.
+  const [tab, setTab] = useState<'restock' | 'suggestions' | 'rules'>('restock')
   const [suggestions, setSuggestions] = useState<Suggestion[]>([])
   const [rules, setRules] = useState<Rule[]>([])
   const [loading, setLoading] = useState(true)
@@ -106,7 +108,7 @@ export default function AutoPurchasePage() {
 
   useEffect(() => {
     if (tab === 'suggestions') loadSuggestions()
-    else loadRules()
+    else if (tab === 'rules') loadRules()
   }, [tab, loadSuggestions, loadRules])
 
   // Подгрузка списка постачальників один раз при открытии модалки
@@ -194,7 +196,7 @@ export default function AutoPurchasePage() {
     <Layout title="Автозакупки">
       <p className="mb-4 text-sm text-gray-500">Правила та залишки — з локальної бази. Враховуються відкриті чернетки приходу. Створення закупівлі не проводить накладну, не змінює залишок і не виконує оплату.</p>
       <div className="flex gap-2 mb-6">
-        {(['suggestions', 'rules'] as const).map((t) => (
+        {(['restock', 'suggestions', 'rules'] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -202,7 +204,7 @@ export default function AutoPurchasePage() {
               tab === t ? 'bg-yellow-100 text-yellow-800 border border-yellow-300' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
             }`}
           >
-            {t === 'suggestions' ? `Пропозиції${suggestions.length > 0 ? ` (${suggestions.length})` : ''}` : 'Правила'}
+            {t === 'restock' ? 'Що закінчується' : t === 'suggestions' ? `За правилами${suggestions.length > 0 ? ` (${suggestions.length})` : ''}` : 'Правила'}
           </button>
         ))}
         <div className="flex-1" />
@@ -221,13 +223,13 @@ export default function AutoPurchasePage() {
             Нове правило
           </Button>
         )}
-        <Button variant="secondary" size="sm" icon={<RefreshCw size={14} />}
+        {tab !== 'restock' && <Button variant="secondary" size="sm" icon={<RefreshCw size={14} />}
           onClick={tab === 'suggestions' ? loadSuggestions : loadRules}>
           Оновити
-        </Button>
+        </Button>}
       </div>
 
-      {loading ? (
+      {tab === 'restock' ? <RestockTab /> : loading ? (
         <div className="text-center py-16 text-gray-400 text-sm">Завантаження...</div>
       ) : loadError ? <p className="py-8 text-center text-red-700">{loadError}. Натисніть «Оновити» для повтору.</p> : tab === 'suggestions' ? (
         suggestions.length === 0 ? (

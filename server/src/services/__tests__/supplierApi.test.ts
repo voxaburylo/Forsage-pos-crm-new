@@ -1,7 +1,8 @@
+import { readFileSync } from 'node:fs'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 const query = vi.hoisted(() => vi.fn())
 vi.mock('../../db/pg.js', () => ({ pool: { query } }))
-import { code, omegaOffer, restQty, saveConnection, searchOffers, syncConnectionStep, warehouseCity } from '../supplierApiService.js'
+import { code, omegaOffer, pricedOffers, restQty, saveConnection, searchOffers, syncConnectionStep, warehouseCity } from '../supplierApiService.js'
 import { isWriteAllowed } from '../../middleware/localFirstWriteGuard.js'
 
 const omegaItem = (over: Record<string, unknown> = {}) => ({ ProductId: -87748, Card: '69351412', Number: '36489', BrandDescription: 'A.B.S.',
@@ -132,5 +133,21 @@ describe('linking supplier goods to our cards', () => {
     const started = Date.now()
     expect(matchOffers(big, offers).size).toBe(17_000)
     expect(Date.now() - started).toBeLessThan(5000)
+  })
+
+// 24.11.2026 (слово власника): ціна продажу за сіткою — для всіх товарів усіх постачальників, бо їх буде багато.
+  it('prices every offer of every supplier in the shared write step, whatever the supplier parser returned', () => {
+    const offer = (purchase: number, retail: number) => ({ external_id: 'x' + purchase, number: 'N', number_code: 'N', brand: null, name: 'Товар', barcode: null,
+      image_url: null, purchase_price: purchase, retail_price: retail, stock: [], total_qty: 0 })
+    const grid = (purchase: number) => purchase < 10000 ? Math.ceil(purchase * 1.6 / 500) * 500 : Math.ceil(purchase * 1.4 / 500) * 500
+    // Розбір нового постачальника «забув» ціну (0), дав нижчу за закупку чи свою — у базу йде лише ціна за сіткою.
+    expect(pricedOffers([offer(9900, 0), offer(20000, 15000), offer(5000, 99999)], grid).map(row => row.retail_price)).toEqual([16000, 28000, 8000])
+    // Сітка, що дала б менше закупки чи сміття, не опускає ціну нижче закупки.
+    expect(pricedOffers([offer(20000, 0)], () => 100)[0].retail_price).toBe(20000)
+    expect(pricedOffers([offer(20000, 0)], () => Number.NaN)[0].retail_price).toBe(20000)
+    // Без закупівельної ціни товар не записується.
+    expect(pricedOffers([offer(0, 500), offer(-5, 500)], grid)).toEqual([])
+    const source = readFileSync(new URL('../supplierApiService.ts', import.meta.url), 'utf8')
+    expect(source).toContain('const offers = pricedOffers(rawOffers, retail)')
   })
 })

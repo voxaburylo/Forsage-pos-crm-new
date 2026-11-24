@@ -42,4 +42,16 @@ describe('AI tool request bounds', () => {
     expect(source).toContain('args = parseAiReadArguments(name, args)')
     expect(source.indexOf('reserveToolCalls(calls.length)')).toBeLessThan(source.indexOf('await handleCall(call.name, call.args)'))
   })
+
+  // 24.11.2026 (слово власника): навести порядок у назвах усієї бази — прибрати зайве, артикул у поле артикулу.
+  it('lets the assistant page through messy names and propose a cleanup with the article and the removed junk shown', () => {
+    expect(parseAiReadArguments('list_products_page', { filter: 'messy_names' })).toEqual({ page: 1, per_page: 200, filter: 'messy_names' })
+    expect(() => parseAiReadArguments('list_products_page', { filter: 'anything' })).toThrow()
+    const service = readFileSync(new URL('./aiService.ts', import.meta.url), 'utf8')
+    for (const text of ["filter === 'messy_names'", 'new_sku:', 'cleanup:', "'Прибрано з назви'", "'Новий артикул'", 'НІКОЛИ не показуй product_id', 'бери знову page=1', 'Нічого НЕ вигадуй'])
+      expect(service).toContain(text)
+    const route = readFileSync(new URL('../routes/ai.ts', import.meta.url), 'utf8')
+    expect(route).toContain('new_sku: optionalText(80)')
+    expect(route).toContain('cleanup: z.boolean().optional()')
+  })
 })

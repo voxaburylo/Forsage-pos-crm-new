@@ -210,6 +210,7 @@ export function createDesktopApi(ipcRenderer: DesktopInvoker) {
       suggestions: () => ipcRenderer.invoke('desktop:purchases:suggestions'),
       generateInvoices: (input: unknown) => ipcRenderer.invoke('desktop:purchases:generate-invoices', input),
       supplierNeeds: () => ipcRenderer.invoke('desktop:purchases:supplier-needs'),
+      restockNeeds: () => ipcRenderer.invoke('desktop:purchases:restock-needs'),
     },
     inventory: {
       scanOperationIds: true,
@@ -331,8 +332,8 @@ export function createDesktopApi(ipcRenderer: DesktopInvoker) {
       shiftReport: (cashierId: string) => ipcRenderer.invoke('desktop:pos:shift-report', cashierId),
       reconcile: (cashierId: string, actualAmount: number, comment: string | null) =>
         ipcRenderer.invoke('desktop:pos:reconcile', cashierId, actualAmount, comment),
-      closeShift: (cashierId: string, actualAmount: number, comment: string | null, shiftId: string) =>
-        ipcRenderer.invoke('desktop:pos:close-shift', cashierId, actualAmount, comment, shiftId),
+      closeShift: (cashierId: string, actualAmount: number, comment: string | null, shiftId: string, keepInDrawer?: number | null) =>
+        ipcRenderer.invoke('desktop:pos:close-shift', cashierId, actualAmount, comment, shiftId, keepInDrawer ?? null),
     },
     sync: {
       listPending: (limit?: number) =>

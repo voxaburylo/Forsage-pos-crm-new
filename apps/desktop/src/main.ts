@@ -2012,6 +2012,8 @@ app.whenReady().then(async () => {
   handleDesktopIpc('desktop:purchases:suggestions', () => requireLocalPurchases().suggestions(requireDesktopSession().tenant_id))
   handleDesktopIpc('desktop:purchases:generate-invoices', (_event, input: any) => requireLocalPurchases().generateInvoices({ ...input, user_id: requireDesktopSession().id }))
   handleDesktopIpc('desktop:purchases:supplier-needs', () => requireLocalPurchases().supplierNeeds(requireDesktopSession().tenant_id))
+  // 24.11.2026: «Що закінчується» — товари з низьким залишком за постачальниками (лише читання).
+  handleDesktopIpc('desktop:purchases:restock-needs', () => requireLocalPurchases().restockNeeds(requireDesktopSession().tenant_id))
   handleDesktopIpc('desktop:staff:save-server-user', (_event, input: any, password?: string) =>
     requireLocalStaff().saveServerUser(input, password))
   handleDesktopIpc('desktop:staff:update-user', (_event, id: string, input: any) => {
@@ -2392,11 +2394,13 @@ app.whenReady().then(async () => {
     const session = requireDesktopSession()
     return requireLocalPos().reconcileShift(session.id, actualAmount, comment, session.tenant_id)
   })
-  handleDesktopIpc('desktop:pos:close-shift', (_event, cashierId: string, actualAmount: number, comment: string | null, shiftId: string) => {
+  handleDesktopIpc('desktop:pos:close-shift', (_event, cashierId: string, actualAmount: number, comment: string | null, shiftId: string, keepInDrawer?: number | null) => {
     const session = requireDesktopSession()
     // Власник/адміністратор може закрити забуту зміну іншого касира; касир — лише свою, як і раніше.
     const foreign = typeof cashierId === 'string' && cashierId !== session.id && (session.role === 'owner' || session.role === 'admin')
-    const result = requireLocalPos().closeShift(foreign ? cashierId : session.id, actualAmount, comment, shiftId, session.tenant_id, session.role, session.id)
+    // 24.11.2026: keepInDrawer — скільки лишили на розмін; решта записується як «здано власнику».
+    const result = requireLocalPos().closeShift(foreign ? cashierId : session.id, actualAmount, comment, shiftId, session.tenant_id, session.role, session.id,
+      keepInDrawer === undefined || keepInDrawer === null ? null : Number(keepInDrawer))
     setImmediate(() => { void shiftBackups?.tick() })
     return result
   })

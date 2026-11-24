@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { PickingScanPanel } from './PickingScanPanel'
 import { useSearchParams } from 'react-router-dom'
 import { ClipboardList, Printer, CheckCircle, Clock, CheckSquare, Barcode, Search } from 'lucide-react'
 import { Layout } from '@/components/Layout'
@@ -625,6 +626,9 @@ export default function WarehousePicking() {
         </div>
 
         <PickingSteps active={1} />
+
+        {/* 24.11.2026: розкласти прибулий товар сканером — за бажанням, панель згорнута. */}
+        <PickingScanPanel orders={orders} onChanged={loadOrders} />
 
         <div className="rounded-xl border border-blue-100 bg-blue-50/70 px-4 py-3 text-xs leading-relaxed text-blue-900">
           <strong>Важливо:</strong> товари постачальника тут не потрібно шукати на складі.

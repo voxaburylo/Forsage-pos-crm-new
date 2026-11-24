@@ -30,9 +30,9 @@ export const DEFAULT_OWNER_ALERTS: OwnerAlertSettings = {
 export interface OwnerAlertFacts {
   /** Коли каса востаннє виходила на зв'язок; null — ще ніколи (тривоги немає). */
   till_seen_at: string | null
-  open_shifts: Array<{ id: string; opened_at: string }>
+  open_shifts: Array<{ id: string; opened_at: string; cashier_name?: string | null }>
   /** Зміни, закриті за останні дві доби. */
-  closed_shifts: Array<{ id: string; closed_at: string; cash_variance: number | null }>
+  closed_shifts: Array<{ id: string; closed_at: string; cash_variance: number | null; cashier_name?: string | null; closing_cash?: number | null }>
   negative_products: Array<{ id: string; name: string; sku: string | null; qty_on_hand: number }>
   /** Час останньої перевіреної хмарної копії; undefined — дізнатися не вдалося (тривоги немає). */
   last_backup_at: string | null | undefined
@@ -101,16 +101,25 @@ export function planOwnerAlerts(facts: OwnerAlertFacts, now: Date, settings: Own
     const hours = hoursBetween(shift.opened_at, now)
     if (hours >= settings.shift_open_hours) alerts.push({
       key: `shift_open:${shift.id}:${today}`,
-      text: `⏰ Зміну не закрито вже ${Math.floor(hours)} год (відкрита ${kyivTime(shift.opened_at)}).\nЗакрити можна на касі або з вебу: Статистика → «Відкриті зміни на касі».`,
+      text: `⏰ Зміну не закрито вже ${Math.floor(hours)} год: ${who(shift.cashier_name)} (відкрита ${kyivTime(shift.opened_at)}).\nЗакрити можна на касі або з вебу: Статистика → «Відкриті зміни на касі».`,
     })
   }
 
-  // 3. Велика різниця каси при закритті зміни — один раз на зміну.
+  // 3. Зміну закрито — хто й коли (слово власника 24.11.2026: «у сповіщеннях бота немає, хто закрив зміну»). Один раз на
+  // зміну й лише про свіжі закриття (до 3 год), щоб після увімкнення не прийшла пачка про вчорашні.
+  for (const shift of facts.closed_shifts) {
+    if (hoursBetween(shift.closed_at, now) < 3) alerts.push({
+      key: `shift_closed:${shift.id}`,
+      text: `✅ Зміну закрито: ${who(shift.cashier_name)}, ${kyivTime(shift.closed_at)}.` + (shift.closing_cash == null ? '' : ` У касі лишилось ${uah(shift.closing_cash)}.`),
+    })
+  }
+
+  // 3а. Велика різниця каси при закритті зміни — один раз на зміну.
   for (const shift of facts.closed_shifts) {
     const variance = Number(shift.cash_variance)
     if (Number.isFinite(variance) && Math.abs(variance) >= settings.cash_diff_kopecks) alerts.push({
       key: `cash_diff:${shift.id}`,
-      text: `💵 Різниця каси при закритті зміни (${kyivTime(shift.closed_at)}): ${variance < 0 ? 'недостача' : 'надлишок'} ${uah(variance)}.`,
+      text: `💵 Різниця каси при закритті зміни (${who(shift.cashier_name)}, ${kyivTime(shift.closed_at)}): ${variance < 0 ? 'недостача' : 'надлишок'} ${uah(variance)}.`,
     })
   }
 
@@ -219,11 +228,15 @@ async function cloudDatabaseBytes(): Promise<number | null> {
   } catch { return null }
 }
 
+/** Імʼя касира зміни — з облікового запису працівника. */
+const CASHIER_NAME_SQL = `(SELECT u.raw_user_meta_data->>'full_name' FROM auth.users u WHERE u.id = s.cashier_id)`
+const who = (name: string | null | undefined) => name?.trim() || 'касир'
+
 async function collectFacts(tenantId: string): Promise<OwnerAlertFacts> {
   const [presence, open, closed, negative, backup] = await Promise.all([
     pool.query('SELECT seen_at FROM till_presence WHERE tenant_id = $1', [tenantId]),
-    pool.query(`SELECT id, opened_at FROM shifts WHERE tenant_id = $1 AND status = 'open' ORDER BY opened_at LIMIT 20`, [tenantId]),
-    pool.query(`SELECT id, closed_at, cash_variance FROM shifts WHERE tenant_id = $1 AND status = 'closed' AND closed_at > now() - interval '48 hours' ORDER BY closed_at LIMIT 50`, [tenantId]),
+    pool.query(`SELECT s.id, s.opened_at, ${CASHIER_NAME_SQL} AS cashier_name FROM shifts s WHERE s.tenant_id = $1 AND s.status = 'open' ORDER BY s.opened_at LIMIT 20`, [tenantId]),
+    pool.query(`SELECT s.id, s.closed_at, s.cash_variance, s.closing_cash, ${CASHIER_NAME_SQL} AS cashier_name FROM shifts s WHERE s.tenant_id = $1 AND s.status = 'closed' AND s.closed_at > now() - interval '48 hours' ORDER BY s.closed_at LIMIT 50`, [tenantId]),
     pool.query(`SELECT id, name, sku, qty_on_hand FROM products WHERE tenant_id = $1 AND deleted_at IS NULL AND qty_on_hand < 0 ORDER BY updated_at DESC LIMIT 50`, [tenantId]),
     lastVerifiedBackup(tenantId),
   ])
@@ -234,8 +247,9 @@ async function collectFacts(tenantId: string): Promise<OwnerAlertFacts> {
     .then(result => result.rows[0], () => undefined)
   return {
     till_seen_at: presence.rows[0]?.seen_at ? new Date(presence.rows[0].seen_at).toISOString() : null,
-    open_shifts: open.rows.map(row => ({ id: String(row.id), opened_at: new Date(row.opened_at).toISOString() })),
-    closed_shifts: closed.rows.map(row => ({ id: String(row.id), closed_at: new Date(row.closed_at).toISOString(), cash_variance: row.cash_variance == null ? null : Number(row.cash_variance) })),
+    open_shifts: open.rows.map(row => ({ id: String(row.id), opened_at: new Date(row.opened_at).toISOString(), cashier_name: row.cashier_name ? String(row.cashier_name) : null })),
+    closed_shifts: closed.rows.map(row => ({ id: String(row.id), closed_at: new Date(row.closed_at).toISOString(), cash_variance: row.cash_variance == null ? null : Number(row.cash_variance),
+      cashier_name: row.cashier_name ? String(row.cashier_name) : null, closing_cash: row.closing_cash == null ? null : Number(row.closing_cash) })),
     negative_products: negative.rows.map(row => ({ id: String(row.id), name: String(row.name ?? ''), sku: row.sku ? String(row.sku) : null, qty_on_hand: Number(row.qty_on_hand) })),
     last_backup_at: backup === undefined ? undefined : backup.at,
     last_backup_bytes: backup?.bytes ?? null,

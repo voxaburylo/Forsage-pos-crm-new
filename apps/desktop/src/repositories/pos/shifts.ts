@@ -350,26 +350,50 @@ export class LocalPosShifts extends LocalPosFiscalGuards {
    * `actorId` — хто закриває. Зазвичай касир закриває свою зміну. 20.11.2026: зміни касирів, які забули їх
    * закрити (з 15.11), ніхто не міг закрити — власник чи адміністратор тепер закриває чужу зміну з поясненням.
    */
-  closeShift(cashierId: string, actualAmount: number, comment: string | null, shiftId: string, tenantId = DEFAULT_TENANT_ID, role = 'cashier', actorId = cashierId): { ok: true; id: string } {
+  /**
+   * 24.11.2026 (рішення власника): при закритті касир каже, скільки лишає в шухляді на розмін (keepInDrawer).
+   * Решта записується як «здано власнику» (видача з каси) у тій самій транзакції, що й закриття: раніше видачу
+   * ніхто не записував, уся сума переходила на початок наступної зміни й росла щодня (37 986 грн у зміні з 21 000 виручки).
+   * actualAmount — перерахована готівка ДО здачі: розбіжність рахується від неї, як і раніше. Без keepInDrawer — як було.
+   */
+  closeShift(cashierId: string, actualAmount: number, comment: string | null, shiftId: string, tenantId = DEFAULT_TENANT_ID, role = 'cashier', actorId = cashierId, keepInDrawer: number | null = null): { ok: true; id: string } {
     validateCashAmount(actualAmount)
+    if (keepInDrawer !== null) {
+      validateCashAmount(keepInDrawer)
+      if (keepInDrawer > actualAmount) throw new Error('На розмін не можна лишити більше, ніж є в касі')
+    }
     if (!shiftId?.trim()) throw new Error('Не вказано зміну для закриття')
     if (actorId !== cashierId) {
       if (role !== 'owner' && role !== 'admin') throw new Error('Недостатньо прав: чужу зміну закриває лише власник або адміністратор')
       if (!comment?.trim()) throw new Error('Вкажіть, чому зміну касира закриває власник')
     }
-    return idempotentMutation(this.db, `shift-close:${tenantId}`, shiftId, { cashierId, actualAmount, comment: comment?.trim() || null }, () => {
+    return idempotentMutation(this.db, `shift-close:${tenantId}`, shiftId, { cashierId, actualAmount, comment: comment?.trim() || null, ...(keepInDrawer === null ? {} : { keepInDrawer }) }, () => {
       const shift = this.getOpenShift(cashierId, tenantId)
       if (!shift || shift.id !== shiftId) throw new Error('Ця зміна вже закрита або не належить касиру. Оновіть дані зміни.')
-      const expected = readOpenCashBreakdown(this.db, tenantId, shift.id).expected_amount
-      const closingCash = actualAmount
-      const variance = cashSum(closingCash, -expected)
+      const expectedBefore = readOpenCashBreakdown(this.db, tenantId, shift.id).expected_amount
+      const variance = cashSum(actualAmount, -expectedBefore)
+      // Здано власнику = перераховано − лишили на розмін. У зміні лишається розмін; очікувана сума зменшується на здане.
+      const handover = keepInDrawer === null ? 0 : cashSum(actualAmount, -keepInDrawer)
+      const closingCash = keepInDrawer === null ? actualAmount : keepInDrawer
+      const expected = cashSum(expectedBefore, -handover)
       const canOverride = role === 'owner' || role === 'admin'
-      if (!canOverride && variance !== 0) throw new Error(`Сума не сходиться. Очікується ${(expected / 100).toFixed(2)} грн. Оновіть дані зміни.`)
+      if (!canOverride && variance !== 0) throw new Error(`Сума не сходиться. Очікується ${(expectedBefore / 100).toFixed(2)} грн. Оновіть дані зміни.`)
       if (canOverride && Math.abs(variance) > 1000 && !comment?.trim()) throw new Error('Розбіжність > 10 грн — поясніть у коментарі')
       const timestamp = nowIso()
       const note = comment?.trim()
         ? `${shift.notes ? shift.notes + '\n' : ''}${comment.trim()}`
         : shift.notes
+
+      if (handover > 0) {
+        const handoverId = randomUUID(), handoverNote = 'Здано власнику при закритті зміни'
+        this.db.prepare(`
+          INSERT INTO cash_operations (id, tenant_id, shift_id, user_id, type, source, amount, notes, dirty_at, created_at, updated_at)
+          VALUES (?, ?, ?, ?, 'cash_out', 'cashbox', ?, ?, ?, ?, ?)
+        `).run(handoverId, tenantId, shift.id, cashierId, handover, handoverNote, timestamp, timestamp, timestamp)
+        this.addOutbox(tenantId, 'cash_operation', handoverId, 'cash_operation.created', {
+          id: handoverId, shift_id: shift.id, type: 'out', amount: handover, note: handoverNote, source: 'cashbox', user_id: cashierId,
+        }, timestamp)
+      }
 
       this.db.prepare(`
         UPDATE shifts
