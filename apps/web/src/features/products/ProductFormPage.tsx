@@ -482,13 +482,21 @@ export function ProductEditor({ embedded = false, disabled = false, onSaved, onB
                 <p className="text-sm font-semibold text-gray-800">{specTemplate.label}</p>
                 <div className="grid grid-cols-2 gap-3">
                   {specTemplate.fields.map((field) => (
-                    <div key={field.key}>
+                    <div key={field.key} className={field.type === 'area' ? 'col-span-2' : undefined}>
                       <label className="block text-xs font-medium text-gray-600 mb-1">
                         {field.label}
                         {field.unit && <span className="text-gray-400 ml-1">({field.unit})</span>}
                         {field.required && <span className="text-red-500 ml-1">*</span>}
                       </label>
-                      {field.type === 'select' ? (
+                      {field.type === 'area' ? (
+                        <textarea
+                          value={form.specs?.[field.key] ?? ''}
+                          onChange={(e) => setSpec(field.key, e.target.value)}
+                          placeholder={field.placeholder}
+                          rows={3}
+                          className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 bg-white"
+                        />
+                      ) : field.type === 'select' ? (
                         <select
                           value={form.specs?.[field.key] ?? ''}
                           onChange={(e) => setSpec(field.key, e.target.value)}
@@ -509,6 +517,7 @@ export function ProductEditor({ embedded = false, disabled = false, onSaved, onB
                           className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
                         />
                       )}
+                      {field.hint && <p className="mt-1 text-xs text-gray-400">{field.hint}</p>}
                     </div>
                   ))}
                 </div>

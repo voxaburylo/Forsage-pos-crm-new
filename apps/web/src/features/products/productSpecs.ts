@@ -1,7 +1,8 @@
 // Шаблони характеристик для категорій автомагазину
 // Значення зберігаються в products.specs (JSONB)
 
-export type SpecFieldType = 'number' | 'text' | 'select'
+// 'area' — довге поле на всю ширину (допуски оливи): кілька значень через кому або з нового рядка.
+export type SpecFieldType = 'number' | 'text' | 'select' | 'area'
 
 export interface SpecField {
   key: string
@@ -11,6 +12,8 @@ export interface SpecField {
   placeholder?: string
   options?: string[]
   required?: boolean
+  /** Підказка під полем. */
+  hint?: string
 }
 
 export interface SpecTemplate {
@@ -36,18 +39,24 @@ const TEMPLATES: Array<{ match: string[]; template: SpecTemplate }> = [
     },
   },
   {
-    match: ['акумулятор'],
+    // 24.11.2026 (слово власника): категорія в програмі називається «АКБ» — раніше шаблон її не знаходив.
+    match: ['акумулятор', 'аккумулятор', 'акб'],
     template: {
       label: '🔋 Характеристики акумулятора',
       fields: [
         { key: 'capacity',    label: 'Ємність',           type: 'number', unit: 'Ач',  placeholder: '60',  required: true },
         { key: 'cca',         label: 'Пусковий струм',    type: 'number', unit: 'А',   placeholder: '540' },
         { key: 'voltage',     label: 'Напруга',           type: 'select', options: ['12', '24'],             required: true },
-        { key: 'polarity',    label: 'Полярність',        type: 'select', options: ['Пряма (+ зліва)', 'Зворотна (+ справа)'] },
+        { key: 'case_type',   label: 'Тип корпусу',       type: 'select', options: ['Європа', 'Азія', 'Америка'], hint: 'Азія — вищий і вужчий корпус, клеми виступають над кришкою.' },
+        { key: 'polarity',    label: 'Полярність',        type: 'select', options: ['Пряма (+ зліва)', 'Зворотна (+ справа)'], hint: 'Дивитись, коли клеми ближче до вас.' },
+        { key: 'terminals',   label: 'Клеми',             type: 'select', options: ['Стандартні (конус)', 'Тонкі (Азія)', 'Під болт', 'Бокові (Америка)'] },
+        { key: 'bottom_mount',label: 'Нижнє кріплення',   type: 'select', options: ['Є (бортик)', 'Немає'] },
         { key: 'length',      label: 'Довжина',           type: 'number', unit: 'мм',  placeholder: '242' },
         { key: 'width',       label: 'Ширина',            type: 'number', unit: 'мм',  placeholder: '175' },
         { key: 'height',      label: 'Висота',            type: 'number', unit: 'мм',  placeholder: '190' },
         { key: 'technology',  label: 'Технологія',        type: 'select', options: ['AGM', 'EFB', 'WET', 'GEL', 'Ca/Ca'] },
+        { key: 'start_stop',  label: 'Для Start-Stop',    type: 'select', options: ['Ні', 'Так'] },
+        { key: 'warranty_m',  label: 'Гарантія',          type: 'number', unit: 'міс', placeholder: '24' },
       ],
     },
   },
@@ -71,12 +80,15 @@ const TEMPLATES: Array<{ match: string[]; template: SpecTemplate }> = [
     template: {
       label: '🛢 Характеристики оливи',
       fields: [
-        { key: 'viscosity',   label: 'В\'язкість SAE',    type: 'select', options: ['0W-20','0W-30','0W-40','5W-30','5W-40','5W-50','10W-30','10W-40','10W-60','15W-40','20W-50'], required: true },
+        { key: 'viscosity',   label: 'В\'язкість SAE',    type: 'select', options: ['0W-16','0W-20','0W-30','0W-40','5W-20','5W-30','5W-40','5W-50','10W-30','10W-40','10W-60','15W-40','20W-50','75W-80','75W-90','80W-90','ATF'], required: true },
         { key: 'api',         label: 'Стандарт API',      type: 'select', options: ['SN','SN+','SP','CF','CK-4','CI-4'] },
         { key: 'acea',        label: 'Стандарт ACEA',     type: 'select', options: ['A1/B1','A3/B3','A3/B4','A5/B5','C1','C2','C3','C4','C5','E6','E7','E9'] },
         { key: 'volume',      label: 'Об\'єм',            type: 'select', options: ['0.5 л','1 л','2 л','4 л','5 л','10 л','20 л','60 л','208 л'], required: true },
         { key: 'synthetic',   label: 'Тип основи',        type: 'select', options: ['Синтетика', 'Напівсинтетика', 'Мінералка'] },
-        { key: 'approved',    label: 'Допуски VW/BMW/MB', type: 'text',   placeholder: 'VW 504.00, MB 229.5' },
+        // 24.11.2026 (слово власника): допуски — окремим полем, заповнює власник.
+        { key: 'approved',    label: 'Допуски виробників', type: 'area',  placeholder: 'VW 504.00/507.00, MB 229.51, BMW LL-04, Renault RN0720', hint: 'Через кому або з нового рядка. За допуском товар знаходитиметься в пошуку на сайті.' },
+        { key: 'ilsac',       label: 'Стандарт ILSAC',    type: 'select', options: ['GF-5', 'GF-6A', 'GF-6B', 'GF-7'] },
+        { key: 'engine_type', label: 'Для двигуна',       type: 'select', options: ['Бензин', 'Дизель', 'Бензин і дизель', 'Газ'] },
       ],
     },
   },

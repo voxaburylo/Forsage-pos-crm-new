@@ -11,6 +11,9 @@ import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
  */
 export const AUTO_PHOTO_FOLDER = 'auto-site'
 export const SITE_PHOTO_SINCE_KEY = 'forsage:site-photos:since'
+/** 24.11.2026: фото постачальника (Омега) для наших карток, що збіглися з його товарами. */
+export const SUPPLIER_PHOTO_FOLDER = 'auto-supplier'
+export const SUPPLIER_PHOTO_SINCE_KEY = 'forsage:supplier-photos:since'
 export const SITE_PHOTO_EVERY_MS = 60 * 60_000
 export const SITE_PHOTO_MAX_BYTES = 3 * 1024 * 1024
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -18,7 +21,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 export interface SiteAutoPhoto { program_product_id: string; full: string; thumb?: string; found_at: string }
 export interface SitePhotoImportResult { received: number; added: number; skippedHasPhoto: number; skippedNoCard: number; failed: number; since: string | null }
 
-export const isAutoPhoto = (photoUrl: unknown) => typeof photoUrl === 'string' && photoUrl.replace(/\\/g, '/').includes('/photos/' + AUTO_PHOTO_FOLDER + '-')
+export const isAutoPhoto = (photoUrl: unknown) => typeof photoUrl === 'string' && [AUTO_PHOTO_FOLDER, SUPPLIER_PHOTO_FOLDER].some(folder => photoUrl.replace(/\\/g, '/').includes('/photos/' + folder + '-'))
 
 /** Лише записи, яким можна довіряти за формою: код картки, https-адреса, дата. */
 export function cleanAutoPhotos(raw: unknown): SiteAutoPhoto[] {
@@ -44,6 +47,8 @@ export interface SitePhotoImportDeps {
   deletePhoto?: (photoUrl: string) => Promise<unknown>
   readSince: () => string | null
   writeSince: (value: string) => void
+  /** Тека-мітка для файла (типово — фото із сайту). */
+  folder?: string
 }
 
 /**
@@ -63,7 +68,7 @@ export async function importSitePhotos(deps: SitePhotoImportDeps): Promise<SiteP
       else {
         const bytes = await deps.download(photo.full)
         if (!bytes.byteLength || bytes.byteLength > SITE_PHOTO_MAX_BYTES) throw new Error('Неприпустимий розмір фото')
-        const saved = await deps.savePhoto(AUTO_PHOTO_FOLDER + '-' + photo.program_product_id, bytes)
+        const saved = await deps.savePhoto((deps.folder ?? AUTO_PHOTO_FOLDER) + '-' + photo.program_product_id, bytes)
         try { await deps.setCardPhoto(photo.program_product_id, saved) }
         catch (error) { await deps.deletePhoto?.(saved).catch(() => undefined); throw error }
         result.added += 1
@@ -82,14 +87,18 @@ export function canImportSitePhotos(): boolean {
 }
 
 /** Імпорт на головному ПК справжніми засобами програми. null — цей ПК не головний або звʼязок не налаштовано. */
-export async function runSitePhotoImport(): Promise<SitePhotoImportResult | null> {
+export function runSitePhotoImport(): Promise<SitePhotoImportResult | null> { return runPhotoImport('/site-photos', SITE_PHOTO_SINCE_KEY, AUTO_PHOTO_FOLDER) }
+/** Те саме для фото постачальника (Омега): лише картки, що збіглися з його товарами й ще без фото. */
+export function runSupplierPhotoImport(): Promise<SitePhotoImportResult | null> { return runPhotoImport('/supplier-photos', SUPPLIER_PHOTO_SINCE_KEY, SUPPLIER_PHOTO_FOLDER) }
+
+async function runPhotoImport(listPath: string, sinceKey: string, folder: string): Promise<SitePhotoImportResult | null> {
   const bridge = desktopBridge()
   const send = bridge?.link?.assistant, catalog = bridge?.catalog
   if (!canImportSitePhotos() || !send || !catalog?.savePhoto || !catalog.findById) return null
   const { productApi } = await import('@/features/products/productApi')
   return importSitePhotos({
     list: async since => {
-      const answer = await send({ method: 'GET', path: '/site-photos' + (since ? '?since=' + encodeURIComponent(since) : '') })
+      const answer = await send({ method: 'GET', path: listPath + (since ? '?since=' + encodeURIComponent(since) : '') })
       if (!answer) throw new Error('Звʼязок головного ПК не налаштовано')
       const parsed = JSON.parse(answer.text) as { data?: unknown; error?: { message?: string } }
       if (answer.status !== 200) throw new Error(parsed?.error?.message || 'Сервер не віддав список фото (код ' + answer.status + ')')
@@ -104,8 +113,9 @@ export async function runSitePhotoImport(): Promise<SitePhotoImportResult | null
     savePhoto: (folder, bytes) => catalog.savePhoto!(folder, bytes),
     setCardPhoto: (id, photoUrl) => productApi.update(id, { photo_url: photoUrl } as never),
     deletePhoto: photoUrl => catalog.deletePhoto?.(photoUrl) ?? Promise.resolve(),
-    readSince: () => { try { return localStorage.getItem(SITE_PHOTO_SINCE_KEY) } catch { return null } },
-    writeSince: value => { try { localStorage.setItem(SITE_PHOTO_SINCE_KEY, value) } catch { /* наступний прохід повторить; картки з фото пропускаються */ } },
+    folder,
+    readSince: () => { try { return localStorage.getItem(sinceKey) } catch { return null } },
+    writeSince: value => { try { localStorage.setItem(sinceKey, value) } catch { /* наступний прохід повторить; картки з фото пропускаються */ } },
   })
 }
 
