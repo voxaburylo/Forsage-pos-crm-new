@@ -3,8 +3,9 @@ import { describe, expect, it } from 'vitest'
 const page = readFileSync(new URL('./AiAssistantPage.tsx', import.meta.url), 'utf8')
 describe('AI invoice confirmation lifecycle', () => {
   it('unlocks recognition before cleanup so a ready table can be confirmed', () => {
-    const send = page.slice(page.indexOf('async function send('), page.indexOf('const applyBusy'))
-    expect(send).toMatch(/finally\s*\{\s*sendBusy.current = false\s*if \(isCurrentContext\(\)\) \{ setSendingProgress/)
+    const send = page.slice(page.indexOf('async function send('), page.indexOf('async function collectPendingReply'))
+    // 24.11.2026: скидає прапорці лише свій запит (відповідь могли вже забрати за номером запиту).
+    expect(send).toMatch(/finally\s*\{[^}]*if \(activeSend.current === sendToken\) \{\s*activeSend.current = null\s*sendBusy.current = false\s*if \(isCurrentContext\(\)\) \{ setSendingProgress/)
     expect(send.indexOf('sendBusy.current = false', send.lastIndexOf('finally'))).toBeLessThan(send.lastIndexOf('await removeProcessingUploads'))
   })
   it('opens the full invoice review directly and suppresses the duplicate short table', () => {

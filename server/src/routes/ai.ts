@@ -11,6 +11,7 @@ import {
 } from '../services/aiService.js'
 import { downloadProcessingUpload, removeProcessingUploads } from '../services/processingUploadService.js'
 import { findProductPhotos, productPhotoRequestSchema } from '../services/aiProductPhotoService.js'
+import { isAiRequestId, readAiReply, saveAiReply } from '../services/aiReplyStore.js'
 import { addAiRule, deleteAiRule, listAiRules, parseMemoryCommand, runMemoryCommand, AI_RULE_MAX_CHARS } from '../services/aiMemoryService.js'
 
 const router = Router()
@@ -90,6 +91,8 @@ const chatSchema = z.object({
     text: z.string(),
   })).max(40).optional(),
   file_text: z.string().max(1_000_000).optional(),
+  // 24.11.2026: номер запиту від екрана — за ним готову відповідь можна забрати, якщо зʼєднання обірвалось.
+  request_id: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/).optional(),
   // Новий веб-клієнт передає приватний шлях Supabase Storage, старі клієнти — base64.
   images: z.array(z.union([
     z.object({
@@ -172,6 +175,17 @@ router.delete('/memory/:id', requireRole('owner', 'admin'), async (req, res, nex
   try { res.json({ data: (await deleteAiRule(req.user!.tenant_id, String(req.params.id))).rules }) } catch (err) { next(err) }
 })
 
+// GET /api/v1/ai/chat-result/:id — готова відповідь помічника, якщо зʼєднання обірвалось (24.11.2026).
+// { data: null } — відповіді ще немає; читає лише той, хто питав.
+router.get('/chat-result/:id', requireRole('owner', 'admin', 'manager', 'cashier'), async (req, res, next) => {
+  try {
+    const id = String(req.params.id)
+    if (!isAiRequestId(id)) throw new AppError('VALIDATION_ERROR', 'Невірний номер запиту', 422)
+    res.setHeader('Cache-Control', 'no-store')
+    res.json({ data: await readAiReply(req.user!.tenant_id, req.user!.id, id) })
+  } catch (err) { next(err) }
+})
+
 router.post('/chat', requireRole('owner', 'admin', 'manager', 'cashier'), async (req, res, next) => {
   const storagePaths: string[] = []
   try {
@@ -181,7 +195,9 @@ router.post('/chat', requireRole('owner', 'admin', 'manager', 'cashier'), async 
     const memory = !parsed.data.file_text && !(parsed.data.images ?? []).length ? parseMemoryCommand(parsed.data.message) : null
     if (memory) {
       const reply = await runMemoryCommand(req.user!.tenant_id, req.user!.id, req.user!.role, memory)
-      res.json({ data: { reply, actions: [], usage: { prompt_tokens: 0, completion_tokens: 0, cost_usd: 0 } } })
+      const out = { reply, actions: [], usage: { prompt_tokens: 0, completion_tokens: 0, cost_usd: 0 } }
+      if (parsed.data.request_id) await saveAiReply(req.user!.tenant_id, req.user!.id, parsed.data.request_id, { data: out })
+      res.json({ data: out })
       return
     }
     const images = []
@@ -205,6 +221,7 @@ router.post('/chat', requireRole('owner', 'admin', 'manager', 'cashier'), async 
     }
     // 21.11.2026: клієнт може попросити хід роботи рядками NDJSON (X-AI-Progress: 1). Без заголовка — як раніше.
     const progress = req.get('x-ai-progress') === '1'
+    const requestId = parsed.data.request_id
     if (progress) {
       res.status(200)
       res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8')
@@ -219,18 +236,22 @@ router.post('/chat', requireRole('owner', 'admin', 'manager', 'cashier'), async 
         history: parsed.data.history,
         fileText: parsed.data.file_text,
         images: images.length > 0 ? images : undefined,
-        onProgress: progress ? event => { res.write(JSON.stringify({ progress: event }) + '\n') } : undefined,
+        onProgress: progress ? event => { if (!res.writableEnded && !res.destroyed) res.write(JSON.stringify({ progress: event }) + '\n') } : undefined,
       })
+      // Спершу зберегти, потім віддати: екран, що втратив зʼєднання (згорнутий браузер, інша вкладка), забере її сам.
+      if (requestId) await saveAiReply(req.user!.tenant_id, req.user!.id, requestId, { data: out })
       if (progress) res.end(JSON.stringify({ data: out }) + '\n')
       else res.json({ data: out })
     } catch (error) {
-      if (!progress) throw error
       const appError = error instanceof AppError ? error : null
-      res.end(JSON.stringify({ error: {
+      const failure = {
         code: appError?.code ?? 'AI_UPSTREAM_UNAVAILABLE',
         message: appError?.message ?? 'ШІ тимчасово недоступний. Повторіть запит.',
         status: appError?.status ?? 503,
-      } }) + '\n')
+      }
+      if (requestId) await saveAiReply(req.user!.tenant_id, req.user!.id, requestId, { error: failure })
+      if (!progress) throw error
+      res.end(JSON.stringify({ error: failure }) + '\n')
     }
   } catch (err) { next(err) }
   finally {
