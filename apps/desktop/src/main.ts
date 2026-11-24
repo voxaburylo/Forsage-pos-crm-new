@@ -1541,8 +1541,8 @@ app.whenReady().then(async () => {
     customerHistory(requireLocalDatabase(), requireDesktopSession().tenant_id, id, kind, options))
   handleDesktopIpc('desktop:backup:pending', () => shiftBackups?.pending(requireDesktopSession().tenant_id) ?? [])
   handleDesktopIpc('desktop:backup:status', () => shiftBackups?.status(requireDesktopSession().tenant_id) ?? [])
-  handleDesktopIpc('desktop:backup:upload', (_event, id: string, url: string) =>
-    shiftBackups!.upload(requireDesktopSession().tenant_id, id, url, requireTrustedAuthConfig().supabaseUrl))
+  handleDesktopIpc('desktop:backup:upload', (_event, id: string, url: string, part?: number) =>
+    shiftBackups!.upload(requireDesktopSession().tenant_id, id, url, requireTrustedAuthConfig().supabaseUrl, part === undefined || part === null ? undefined : Number(part)))
   handleDesktopIpc('desktop:backup:confirmed', (_event, id: string, sha: string) =>
     shiftBackups!.confirmed(requireDesktopSession().tenant_id, id, sha))
   handleDesktopIpc('desktop:backup:failed', (_event, id: string, message: string) =>

@@ -73,9 +73,9 @@ describe('shift backups and full customer history',()=>{
     expect(sheet.H2.v).toBe(8)
     expect(db.prepare('SELECT qty_on_hand FROM products WHERE id=?').get(product.id)).toEqual({qty_on_hand:3})
     await expect(restarted.upload(DEFAULT_TENANT_ID,id,'https://attacker.invalid/upload','https://trusted.supabase.co')).rejects.toThrow('Неприпустима')
-    expect(restarted.pending(randomUUID())).toEqual([])
+    expect(await restarted.pending(randomUUID())).toEqual([])
     restarted.confirmed(DEFAULT_TENANT_ID,id,job.sha256)
-    expect(restarted.pending(DEFAULT_TENANT_ID)).toEqual([])
+    expect(await restarted.pending(DEFAULT_TENANT_ID)).toEqual([])
     expect(restarted.status(DEFAULT_TENANT_ID)[0].cloud_completed_at).toBeTruthy()
     db.prepare('UPDATE shift_backups SET compressed_path=? WHERE id=?').run(path.join(root, 'missing.gz'), id)
     expect(restarted.status(DEFAULT_TENANT_ID)[0].local_ready).toBe(false)
@@ -183,14 +183,14 @@ describe('the daily copy archive: smaller, and proven to unpack', () => {
       database.prepare('INSERT INTO shift_backups (id, tenant_id, device_id, closed_at, created_at, compressed_path, sha256, size_bytes) VALUES (?,?,?,?,?,?,?,?)')
         .run(id, DEFAULT_TENANT_ID, database.deviceId, '2026-11-22T17:00:00Z', '2026-11-22T17:00:00Z', archive, sha, 10)
       const service = new ShiftBackupService(database, dir, () => undefined)
-      expect(service.pending(DEFAULT_TENANT_ID)).toEqual([expect.objectContaining({ id, sha256: sha, format: 'zst' })])
-      expect(service.pending(DEFAULT_TENANT_ID)[0]).not.toHaveProperty('compressed_path')
+      expect(await service.pending(DEFAULT_TENANT_ID)).toEqual([expect.objectContaining({ id, sha256: sha, format: 'zst', parts: 1, part_sha256s: [] })])
+      expect((await service.pending(DEFAULT_TENANT_ID))[0]).not.toHaveProperty('compressed_path')
       // Адреса з розширенням іншого формату — не той файл: каса туди не вантажить.
       const origin = 'https://project.supabase.co'
       const signed = (ext: string) => origin + '/storage/v1/object/upload/sign/forsage-private-backups/' + [DEFAULT_TENANT_ID, database.deviceId, id + '-' + sha + '.db.' + ext].join('/') + '?token=t'
       await expect(service.upload(DEFAULT_TENANT_ID, id, signed('gz'), origin)).rejects.toThrow('Неприпустима адреса резервування')
       database.prepare('UPDATE shift_backups SET compressed_path=? WHERE id=?').run(path.join(dir, 'shift-backups', 'x.db.gz'), id)
-      expect(service.pending(DEFAULT_TENANT_ID)[0]).toMatchObject({ format: 'gz' })
+      expect((await service.pending(DEFAULT_TENANT_ID))[0]).toMatchObject({ format: 'gz' })
       await expect(service.upload(DEFAULT_TENANT_ID, id, signed('zst'), origin)).rejects.toThrow('Неприпустима адреса резервування')
     } finally { database.close() }
   })

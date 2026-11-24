@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { BACKUP_KEEP, VERIFIED_BACKUP_NAME, backupDescriptor, backupFormatOfName, backupsToKeep, hasArchiveMagic, MAX_BACKUP_BYTES } from './backupPolicy.js'
+import { BACKUP_KEEP, BACKUP_PART_BYTES, VERIFIED_BACKUP_NAME, backupDescriptor, backupFormatOfName, backupPartPath, backupPartsOf, backupPartSize, backupsToKeep, hasArchiveMagic, MAX_BACKUP_BYTES, MAX_CHUNKED_BACKUP_BYTES } from './backupPolicy.js'
 const tenant='11111111-1111-4111-8111-111111111111'
 const input={tenant_id:tenant,device_id:'22222222-2222-4222-8222-222222222222',id:'33333333-3333-4333-8333-333333333333',sha256:'a'.repeat(64),size_bytes:100}
 describe('private backup paths',()=>{
   it('uses immutable tenant/device/shift and checksum names',()=>expect(backupDescriptor(input,tenant).path).toBe(tenant+'/'+input.device_id+'/'+input.id+'-'+input.sha256+'.db.gz'))
-  it.each([{tenant_id:'other'},{id:'../../secret'},{device_id:'../other'},{sha256:'x'},{size_bytes:MAX_BACKUP_BYTES+1},{size_bytes:-1}])('rejects %j',change=>expect(()=>backupDescriptor({...input,...change},tenant)).toThrow())
+  it.each([{tenant_id:'other'},{id:'../../secret'},{device_id:'../other'},{sha256:'x'},{size_bytes:MAX_CHUNKED_BACKUP_BYTES+1},{size_bytes:-1}])('rejects %j',change=>expect(()=>backupDescriptor({...input,...change},tenant)).toThrow())
 })
 
 // 22.11.2026: копія в gzip уже 27,6 МБ при ліміті хмари 45 МБ; Zstandard дає 17,8 МБ на тій самій базі.
@@ -81,5 +81,26 @@ describe('cloud copies: seven days, four weeks, six months', () => {
     // 21:30Z 21.11 — це вже 23:30 за Києвом 21.11; 22:30Z — 00:30 22.11 за Києвом.
     const kept = backupsToKeep([{ name: 'late', created_at: '2026-11-21T21:30:00Z' }, { name: 'after-midnight', created_at: '2026-11-21T22:30:00Z' }], { days: 2, weeks: 0, months: 0 })
     expect([...kept].sort()).toEqual(['after-midnight', 'late'])
+  })
+})
+
+// 24.11.2026 (план C10): копія, більша за 45 МБ, іде частинами по 40 МБ.
+describe('a big copy goes in parts', () => {
+  it('a copy up to 45 MB stays one file; bigger is split into 40 MB parts with a short last one', () => {
+    expect(backupPartsOf(MAX_BACKUP_BYTES)).toBe(1)
+    expect(backupPartsOf(MAX_BACKUP_BYTES + 1)).toBe(2)
+    expect(backupPartsOf(100 * 1024 * 1024)).toBe(3)
+    expect(backupPartSize(100 * 1024 * 1024, 1)).toBe(BACKUP_PART_BYTES)
+    expect(backupPartSize(100 * 1024 * 1024, 3)).toBe(20 * 1024 * 1024)
+    expect(backupPartPath('t/d/x.db.zst', 2)).toBe('t/d/x.db.zst.part02')
+  })
+  it('a part names its index and its own checksum; a part of a small copy or a wrong index is refused', () => {
+    const big = { ...input, size_bytes: 100 * 1024 * 1024, format: 'zst' }
+    expect(backupDescriptor({ ...big, part: 3, part_sha256: 'b'.repeat(64) }, tenant)).toMatchObject({ parts: 3, part: { index: 3, sha256: 'b'.repeat(64), size_bytes: 20 * 1024 * 1024 } })
+    expect(backupDescriptor(big, tenant)).toMatchObject({ parts: 3, part: null })
+    for (const change of [{ part: 0 }, { part: 4 }, { part: 1.5 }, { part: 1, part_sha256: 'x' }]) {
+      expect(() => backupDescriptor({ ...big, part_sha256: 'b'.repeat(64), ...change }, tenant)).toThrow()
+    }
+    expect(() => backupDescriptor({ ...input, part: 1, part_sha256: 'b'.repeat(64) }, tenant)).toThrow()
   })
 })

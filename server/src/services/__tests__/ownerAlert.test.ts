@@ -131,16 +131,18 @@ describe('owner alerts about cloud limits', () => {
     expect(planOwnerAlerts(facts(), at('12:00'))).toEqual([])
   })
 
-  it('warns once a month when the cloud copy reaches 80% of the allowed file size', () => {
-    const near = planOwnerAlerts(facts({ last_backup_bytes: 36 * MB }), at('12:00'))
+  // 24.11.2026 (план C10): велика копія йде частинами — межа тепер 400 МБ на всю копію; 36 МБ уже не тривога.
+  it('warns once a month when the cloud copy reaches 80% of the allowed size in parts', () => {
+    expect(planOwnerAlerts(facts({ last_backup_bytes: 36 * MB }), at('12:00'))).toEqual([])
+    const near = planOwnerAlerts(facts({ last_backup_bytes: 330 * MB }), at('12:00'))
     expect(keys(near)).toEqual(['backup_size:2026-11'])
-    expect(near[0].text).toContain('36,0 МБ із 45,0')
+    expect(near[0].text).toContain('330 МБ із 400 дозволених (частинами)')
     // Наступного дня того самого місяця ключ той самий — повтору не буде; у новому місяці нагадаємо ще раз.
     const nextDay = new Date('2026-11-23T12:00:00+02:00')
-    expect(keys(planOwnerAlerts(facts({ last_backup_bytes: 37 * MB, till_seen_at: nextDay.toISOString(), last_backup_at: nextDay.toISOString() }), nextDay))).toEqual(['backup_size:2026-11'])
+    expect(keys(planOwnerAlerts(facts({ last_backup_bytes: 331 * MB, till_seen_at: nextDay.toISOString(), last_backup_at: nextDay.toISOString() }), nextDay))).toEqual(['backup_size:2026-11'])
     const december = new Date('2026-12-01T12:00:00+02:00')
-    expect(keys(planOwnerAlerts(facts({ last_backup_bytes: 37 * MB, till_seen_at: december.toISOString(), last_backup_at: december.toISOString() }), december))).toEqual(['backup_size:2026-12'])
-    expect(planOwnerAlerts(facts({ last_backup_bytes: 35 * MB }), at('12:00'))).toEqual([])
+    expect(keys(planOwnerAlerts(facts({ last_backup_bytes: 331 * MB, till_seen_at: december.toISOString(), last_backup_at: december.toISOString() }), december))).toEqual(['backup_size:2026-12'])
+    expect(planOwnerAlerts(facts({ last_backup_bytes: 319 * MB }), at('12:00'))).toEqual([])
   })
 
   it('warns when the cloud database is 80% full; the limit follows the plan', () => {

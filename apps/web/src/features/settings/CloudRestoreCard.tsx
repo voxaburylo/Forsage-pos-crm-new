@@ -37,11 +37,12 @@ export function CloudRestoreCard() {
   async function restore(item: CloudBackupItem) {
     const bridge = desktopBridge()
     if (!bridge?.fetchCloudBackup || !bridge.restoreBackup) throw new Error('Ця версія програми не вміє відновлювати з хмари. Оновіть програму.')
-    const { data } = await api.post<{ data: { url: string } }>('/api/v1/backups/download', {
+    // 24.11.2026 (план C10): велика копія приходить частинами (urls) — програма збирає її сама й звіряє загальну суму.
+    const { data } = await api.post<{ data: { url?: string; urls?: string[] } }>('/api/v1/backups/download', {
       device_id: item.device_id, id: item.id, sha256: item.sha256, size_bytes: item.size_bytes, format: cloudBackupFormat(item),
     }, undefined, { silent: true, timeoutMs: 60_000 })
     const fetched = await bridge.fetchCloudBackup({
-      url: data.url, tenant_id: tenantId, device_id: item.device_id, id: item.id, sha256: item.sha256, size_bytes: item.size_bytes, format: cloudBackupFormat(item),
+      url: data.url ?? '', ...(data.urls?.length ? { urls: data.urls } : {}), tenant_id: tenantId, device_id: item.device_id, id: item.id, sha256: item.sha256, size_bytes: item.size_bytes, format: cloudBackupFormat(item),
     })
     toast.success('Копію завантажено й перевірено. Відновлюю…')
     // Після успіху програма перезапускається сама — відповіді можемо не дочекатись.

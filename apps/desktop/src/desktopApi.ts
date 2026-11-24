@@ -51,7 +51,7 @@ export function createDesktopApi(ipcRenderer: DesktopInvoker) {
     shiftBackups: {
       pending: () => ipcRenderer.invoke('desktop:backup:pending'),
       status: () => ipcRenderer.invoke('desktop:backup:status'),
-      upload: (id: string, url: string) => ipcRenderer.invoke('desktop:backup:upload', id, url),
+      upload: (id: string, url: string, part?: number) => ipcRenderer.invoke('desktop:backup:upload', id, url, part),
       confirmed: (id: string, sha: string) => ipcRenderer.invoke('desktop:backup:confirmed', id, sha),
       failed: (id: string, message: string) => ipcRenderer.invoke('desktop:backup:failed', id, message),
     },
