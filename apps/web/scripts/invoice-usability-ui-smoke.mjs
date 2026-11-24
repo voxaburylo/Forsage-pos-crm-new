@@ -132,6 +132,14 @@ scenario('clipboard', async () => {
   assert.equal(await page.locator('input[data-invoice-quantity]:visible').inputValue(), '1.25')
   assert.equal(await page.locator('input[data-invoice-price=purchase]:visible').inputValue(), '125.50')
   assert.equal(await page.locator('input[data-invoice-price=retail]:visible').inputValue(), '190.00')
+  // 24.11.2026: поле «Розн. ціна» стислося до нуля від загального правила оболонки — ціну не можна було ввести.
+  // У програмі накладна живе в робочій області оболонки (.app-main) — тут її немає, тож ставимо клас самі.
+  await page.evaluate(() => document.getElementById('root').classList.add('app-main'))
+  for (const [field, min] of [['purchase', 50], ['retail', 80]]) {
+    const box = await page.locator('input[data-invoice-price=' + field + ']:visible').boundingBox()
+    assert.ok(box && box.width >= min, 'Поле ціни (' + field + ') має бути достатньо широким, а воно ' + Math.round(box?.width ?? 0) + 'px')
+  }
+  await page.evaluate(() => document.getElementById('root').classList.remove('app-main'))
   assert.equal(await page.getByPlaceholder('Немає', { exact: true }).filter({ visible: true }).inputValue(), 'A-3')
   const bad = 'Назва\tКількість\tЗакупівля\nКлюч\tпомилка\t120'
   await page.getByPlaceholder('Вставте скопійовану таблицю', { exact: false }).fill(bad)
