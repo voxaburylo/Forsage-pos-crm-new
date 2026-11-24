@@ -6,6 +6,7 @@ import { pool } from '../db/pg.js'
 import { runOwnerAlerts } from '../services/ownerAlertService.js'
 import { runDailyDigestTick } from '../services/dailyDigestService.js'
 import { runSelfCheckIfDue } from '../services/selfCheckService.js'
+import { runSupplierSync } from '../services/supplierApiService.js'
 
 const router = Router()
 
@@ -69,6 +70,18 @@ router.get('/self-check', async (req, res, next) => {
     res.setHeader('Cache-Control', 'no-store')
     const outcome = await runSelfCheckIfDue(req.app)
     res.json({ data: { ran: outcome.ran, results: outcome.results?.map(result => ({ checked: result.checked, failures: result.failures.length, slow: result.slow.length, ms: result.ms })) } })
+  } catch (error) {
+    next(error)
+  }
+})
+
+// 24.11.2026: прайси постачальників з API (Омега). Планувальник бази стукає кожні 5 хв; одна порція — до 8 сторінок.
+router.get('/supplier-sync', async (req, res, next) => {
+  try {
+    const allowed = hasValidCronSecret(req.get('authorization')) || await hasValidJobKey(req.get('x-forsage-job-key'), 'supplier-sync')
+    if (!allowed) throw new AppError('UNAUTHORIZED', 'Невірний ключ фонового завдання', 401)
+    res.setHeader('Cache-Control', 'no-store')
+    res.json({ data: await runSupplierSync() })
   } catch (error) {
     next(error)
   }

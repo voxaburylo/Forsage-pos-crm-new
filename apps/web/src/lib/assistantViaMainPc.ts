@@ -10,6 +10,8 @@ import { desktopBridge, isDesktopRuntime } from './desktopBridge'
 export function isAssistantPath(path: string): boolean {
   // 24.11.2026: розділ «Сайт» власника ходить тим самим шляхом.
   if (/^\/api\/v1\/site-admin(?:\/|$)/.test(path)) return true
+  // 24.11.2026: товари постачальників під замовлення й налаштування їх ключів — теж.
+  if (/^\/api\/v1\/supplier-(?:offers|api)(?:\/|\?|$)/.test(path)) return true
   return /^\/api\/v1\/(?:ai|vin)\//.test(path) && !/^\/api\/v1\/ai\/(?:config|test)(?:[/?]|$)/.test(path)
 }
 

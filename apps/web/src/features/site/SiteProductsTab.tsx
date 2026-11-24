@@ -3,6 +3,7 @@ import { ArrowLeft, ArrowRight, FolderUp, ImagePlus, Save, Sparkles, Trash2 } fr
 import { Button, Card, Input } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { productApi } from '@/features/products/productApi'
+import { canImportSitePhotos, runSitePhotoImport, sitePhotoImportText } from './sitePhotoImport'
 import { errorText, exactProductMatch, groupPhotoFiles, siteCall, uploadProductPhotos, type SitePhoto } from './siteGateway'
 
 interface Found { id: string; name: string; sku?: string | null; barcode?: string | null }
@@ -201,6 +202,29 @@ function BulkPhotos() {
   )
 }
 
+/** Фото, які сайт знайшов сам: головний ПК забирає їх раз на годину; тут — те саме кнопкою. */
+function AutoPhotoImport() {
+  const [busy, setBusy] = useState(false)
+  const [text, setText] = useState('')
+  const able = canImportSitePhotos()
+  async function run() {
+    setBusy(true)
+    try {
+      const result = await runSitePhotoImport()
+      setText(result ? sitePhotoImportText(result) : 'Імпорт працює лише на головному ПК каси.')
+    } catch (reason) { setText(errorText(reason, 'Не вдалося отримати фото із сайту')) } finally { setBusy(false) }
+  }
+  return (
+    <Card>
+      <h2 className="mb-1 text-base font-semibold text-gray-900">Фото, які знайшов сайт</h2>
+      <p className="mb-3 text-xs text-gray-500">Сайт сам шукає фото товарів і перевіряє їх. Головний ПК забирає їх раз на годину й ставить у картки, де фото ще немає. Своє фото програми не замінюється ніколи.</p>
+      <Button variant="secondary" icon={<ImagePlus size={14} />} loading={busy} disabled={!able} onClick={() => void run()} data-site-auto-photos>Імпортувати зараз</Button>
+      {!able && <p className="mt-2 text-xs text-gray-500">Кнопка працює на головному ПК каси: фото зберігаються в його базі.</p>}
+      {text && <p role="status" className="mt-2 text-sm text-gray-700">{text}</p>}
+    </Card>
+  )
+}
+
 export function SiteProductsTab() {
   const [search, setSearch] = useState('')
   const [found, setFound] = useState<Found[]>([])
@@ -230,6 +254,7 @@ export function SiteProductsTab() {
         {picked && <div className="mt-4 border-t border-gray-100 pt-4"><ProductEditor key={picked.id} product={picked} /></div>}
       </Card>
       <BulkPhotos />
+      <AutoPhotoImport />
     </div>
   )
 }

@@ -95,6 +95,30 @@ export function findInvoiceIdentifierConflict(items: ReceivingLine[]): { index: 
   return null
 }
 
+/**
+ * 24.11.2026 (накладна власника: «Фильтр салона» KCF-8113 і угольний KCF-8113-C лягли в ОДНУ картку):
+ * два рядки з тією самою карткою, але різними артикулами чи штрихкодами — це два різні товари, привʼязані помилково.
+ * Раніше проведення падало на другому рядку з «Картка товару змінилася, поки накладна була відкрита», а на першому —
+ * «Артикул або штрихкод уже зайнятий»: причину було не зрозуміти. Той самий товар у двох рядках (однакові коди) дозволено.
+ */
+export function findSameCardConflict(items: ReceivingLine[]): { index: number; other: number; field: 'barcode' | 'sku'; value: string; otherValue: string } | null {
+  const first = new Map<string, number>()
+  for (const [index, line] of items.entries()) {
+    const id = clean(line.product_id)
+    if (!id) continue
+    const other = first.get(id)
+    if (other === undefined) { first.set(id, index); continue }
+    for (const field of ['sku', 'barcode'] as const) {
+      const [mine, theirs] = field === 'barcode' ? [barcodeKey(line.barcode), barcodeKey(items[other].barcode)] : [skuKey(line.sku), skuKey(items[other].sku)]
+      if (mine && theirs && mine !== theirs) return { index, other, field, value: clean(line[field]), otherValue: clean(items[other][field]) }
+    }
+  }
+  return null
+}
+export const sameCardConflictText = (index: number, other: number, field: 'barcode' | 'sku', mine: string, theirs: string) =>
+  `Рядки ${other + 1} і ${index + 1} привʼязані до однієї картки, але ${field === 'barcode' ? 'штрихкоди' : 'артикули'} в них різні: «${theirs}» і «${mine}». `
+  + 'Якщо це різні товари — у цьому рядку приберіть вибрану картку (новий товар) або виберіть іншу; якщо той самий — зробіть однаковими.'
+
 /** One outer BEGIN IMMEDIATE covers cards, document, split payments, stock and receipt. */
 export function commitReceiving(db: LocalDatabase, input: ReceivingCommitInput): any {
   if (!input || !clean(input.operation_id) || !clean(input.invoice_id)) throw new Error('Відсутній ідентифікатор приймання')
@@ -141,6 +165,8 @@ export function commitReceiving(db: LocalDatabase, input: ReceivingCommitInput):
       if (nullable(line.category_id) && !db.prepare('SELECT id FROM categories WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL').get(line.category_id!, tenant))
         lineFailure(i, 'Категорію видалено. Виберіть актуальну категорію.')
     })
+    const sameCard = findSameCardConflict(input.items)
+    if (sameCard) lineFailure(sameCard.index, sameCardConflictText(sameCard.index, sameCard.other, sameCard.field, sameCard.value, sameCard.otherValue))
     const conflict = findInvoiceIdentifierConflict(input.items)
     if (conflict) lineFailure(conflict.index, `${conflict.field === 'barcode' ? 'Штрихкод' : 'Артикул'} «${conflict.value}» вже є в рядку ${conflict.other + 1} `
       + 'з іншим товаром. Виправте штрихкод/артикул в одному з рядків або виберіть ту саму картку.')

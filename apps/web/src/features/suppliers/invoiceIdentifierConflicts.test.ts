@@ -28,3 +28,20 @@ describe('receiving error text for the cashier', () => {
     expect(receivingErrorText('RECEIVING_STEP:posting: База зайнята')).toEqual({ line: null, text: 'База зайнята' })
   })
 })
+
+// 24.11.2026 (накладна власника: звичайний і вугільний фільтр салона лягли в одну картку).
+describe('two rows bound to one card with different codes', () => {
+  it('names both rows and both articles instead of a vague refusal at posting', () => {
+    const conflicts = findInvoiceIdentifierConflicts([
+      row('Фильтр салона Амулет Könner', 'KCF-8113', '2100000000494', 'p1'),
+      row('Фильтр салона угольный Амулет Könner', 'KCF-8113-C', '', 'p1'),
+    ])
+    expect(conflicts).toHaveLength(1)
+    expect(conflicts[0]).toMatchObject({ index: 1, other: 0, field: 'sku', value: 'KCF-8113-C' })
+    expect(conflicts[0].message).toContain('Рядки 1 і 2 привʼязані до однієї картки, але артикули в них різні: «KCF-8113» і «KCF-8113-C»')
+  })
+  it('the same card twice with the same or an empty code stays allowed; different barcodes are caught too', () => {
+    expect(findInvoiceIdentifierConflicts([row('А', 'X-1', '', 'p1'), row('А', 'x-1', '', 'p1'), row('А', '', '', 'p1')])).toEqual([])
+    expect(findInvoiceIdentifierConflicts([row('А', '', '111', 'p1'), row('А', '', '222', 'p1')])[0]).toMatchObject({ index: 1, field: 'barcode' })
+  })
+})

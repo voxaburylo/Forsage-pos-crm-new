@@ -25,6 +25,28 @@ describe('fewer red invoice rows without losing accuracy', () => {
   const row = (data: Record<string, unknown>) => ({ qty: 1, purchase_price_uah: 100, ...data })
   const preview = (data: Record<string, unknown>) => supply.previewInvoiceFromAiRows({ rows: [row(data)] })[0]
 
+  // 24.11.2026 (слово власника: «майже всі нові позиції червоні, а у списку — купа сміття, зовсім не схожого на товар»).
+  it('a new product is created by itself when only common words match; the list shows the truly similar card first', () => {
+    const cars = ['Ланос', 'Авео 1.5', 'Авео 1.6', 'Лачетти', 'Нубира', 'Джили МК', 'Джили СК', 'Эмгранд', 'Форза', 'Тигго', 'Матиз', 'Нексия']
+    cars.forEach((car, index) => add('f' + index, String(79000 + index), 'Фильтр салона ' + car + ' Könner KCF-' + (7100 + index)))
+    cars.slice(0, 6).forEach((car, index) => add('u' + index, String(84000 + index), 'Фильтр салона угольный ' + car + ' Könner'))
+    add('amulet', '79388', 'Фильтр салона Амулет Könner')
+    add('typo', '79342', 'Фильтр салона KFC 8113-C Chery Amulet KONNER')
+    // Угольний фільтр на Амулет: потрібна картка — з кодом 8113 у назві, вона має бути першою; фільтри інших машин не показуємо.
+    const carbon = preview({ name: 'Фильтр салона угольный Амулет Könner', sku: 'KCF-8113-C' })
+    expect(carbon.status).toBe('review')
+    expect(carbon.candidates[0].id).toBe('typo')
+    expect(carbon.candidates.map(item => item.id)).toContain('amulet')
+    expect(carbon.candidates.length).toBeLessThanOrEqual(5)
+    expect(carbon.candidates.some(item => /Ланос|Авео|Нексия|Матиз/.test(item.name))).toBe(false)
+    // Зовсім новий товар: спільні лише загальні слова — рядок не червоний, створюється сам.
+    const fresh = preview({ name: 'Фильтр салона Чери Кимо Könner', sku: 'KCF-9977' })
+    expect(fresh).toMatchObject({ status: 'new', candidates: [] })
+    expect(fresh.validation_errors ?? []).toEqual([])
+    // Майже та сама назва без артикула — як і раніше просимо звірити, щоб не створити дубль.
+    expect(preview({ name: 'Фильтр салона Амулет Könner (упаковка)', sku: '' })).toMatchObject({ status: 'review' })
+  })
+
   it('recognises a supplier brand prefix only in front of a real part number', () => {
     expect(supplierPrefixedSku('MF HU719/7X')).toBe('HU719/7X')
     expect(supplierPrefixedSku('WX WL7125')).toBe('WL7125')

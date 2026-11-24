@@ -18,6 +18,8 @@ export const SETTINGS_TABS = [
   { id: 'telegram', label: 'Telegram' },
   { id: 'pc', label: 'ПК і копії' },
   { id: 'ai', label: 'ШІ' },
+  // 24.11.2026 (слово власника): постачальники, що дають товари за ключем API (Омега).
+  { id: 'api', label: 'API-ключі' },
 ] as const
 type VisibleTabId = (typeof SETTINGS_TABS)[number]['id']
 /**

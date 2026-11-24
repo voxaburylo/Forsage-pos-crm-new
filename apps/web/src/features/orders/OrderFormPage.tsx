@@ -23,6 +23,8 @@ import { buildMessengerText, printInvoice, printDeliveryNote, loadSellerRequisit
 import { toast } from '@/components/ui/Toast'
 import { OrderProductResults } from './OrderProductResults'
 import { OrderPartSuggestions, type OrderPartSuggestion } from './OrderPartSuggestions'
+import { SupplierOfferSuggestions, expectedDate, type SupplierOfferPick } from './SupplierOfferSuggestions'
+import { useStaffRights } from '@/lib/staffRights'
 import { readOrderItemPhotos } from './orderItemPhotos'
 import { availableStock, orderNumber, stockFirst, validateOrderRows, replaceOrderProduct } from './orderUx'
 import { readOrderFormDraft, writeOrderFormDraft, removeOrderFormDraft } from './orderFormDraft'
@@ -210,6 +212,7 @@ export default function OrderFormPage() {
 }
 
 function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: () => void }) {
+  const canSeeSupplierPurchase = useStaffRights().purchase_prices
   const [initialBackup] = useState(() => {
     try { return { backup: readOrderFormDraft<FormBackup>(backupKey), pending: readOrderSaveAttempt(backupKey), error: '' } }
     catch (error) { return { backup: null, pending: null, error: (error as Error).message } }
@@ -1093,6 +1096,22 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
     setSearchResults([])
   }
 
+  // 24.11.2026: товар постачальника з API (Омега) — рядок «під замовлення»: ціна продажу за сіткою, закупка постачальника,
+  // очікувана дата — за «днями до відправки» складу. Картка складу не створюється.
+  function addSupplierOffer({ offer, warehouse }: SupplierOfferPick) {
+    const title = [offer.name, offer.brand, offer.number].filter(Boolean).join(' ').slice(0, 300)
+    setItems((rows) => [...rows.filter((row) => row.name.trim() || row.sku.trim()), {
+      ...EMPTY_ITEM, local_key: crypto.randomUUID(), source_type: 'supplier',
+      name: warehouse ? (title + ' (' + offer.supplier + ', ' + warehouse.warehouse + ')').slice(0, 300) : title,
+      sku: offer.number, supplier_id: offer.supplier_id ?? '',
+      expected_date: expectedDate(warehouse?.days_to_ship),
+      buy_price: offer.purchase_price ? kopecksToHryvnia(offer.purchase_price) : '0',
+      sell_price: kopecksToHryvnia(offer.retail_price),
+    }])
+    setSearch('')
+    setSearchResults([])
+  }
+
   function addManualItemRow(name = '') {
     setItems((rows) => [...rows, { ...EMPTY_ITEM, local_key: crypto.randomUUID(), source_type: 'supplier', name }])
   }
@@ -1739,6 +1758,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
               )}
               {/* Довідник запчастин «під замовлення»: спершу склад (вище), потім те, що вже замовляли. */}
               {replaceIndex === null && <OrderPartSuggestions query={search} onPick={addSuggestedPart} />}
+              {replaceIndex === null && <SupplierOfferSuggestions query={search} onPick={addSupplierOffer} showPurchase={canSeeSupplierPurchase} />}
 
               {/* Не знайдено → пропонуємо додати під замовлення */}
               {replaceIndex === null && !searchLoading && !searchError && search.trim().length >= 2 && searchResults.length === 0 && (

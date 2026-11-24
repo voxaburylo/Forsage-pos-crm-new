@@ -19,7 +19,7 @@ describe('site gateway proxy', () => {
     expect(() => checkSiteCall('promos.upsert', { items: [{ min_price: 1 }] })).toThrow('на сайт не передаються')
     expect(() => checkSiteCall('settings.set', { values: { contact_phone1: '1', admin_password: 'x' } })).toThrow('Невідоме налаштування сайту: admin_password')
     expect(checkSiteCall('settings.set', { values: { contact_phone1: '1' } }).changes).toBe(true)
-    expect(Object.keys(SITE_ACTIONS)).toHaveLength(29)
+    expect(Object.keys(SITE_ACTIONS)).toHaveLength(30)
   })
 
   it('adds the key on the server and sends the action in the body', async () => {

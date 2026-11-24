@@ -10,6 +10,8 @@ import { saveStatusReport } from '../services/systemStatusService.js'
 import { storeProcessingUpload } from '../services/processingUploadService.js'
 import { assistantActor, DEVICE_AI_DENIED } from '../services/tillAssistantActor.js'
 import { siteAdminRouter } from './site.js'
+import { supplierApiRouter, supplierOffersRouter } from './supplierApi.js'
+import { callSiteGateway } from '../services/siteGatewayService.js'
 import aiRouter from './ai.js'
 import vinRouter from './vin.js'
 
@@ -113,5 +115,17 @@ tillDeviceRouter.use('/ai', requireTillDevice, actAsTillStaff, (req, _res, next)
   next()
 }, aiRouter)
 tillDeviceRouter.use('/vin', requireTillDevice, actAsTillStaff, vinRouter)
+// 24.11.2026 (доповнення 3): фото, які сайт знайшов сам. Забирає їх головний ПК своїм ключем — раз на годину й кнопкою;
+// працівник для цього не потрібен. Сервер лише передає список від шлюзу сайту, у базу нічого не пише.
+tillDeviceRouter.get('/site-photos', requireTillDevice, async (req: DeviceRequest, res, next) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store')
+    const since = typeof req.query.since === 'string' && !Number.isNaN(Date.parse(req.query.since)) ? new Date(req.query.since).toISOString() : undefined
+    res.json({ data: await callSiteGateway('photos.auto_list', { ...(since ? { since } : {}), limit: 200 }) })
+  } catch (err) { next(err) }
+})
 // 24.11.2026: розділ «Сайт» на головному ПК — тим самим ключем; пускає лише власника (requireRole у самому розділі).
 tillDeviceRouter.use('/site-admin', requireTillDevice, actAsTillStaff, siteAdminRouter)
+// 24.11.2026: товари постачальників під замовлення — на головному ПК тим самим ключем.
+tillDeviceRouter.use('/supplier-offers', requireTillDevice, actAsTillStaff, supplierOffersRouter)
+tillDeviceRouter.use('/supplier-api', requireTillDevice, actAsTillStaff, supplierApiRouter)
