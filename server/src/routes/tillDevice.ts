@@ -12,6 +12,7 @@ import { assistantActor, DEVICE_AI_DENIED } from '../services/tillAssistantActor
 import { siteAdminRouter } from './site.js'
 import { supplierApiRouter, supplierOffersRouter } from './supplierApi.js'
 import { callSiteGateway } from '../services/siteGatewayService.js'
+import { linkedOfferPhotos } from '../services/supplierApiService.js'
 import aiRouter from './ai.js'
 import vinRouter from './vin.js'
 
@@ -122,6 +123,14 @@ tillDeviceRouter.get('/site-photos', requireTillDevice, async (req: DeviceReques
     res.setHeader('Cache-Control', 'no-store')
     const since = typeof req.query.since === 'string' && !Number.isNaN(Date.parse(req.query.since)) ? new Date(req.query.since).toISOString() : undefined
     res.json({ data: await callSiteGateway('photos.auto_list', { ...(since ? { since } : {}), limit: 200 }) })
+  } catch (err) { next(err) }
+})
+// 24.11.2026: фото постачальника (Омега) для НАШИХ карток, що збіглися з його товарами. Головний ПК ставить їх у картки без фото.
+tillDeviceRouter.get('/supplier-photos', requireTillDevice, async (req: DeviceRequest, res, next) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store')
+    const since = typeof req.query.since === 'string' && !Number.isNaN(Date.parse(req.query.since)) ? new Date(req.query.since).toISOString() : null
+    res.json({ data: await linkedOfferPhotos(req.tillDevice!.tenant_id, since) })
   } catch (err) { next(err) }
 })
 // 24.11.2026: розділ «Сайт» на головному ПК — тим самим ключем; пускає лише власника (requireRole у самому розділі).

@@ -32,7 +32,8 @@ describe('Omega supplier', () => {
   })
 
   it('a step takes pages until the end, zeroes what disappeared and links to our cards; waits an hour between passes', async () => {
-    query.mockResolvedValue({ rows: [] })
+    // Лічильник запитів дає дозвіл; решта запитів до бази порожні.
+    query.mockImplementation(async (sql: string) => ({ rows: /calls_hour_count/.test(String(sql)) ? [{ id: 'c' }] : [] }))
     const fetchImpl = vi.fn(async (_url: unknown, init: RequestInit) => {
       const from = JSON.parse(String(init.body)).From
       return new Response(JSON.stringify({ Result: from === 1 ? [omegaItem()] : [], Total: 1 }), { status: 200 })
@@ -63,5 +64,49 @@ describe('Omega supplier', () => {
     const request = (method: string, path: string) => ({ method, path, get: () => undefined }) as never
     expect(isWriteAllowed(request('PUT', '/api/v1/supplier-api'))).toBe(true)
     expect(isWriteAllowed(request('PUT', '/api/v1/supplier-apix'))).toBe(false)
+  })
+})
+
+// 24.11.2026 (власник: «нехай вантажить фото Омеги, там не більше 300 на годину»).
+describe('Omega photos and the request limit', () => {
+  beforeEach(() => query.mockReset())
+  const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(2000, 1)])
+  const image = (body: Buffer | string, type: string, status = 200) => vi.fn(async () => new Response(body, { status, headers: { 'content-type': type } })) as unknown as typeof fetch
+
+  it('keeps a margin under Omega limits and counts every request in the database', async () => {
+    const { CALLS_PER_HOUR, CALLS_PER_MINUTE, PHOTOS_PER_RUN, PAGES_PER_RUN, takeCall } = await import('../supplierApiService.js')
+    expect(CALLS_PER_HOUR).toBeLessThanOrEqual(270); expect(CALLS_PER_MINUTE).toBeLessThanOrEqual(25)
+    // Найгірша година: 12 викликів планувальника — усе одно не більше дозволеного лічильником.
+    expect(12 * PHOTOS_PER_RUN + 80).toBeLessThan(300); expect(PAGES_PER_RUN + PHOTOS_PER_RUN).toBeLessThan(30)
+    query.mockResolvedValueOnce({ rows: [{ id: 'c' }] }).mockResolvedValueOnce({ rows: [] })
+    expect(await takeCall('c')).toBe(true); expect(await takeCall('c')).toBe(false)
+    expect(query.mock.calls[0][1]).toEqual(['c', CALLS_PER_HOUR, CALLS_PER_MINUTE])
+  })
+
+  it('takes only a real picture; anything else means "no photo"', async () => {
+    const { omegaImage } = await import('../supplierApiService.js')
+    expect(await omegaImage('K', '-87748', { fetchImpl: image(jpeg, 'image/jpeg') })).toMatchObject({ type: 'image/jpeg' })
+    expect(await omegaImage('K', '-87748', { fetchImpl: image('{"Success":false}', 'application/json') })).toBeNull()
+    expect(await omegaImage('K', '-87748', { fetchImpl: image(Buffer.alloc(3000, 7), 'image/jpeg') })).toBeNull()
+    expect(await omegaImage('K', '-87748', { fetchImpl: image(jpeg, 'image/jpeg', 404) })).toBeNull()
+    expect(await omegaImage('K', 'abc; drop', { fetchImpl: image(jpeg, 'image/jpeg') })).toBeNull()
+    await expect(omegaImage('K', '1', { fetchImpl: image('', 'text/plain', 429) })).rejects.toMatchObject({ code: 'SUPPLIER_LIMIT' })
+  })
+
+  it('stops as soon as the counter says enough, remembers goods without a photo, saves the rest', async () => {
+    const { syncPhotosStep } = await import('../supplierApiService.js')
+    const upload = vi.fn(async (path: string) => 'https://x.supabase.co/storage/v1/object/public/supplier-photos/' + path)
+    let allowed = 2
+    query.mockImplementation(async (sql: string) => {
+      if (/count\(\*\)::int AS n/.test(sql)) return { rows: [{ n: 0 }] }
+      if (/SELECT external_id FROM supplier_offers/.test(sql)) return { rows: [{ external_id: '-1' }, { external_id: '-2' }, { external_id: '-3' }] }
+      if (/calls_hour_count/.test(sql)) return { rows: allowed-- > 0 ? [{ id: 'c' }] : [] }
+      return { rows: [] }
+    })
+    let n = 0
+    const fetchImpl = vi.fn(async () => ++n === 1 ? new Response(jpeg, { status: 200, headers: { 'content-type': 'image/jpeg' } }) : new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch
+    expect(await syncPhotosStep({ id: 'c', tenant_id: 't', api_key: 'K' }, { fetchImpl, upload })).toEqual({ saved: 1, none: 1, stopped: 'limit' })
+    expect(upload).toHaveBeenCalledWith('t/c/-1.jpg', expect.anything(), 'image/jpeg')
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
 })

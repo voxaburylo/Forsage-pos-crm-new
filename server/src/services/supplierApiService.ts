@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { pool } from '../db/pg.js'
 import { applyMarkup, roundingFromSettings, type MarkupRule } from '../lib/markup.js'
 import { AppError } from '../middleware/errorHandler.js'
+import { guessCategory, learnCategories } from './supplierCategories.js'
 
 /**
  * Постачальники з API (рішення власника 24.11.2026). Перший — Омега (public.omega.page).
@@ -15,6 +16,17 @@ export const OMEGA_PAGE_SIZE = 1000
 export const PAGES_PER_RUN = 8
 /** Повний прохід прайсу не частіше, ніж раз на годину. */
 export const FULL_PASS_EVERY_MS = 60 * 60_000
+/**
+ * Ліміти Омеги (з її опису API): 30 запитів на хвилину та/або 300 на годину; за перевищення обліковий запис блокують
+ * автоматично. Тримаємо запас: не більше 250 на годину й 20 на хвилину — на ВСІ запити разом (прайс і фото).
+ */
+export const CALLS_PER_HOUR = 250
+export const CALLS_PER_MINUTE = 20
+/** Скільки фото питати за один виклик планувальника (12 викликів на годину → до 180 фото). */
+export const PHOTOS_PER_RUN = 15
+/** Скільки фото тримати в сховищі, доки власник не підніме межу: ~14 КБ на фото, 30 000 ≈ 420 МБ. */
+export const PHOTO_STORAGE_CAP = 30_000
+export const PHOTO_BUCKET = 'supplier-photos'
 
 export const code = (value: unknown) => String(value ?? '').normalize('NFKC').toLocaleUpperCase('uk-UA').replace(/[^A-ZА-ЯІЇЄҐ0-9]/g, '')
 const kopecks = (uah: unknown) => { const n = Number(uah); return Number.isFinite(n) && n > 0 ? Math.round(n * 100) : 0 }
@@ -190,6 +202,104 @@ export async function linkOffers(tenantId: string, connectionId: string) {
     [tenantId, connectionId])
 }
 
+/**
+ * Розкласти товари постачальника по наших категоріях (рішення власника 24.11.2026). Модель вчиться на наших картках;
+ * невпевнене — без категорії. Категорію, поставлену людиною (category_source = 'manual'), не чіпаємо ніколи.
+ */
+export async function categorizeOffers(tenantId: string, connectionId: string) {
+  const products = (await pool.query('SELECT name, category_id FROM products WHERE tenant_id = $1 AND deleted_at IS NULL AND is_active AND category_id IS NOT NULL', [tenantId])).rows
+  const model = learnCategories(products)
+  const offers = (await pool.query(`SELECT external_id, name, category_id FROM supplier_offers WHERE connection_id = $1 AND category_source IS DISTINCT FROM 'manual'`, [connectionId])).rows
+  const changes = offers.map((offer: any) => ({ external_id: offer.external_id as string, category_id: guessCategory(model, offer.name), before: offer.category_id as string | null }))
+    .filter(change => change.category_id !== change.before)
+  for (let start = 0; start < changes.length; start += 5000) {
+    await pool.query(
+      `UPDATE supplier_offers o SET category_id = x.category_id, category_source = CASE WHEN x.category_id IS NULL THEN NULL ELSE 'auto' END, updated_at = now()
+         FROM jsonb_to_recordset($2::jsonb) AS x(external_id text, category_id uuid)
+        WHERE o.connection_id = $1 AND o.external_id = x.external_id AND o.category_source IS DISTINCT FROM 'manual'`,
+      [connectionId, JSON.stringify(changes.slice(start, start + 5000).map(({ external_id, category_id }) => ({ external_id, category_id })))])
+  }
+  return { changed: changes.length, categorized: offers.length - changes.filter(change => !change.category_id).length }
+}
+
+/**
+ * Дозвіл на один запит до постачальника. Лічильник — у базі, один на всі виклики сервера: два одночасні виклики
+ * планувальника не перевищать ліміт удвох. false — на цю хвилину чи годину досить.
+ */
+export async function takeCall(connectionId: string): Promise<boolean> {
+  const { rows } = await pool.query(
+    `UPDATE supplier_api_connections SET
+        calls_hour_start = CASE WHEN calls_hour_start IS NULL OR calls_hour_start < now() - interval '1 hour' THEN now() ELSE calls_hour_start END,
+        calls_hour_count = CASE WHEN calls_hour_start IS NULL OR calls_hour_start < now() - interval '1 hour' THEN 1 ELSE calls_hour_count + 1 END,
+        calls_minute_start = CASE WHEN calls_minute_start IS NULL OR calls_minute_start < now() - interval '1 minute' THEN now() ELSE calls_minute_start END,
+        calls_minute_count = CASE WHEN calls_minute_start IS NULL OR calls_minute_start < now() - interval '1 minute' THEN 1 ELSE calls_minute_count + 1 END
+      WHERE id = $1
+        AND (calls_hour_start IS NULL OR calls_hour_start < now() - interval '1 hour' OR calls_hour_count < $2)
+        AND (calls_minute_start IS NULL OR calls_minute_start < now() - interval '1 minute' OR calls_minute_count < $3)
+      RETURNING id`, [connectionId, CALLS_PER_HOUR, CALLS_PER_MINUTE])
+  return rows.length > 0
+}
+
+/** Фото товару з Омеги: байти JPEG/PNG або null (фото немає). Один запит. */
+export async function omegaImage(key: string, productId: string, deps: OmegaDeps = {}): Promise<{ bytes: Buffer; type: string } | null> {
+  if (!/^-?\d{1,18}$/.test(productId)) return null
+  let response: Response
+  try {
+    response = await (deps.fetchImpl ?? fetch)(OMEGA_BASE + '/product/image', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ProductId: Number(productId), Number: 1, Key: key }), redirect: 'error', signal: AbortSignal.timeout(30_000) })
+  } catch { throw new AppError('SUPPLIER_UNREACHABLE', 'Омега не відповіла на запит фото', 502) }
+  if (response.status === 429 || response.status === 403) throw new AppError('SUPPLIER_LIMIT', 'Омега обмежила запити', 502)
+  const type = (response.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase()
+  if (!response.ok || !['image/jpeg', 'image/png'].includes(type)) return null
+  const bytes = Buffer.from(await response.arrayBuffer())
+  // Справжнє зображення за першими байтами й розумного розміру; інше — «фото немає».
+  const jpeg = bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8, png = bytes.length > 8 && bytes.readUInt32BE(0) === 0x89504e47
+  if ((!jpeg && !png) || bytes.length < 500 || bytes.length > 1_000_000) return null
+  return { bytes, type: jpeg ? 'image/jpeg' : 'image/png' }
+}
+
+export interface PhotoDeps extends OmegaDeps { upload?: (path: string, bytes: Buffer, type: string) => Promise<string> }
+
+async function uploadPhoto(path: string, bytes: Buffer, type: string): Promise<string> {
+  const { supabaseAdmin } = await import('../db/supabaseAdmin.js')
+  const saved = await supabaseAdmin.storage.from(PHOTO_BUCKET).upload(path, bytes, { contentType: type, upsert: true, cacheControl: '31536000' })
+  if (saved.error) throw new Error('Сховище не прийняло фото: ' + saved.error.message)
+  return supabaseAdmin.storage.from(PHOTO_BUCKET).getPublicUrl(path).data.publicUrl
+}
+
+/**
+ * Порція фото: спершу товари, що збіглися з нашими картками, далі — з категорією, далі решта; у кожній групі — де більший
+ * залишок. Товар без фото в Омеги позначаємо й не питаємо знову 30 днів. Зупиняється, щойно лічильник запитів каже «досить».
+ */
+export async function syncPhotosStep(connection: { id: string; tenant_id: string; api_key: string }, deps: PhotoDeps = {}, max = PHOTOS_PER_RUN) {
+  const stored = Number((await pool.query('SELECT count(*)::int AS n FROM supplier_offers WHERE connection_id = $1 AND photo_saved_at IS NOT NULL', [connection.id])).rows[0]?.n) || 0
+  if (stored >= PHOTO_STORAGE_CAP) return { saved: 0, none: 0, stopped: 'cap' as const }
+  const { rows } = await pool.query(
+    `SELECT external_id FROM supplier_offers
+      WHERE connection_id = $1 AND image_url IS NULL AND total_qty > 0 AND (photo_checked_at IS NULL OR photo_checked_at < now() - interval '30 days')
+      ORDER BY (product_id IS NOT NULL) DESC, (category_id IS NOT NULL) DESC, total_qty DESC, external_id LIMIT $2`, [connection.id, Math.min(max, PHOTO_STORAGE_CAP - stored)])
+  let saved = 0, none = 0
+  for (const row of rows) {
+    if (!await takeCall(connection.id)) return { saved, none, stopped: 'limit' as const }
+    const image = await omegaImage(connection.api_key, String(row.external_id), deps)
+    if (!image) { none += 1; await pool.query('UPDATE supplier_offers SET photo_checked_at = now() WHERE connection_id = $1 AND external_id = $2', [connection.id, row.external_id]); continue }
+    const path = connection.tenant_id + '/' + connection.id + '/' + String(row.external_id).replace(/[^0-9A-Za-z_-]/g, '_') + (image.type === 'image/png' ? '.png' : '.jpg')
+    const url = await (deps.upload ?? uploadPhoto)(path, image.bytes, image.type)
+    await pool.query('UPDATE supplier_offers SET image_url = $3, photo_checked_at = now(), photo_saved_at = now(), updated_at = now() WHERE connection_id = $1 AND external_id = $2', [connection.id, row.external_id, url])
+    saved += 1
+  }
+  return { saved, none, stopped: null }
+}
+
+/** Фото для НАШИХ карток, що збіглися з товарами постачальника: головний ПК ставить їх у картки без фото. */
+export async function linkedOfferPhotos(tenantId: string, since: string | null) {
+  const { rows } = await pool.query(
+    `SELECT product_id, image_url, photo_saved_at FROM supplier_offers
+      WHERE tenant_id = $1 AND product_id IS NOT NULL AND image_url IS NOT NULL AND photo_saved_at IS NOT NULL AND ($2::timestamptz IS NULL OR photo_saved_at > $2::timestamptz)
+      ORDER BY photo_saved_at LIMIT 200`, [tenantId, since])
+  return rows.map((row: any) => ({ program_product_id: row.product_id as string, full: String(row.image_url), found_at: new Date(row.photo_saved_at).toISOString() }))
+}
+
 /** Одна порція прайсу (до PAGES_PER_RUN сторінок). Наприкінці повного проходу — зниклі товари обнуляються. */
 export async function syncConnectionStep(connection: { id: string; tenant_id: string; api_key: string; sync_page: number; sync_started_at: string | null; last_full_sync_at: string | null }, deps: OmegaDeps & { now?: number } = {}) {
   const now = deps.now ?? Date.now()
@@ -200,6 +310,8 @@ export async function syncConnectionStep(connection: { id: string; tenant_id: st
   let done = false, fetched = 0, total = 0
   try {
     for (let step = 0; step < PAGES_PER_RUN; step++) {
+      // Ліміт запитів Омеги спільний для прайсу й фото: не дали дозволу — продовжимо з цієї ж сторінки наступного разу.
+      if (!await takeCall(connection.id)) break
       const { items, total: reported } = await omegaPage(connection.api_key, page, deps)
       total = reported
       const offers = items.map(item => omegaOffer(item, retail)).filter((offer): offer is OfferRow => Boolean(offer))
@@ -217,21 +329,27 @@ export async function syncConnectionStep(connection: { id: string; tenant_id: st
     // Чого в цьому проході не було — того в постачальника вже немає: залишок 0 (рядок лишається для історії й сайту).
     await pool.query(`UPDATE supplier_offers SET stock = '[]'::jsonb, total_qty = 0, updated_at = now() WHERE connection_id = $1 AND seen_at < $2 AND total_qty > 0`, [connection.id, passStarted.toISOString()])
     await linkOffers(connection.tenant_id, connection.id)
+    await categorizeOffers(connection.tenant_id, connection.id)
     await pool.query(`UPDATE supplier_api_connections SET sync_page = 1, sync_started_at = NULL, last_full_sync_at = now(), last_error = NULL, total_offers = $2, updated_at = now() WHERE id = $1`, [connection.id, total])
   } else {
-    await pool.query('UPDATE supplier_api_connections SET sync_page = $2, sync_started_at = $3, last_error = NULL, total_offers = $4, updated_at = now() WHERE id = $1', [connection.id, page + 1, passStarted.toISOString(), total])
+    await pool.query('UPDATE supplier_api_connections SET sync_page = $2, sync_started_at = $3, last_error = NULL, total_offers = COALESCE($4, total_offers), updated_at = now() WHERE id = $1', [connection.id, page, passStarted.toISOString(), total || null])
   }
   return { ran: true, fetched, page, done, total }
 }
 
 /** Виклик планувальника: по одній порції для кожного увімкненого підключення. */
 export async function runSupplierSync(deps: OmegaDeps = {}) {
-  const { rows } = await pool.query('SELECT id, tenant_id, api_key, sync_page, sync_started_at, last_full_sync_at FROM supplier_api_connections WHERE enabled ORDER BY updated_at LIMIT 5')
+  const { rows } = await pool.query('SELECT id, tenant_id, api_key, sync_page, sync_started_at, last_full_sync_at, photos_enabled FROM supplier_api_connections WHERE enabled ORDER BY updated_at LIMIT 5')
   const results = []
   for (const row of rows) {
     try { results.push({ id: row.id, ...(await syncConnectionStep({ ...row, sync_started_at: row.sync_started_at ? new Date(row.sync_started_at).toISOString() : null,
       last_full_sync_at: row.last_full_sync_at ? new Date(row.last_full_sync_at).toISOString() : null }, deps)) }) }
     catch (error) { results.push({ id: row.id, error: error instanceof Error ? error.message : 'error' }) }
+    // Фото — після прайсу й лише в межах того самого лічильника запитів.
+    if (row.photos_enabled) {
+      try { results.push({ id: row.id, photos: await syncPhotosStep(row, deps) }) }
+      catch (error) { results.push({ id: row.id, photos_error: error instanceof Error ? error.message : 'error' }) }
+    }
   }
   return results
 }

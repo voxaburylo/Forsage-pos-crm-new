@@ -96,8 +96,10 @@ export function useTillLink(serverOnline: boolean) {
     const run = async () => {
       if (stopped || busy || isDesktopAccessLocked()) return
       busy = true
-      try { const { runSitePhotoImport } = await import('@/features/site/sitePhotoImport'); await runSitePhotoImport() }
-      catch { /* сайт чи шлюз недоступні — наступна година повторить */ }
+      const photos = await import('@/features/site/sitePhotoImport')
+      try { await photos.runSitePhotoImport() } catch { /* сайт чи шлюз недоступні — наступна година повторить */ }
+      // Фото постачальника (Омега) для наших карток, що збіглися з його товарами.
+      try { await photos.runSupplierPhotoImport() } catch { /* наступна година повторить */ }
       finally { busy = false }
     }
     const first = window.setTimeout(() => { void run() }, 3 * 60_000)

@@ -30,7 +30,7 @@ describe('assistant requests go with the main PC key', () => {
   it('the owner site section passes, the site address itself does not', () => {
     for (const [method, path] of [['GET', '/site-admin'], ['PUT', '/site-admin'], ['POST', '/site-admin/key'], ['DELETE', '/site-admin/key'], ['GET', '/site-admin/orders']])
       expect(isAssistantRequest(method, path), method + ' ' + path).toBe(true)
-    for (const [method, path] of [['GET', '/site-photos'], ['GET', '/site-photos?since=2026-11-24T10%3A00%3A00.000Z']]) expect(isAssistantRequest(method, path), method + ' ' + path).toBe(true)
+    for (const [method, path] of [['GET', '/supplier-photos'], ['GET', '/supplier-photos?since=2026-11-24T10%3A00%3A00.000Z'], ['GET', '/site-photos'], ['GET', '/site-photos?since=2026-11-24T10%3A00%3A00.000Z']]) expect(isAssistantRequest(method, path), method + ' ' + path).toBe(true)
     for (const [method, path] of [['POST', '/site-photos'], ['GET', '/site-photos?x=1'], ['GET', '/site-photosx'], ['POST', '/site/orders'], ['GET', '/site-adminx'], ['GET', '/site-admin/../sync/push'], ['PATCH', '/site-admin']])
       expect(isAssistantRequest(method, path), method + ' ' + path).toBe(false)
   })

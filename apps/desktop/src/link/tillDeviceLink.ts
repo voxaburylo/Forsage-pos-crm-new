@@ -249,7 +249,7 @@ export function isAssistantRequest(method: string, path: string): boolean {
   if (method === 'GET' && /^\/supplier-offers\/search\?q=[A-Za-z0-9%._~-]{1,240}$/.test(path)) return true
   if (['GET', 'PUT', 'POST', 'DELETE'].includes(method) && /^\/supplier-api(?:\/[A-Za-z0-9-]{1,60}){0,2}$/.test(path)) return true
   // 24.11.2026: фото, знайдені сайтом, — головний ПК забирає список своїм ключем.
-  if (method === 'GET' && /^\/site-photos(?:\?since=[A-Za-z0-9%._:-]{1,60})?$/.test(path)) return true
+  if (method === 'GET' && /^\/(?:site|supplier)-photos(?:\?since=[A-Za-z0-9%._:-]{1,60})?$/.test(path)) return true
   if (!['GET', 'POST', 'DELETE'].includes(method)) return false
   if (path === '/assistant-upload') return method === 'POST'
   if (/^\/ai\/(config|test)(?:[/?]|$)/.test(path)) return false
