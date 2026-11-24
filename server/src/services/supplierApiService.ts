@@ -164,22 +164,29 @@ async function writeOffers(tenantId: string, connectionId: string, offers: Offer
 }
 
 /**
- * Привʼязати товари постачальника до наших карток: той самий артикул (без знаків) і бренд, або той самий штрихкод.
- * Лише однозначний збіг; товар постачальника карткою складу не стає.
+ * Привʼязати товари постачальника до наших карток. Лише однозначний збіг І той самий бренд:
+ *  - артикул картки = артикул постачальника, а бренд постачальника — бренд картки або є в її назві;
+ *  - або номер постачальника (від 6 знаків) є в назві картки разом із брендом постачальника.
+ * Без бренду не привʼязуємо: на пробі «28.0110» Adriauto лягав у подовжувач HANS «2801-10». Карткою складу товар не стає.
  */
 export async function linkOffers(tenantId: string, connectionId: string) {
   await pool.query(
     `WITH ours AS (
-       SELECT p.id, upper(regexp_replace(p.sku, '[^A-Za-zА-Яа-яІЇЄҐіїєґ0-9]', '', 'g')) AS sku_code, upper(regexp_replace(coalesce(b.name, ''), '[^A-Za-zА-Яа-яІЇЄҐіїєґ0-9]', '', 'g')) AS brand_code
+       SELECT p.id, upper(regexp_replace(p.sku, '[^A-Za-zА-Яа-яІЇЄҐіїєґ0-9]', '', 'g')) AS sku_code,
+              upper(regexp_replace(coalesce(b.name, ''), '[^A-Za-zА-Яа-яІЇЄҐіїєґ0-9]', '', 'g')) AS brand_code,
+              upper(regexp_replace(p.name, '[^A-Za-zА-Яа-яІЇЄҐіїєґ0-9]', '', 'g')) AS name_code
          FROM products p LEFT JOIN brands b ON b.id = p.brand_id AND b.tenant_id = p.tenant_id
         WHERE p.tenant_id = $1 AND p.deleted_at IS NULL AND p.is_active),
-     by_sku AS (
-       SELECT o.external_id, min(ours.id::text)::uuid AS product_id, count(*) AS n
-         FROM supplier_offers o JOIN ours ON ours.sku_code = o.number_code
-          AND (ours.brand_code = '' OR ours.brand_code = upper(regexp_replace(coalesce(o.brand, ''), '[^A-Za-zА-Яа-яІЇЄҐіїєґ0-9]', '', 'g')))
-        WHERE o.tenant_id = $1 AND o.connection_id = $2 GROUP BY o.external_id)
-     UPDATE supplier_offers o SET product_id = s.product_id FROM by_sku s
-      WHERE o.connection_id = $2 AND o.external_id = s.external_id AND s.n = 1 AND o.product_id IS DISTINCT FROM s.product_id`,
+     offers AS (
+       SELECT o.external_id, o.number_code, upper(regexp_replace(coalesce(o.brand, ''), '[^A-Za-zА-Яа-яІЇЄҐіїєґ0-9]', '', 'g')) AS brand_code
+         FROM supplier_offers o WHERE o.tenant_id = $1 AND o.connection_id = $2),
+     hits AS (
+       SELECT DISTINCT o.external_id, ours.id
+         FROM offers o JOIN ours ON o.brand_code <> '' AND (ours.brand_code = o.brand_code OR position(o.brand_code IN ours.name_code) > 0)
+          AND (ours.sku_code = o.number_code OR (length(o.number_code) >= 6 AND position(o.number_code IN ours.name_code) > 0))),
+     single AS (SELECT external_id, min(id::text)::uuid AS product_id FROM hits GROUP BY external_id HAVING count(*) = 1)
+     UPDATE supplier_offers o SET product_id = s.product_id FROM single s
+      WHERE o.connection_id = $2 AND o.external_id = s.external_id AND o.product_id IS DISTINCT FROM s.product_id`,
     [tenantId, connectionId])
 }
 
