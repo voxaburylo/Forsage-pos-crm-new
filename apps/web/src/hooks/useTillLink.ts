@@ -89,6 +89,22 @@ export function useTillLink(serverOnline: boolean) {
     return () => { stopped = true; window.clearInterval(timer); if (channel) void supabase.removeChannel(channel) }
   }, [link.mode, link.tenantId, serverOnline, offlineMode, user?.id])
 
+  // 2а. 24.11.2026: фото, які сайт знайшов сам, головний ПК забирає раз на годину (і кнопкою в розділі «Сайт»).
+  useEffect(() => {
+    if (link.mode !== 'device' || !serverOnline || offlineMode || !user) return
+    let stopped = false, busy = false
+    const run = async () => {
+      if (stopped || busy || isDesktopAccessLocked()) return
+      busy = true
+      try { const { runSitePhotoImport } = await import('@/features/site/sitePhotoImport'); await runSitePhotoImport() }
+      catch { /* сайт чи шлюз недоступні — наступна година повторить */ }
+      finally { busy = false }
+    }
+    const first = window.setTimeout(() => { void run() }, 3 * 60_000)
+    const timer = window.setInterval(() => { void run() }, 60 * 60_000)
+    return () => { stopped = true; window.clearTimeout(first); window.clearInterval(timer) }
+  }, [link.mode, serverOnline, offlineMode, user?.id])
+
   // 3. Ключа ПК немає: зв'язок тримає вікно програми під сесією того, хто увійшов (як до 22.11.2026).
   useEffect(() => {
     const bridge = desktopBridge()

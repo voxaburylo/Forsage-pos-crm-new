@@ -21,6 +21,8 @@ export const SITE_ACTIONS: Readonly<Record<string, boolean>> = {
   'products.site_fields.get': false, 'products.site_fields.set': true,
   // Адреса для завантаження — ще не зміна: фото з'являється на сайті лише після photos.attach.
   'photos.upload_url': false, 'photos.attach': true, 'photos.remove': true,
+  // Фото, які сайт знайшов сам і перевірив ШІ; їх забирає головний ПК (routes/tillDevice.ts, /site-photos).
+  'photos.auto_list': false,
   'categories.list': false, 'categories.upsert': true, 'categories.delete': true,
   'banners.list': false, 'banners.upsert': true, 'banners.delete': true,
   'promos.list': false, 'promos.upsert': true, 'promos.delete': true,
