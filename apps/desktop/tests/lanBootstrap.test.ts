@@ -152,3 +152,47 @@ it('the main PC remembers the build of the manager PC from its commands', async 
   expect(hub.lastClientSeen()).toMatchObject({ release_id: '20261120T100000-aaaa' })
   expect(Date.parse(hub.lastClientSeen()!.seen_at)).toBeGreaterThan(Date.now() - 60_000)
 })
+
+// 24.11.2026 (власник: роутер змінив адресу головного ПК — на другому ПК не увійти, а адресу змінити можна лише після входу).
+it('finds the main PC again when its address changed, accepts only the PC that knows our code, and works without the old address', async () => {
+  const oldPort = await port(), newPort = await port(), strangerPort = await port(), calls: string[] = []
+  const profile = { ...actor, full_name: 'Менеджер', phone: '0671234567', is_active: true }
+  const makeHub = async (hubPort: number, accessKey: string) => {
+    const hub = new LocalNetworkCoordinator(root(), async (channel) => { calls.push(channel); return 'ok' }, () => actor, { discovery: false, authenticate: async () => profile })
+    peers.push(hub); await hub.update({ mode: 'hub', port: hubPort, accessKey, allowedUserId: actor.id }); return hub
+  }
+  const first = await makeHub(oldPort, code)
+  const directory = root(), client = new LocalNetworkCoordinator(directory, async () => null, () => null, { discovery: false }); peers.push(client)
+  await client.pairRemote({ hubAddress: `127.0.0.1:${oldPort}`, accessKey: code })
+  // Головний ПК «переїхав»: стара адреса мовчить, у мережі відповідають чужий ПК з іншим кодом і наш — на новій адресі.
+  await first.stop()
+  await makeHub(strangerPort, 'f'.repeat(32))
+  await makeHub(newPort, code)
+  const hub = (p: number) => ({ service: 'forsage-lan' as const, protocol: 3 as const, bootstrap: 1 as const, hubAddress: `http://127.0.0.1:${p}`, name: 'Головний ПК каси' })
+  let searches = 0
+  client.discoverHubs = async () => { searches += 1; return [hub(strangerPort), hub(oldPort), hub(newPort)] }
+  // Вхід — перша дія на ПК менеджера: саме він має знайти нову адресу сам.
+  expect(await client.loginRemote('0671234567', 'secret-password')).toMatchObject({ id: actor.id })
+  expect(client.getStatus()).toMatchObject({ hubAddress: `http://127.0.0.1:${newPort}`, connected: true })
+  expect(JSON.parse(readFileSync(path.join(directory, 'lan-config.json'), 'utf8'))).toMatchObject({ mode: 'client', hubAddress: `http://127.0.0.1:${newPort}`, secureTransport: 1 })
+  expect(await client.invoke('desktop:orders:list', [], actor)).toBe('ok')
+  expect(searches).toBe(1)
+  expect(calls).toEqual(['desktop:orders:list'])
+})
+
+it('does not move to a stranger and does not search more often than once in 15 seconds', async () => {
+  const oldPort = await port(), strangerPort = await port()
+  const hubA = new LocalNetworkCoordinator(root(), async () => 'ok', () => actor, { discovery: false, authenticate: async () => ({ ...actor, is_active: true }) }); peers.push(hubA)
+  await hubA.update({ mode: 'hub', port: oldPort, accessKey: code, allowedUserId: actor.id })
+  const client = new LocalNetworkCoordinator(root(), async () => null, () => null, { discovery: false }); peers.push(client)
+  await client.pairRemote({ hubAddress: `127.0.0.1:${oldPort}`, accessKey: code })
+  await hubA.stop()
+  const stranger = new LocalNetworkCoordinator(root(), async () => 'stolen', () => actor, { discovery: false, authenticate: async () => ({ ...actor, is_active: true }) }); peers.push(stranger)
+  await stranger.update({ mode: 'hub', port: strangerPort, accessKey: 'f'.repeat(32), allowedUserId: actor.id })
+  let searches = 0
+  client.discoverHubs = async () => { searches += 1; return [{ service: 'forsage-lan', protocol: 3, bootstrap: 1, hubAddress: `http://127.0.0.1:${strangerPort}`, name: 'x' }] }
+  await expect(client.invoke('desktop:orders:list', [], actor)).rejects.toBeInstanceOf(LanUnavailableError)
+  await expect(client.invoke('desktop:orders:list', [], actor)).rejects.toBeInstanceOf(LanUnavailableError)
+  expect(searches).toBe(1)
+  expect(client.getStatus().hubAddress).toBe(`http://127.0.0.1:${oldPort}`)
+})

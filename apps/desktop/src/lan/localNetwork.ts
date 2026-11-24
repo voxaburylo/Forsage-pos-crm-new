@@ -277,6 +277,42 @@ export class LocalNetworkCoordinator {
     return this.secureClientRequest({ action: 'update-chunk', input, user_id: session.id, tenant_id: session.tenant_id }, signal) as Promise<{ offset: number; data: Uint8Array }>
   }
 
+  /**
+   * 24.11.2026 (слово власника: «не можу увійти на другому ПК — немає звʼязку, а адресу змінити можна лише після входу»).
+   * Роутер видав головному ПК іншу адресу. ПК менеджера сам шукає головний у локальній мережі (той самий пошук, що й
+   * при першому підключенні) і приймає нову адресу лише від того ПК, який довів, що знає наш код підключення:
+   * відповідь запечатана цим кодом, сам код мережею не йде. Чужий пристрій у мережі підставити себе не може.
+   * Працює без інтернету. Не частіше ніж раз на 15 с.
+   */
+  private relocating: Promise<boolean> | null = null
+  private lastRelocateAt = 0
+  relocateHub(): Promise<boolean> {
+    if (this.config.mode !== 'client' || this.config.secureTransport !== 1 || !this.config.accessKey) return Promise.resolve(false)
+    if (this.relocating) return this.relocating
+    if (Date.now() - this.lastRelocateAt < 15_000) return Promise.resolve(false)
+    this.lastRelocateAt = Date.now()
+    this.relocating = (async () => {
+      try {
+        const current = this.config.hubAddress
+        const hubs = (await this.discoverHubs()).filter(hub => hub.hubAddress !== current).slice(0, 4)
+        for (const hub of hubs) {
+          try {
+            const target = this.secureCandidate({ hubAddress: hub.hubAddress, accessKey: this.config.accessKey })
+            await this.probeRemote(target)
+            const next: LanConfig = { ...this.config, hubAddress: target.hubAddress, port: target.port }
+            const configFile = path.join(this.dataRoot, CONFIG_FILE), pendingFile = configFile + '.pending'
+            writeFileSync(pendingFile, JSON.stringify(next, null, 2), 'utf8')
+            renameSync(pendingFile, configFile)
+            this.config = next
+            return true
+          } catch { /* не наш головний ПК або він не відповів — пробуємо наступний */ }
+        }
+        return false
+      } catch { return false } finally { this.relocating = null }
+    })()
+    return this.relocating
+  }
+
   private secureCandidate(candidate: LanPairCandidate): Required<LanPairCandidate> {
     const hubAddress = privateHubAddress(candidate.hubAddress, candidate.port ?? DEFAULT_PORT)
     return { hubAddress, port: Number(new URL(hubAddress).port), accessKey: normalizeConnectCode(candidate.accessKey) }
@@ -289,6 +325,15 @@ export class LocalNetworkCoordinator {
       this.connected = true; this.lastError = null
       return result
     } catch (error) {
+      // 24.11.2026: головний ПК отримав від роутера іншу адресу — шукаємо його в мережі й пробуємо ще раз.
+      // Повторюємо лише запит, який до головного ПК не дійшов узагалі: операція двічі не виконається.
+      if (error instanceof LanUnavailableError && (error as LanUnavailableError & { beforeSend?: boolean }).beforeSend && await this.relocateHub()) {
+        try {
+          const result = await this.performSecureRequest(this.secureCandidate(this.config), payload, signal)
+          this.connected = true; this.lastError = null
+          return result
+        } catch (again) { error = again }
+      }
       if (error instanceof LanUnavailableError) this.connected = false
       this.lastError = error instanceof Error ? error.message : 'Помилка локальної мережі'
       throw error
@@ -297,6 +342,7 @@ export class LocalNetworkCoordinator {
 
   private async performSecureRequest(candidate: LanPairCandidate, payload: unknown, signal?: AbortSignal): Promise<unknown> {
     const challenge = await this.fetchSecureJson(`${candidate.hubAddress}/forsage-lan/bootstrap`, { method: 'GET' }, 3000, 4096, signal)
+      .catch(error => { if (error instanceof LanUnavailableError) (error as LanUnavailableError & { beforeSend?: boolean }).beforeSend = true; throw error })
     if (challenge.response.status !== 200 || challenge.payload?.service !== 'forsage-lan' || challenge.payload?.version !== LAN_PROTOCOL_VERSION || challenge.payload?.bootstrap !== LAN_BOOTSTRAP_VERSION || !/^[a-f0-9]{32}$/.test(challenge.payload?.nonce ?? '')) {
       throw new Error('Головний ПК не підтримує захищене підключення. Оновіть обидва ПК.')
     }
