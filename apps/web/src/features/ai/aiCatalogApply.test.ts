@@ -76,4 +76,18 @@ describe('assistant chat catalog updates on the till', () => {
     expect(result).toMatchObject({ updated: 648, unchanged: 0, backupPath: 'b.db' })
     expect(result.skipped).toHaveLength(2)
   })
+
+  // 24.11.2026: наведення порядку в назвах — артикул із назви й позначка cleanup доходять до каси.
+  it('passes the article taken from the name and the cleanup mark to the till, and never resends the same article', () => {
+    const plan = planChatCatalogUpdates([
+      { product_id: 'a', new_name: 'Фільтр повітряний KAVO FAF-10740', new_sku: 'FAF-10740', cleanup: true },
+      { product_id: 'b', new_name: 'Фільтр W67/1', new_sku: 'W67/1' },
+      { product_id: 'c', new_sku: 'X-1', cleanup: true },
+    ], [{ ...fp('a', 'KAVO KV FAF-10740 372 87 Фільтр повітряний'), sku: 'AUTO-1' }, { ...fp('b', 'Фильтр W67/1'), sku: 'W67/1' }, { ...fp('c', 'Товар X-1'), sku: 'AUTO-3' }], categories)
+    expect(plan.items).toEqual([
+      { product_id: 'a', fingerprint: 'f-a', changes: { name: 'Фільтр повітряний KAVO FAF-10740', sku: 'FAF-10740' }, cleanup: true },
+      { product_id: 'b', fingerprint: 'f-b', changes: { name: 'Фільтр W67/1' } },
+      { product_id: 'c', fingerprint: 'f-c', changes: { sku: 'X-1' } },
+    ])
+  })
 })

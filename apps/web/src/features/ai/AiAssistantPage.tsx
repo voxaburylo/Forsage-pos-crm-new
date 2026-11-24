@@ -11,7 +11,7 @@ import { AiServerConnection } from './AiServerConnection'
 import { aiAvailabilityProblem, type AiAvailabilityProblem } from './aiAvailability'
 import { reportLocalError } from '@/lib/localDiagnostics'
 import { reportAiFailure } from './aiDiagnostics'
-import { assertAiWriteAllowed, canApplyAiWrite } from './aiWritePolicy'
+import { aiWriteBlockReason, assertAiWriteAllowed, canApplyAiWrite } from './aiWritePolicy'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Sparkles, Send, Paperclip, ClipboardPaste, X, Check, Loader2, AlertTriangle, Settings as SettingsIcon, Eye, Trash2,
@@ -35,7 +35,8 @@ import { AiClipboardTimeoutError, readAiClipboard } from './readAiClipboard'
 import { dataUrlToBlob, removeProcessingUploads, uploadProcessingBlob } from '@/lib/processingUploads'
 import { requestDesktopSync } from '@/features/products/productApi'
 import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
-import { writesToMainPc } from '@/lib/mainPcData'
+import { useWritesToMainPc, writesToMainPc } from '@/lib/mainPcData'
+import { ReplyText } from './ReplyText'
 import { aiChatStorageKey, readAiChat, saveAiChat } from './aiChatStorage'
 import { aiRequestHistory } from './aiRequestHistory'
 import { isOrderPhotoRequest, isSupplyRecognitionRequest, SUPPLY_PHOTO_INSTRUCTION } from './aiPhotoIntent'
@@ -227,6 +228,8 @@ export default function AiAssistantPage({ invoiceOnly = false }: { invoiceOnly?:
 function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean; storageKey: string }) {
   const navigate = useNavigate()
   const role = useAuthStore((state) => state.session?.user.app_metadata?.role as string | undefined)
+  // Екран перемальовується, коли зʼявляється чи зникає звʼязок із головним ПК: кнопка «Застосувати» зʼявляється сама.
+  const toMainPc = useWritesToMainPc()
   const canConfigure = role === 'owner' || role === 'admin'
   const [status, setStatus] = useState<AiStatus | null>(null)
   const [loadingStatus, setLoadingStatus] = useState(true)
@@ -1042,7 +1045,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
                       : 'bg-white border border-gray-100 text-gray-800 rounded-bl-sm'
                   }`}
                 >
-                  {entry.text}
+                  {entry.role === 'user' ? entry.text : <ReplyText text={entry.text} />}
                 </div>
 
                 {/* Картки пропозицій змін */}
@@ -1050,7 +1053,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
                   const state = applied[action.id]
                   const isOrder = action.tool === 'create_order'
                   const isInvoice = action.tool === 'create_supply_invoice_bulk'
-                  const supported = canApplyAiWrite(action.tool, role, writesToMainPc())
+                  const supported = canApplyAiWrite(action.tool, role, toMainPc)
                   const isBulk = !isOrder && !!(action.items && action.columns)
                   return (
                     <Card key={action.id} className="w-full border-blue-100 bg-blue-50/40 space-y-2">
@@ -1099,7 +1102,9 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
                       ) : !supported ? (
                         <p className="text-xs text-amber-700">{action.tool === 'create_products_bulk'
                           ? 'Це пропозиція каталогу, не прихідна накладна. Її не збережено. Додайте фото повторно — тепер воно автоматично відкриє перевірку приходу; старі продажні ціни не переноситимуться в закупку.'
-                          : 'Ця дія недоступна для запису. Для внесення змін відкрийте відповідний розділ локальної програми.'}</p>
+                          : aiWriteBlockReason(action.tool, role, toMainPc)}
+                          {/* Подивитись усі рядки можна й без права запису — кнопка «Застосувати» у вікні буде вимкнена. */}
+                          {isBulk && action.tool !== 'create_products_bulk' && <button type="button" onClick={() => setModalAction(action)} className="mt-1 block font-semibold text-blue-700 underline">Переглянути всі рядки{action.count ? ` (${action.count})` : ''}</button>}</p>
                       ) : (
                         <div className="space-y-2">
                           <div className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-600 bg-amber-50 rounded-md px-2 py-1">
@@ -1316,7 +1321,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
                 type="button"
                 className="flex-1"
                 loading={applyingId === modalAction.id}
-                disabled={!canApplyAiWrite(modalAction.tool, role, writesToMainPc()) || sending || (!!applyingId && applyingId !== modalAction.id)}
+                disabled={!canApplyAiWrite(modalAction.tool, role, toMainPc) || sending || (!!applyingId && applyingId !== modalAction.id)}
                 onClick={async () => {
                   if (await applyAction(modalAction)) setModalAction(null)
                 }}

@@ -205,6 +205,14 @@ export function requestCostQuantiles(costs: readonly number[]): { typical_usd?: 
 const READ_TOOLS = new Set(['search_products', 'get_product', 'list_categories', 'list_brands', 'search_customers', 'list_products_page', 'find_duplicate_products'])
 const WRITE_TOOLS = new Set(['update_product', 'create_product', 'create_customer', 'update_customer', 'create_category', 'create_order'])
 // Масові дії: одна картка-пропозиція з багатьма рядками, застосовується пакетом
+/** Коди й числа старої назви, яких у новій уже немає, — показуємо власнику, що саме прибирає «наведення порядку». */
+export function droppedNameTokens(before: string, after: string): string[] {
+  const compact = (value: string) => value.toUpperCase().replace(/[^A-ZА-ЯІЇЄҐ0-9]/g, '')
+  const kept = compact(after)
+  const tokens = before.match(/[\p{L}\p{N}][\p{L}\p{N}/.>-]*[\p{L}\p{N}]|\p{N}/gu) ?? []
+  return [...new Set(tokens.filter(token => /\d/.test(token) && !kept.includes(compact(token))))]
+}
+
 const BULK_TOOLS = new Set(['create_customers_bulk', 'create_products_bulk', 'create_categories_bulk', 'rename_categories_bulk', 'update_products_bulk', 'merge_products_bulk', 'add_cross_numbers_bulk'])
 /** Пошук у інтернеті (веб-пошук Anthropic) — окремо від читання бази: довший і платний. */
 const RESEARCH_TOOL = 'search_cross_numbers'
@@ -447,13 +455,13 @@ const toolDeclarations: FunctionDeclaration[] = [
   },
   {
     name: 'list_products_page',
-    description: 'Посторінковий обхід каталогу для масового наведення порядку. Повертає до 200 товарів за раз (product_id, sku, name, category). Фільтри: russian_names — назви з ознаками російської мови (для перекладу), no_category — товари без категорії (для сортування), all — всі. Викликай наступну сторінку лише після обробки поточної.',
+    description: 'Посторінковий обхід каталогу для масового наведення порядку. Повертає до 200 товарів за раз (product_id, sku, name, category). Фільтри: russian_names — назви з ознаками російської мови (для перекладу), messy_names — назви зі сміттям: задовгі, зі службовими кодами й числами з прайсів, з «Знайдено за», з подвійними пробілами (для наведення порядку в назвах), no_category — товари без категорії (для сортування), all — всі. Викликай наступну сторінку лише після обробки поточної.',
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
         page: { type: SchemaType.NUMBER, description: 'Номер сторінки, з 1' },
         per_page: { type: SchemaType.NUMBER, description: 'Розмір сторінки, 1-200 (за замовч. 200)' },
-        filter: { type: SchemaType.STRING, description: 'russian_names | no_category | all' },
+        filter: { type: SchemaType.STRING, description: 'russian_names | messy_names | no_category | all' },
       },
       required: ['page'],
     },
@@ -472,7 +480,7 @@ const toolDeclarations: FunctionDeclaration[] = [
   },
   {
     name: 'update_products_bulk',
-    description: 'МАСОВА зміна наявних товарів: нові назви (переклад українською) та/або категорія. Одна пропозиція на всю пачку, користувач підтвердить. До 200 товарів за виклик. product_id бери ТІЛЬКИ з list_products_page/search_products.',
+    description: 'МАСОВА зміна наявних товарів: нові назви (переклад українською або наведення порядку в назві), артикул із назви в поле артикулу та/або категорія. Одна пропозиція на всю пачку, користувач підтвердить. До 200 товарів за виклик. product_id бери ТІЛЬКИ з list_products_page/search_products.',
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
@@ -484,6 +492,8 @@ const toolDeclarations: FunctionDeclaration[] = [
               product_id: { type: SchemaType.STRING },
               new_name: { type: SchemaType.STRING, description: 'Нова назва (укр). Бренди, артикули, розміри, латиницю НЕ чіпати' },
               category_name: { type: SchemaType.STRING, description: 'Назва категорії з list_categories; якщо підхожої немає — нова коротка назва українською (каса створить її)' },
+              new_sku: { type: SchemaType.STRING, description: 'Артикул (каталожний номер), який стоїть у старій назві, — лише коли поточний sku порожній або службовий AUTO-…. Не вигадуй: якщо в назві кілька схожих кодів і неясно, який артикул, — не заповнюй.' },
+              cleanup: { type: SchemaType.BOOLEAN, description: 'true — це наведення порядку в назві: з назви ПРИБРАНО зайве (службові коди, числа з прайсу, повтори). Без true програма відхилить назву, у якій зникла хоч одна цифра.' },
             },
             required: ['product_id'],
           },
@@ -663,7 +673,10 @@ const SYSTEM_PROMPT = `Ти — AI-помічник «Директор» для 
 - Розкладання по категоріях: list_products_page(filter='no_category') + list_categories → update_products_bulk з category_name: спершу наявна категорія за призначенням; якщо підхожої немає — коротка загальна назва нової українською (каса створить її сама). Не плоди категорії за брендом чи розміром.
 - Назви категорій українською: list_categories → rename_categories_bulk з парами category_id + new_name лише для тих, що російською чи з помилками («Фильтра» → «Фільтри», «Масла-ATF» → «Оливи-ATF»). Якщо українська назва вже є в іншої категорії — не перейменовуй, а скажи про дубль.
 - Зрозуміла назва з частин: назву, що починається з упаковки чи службового слова («(метал) 10W40 API SL/CF 1л (12)»), а тип товару й бренд лежать окремо (поле brand, категорія), збери в людську: спочатку тип товару, потім бренд із поля brand, потім характеристики, обʼєм, упаковка. Приклад: «(метал) 10W40 API SL/CF 1л (12)», brand «Polo Expert», категорія «Масла» → «Моторна олива Polo Expert 10W40 API SL/CF 1л, метал (12)». Тип визначай за категорією й специфікацією (W40/API SL — моторна олива; GL-4/GL-5, 80W90 — трансмісійна олива); якщо не впевнений у типі — не змінюй назву.
-- У новій назві ВСІ числа й коди старої назви мають лишитися в тому самому порядку (10W40, 1л, (12), артикули): програма відхилить картку, у якій зникла чи додалась цифра. Бренд, який уже є в назві, не прибирай.
+- У перекладі й «назві з частин» ВСІ числа й коди старої назви мають лишитися в тому самому порядку (10W40, 1л, (12), артикули): програма відхилить картку, у якій зникла чи додалась цифра. Бренд, який уже є в назві, не прибирай.
+- НАВЕДЕННЯ ПОРЯДКУ В НАЗВАХ («прибери зайве з назв», «наведи порядок у назвах»): list_products_page(filter='messy_names') → update_products_bulk, у кожній парі cleanup=true. Нова назва: тип товару → для чого/на яке авто (коротко) → бренд → суттєві характеристики (вʼязкість, обʼєм, розмір, сторона, кількість у комплекті) → артикул у кінці. ПРИБИРАЙ: службові коди й числа з прайсів постачальника («VL», «KV», «5 13348 40», «372 87», «4>132»), повтор бренду, «Знайдено за: …», повтори слів, обірвані хвости, зайві дужки й пробіли, роки випуску й довгі переліки модифікацій авто, якщо назва й без них однозначна. ЛИШАЙ як є: бренд, артикул/каталожний номер, обʼєм і розміри з одиницями, вʼязкість і допуски (10W40, API SL/CF), сторону, модель авто. Нічого НЕ вигадуй: жодного числа чи слова-характеристики, якого не було в старій назві. Якщо sku порожній чи AUTO-…, а в назві є однозначний каталожний номер — передай його в new_sku (і лиши в кінці назви: товар шукають за артикулом). Приклад: «VALEO VL 700431 5 13348 40 Дросельна заслонка з електроприводом OPEL VIVARO A (X83) - 2.0 CDTI (F7) (2001.08 - 2014.07» → new_name «Дросельна заслонка з електроприводом OPEL VIVARO A VALEO 700431», new_sku «700431», cleanup=true. Якщо водночас просили переклад — перекладай у тій самій пропозиції. Назву, з якої не зрозуміло, що це за товар, не чіпай.
+- СУМНІВНІ ТОВАРИ у відповіді називай так, як їх бачить власник: «назва (артикул)». НІКОЛИ не показуй product_id чи його шматки («ef50abed») — власник за ними нічого не знайде. Якщо назва обрізана й незрозуміла — так і напиши поруч із назвою.
+- ПАЧКИ ПО ЧЕРЗІ: застосовані товари зникають із фільтра (no_category, russian_names, messy_names). Тому після того, як власник застосував пачку й написав «далі», бери знову page=1; page=2 бери лише коли пачку не застосовано або на першій сторінці лишились самі сумнівні, які ти вже показував.
 - Дублі: find_duplicate_products(by='name' або by='sku') — сервер сам знайде групи по всьому каталогу. Переглянь групи, обери в кожній ОСНОВНИЙ товар (більший залишок / заповненіша картка) і виклич merge_products_bulk. Залишки та історія дубліката перенесуться в основний, дублікат зникне. НЕ зливай товари, якщо не впевнений, що це той самий товар (різні розміри/сторони/обʼєми — це РІЗНІ товари!).
 - РОЗБІР ПРОБЛЕМИ ЗА ОПИСОМ ВЛАСНИКА («обʼєднай дублі після накладної», «замок EL 101 514 потрапив не в ту картку», «клеми лягли не туди»):
   1) знайди кожен названий товар через search_products (за номером без пробілів і з пробілами, за назвою, артикулом, штрихкодом); 2) покажи власнику знайдені картки списком: артикул, назва, залишок; 3) пари, що точно той самий товар (той самий каталожний номер, бренд, упаковка/кількість у комплекті, сторона, обʼєм), запропонуй одним merge_products_bulk з причиною до кожної пари; 4) сумнівні (різна упаковка «1шт»/«2шт», інший обʼєм чи сторона, інший комплект) НЕ обʼєднуй — перелічи окремо й спитай.
@@ -746,6 +759,8 @@ async function executeReadTool(name: string, args: any, tenantId: string, budget
       // Ознаки російської: літери ёыэъ або типові закінчення, яких нема в українській
       if (filter === 'russian_names') q = q.filter('name', 'imatch', '[ёыэъ]|(ый|ое|ая|ние|ской|ского)\\y')
       if (filter === 'no_category') q = q.is('category_id', null)
+      // Сміття в назві: задовга, службові числа з прайсу («372 87», «4>132»), «Знайдено за», вертикальні риски, подвійні пробіли.
+      if (filter === 'messy_names') q = q.filter('name', 'imatch', '.{90}|знайдено за|[|>]|[[:space:]]{2}|[0-9]{2,5} [0-9]{2} [а-яіїє]')
       const { data, count, error } = await q
       if (error) return { error: error.message }
       return {
@@ -836,12 +851,16 @@ async function buildPendingAction(name: string, args: any, tenantId: string, bud
         'Було': cur?.name ?? '(не знайдено)',
         'Стане': String(u.new_name ?? cur?.name ?? '—'),
         'Категорія': String(u.category_name ?? '—'),
+        'Новий артикул': typeof u.new_sku === 'string' && u.new_sku.trim() ? u.new_sku.trim() : '—',
+        // Що зникне з назви — власник бачить до підтвердження (наведення порядку прибирає зайве).
+        'Прибрано з назви': u.cleanup === true && cur?.name && u.new_name ? droppedNameTokens(cur.name, String(u.new_name)).join(' · ') || '—' : '—',
       }
     })
+    const extra = [...(list.some(u => typeof u.new_sku === 'string' && u.new_sku.trim()) ? ['Новий артикул'] : []), ...(list.some(u => u.cleanup === true) ? ['Прибрано з назви'] : [])]
     return {
       id, tool: name, title: `Змінити товари: ${list.length}`,
       changes: [], count: list.length,
-      columns: ['Артикул', 'Було', 'Стане', 'Категорія'], items,
+      columns: ['Артикул', 'Було', 'Стане', 'Категорія', ...extra], items,
       payload: { updates: list },
     }
   }

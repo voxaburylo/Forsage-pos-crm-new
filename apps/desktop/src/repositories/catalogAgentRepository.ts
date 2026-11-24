@@ -4,7 +4,7 @@ import { DEFAULT_TENANT_ID } from '../db/localTypes'
 import { LocalCatalogRepository } from './catalogRepository'
 import { idempotentMutation } from './idempotentMutation'
 
-export type AgentChange = { product_id: string; fingerprint: string; changes?: Record<string, unknown>; primary_id?: string; primary_fingerprint?: string }
+export type AgentChange = { product_id: string; fingerprint: string; changes?: Record<string, unknown>; primary_id?: string; primary_fingerprint?: string; cleanup?: boolean }
 export const normalizeAgentCode = (s: unknown) => String(s ?? '').toUpperCase().replace(/[^A-ZА-ЯІЇЄҐ0-9]/g, '')
 export const missingAgentSku = (sku: unknown) => !String(sku ?? '').trim() || /^AUTO[-_]/i.test(String(sku))
 export function catalogCodeFromName(name: string, sku: string): boolean {
@@ -34,6 +34,39 @@ export function preservesTechnicalName(before: string, after: string) {
   const compact = normalizeAgentCode(after)
   return codes.filter(x => /[a-z]/i.test(x) && /\d/.test(x)).every(x => compact.includes(normalizeAgentCode(x)))
 }
+const nameNumbers = (s: string) => (s.match(/\d+(?:[.,]\d+)?/g) ?? []).map(value => value.replace(',', '.'))
+const nameMeasures = (s: string) => Array.from(s.matchAll(/(\d+(?:[.,]\d+)?)\s*(мл|ml|мм|mm|см|cm|кг|kg|шт|pcs|л|l|м|m|г|g|вт|w|в|v|ah|ач)(?![\p{L}\p{N}])/giu), match => {
+  const aliases: Record<string, string> = { ml: 'мл', mm: 'мм', cm: 'см', kg: 'кг', pcs: 'шт', l: 'л', m: 'м', g: 'г', w: 'вт', v: 'в', ah: 'ач' }
+  const unit = match[2].toLowerCase()
+  return match[1].replace(',', '.') + ':' + (aliases[unit] ?? unit)
+})
+/**
+ * «Навести порядок у назві» (слово власника 24.11.2026): з назви можна ПРИБРАТИ зайве (службові коди, повтори, сміття
+ * з прайсів), але не можна нічого вигадати й не можна загубити суттєве. Повертає причину відмови або null.
+ *  - жодного числа, якого не було в старій назві чи в артикулі (нічого не вигадано);
+ *  - усі розміри з одиницями (5 л, 0,8 мм, 12 В) лишаються ті самі;
+ *  - артикул картки, якщо він стояв у назві, лишається в назві (правило власника «назва + артикул» — для пошуку);
+ *  - у назві лишається хоч одне слово.
+ * Що саме прибрано, власник бачить у пропозиції до підтвердження.
+ */
+export function nameCleanupProblem(before: string, after: string, sku: string | null): string | null {
+  const text = after.trim()
+  if (!text || text.length > 500 || !/\p{L}{3,}/u.test(text)) return 'У новій назві не лишилось назви товару'
+  const known = new Set([...nameNumbers(before), ...nameNumbers(sku ?? '')])
+  const invented = nameNumbers(text).find(value => !known.has(value))
+  if (invented !== undefined) return 'У новій назві зʼявилось число «' + invented + '», якого не було'
+  const measuresBefore = new Set(nameMeasures(before)), measuresAfter = new Set(nameMeasures(text))
+  const lost = [...measuresBefore].find(value => !measuresAfter.has(value)), added = [...measuresAfter].find(value => !measuresBefore.has(value))
+  if (lost || added) return 'Нова назва змінює розмір чи обʼєм (' + String(lost ?? added).replace(':', ' ') + ')'
+  if (sku && !missingAgentSku(sku) && catalogCodeFromName(before, sku) && !normalizeAgentCode(text).includes(normalizeAgentCode(sku))) return 'З назви зник артикул ' + sku
+  return null
+}
+/** Що прибрано з назви: коди й числа, яких у новій назві вже немає (для показу власнику). */
+export function droppedFromName(before: string, after: string): string[] {
+  const compact = normalizeAgentCode(after)
+  const tokens = before.match(/[\p{L}\p{N}][\p{L}\p{N}/.>-]*[\p{L}\p{N}]|\p{N}/gu) ?? []
+  return [...new Set(tokens.filter(token => /\d/.test(token) && !compact.includes(normalizeAgentCode(token))))]
+}
 export function agentFingerprint(p: Record<string, any>) {
   return createHash('sha256').update(JSON.stringify([p.id, p.name, p.sku, p.barcode, p.category_id, p.brand_id, p.unit,
     p.purchase_price, p.retail_price, p.deleted_at ?? null])).digest('hex')
@@ -58,11 +91,11 @@ export class CatalogAgentRepository {
   }
   constructor(private db: LocalDatabase) {}
   /** Відбитки карток для підтвердження змін, запропонованих у чаті помічника (лише читання). */
-  fingerprints(ids: unknown): Array<{ product_id: string; fingerprint: string | null; name?: string; category_id?: string | null }> {
+  fingerprints(ids: unknown): Array<{ product_id: string; fingerprint: string | null; name?: string; sku?: string; category_id?: string | null }> {
     if (!Array.isArray(ids) || !ids.length || ids.length > 500 || ids.some(id => typeof id !== 'string' || !id || id.length > 64)) throw new Error('Некоректний список товарів')
     return [...new Set(ids as string[])].map(id => {
       const row = this.db.prepare('SELECT * FROM products WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL').get(id, DEFAULT_TENANT_ID) as any
-      return row ? { product_id: id, fingerprint: agentFingerprint(row), name: row.name, category_id: row.category_id ?? null } : { product_id: id, fingerprint: null }
+      return row ? { product_id: id, fingerprint: agentFingerprint(row), name: row.name, sku: row.sku, category_id: row.category_id ?? null } : { product_id: id, fingerprint: null }
     })
   }
 
@@ -169,7 +202,7 @@ export class CatalogAgentRepository {
           try {
             before = this.product(action.product_id)
             if (agentFingerprint(before) !== action.fingerprint) throw new Error('Картку вже змінено після пропозиції')
-            this.validateEdit(before, action.changes ?? {})
+            this.validateEdit(before, action.changes ?? {}, action.cleanup === true)
           } catch (error) {
             skipped.push({ product_id: action.product_id, name: before?.name ?? action.product_id, error: error instanceof Error ? error.message : String(error) })
             continue
@@ -186,7 +219,7 @@ export class CatalogAgentRepository {
           this.writer().deleteProduct(before.id)
         } else {
           const changes = action.changes ?? {}
-          const specs = this.validateEdit(before, changes)
+          const specs = this.validateEdit(before, changes, action.cleanup === true)
           this.writer().saveProduct({ ...before, ...changes, is_active: Boolean(before.is_active), is_service: Boolean(before.is_service), is_favorite: Boolean(before.is_favorite), requires_core_return: Boolean(before.requires_core_return), specs })
         }
         this.db.prepare(`INSERT INTO audit_log (event_id,tenant_id,device_id,user_id,action,entity_type,entity_id,after_json,created_at) VALUES (?,?,?,?,?,'product',?,?,?)`).run(randomUUID(), DEFAULT_TENANT_ID, this.db.deviceId, userId, 'catalog_agent.' + (action.primary_id ? 'archive' : 'update'), before.id, JSON.stringify({ before, changes: action.changes ?? null, primary_id: action.primary_id ?? null }), new Date().toISOString())
@@ -196,13 +229,17 @@ export class CatalogAgentRepository {
   }
 
   /** Перевірка правки картки агентом: лише назва/артикул/категорія/ціна за сіткою, без зміни цифр і бренду. Повертає specs. */
-  private validateEdit(before: any, changes: Record<string, unknown>): Record<string, unknown> {
+  private validateEdit(before: any, changes: Record<string, unknown>, cleanup = false): Record<string, unknown> {
           if (!Object.keys(changes).length || Object.keys(changes).some(k => !['name', 'sku', 'category_id', 'retail_price'].includes(k))) throw new Error('Агенту заборонено змінювати залишки, закупку, штрихкоди та інші поля')
           if (changes.name !== undefined && before.brand_id) {
             const brand = this.db.prepare('SELECT name FROM brands WHERE id=? AND tenant_id=?').get(before.brand_id, DEFAULT_TENANT_ID) as any
             if (brand?.name && before.name.toLowerCase().includes(brand.name.toLowerCase()) && !String(changes.name).toLowerCase().includes(brand.name.toLowerCase())) throw new Error('Переклад не повинен змінювати бренд')
           }
-          if (changes.name !== undefined && (typeof changes.name !== 'string' || !changes.name.trim() || changes.name.length > 500 || !preservesTechnicalName(before.name, changes.name))) throw new Error('Переклад змінює технічні номери або розміри')
+          if (changes.name !== undefined && cleanup) {
+            // Наведення порядку: зайве можна прибрати, вигадати чи загубити суттєве — ні.
+            const problem = typeof changes.name !== 'string' ? 'Некоректна назва' : nameCleanupProblem(before.name, changes.name, typeof changes.sku === 'string' ? changes.sku : before.sku)
+            if (problem) throw new Error(problem)
+          } else if (changes.name !== undefined && (typeof changes.name !== 'string' || !changes.name.trim() || changes.name.length > 500 || !preservesTechnicalName(before.name, changes.name))) throw new Error('Переклад змінює технічні номери або розміри')
           if (changes.sku !== undefined) {
             const code = normalizeAgentCode(changes.sku)
             if (!missingAgentSku(before.sku) || typeof changes.sku !== 'string' || !code || changes.sku.length > 80 || !catalogCodeFromName(before.name, changes.sku)) throw new Error('Артикул можна взяти лише з назви та лише замість порожнього/службового')
