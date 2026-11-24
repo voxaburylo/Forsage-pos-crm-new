@@ -85,7 +85,8 @@ try {
   await page.evaluate(() => document.querySelector('input').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true})))
   assert.equal(await page.evaluate(() => fixture.calls.length), 1)
   assert.equal(await page.getByRole('button', { name: 'Скасувати', exact: true }).isDisabled(), true)
-  assert.deepEqual(await page.evaluate(() => fixture.calls[0]), ['cashier',10000,null,'A'])
+  // 24.11.2026: пʼятий аргумент — скільки лишити на розмін; порожнє поле = 0, усе здано власнику.
+  assert.deepEqual(await page.evaluate(() => fixture.calls[0]), ['cashier',10000,null,'A',0])
   await page.evaluate(() => fixture.finishClose())
   await page.waitForFunction(() => fixture.closed === 1)
   await page.evaluate(() => { fixture.mode='defer'; fixture.render('B') })
