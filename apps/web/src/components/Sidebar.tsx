@@ -110,7 +110,6 @@ const NAV_GROUPS: NavGroup[] = [
     title: 'Адміністрування',
     roles: ['owner', 'admin'],
     items: [
-      { to: '/ai-agent', icon: <Sparkles size={18} />, label: 'Перевірка каталогу', roles: ['owner','admin'] },
       { to: '/staff',               icon: <UserCog size={18} />,         label: 'Працівники',          roles: ['owner','admin'] },
       { to: '/settings',            icon: <Settings size={18} />,        label: 'Налаштування',         roles: ['owner','admin'] },
       { to: '/site',                icon: <Globe size={18} />,           label: 'Сайт',                 roles: ['owner'], grant: 'site' },

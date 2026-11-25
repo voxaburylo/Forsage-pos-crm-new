@@ -8,7 +8,8 @@ import { code, restQty, type OfferRow, type OmegaDeps } from './supplierApiServi
  * Кросів, застосовності й замовлень в API GPL немає — аналоги беремо з кросів Омеги за артикулом.
  */
 export const GPL_BASE = 'https://back.online.gpl.ua'
-export const GPL_PAGE_SIZE = 200
+// 26.11.2026: GPL відмовив «The per page field must not be greater than 100» (фото власника) — сторінка не більше 100.
+export const GPL_PAGE_SIZE = 100
 
 export interface GplCredentials { login: string; password: string }
 export interface GplItem { cid?: unknown; category?: unknown; brand?: unknown; article?: unknown; partNumber?: unknown; name?: unknown; description?: unknown

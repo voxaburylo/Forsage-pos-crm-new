@@ -5,9 +5,9 @@ import { useNavigate } from 'react-router-dom'
 import {
   Plus, Package, AlertTriangle, Upload, Download,
   ChevronUp, ChevronDown, ChevronsUpDown, Search,
-  Trash2, GitMerge, Copy, FileText, Camera,
+  Trash2, GitMerge, Copy, FileText,
 } from 'lucide-react'
-import { CameraScanner } from '@/features/pos/CameraScanner'
+import { LiveCameraButton } from '@/components/LiveCameraButton'
 import { PriceLinkModal } from '@/features/priceLinks/PriceLinkModal'
 import { ProductPhotoSearchModal } from '@/features/ai/ProductPhotoSearchModal'
 import { MergeModal } from './MergeModal'
@@ -160,7 +160,6 @@ export default function ProductsPage() {
     setPages({})
   }
   usePOSBarcodeScanner({ onScan: applyScannedCode })
-  const [cameraOpen, setCameraOpen] = useState(false)
   const [priceLinkOpen, setPriceLinkOpen] = useState(false)
   const [photoSearchOpen, setPhotoSearchOpen] = useState(false)
 
@@ -650,10 +649,8 @@ export default function ProductsPage() {
                 placeholder="Пошук за артикулом, назвою, штрихкодом, аналогом... (oem: для OEM)"
                 className="w-full pl-9 pr-12 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent bg-white"
               />
-              <button type="button" onClick={() => setCameraOpen(true)} aria-label="Сканувати штрихкод камерою" title="Сканувати штрихкод камерою"
-                className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-800">
-                <Camera size={18} />
-              </button>
+              <LiveCameraButton size={18} label="Сканувати штрихкод камерою"
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-800" />
             </div>
             <PriceLinkModal open={priceLinkOpen} productIds={Array.from(selectedIds)} onClose={() => setPriceLinkOpen(false)} />
             {photoSearchOpen && (
@@ -662,7 +659,6 @@ export default function ProductsPage() {
                 onClose={() => setPhotoSearchOpen(false)}
                 onSaved={() => { setPhotoSearchOpen(false); load() }} />
             )}
-            <CameraScanner open={cameraOpen} onClose={() => setCameraOpen(false)} onScan={(code) => { setCameraOpen(false); applyScannedCode(code) }} />
             <select
               value={brandFilter}
               onChange={(e) => { setBrandFilter(e.target.value); setPage(1) }}

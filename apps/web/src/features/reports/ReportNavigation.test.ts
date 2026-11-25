@@ -47,7 +47,7 @@ describe('existing report and save scopes stay explicit', () => {
     expect(settings).toContain('Зберегти налаштування магазину')
     expect(settings).toContain('Зберегти налаштування ШІ')
     expect(settings).toContain('Вибір принтера зберігається одразу на цьому ПК')
-    expect(settings).toContain('Перевірка каталогу')
+    expect(settings).toContain('наводить порядок у наявних товарах')
     expect(settings).toContain('useUnsavedChanges(')
     expect(settings).toContain('setSettingsSnapshot(JSON.stringify(form))')
     expect(settings).toContain('setSellerSnapshot(JSON.stringify(seller))')

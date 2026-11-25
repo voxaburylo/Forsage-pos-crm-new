@@ -1,13 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import { Camera, CameraOff, ChevronDown, ChevronUp } from 'lucide-react'
-import { CAMERA_FORMATS, createScanGate, deliverCameraScan } from '@/lib/cameraScan'
+import {
+  CAMERA_FORMATS, LIVE_CAMERA_STATE_EVENT, LIVE_CAMERA_STORAGE_KEY, LIVE_CAMERA_TOGGLE_EVENT,
+  createScanGate, deliverCameraScan, liveCameraStoredOn,
+} from '@/lib/cameraScan'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
 
-type NativeDetector = { detect(source: HTMLVideoElement): Promise<Array<{ rawValue: string }>> }
+type Found = Array<{ rawValue: string }>
+type NativeDetector = { detect(source: CanvasImageSource): Promise<Found> }
 type DetectorCtor = { new(options: { formats: string[] }): NativeDetector; getSupportedFormats?: () => Promise<string[]> }
 
-const STORAGE_KEY = 'forsage.camera-scanner'
 const SCAN_EVERY_MS = 70
 
 function beep() {
@@ -26,10 +29,12 @@ function beep() {
 /**
  * Постійний сканер камерою для вебу (план B1, 23.11.2026). Не вікно поверх екрана: вузька смужка-приціл угорі
  * (згортається до значка), курсор лишається в полі. Вмикається один раз і працює на всіх екранах, доки не вимкнуть.
- * Читає вбудованим розпізнавачем телефона (BarcodeDetector), а де його немає (iPhone) — бібліотекою, як і раніше.
+ * Вмикається кнопкою внизу ліворуч або значком камери біля поля пошуку (LiveCameraButton, 25.11.2026).
+ * Читає вбудованим розпізнавачем телефона (BarcodeDetector), а де його немає (iPhone) — zxing у WebAssembly
+ * (25.11.2026); стара бібліотека — лише запасний шлях.
  */
 export function LiveCameraScanner() {
-  const [enabled, setEnabled] = useState(() => { try { return sessionStorage.getItem(STORAGE_KEY) === 'on' } catch { return false } })
+  const [enabled, setEnabled] = useState(liveCameraStoredOn)
   const [collapsed, setCollapsed] = useState(false)
   const [state, setState] = useState<'idle' | 'starting' | 'on' | 'error'>('idle')
   const [message, setMessage] = useState('')
@@ -40,7 +45,14 @@ export function LiveCameraScanner() {
   const touch = typeof window !== 'undefined' && Boolean(window.matchMedia?.('(pointer: coarse)').matches)
 
   useEffect(() => {
-    try { sessionStorage.setItem(STORAGE_KEY, enabled ? 'on' : 'off') } catch { /* optional */ }
+    const toggle = () => { setCollapsed(false); setEnabled(value => !value) }
+    window.addEventListener(LIVE_CAMERA_TOGGLE_EVENT, toggle)
+    return () => window.removeEventListener(LIVE_CAMERA_TOGGLE_EVENT, toggle)
+  }, [])
+
+  useEffect(() => {
+    try { sessionStorage.setItem(LIVE_CAMERA_STORAGE_KEY, enabled ? 'on' : 'off') } catch { /* optional */ }
+    window.dispatchEvent(new CustomEvent(LIVE_CAMERA_STATE_EVENT, { detail: { on: enabled } }))
     if (!enabled) { setState('idle'); setMessage(''); return }
     let stopped = false
     let stream: MediaStream | null = null
@@ -61,25 +73,62 @@ export function LiveCameraScanner() {
         ? 'Доступ до камери заборонено. Дозвольте камеру в налаштуваннях браузера.'
         : 'Камера недоступна на цьому пристрої.')
     }
+    const closeCamera = () => { stream?.getTracks().forEach(track => track.stop()); stream = null }
 
-    async function startNative(Detector: DetectorCtor) {
-      const supported = await Detector.getSupportedFormats?.().catch(() => null)
-      const formats = supported ? CAMERA_FORMATS.filter(format => supported.includes(format)) : [...CAMERA_FORMATS]
-      if (!formats.length) return false
+    async function openCamera(): Promise<HTMLVideoElement | null> {
       stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false })
-      if (stopped) { stream.getTracks().forEach(track => track.stop()); return true }
+      if (stopped) { closeCamera(); return null }
       const video = videoRef.current
-      if (!video) return false
+      if (!video) return null
       video.srcObject = stream
       await video.play().catch(() => undefined)
-      const detector = new Detector({ formats })
+      return video
+    }
+
+    /** Кадр за кадром: поки попереднє розпізнавання не скінчилось, новий кадр не беремо (телефон не захлинається). */
+    function scanLoop(video: HTMLVideoElement, read: (video: HTMLVideoElement) => Promise<Found>) {
       let busy = false
       timer = window.setInterval(() => {
         if (busy || stopped || video.readyState < 2) return
         busy = true
-        void detector.detect(video).then(found => { for (const item of found) accept(item.rawValue) }, () => undefined).finally(() => { busy = false })
+        void read(video).then(found => { for (const item of found) accept(item.rawValue) }, () => undefined).finally(() => { busy = false })
       }, SCAN_EVERY_MS)
       setState('on')
+    }
+
+    async function startNative(Detector: DetectorCtor): Promise<boolean> {
+      const supported = await Detector.getSupportedFormats?.().catch(() => null)
+      const formats = supported ? CAMERA_FORMATS.filter(format => supported.includes(format)) : [...CAMERA_FORMATS]
+      if (!formats.length) return false
+      const video = await openCamera()
+      if (!video) return stopped
+      const detector = new Detector({ formats })
+      scanLoop(video, source => detector.detect(source))
+      return true
+    }
+
+    /**
+     * Без вбудованого розпізнавача (iPhone): zxing у WebAssembly. Камера й розпізнавач готуються одночасно.
+     * Розпізнаємо лише смугу посередині кадру (там червона лінія) і зменшену до 960 точок — швидше відповідь.
+     */
+    async function startZxing(): Promise<boolean> {
+      const [detector, video] = await Promise.all([
+        import('@/lib/zxingDetector').then(module => module.createZxingDetector(CAMERA_FORMATS)),
+        openCamera(),
+      ])
+      if (!video) return stopped
+      const canvas = document.createElement('canvas')
+      const context = canvas.getContext('2d', { willReadFrequently: true })
+      if (!context) return false
+      scanLoop(video, source => {
+        const width = source.videoWidth, height = source.videoHeight
+        if (!width || !height) return Promise.resolve([])
+        const band = Math.round(height * 0.45)
+        const scale = Math.min(1, 960 / width)
+        canvas.width = Math.round(width * scale); canvas.height = Math.round(band * scale)
+        context.drawImage(source, 0, Math.round((height - band) / 2), width, band, 0, 0, canvas.width, canvas.height)
+        return detector.detect(canvas)
+      })
       return true
     }
 
@@ -99,6 +148,13 @@ export function LiveCameraScanner() {
         if (!navigator.mediaDevices?.getUserMedia) throw new Error('no camera')
         const Detector = (window as unknown as { BarcodeDetector?: DetectorCtor }).BarcodeDetector
         if (Detector && await startNative(Detector)) return
+        if (stopped) return
+        let zxingError: unknown = null
+        const zxingStarted = await startZxing().catch(error => { zxingError = error; return false })
+        if (zxingStarted || stopped) return
+        // Камеру заборонили — запасна бібліотека не допоможе, кажемо одразу.
+        if (zxingError instanceof Error && /permission|notallowed|denied/i.test(zxingError.name + zxingError.message)) throw zxingError
+        closeCamera()
         await startLibrary()
       } catch (error) { fail(error) }
     })()
@@ -106,7 +162,7 @@ export function LiveCameraScanner() {
     return () => {
       stopped = true
       if (timer !== null) window.clearInterval(timer)
-      stream?.getTracks().forEach(track => track.stop())
+      closeCamera()
       if (library) { const scanner = library; void scanner.stop().catch(() => undefined).finally(() => { try { scanner.clear() } catch { /* already cleared */ } }) }
     }
   }, [enabled])

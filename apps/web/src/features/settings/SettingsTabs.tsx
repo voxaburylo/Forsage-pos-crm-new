@@ -94,7 +94,7 @@ function useSettingsTabs(): State {
 export function SettingsTabBar() {
   const { active, setActive, query, setQuery } = useSettingsTabs()
   return (
-    <div className="sticky top-0 z-10 -mx-1 mb-4 space-y-2 bg-gray-50/95 px-1 pb-2 pt-1 backdrop-blur-sm">
+    <div className="app-sticky-bar -mx-1 mb-4 space-y-2 px-1 pb-2" data-settings-tabbar>
       <div role="tablist" aria-label="Розділи налаштувань" className="flex flex-wrap gap-1.5">
         {SETTINGS_TABS.map(tab => (
           <button key={tab.id} type="button" role="tab" aria-selected={!query && active === tab.id}

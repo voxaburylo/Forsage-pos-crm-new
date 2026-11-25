@@ -444,3 +444,23 @@ html.lite-mode *, html.lite-mode *::before, html.lite-mode *::after {
 /* Тіні прибираємо лише декоративні (shadow-*): рамки фокуса (ring) лишаються видимими. */
 html.lite-mode [class*="shadow"]:not(:focus-visible) { box-shadow: none !important; }
 html.lite-mode .animate-spin { animation-duration: 1s !important; animation-iteration-count: infinite !important; }
+
+/*
+ * 25.11.2026 (фото власника з iPhone): закріплена панель вкладок (Налаштування, Перевірка каталогу) стояла на відстані
+ * відступу робочої області від верху, і в щілину над нею, крізь напівпрозорий фон, було видно сторінку, що прокручується.
+ * Тепер панель прилягає до самого верху: від'ємний top на величину відступу + такий самий власний відступ і суцільний фон.
+ */
+@layer components {
+  .app-sticky-bar {
+    position: sticky;
+    top: -1rem;
+    margin-top: -1rem;
+    padding-top: 1rem;
+    z-index: 20;
+    background-color: var(--color-gray-50);
+    box-shadow: 0 6px 6px -6px rgb(0 0 0 / 0.12);
+  }
+  @media (min-width: 768px) {
+    .app-sticky-bar { top: -1.5rem; margin-top: -1.5rem; padding-top: 1.5rem; }
+  }
+}

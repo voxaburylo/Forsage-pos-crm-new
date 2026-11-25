@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, memo } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
-  AlertTriangle, Camera, CheckCircle, ChevronDown, Copy, PackageCheck,
+  AlertTriangle, CheckCircle, ChevronDown, Copy, PackageCheck,
   Plus, Printer, Search, Trash2,
 } from 'lucide-react'
 import { pricingApi } from '@/features/admin/pricingApi'
@@ -13,7 +13,7 @@ import { Layout } from '@/components/Layout'
 import { Badge, Button, Card, Input, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { playErrorTone, playSuccessBeep, initAudio } from '@/lib/audioService'
-import { CameraScanner } from '@/features/pos/CameraScanner'
+import { LiveCameraButton } from '@/components/LiveCameraButton'
 import { usePOSBarcodeScanner } from '@/features/pos/usePOSBarcodeScanner'
 import { useAuthStore } from '@/stores/authStore'
 import { formatMoney } from '@/lib/utils'
@@ -244,7 +244,7 @@ export default function ActiveSession() {
   const [saving, setSaving] = useState(false)
   const [completing, setCompleting] = useState(false)
   const [pendingRowWrites, setPendingRowWrites] = useState(0)
-  const [cameraOpen, setCameraOpen] = useState(false)
+
   const [showRecent, setShowRecent] = useState(true)
   const [countedPage, setCountedPage] = useState(0)
   const [pricePage, setPricePage] = useState(0)
@@ -953,7 +953,7 @@ export default function ActiveSession() {
     }
   }
 
-  async function scanCodeFast(code: string, options: { fromCamera?: boolean; fromHardware?: boolean; qty?: number; operationId?: string } = {}) {
+  async function scanCodeFast(code: string, options: { fromHardware?: boolean; qty?: number; operationId?: string } = {}) {
     if (!id) return
     if (completingRef.current && !options.fromHardware) { toast.error('Дочекайтеся завершення ревізії'); return }
     const normalizedCode = normalizeScanCode(code)
@@ -976,7 +976,6 @@ export default function ActiveSession() {
       playErrorTone()
       scanFailuresRef.current += 1
       if (isNotFoundError(error) && canEditPrice) {
-        if (options.fromCamera) setCameraOpen(false)
         toast.error('Товар не знайдено — можна створити його тут')
         openQuickCreate(normalizedCode)
       } else {
@@ -987,7 +986,7 @@ export default function ActiveSession() {
   }
 
 
-  async function resolveCode(code: string, options: { fromCamera?: boolean; fromHardware?: boolean } = {}) {
+  async function resolveCode(code: string) {
     if (!id || !code.trim()) return
     setSearching(true)
     initAudio()
@@ -999,7 +998,6 @@ export default function ActiveSession() {
     } catch (error) {
       playErrorTone()
       if (isNotFoundError(error) && canEditPrice) {
-        if (options.fromCamera) setCameraOpen(false)
         toast.error('Товар не знайдено — можна створити його тут')
         openQuickCreate(code)
       } else {
@@ -1013,7 +1011,7 @@ export default function ActiveSession() {
 
   usePOSBarcodeScanner({
     onScan: (code) => {
-      if (session?.status !== 'in_progress' || cameraOpen) return
+      if (session?.status !== 'in_progress') return
       setQuery(normalizeScanCode(code))
       queueInventoryScan(code)
     },
@@ -1339,14 +1337,8 @@ export default function ActiveSession() {
                   </div>
                 )}
               </div>
-              <button
-                type="button"
-                onClick={() => setCameraOpen(true)}
-                className="flex w-13 shrink-0 items-center justify-center rounded-xl border border-gray-300 bg-gray-100 text-gray-700 hover:bg-gray-200"
-                aria-label="Сканувати камерою"
-              >
-                <Camera size={23} />
-              </button>
+              <LiveCameraButton size={23}
+                className="flex w-13 shrink-0 items-center justify-center rounded-xl border border-gray-300 bg-gray-100 text-gray-700 hover:bg-gray-200" />
               <Button type="submit" loading={searching} className="hidden sm:flex">Знайти</Button>
             </form>
             {canEditPrice && query.trim().length >= 2 && searchResults.length === 0 && !searching && (
@@ -1645,15 +1637,6 @@ export default function ActiveSession() {
             </div>
           </Modal>
         )}
-        <CameraScanner
-          open={cameraOpen}
-          continuous
-          onClose={() => setCameraOpen(false)}
-          onScan={(code) => {
-            setQuery(normalizeScanCode(code))
-            scanCodeFast(code, { fromCamera: true })
-          }}
-        />
 <Card padding="none">
           {failedInputWrites > 0 && <p role="alert" className="border-b border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
             Не збережено полів: {failedInputWrites}. Повторно введіть потрібну кількість або ціну в підсвіченому рядку. Ревізію не буде завершено, доки ці правки не збережуться.

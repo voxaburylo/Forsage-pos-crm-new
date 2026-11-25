@@ -94,6 +94,38 @@ function accessHint(provider: string, stored: string): string {
   try { const login = String(JSON.parse(stored)?.login ?? ''); return 'логін ' + (login.length > 4 ? login.slice(0, 3) + '…' + login.slice(-1) : '…') } catch { return '…' }
 }
 
+/**
+ * 25.11.2026 (слово власника): «не видно, чи йде синхронізація зі складом — кружечок, що заповнюється зеленим,
+ * і скільки лишилось у днях, годинах, хвилинах». Склади постачальника приходять одним прайсом, тож прогрес
+ * складу — це прогрес проходу прайсу. Час — за фактичною швидкістю (а не за обіцянкою): прохід — від його початку,
+ * черги кросів і опису — за кількістю оброблених за останню годину.
+ */
+export type LoadProgress = { fraction: number | null; eta_ms: number | null; loading: boolean; next_at: string | null }
+/** Розмір сторінки прайсу; для GPL — те саме, що GPL_PAGE_SIZE у supplierGpl.ts (перевіряє тест). */
+export const PAGE_SIZE_BY_PROVIDER: Readonly<Record<string, number>> = { omega: OMEGA_PAGE_SIZE, gpl: 100 }
+
+export function pricePassProgress(row: { provider: string; sync_page: number | null; sync_started_at: string | Date | null; last_full_sync_at: string | Date | null; total_offers: number | null }, now = Date.now()): LoadProgress {
+  const pageSize = PAGE_SIZE_BY_PROVIDER[row.provider] ?? OMEGA_PAGE_SIZE
+  const pages = row.total_offers && row.total_offers > 0 ? Math.max(1, Math.ceil(row.total_offers / pageSize)) : null
+  if (!row.sync_started_at) {
+    const last = row.last_full_sync_at ? new Date(row.last_full_sync_at).getTime() : null
+    return { fraction: last ? 1 : 0, eta_ms: null, loading: false, next_at: last ? new Date(last + FULL_PASS_EVERY_MS).toISOString() : null }
+  }
+  const done = Math.max(0, Number(row.sync_page ?? 1) - 1)
+  if (!pages) return { fraction: null, eta_ms: null, loading: true, next_at: null }
+  const fraction = Math.min(1, done / pages)
+  const elapsed = now - new Date(row.sync_started_at).getTime()
+  const eta = done > 0 && elapsed > 0 ? Math.max(0, Math.round(elapsed / done * (pages - done))) : null
+  return { fraction, eta_ms: eta, loading: true, next_at: null }
+}
+
+export function queueProgress(done: number, total: number, perLastHour: number): LoadProgress {
+  if (!total) return { fraction: null, eta_ms: null, loading: false, next_at: null }
+  const left = Math.max(0, total - done)
+  const fraction = Math.min(1, done / total)
+  return { fraction, eta_ms: left === 0 ? 0 : perLastHour > 0 ? Math.round(left / perLastHour * 3_600_000) : null, loading: left > 0, next_at: null }
+}
+
 export async function listConnections(tenantId: string) {
   const { rows } = await pool.query(
     `SELECT c.id, c.provider, c.name, c.api_key, c.meta, c.enabled, c.supplier_id, c.sync_page, c.sync_started_at, c.last_full_sync_at, c.last_error, c.total_offers, c.updated_at,
@@ -101,7 +133,9 @@ export async function listConnections(tenantId: string) {
             (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.product_id IS NOT NULL)::int AS linked,
             (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.crosses_checked_at IS NOT NULL)::int AS crosses_done,
             (SELECT count(*) FROM supplier_offer_crosses x WHERE x.connection_id = c.id)::int AS crosses_total,
-            (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.details_checked_at IS NOT NULL)::int AS details_done
+            (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.details_checked_at IS NOT NULL)::int AS details_done,
+            (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.crosses_checked_at > now() - interval '1 hour')::int AS crosses_hour,
+            (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.details_checked_at > now() - interval '1 hour')::int AS details_hour
        FROM supplier_api_connections c WHERE c.tenant_id = $1 ORDER BY c.created_at`, [tenantId])
   const warehouses = (await pool.query('SELECT id, connection_id, code, name, city, days_to_ship, is_active FROM supplier_warehouses WHERE tenant_id = $1 ORDER BY name', [tenantId])).rows
   return rows.map((row: any) => ({
@@ -110,6 +144,14 @@ export async function listConnections(tenantId: string) {
     syncing: Boolean(row.sync_started_at), sync_page: row.sync_page, last_full_sync_at: row.last_full_sync_at ? new Date(row.last_full_sync_at).toISOString() : null,
     last_error: row.last_error, total_offers: row.total_offers, offers: row.offers, linked: row.linked,
     crosses_done: row.crosses_done ?? 0, crosses_total: row.crosses_total ?? 0, details_done: row.details_done ?? 0,
+    progress: {
+      price: pricePassProgress(row),
+      // Кроси й опис завантажуються лише для Омеги.
+      ...(row.provider === 'omega' ? {
+        crosses: queueProgress(row.crosses_done ?? 0, row.offers ?? 0, row.crosses_hour ?? 0),
+        details: queueProgress(row.details_done ?? 0, row.offers ?? 0, row.details_hour ?? 0),
+      } : {}),
+    },
     warehouses: warehouses.filter((w: any) => w.connection_id === row.id).map((w: any) => ({ id: w.id, code: w.code, name: w.name, city: w.city, days_to_ship: w.days_to_ship, is_active: w.is_active })),
   }))
 }
