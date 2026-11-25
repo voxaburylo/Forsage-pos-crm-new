@@ -57,7 +57,7 @@ describe('AI invoice import into local supply draft', () => {
     catalog.upsertProduct({ id: 'unicode', sku: 'АрТ-１', name: 'Наш товар', qty_on_hand: 0 })
     const all = vi.spyOn(db, 'prepare')
     const result = supply.createInvoiceFromAiRows({ rows: [
-      { name: 'Назва постачальника', sku: 'арт-1', qty: 2, purchase_price_uah: 10 },
+      { name: 'Наш товар від постачальника', sku: 'арт-1', qty: 2, purchase_price_uah: 10 },
       { name: 'Новий', sku: 'NEW-CACHED', qty: 3, purchase_price_uah: 10 },
       { name: 'Новий інша назва', sku: 'new-cached', qty: 4, purchase_price_uah: 10 },
     ] })

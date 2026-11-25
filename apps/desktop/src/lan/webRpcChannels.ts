@@ -23,7 +23,7 @@ export const WEB_MONEY_CHANNELS: readonly string[] = [
   'desktop:pos:open-shift', 'desktop:pos:close-shift', 'desktop:pos:remote-close-shift', 'desktop:pos:reconcile',
   'desktop:pos:pay-debt', 'desktop:pos:add-customer-deposit', 'desktop:pos:payout-customer-deposit',
   'desktop:pos:suspend-sale', 'desktop:pos:resume-sale', 'desktop:pos:confirm-resume-sale', 'desktop:pos:discard-suspended-sale',
-  'desktop:orders:add-payment', 'desktop:orders:complete',
+  'desktop:orders:add-payment', 'desktop:orders:complete', 'desktop:orders:hand-over',
   'desktop:staff:create-salary', 'desktop:staff:delete-salary', 'desktop:staff:daily-payout', 'desktop:staff:tire-cash-handover',
 ]
 export function webRpcChannelAllowed(channel: string): boolean {

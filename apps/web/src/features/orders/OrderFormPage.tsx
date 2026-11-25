@@ -27,6 +27,7 @@ import { SupplierOfferSuggestions, expectedDate, type SupplierOfferPick } from '
 import { useStaffRights } from '@/lib/staffRights'
 import { readOrderItemPhotos } from './orderItemPhotos'
 import { availableStock, orderNumber, stockFirst, validateOrderRows, replaceOrderProduct } from './orderUx'
+import { isEditableTarget, isRecognizableText, placeRecognizedRow, readClipboard, skuKey, textToImages } from './orderClipboard'
 import { readOrderFormDraft, writeOrderFormDraft, removeOrderFormDraft } from './orderFormDraft'
 import { beginOrderSaveAttempt, checkOrderSaveAttempt, clearOrderSaveAttempt, readOrderSaveAttempt } from './orderSaveAttempt'
 import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
@@ -1044,27 +1045,35 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
   const cartBusyRef = useRef(false)
   // 24.11.2026 (рішення власника): одне завантаження фото додає всі товари в це замовлення; ще фото в те саме
   // замовлення — ще товари (нічого не замінюється). Кілька фото за раз розбираються по черзі.
-  async function addCartScreenshot(input: File | File[] | null) {
+  async function addCartScreenshot(input: File | File[] | null, fromText = false) {
     const files = (Array.isArray(input) ? input : input ? [input] : []).filter((file) => file.type.startsWith('image/')).slice(0, 10)
     if (!files.length || cartBusyRef.current || savingRef.current) return
     cartBusyRef.current = true
     setCartBusy(true)
     try {
-      const { recognizeCartScreenshot } = await import('./orderCartScreenshot')
-      let added = 0, skipped = 0, empty = 0
+      const { recognizeCartScreenshot, CART_TEXT_INSTRUCTION } = await import('./orderCartScreenshot')
+      let added = 0, skipped = 0, empty = 0, fromStock = 0, linked = 0
       for (const file of files) {
-        const result = await recognizeCartScreenshot(file)
+        const result = fromText ? await recognizeCartScreenshot(file, CART_TEXT_INSTRUCTION) : await recognizeCartScreenshot(file)
         skipped += result.skipped
         if (!result.rows.length) { empty += 1; continue }
         added += result.rows.length
+        // 25.11.2026: розкласти по місцях — позицію з артикулом шукаємо в базі (склад чи постачальник).
+        const placed = await Promise.all(result.rows.map(async (row) => {
+          if (skuKey(row.sku).length < 3) return placeRecognizedRow(row, [])
+          try { return placeRecognizedRow(row, (await productApi.search(row.sku, 10, { silent: true })).data ?? []) } catch { return placeRecognizedRow(row, []) }
+        }))
+        linked += placed.filter((row) => row.product_id).length
+        fromStock += placed.filter((row) => row.source_type === 'warehouse').length
         setItems((current) => [
           ...current.filter((row) => row.name.trim() || row.sku.trim()),
-          ...result.rows.map((row) => ({ ...EMPTY_ITEM, local_key: crypto.randomUUID(), source_type: 'supplier' as const, ...row })),
+          ...placed.map((row) => ({ ...EMPTY_ITEM, local_key: crypto.randomUUID(), ...row })),
         ])
       }
-      if (!added) { toast.error('На скриншоті не знайдено позицій. Спробуйте чіткіший знімок кошика.'); return }
-      const photos = files.length > 1 ? ` з ${files.length} фото` : ' зі скриншота'
-      toast.success(`Додано ${added} поз.${photos}${empty ? `; без позицій: ${empty} фото` : ''}${skipped ? `; пропущено без назви: ${skipped}` : ''}. Перевірте кількість і поставте ціни продажу.`)
+      if (!added) { toast.error(fromText ? 'У тексті не знайдено позицій.' : 'На скриншоті не знайдено позицій. Спробуйте чіткіший знімок кошика.'); return }
+      const photos = fromText ? ' з тексту' : files.length > 1 ? ` з ${files.length} фото` : ' зі скриншота'
+      const placedNote = linked ? `; знайдено в базі: ${linked}${fromStock ? ` (на складі: ${fromStock})` : ''}` : ''
+      toast.success(`Додано ${added} поз.${photos}${placedNote}${empty ? `; без позицій: ${empty} фото` : ''}${skipped ? `; пропущено без назви: ${skipped}` : ''}. Перевірте кількість і поставте ціни продажу.`)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Не вдалося розпізнати скриншот')
     } finally {
@@ -1072,14 +1081,43 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
       setCartBusy(false)
     }
   }
+  /** 25.11.2026: текст із буфера (кошик чи список) — малюємо на картинці й розпізнаємо тим самим шляхом. */
+  async function addClipboardText(text: string) {
+    if (cartBusyRef.current || savingRef.current) return
+    try {
+      await addCartScreenshot(await textToImages(text), true)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося розпізнати текст')
+    }
+  }
+  /** Кнопка «Вставити з буфера»: картинка — як скриншот, текст — як список позицій. */
+  async function pasteFromClipboard() {
+    if (cartBusyRef.current) return
+    try {
+      const content = await readClipboard()
+      if (content.kind === 'images') await addCartScreenshot(content.files)
+      else if (content.kind === 'text') await addClipboardText(content.text)
+      else toast.error('У буфері немає ні картинки, ні тексту з позиціями. Скопіюйте скриншот або текст кошика.')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Не вдалося прочитати буфер обміну')
+    }
+  }
   const addCartScreenshotRef = useRef(addCartScreenshot)
-  useEffect(() => { addCartScreenshotRef.current = addCartScreenshot })
+  const addClipboardTextRef = useRef(addClipboardText)
+  useEffect(() => { addCartScreenshotRef.current = addCartScreenshot; addClipboardTextRef.current = addClipboardText })
   useEffect(() => {
     const onPaste = (event: ClipboardEvent) => {
       const files = Array.from(event.clipboardData?.items ?? []).filter((item) => item.kind === 'file' && item.type.startsWith('image/')).map((item) => item.getAsFile()).filter((file): file is File => Boolean(file))
-      if (!files.length) return // звичайний текст вставляється в поле як завжди
+      if (files.length) {
+        event.preventDefault()
+        void addCartScreenshotRef.current(files)
+        return
+      }
+      // Текст у поле вводу вставляється як завжди; поза полями (просто Ctrl+V у вікні замовлення) — розпізнаємо.
+      const text = event.clipboardData?.getData('text/plain') ?? ''
+      if (isEditableTarget(event.target) || !isRecognizableText(text)) return
       event.preventDefault()
-      void addCartScreenshotRef.current(files)
+      void addClipboardTextRef.current(text)
     }
     window.addEventListener('paste', onPaste)
     return () => window.removeEventListener('paste', onPaste)
@@ -1786,10 +1824,16 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
                     onDragOver={(event) => event.preventDefault()}
                     onDrop={(event) => { event.preventDefault(); void addCartScreenshot(Array.from(event.dataTransfer.files)) }}
                     className={`text-xs font-semibold ${cartBusy ? 'text-gray-400' : 'cursor-pointer text-blue-600 hover:text-blue-700'}`}>
-                    {cartBusy ? 'Розпізнаю скриншот…' : '📎 Скрин кошика'}
+                    {cartBusy ? 'Розпізнаю…' : '📎 Скрин кошика'}
                     <input type="file" accept="image/*" multiple className="hidden" disabled={cartBusy}
                       onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; void addCartScreenshot(files) }} />
                   </label>
+                  {/* 25.11.2026: скриншот або текст кошика з буфера одним натиском (або Ctrl+V будь-де поза полями). */}
+                  <button type="button" onClick={() => { void pasteFromClipboard() }} disabled={cartBusy} data-order-paste-clipboard
+                    title="Вставити з буфера обміну скриншот кошика або скопійований текст: позиції розпізнаються й розкладаються по полях. Те саме — Ctrl+V у вікні замовлення."
+                    className={`text-xs font-semibold ${cartBusy ? 'text-gray-400' : 'text-blue-600 hover:text-blue-700'}`}>
+                    📋 Вставити з буфера
+                  </button>
                   <span className="text-xs text-gray-400">{items.filter((r) => r.name.trim()).length} шт</span>
                 </div>
               </div>

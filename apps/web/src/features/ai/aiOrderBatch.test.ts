@@ -33,7 +33,7 @@ describe('notebook batch memory', () => {
   it('the order form takes several screenshots and appends their items to the same order', () => {
     const form = readFileSync(new URL('../orders/OrderFormPage.tsx', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
     expect(form).toContain('<input type="file" accept="image/*" multiple className="hidden" disabled={cartBusy}')
-    expect(form).toContain("...current.filter((row) => row.name.trim() || row.sku.trim()),\n          ...result.rows.map(")
+    expect(form).toContain("...current.filter((row) => row.name.trim() || row.sku.trim()),\n          ...placed.map(") // 25.11.2026: спершу розкладено по місцях (склад/постачальник)
     expect(form).toContain('void addCartScreenshotRef.current(files)')
   })
 })

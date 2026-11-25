@@ -808,6 +808,8 @@ export interface ForsageDesktopBridge {
     listPaymentsByPeriod?: (input?: { date_from?: string; date_to?: string; shift_id?: string }) => Promise<any[]>
     addPayment: (orderId: string, input: any) => Promise<any>
     complete: (orderId: string, input?: any) => Promise<any>
+    /** 25.11.2026: видача без прийому грошей; неоплачене — борг клієнта (лише на касі й ПК менеджера). */
+    handOver?: (orderId: string, itemIds?: string[]) => Promise<{ data: { success: true; sale_id: string; sale_number: string; debt_amount?: number; moved_to_account?: number; rest_order_id?: string; rest_order_number?: number } }>
   }
   supply?: {
     listSuppliers?: (input?: any) => Promise<any>

@@ -2284,6 +2284,16 @@ app.whenReady().then(async () => {
     const securedInput = { ...(input ?? {}), user_id: actorId }
     return requireLocalOrders().completeOrder(orderId, securedInput)
   })
+  // 25.11.2026: видача без прийому грошей — внесене зараховується, решта стає боргом клієнта.
+  // Лише ідентифікатор замовлення й (для часткової видачі) вибрані позиції: ні суми, ні способу оплати, ні зміни ззовні не беремо.
+  handleDesktopIpc('desktop:orders:hand-over', (_event, orderId: string, itemIds?: unknown) => {
+    const userId = requireDesktopSession().id
+    if (itemIds === undefined || itemIds === null) return requireLocalOrders().completeOrder(orderId, { user_id: userId, on_debt: true })
+    if (!Array.isArray(itemIds) || itemIds.length === 0 || itemIds.length > 500 || !itemIds.every(id => typeof id === 'string' && id.length <= 64)) {
+      throw new Error('Некоректний список позицій для видачі')
+    }
+    return requireLocalOrders().handOverItems(orderId, { user_id: userId, item_ids: itemIds })
+  })
   handleDesktopIpc('desktop:supply:list-suppliers', (_event, input?: any) =>
     requireLocalSupply().listSuppliers(input),
   )

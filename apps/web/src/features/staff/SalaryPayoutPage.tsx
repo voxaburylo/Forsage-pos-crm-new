@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Wallet } from 'lucide-react'
 import { Button, Card } from '@/components/ui'
+import { Layout } from '@/components/Layout'
 import { toast } from '@/components/ui/Toast'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { businessDateKey } from '@/lib/businessDate'
@@ -51,10 +52,12 @@ export default function SalaryPayoutPage() {
   }
 
   if (!isDesktopRuntime()) {
-    return <div className="p-4"><Card className="p-4 text-sm text-gray-700">Зарплату видають лише на касі: гроші через веб закрито.</Card></div>
+    return <Layout title="Видати зарплату"><div className="p-4"><Card className="p-4 text-sm text-gray-700">Зарплату видають лише на касі: гроші через веб закрито.</Card></div></Layout>
   }
   const total = rows ? payoutTotal(rows) : 0
+  // 25.11.2026 (власник: «из этого окна выйти нельзя никак»): сторінка була без загальної рамки — без меню й «Назад».
   return (
+    <Layout title="Видати зарплату">
     <div className="mx-auto max-w-3xl space-y-4 p-4">
       <div className="flex items-center gap-2"><Wallet size={22} /><h1 className="text-xl font-bold text-gray-900">Видати зарплату за сьогодні</h1></div>
       <p className="text-sm text-gray-600">Видайте заробіток перед закриттям зміни. Якщо в касі бракує готівки, а власник доніс свої гроші — «Коштами власника».</p>
@@ -84,5 +87,6 @@ export default function SalaryPayoutPage() {
         </Card>
       )}
     </div>
+    </Layout>
   )
 }

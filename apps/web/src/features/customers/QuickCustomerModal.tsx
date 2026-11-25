@@ -321,9 +321,9 @@ export function QuickCustomerModal({ open, offline: networkOffline = false, onCl
                           type="button"
                           onClick={() => onPayDebt(c)}
                           className="border-r border-gray-100 px-3 text-xs font-bold text-yellow-700 hover:bg-yellow-50"
-                          title="Борг, поповнення або видача коштів клієнту"
+                          title="Розрахунки клієнта: борг, замовлення (передоплата, видача), рахунок"
                         >
-                          Гроші
+                          Розрахунки
                         </button>
                       )}
                       {onEdit && !offline && canEdit && (

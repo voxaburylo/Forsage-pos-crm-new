@@ -8,6 +8,18 @@ import { formatMoney } from '@/lib/utils'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { useDialogEscape } from '@/hooks/useDialogEscape'
 import { canUseIntegratedTerminal, runPaymentConfirmation } from './paymentContract'
+import { posCustomerMoneyApi } from './posCustomerMoneyApi'
+import { toast } from '@/components/ui/Toast'
+
+/**
+ * 25.11.2026 (власник: «покупка і борг однією оплатою»): касир ставить галочку «Також закрити борг» —
+ * клієнт платить один раз, а каса проводить ДВІ окремі операції: продаж (як завжди) і оплату боргу
+ * (той самий запис, що у вікні «Розрахунки клієнта»), щоб звіти й зміна сходились.
+ * Лише на касі, лише готівкою, терміналом чи переказом, і лише на весь борг.
+ */
+export function debtPaymentMethod(method: string): 'cash' | 'card' | 'transfer' | null {
+  return method === 'cash' || method === 'card' || method === 'transfer' ? method : null
+}
 
 interface SplitAmounts {
   cash_amount: number
@@ -64,6 +76,9 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   const [splitCash, setSplitCash] = useState('')
   const [printAfterPayment, setPrintAfterPayment] = useState(false)
   const [debtLimit, setDebtLimit] = useState(0)
+  // Борг клієнта, прочитаний із бази каси при відкритті (у чеку він міг застаріти).
+  const [customerDebt, setCustomerDebt] = useState<{ customerId: string; amount: number } | null>(null)
+  const [payDebtToo, setPayDebtToo] = useState(false)
   const submittingRef = useRef(false)
 
   function cancelTerminal() {
@@ -91,7 +106,20 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
     setTerminalStep('none')
     setTerminalAuthCode('')
     setPrintAfterPayment(false)
+    setPayDebtToo(false)
   }, [open])
+
+  useEffect(() => {
+    setCustomerDebt(null)
+    const customerId = store.customer?.id
+    if (!open || !customerId || !desktopBridge()?.pos?.payDebt) return
+    let cancelled = false
+    customerApi.get(customerId).then((res) => {
+      const amount = Number(res.data.debt_balance)
+      if (!cancelled) setCustomerDebt({ customerId, amount: Number.isSafeInteger(amount) && amount > 0 ? amount : 0 })
+    }).catch(() => { /* без свіжого боргу галочку не пропонуємо */ })
+    return () => { cancelled = true }
+  }, [open, store.customer?.id])
 
   useEffect(() => {
     if (!open) return
@@ -192,6 +220,10 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
     bonusCap, Math.max(0, store.total - store.totalCoreDeposit),
   )
   const _toPay = Math.max(0, store.total - _bonusRedeemed)
+  const debtToClose = customerDebt && customerDebt.customerId === store.customer?.id ? customerDebt.amount : 0
+  const canCloseDebt = debtToClose > 0 && debtPaymentMethod(method) !== null && !offline
+  // Скільки грошей бере касир понад чек: весь борг, якщо стоїть галочка.
+  const debtExtra = canCloseDebt && payDebtToo ? debtToClose : 0
 
   if (!open) return null
 
@@ -200,8 +232,9 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
   const bonusRedeemed = _bonusRedeemed
   const toPay        = Math.max(0, store.total - bonusRedeemed)
   const cashReceived = parsePaymentKopecks(cashInput)
-  const change       = Math.max(0, cashReceived - toPay)
-  const cashValid    = method !== 'cash' || cashReceived >= toPay
+  const collect      = toPay + debtExtra
+  const change       = Math.max(0, cashReceived - collect)
+  const cashValid    = method !== 'cash' || cashReceived >= collect
   const debtOk       = method !== 'debt' || !!store.customer
   // Налаштування «Ліміт боргу»: 0 означає, що ліміт не задано. Продаж не
   // блокуємо — касир бачить попередження й підтверджує.
@@ -257,15 +290,36 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
     setPrintAfterPayment(false)
   }
 
+  /** Друга операція після успішного продажу: оплата боргу. Продаж уже проведено — його не чіпаємо. */
+  async function closeDebtAfterSale(customerId: string, amount: number, debtMethod: 'cash' | 'card' | 'transfer', shiftId: string | null) {
+    try {
+      await posCustomerMoneyApi.payDebt(customerId, { amount, method: debtMethod, shift_id: shiftId, notes: 'Оплата боргу разом із покупкою' })
+      toast.success(`Борг закрито: ${formatMoney(amount)}`)
+    } catch (error) {
+      const reason = error instanceof Error && error.message ? ' Причина: ' + error.message : ''
+      toast.error(`Покупку проведено, але борг ${formatMoney(amount)} НЕ закрито.${reason} Гроші за борг отримано — проведіть їх у «Розрахунки клієнта» (кнопка «Борги»).`)
+    }
+  }
+
   async function submitSale(authCode?: string, shouldPrint = false): Promise<boolean> {
     if (submittingRef.current) return false
     submittingRef.current = true
     setLoading(true)
+    // Запамʼятовуємо до продажу: після нього чек (і клієнт у ньому) очищається.
+    const debtCustomerId = store.customer?.id ?? null
+    const debtAmount = debtExtra
+    const debtMethod = debtPaymentMethod(method)
+    const shiftId = store.currentShift?.id ?? null
     try {
       return await runPaymentConfirmation(
-        () => method === 'mixed'
-          ? onConfirm('mixed', undefined, bonusRedeemed || undefined, { cash_amount: splitCashKopecks, card_amount: splitCardKopecks }, effectiveFiscal, authCode, shouldPrint)
-          : onConfirm(method, method === 'cash' ? cashReceived : undefined, bonusRedeemed || undefined, undefined, effectiveFiscal, authCode, shouldPrint),
+        async () => {
+          const sold = method === 'mixed'
+            ? await onConfirm('mixed', undefined, bonusRedeemed || undefined, { cash_amount: splitCashKopecks, card_amount: splitCardKopecks }, effectiveFiscal, authCode, shouldPrint)
+            // Готівка понад борг — це гроші за покупку; у продаж іде лише її частина.
+            : await onConfirm(method, method === 'cash' ? cashReceived - debtAmount : undefined, bonusRedeemed || undefined, undefined, effectiveFiscal, authCode, shouldPrint)
+          if (sold && debtAmount > 0 && debtCustomerId && debtMethod) await closeDebtAfterSale(debtCustomerId, debtAmount, debtMethod, shiftId)
+          return sold
+        },
         () => {
           setCash('')
           setMethod('cash')
@@ -288,7 +342,8 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
           <div className="text-center">
             <CreditCard size={40} className="text-blue-400 mx-auto mb-3" />
             <h3 className="text-white text-lg font-bold">Проведіть оплату на терміналі</h3>
-            <p className="text-yellow-400 text-3xl font-bold mt-2">{formatMoney(_toPay)}</p>
+            <p className="text-yellow-400 text-3xl font-bold mt-2">{formatMoney(_toPay + debtExtra)}</p>
+            {debtExtra > 0 && <p className="text-red-300 text-xs mt-1">покупка {formatMoney(_toPay)} + борг {formatMoney(debtExtra)}</p>}
           </div>
 
           <div className="bg-[#2C2C2C] rounded-xl p-4 text-sm text-gray-300 space-y-1">
@@ -354,6 +409,9 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
           <p className="text-white text-4xl font-bold">{formatMoney(toPay)}</p>
           {bonusRedeemed > 0 && (
             <p className="text-yellow-400 text-xs mt-1">з них бонусами: {formatMoney(bonusRedeemed)}</p>
+          )}
+          {debtExtra > 0 && (
+            <p className="text-red-300 text-sm mt-1 font-semibold" data-payment-with-debt>+ борг {formatMoney(debtExtra)} = отримати {formatMoney(collect)}</p>
           )}
           {store.customer && (
             <p className="text-gray-400 text-sm mt-1">{store.customer.name ?? store.customer.phone}</p>
@@ -434,6 +492,18 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
             ))}
           </div>
 
+          {/* Борг клієнта: закрити разом із покупкою */}
+          {debtToClose > 0 && method !== 'debt' && (
+            <label className={`flex items-center gap-3 rounded-xl border px-4 py-3 text-sm ${canCloseDebt ? 'border-red-500/40 bg-red-900/20 text-red-100' : 'border-gray-700 bg-[#222] text-gray-500'}`}>
+              <input type="checkbox" data-payment-close-debt checked={canCloseDebt && payDebtToo} disabled={!canCloseDebt || loading}
+                onChange={(e) => setPayDebtToo(e.target.checked)} className="h-4 w-4 accent-red-500" />
+              <span>
+                Також закрити борг <b>{formatMoney(debtToClose)}</b>
+                {!canCloseDebt && <span className="block text-[11px]">Для змішаної оплати — окремо, кнопкою «Борги».</span>}
+              </span>
+            </label>
+          )}
+
           {/* Cash input */}
           {method === 'cash' && (
             <div>
@@ -445,7 +515,7 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
               {/* Швидкі суми готівки — щоб не вбивати вручну щоразу */}
               <div className="flex flex-wrap gap-1.5 mt-2">
                 {(() => {
-                  const t = toPay / 100
+                  const t = collect / 100
                   const opts = [...new Set([t, Math.ceil(t / 50) * 50, Math.ceil(t / 100) * 100, Math.ceil(t / 500) * 500, 1000])]
                     .filter((v) => v >= t).sort((a, b) => a - b).slice(0, 5)
                   return opts.map((v, i) => (
@@ -460,8 +530,8 @@ export function PaymentModal({ open, offline = false, onClose, onConfirm }: Prop
                   ))
                 })()}
               </div>
-              {cashReceived >= toPay && cashReceived > 0 && <p className="text-green-400 text-center text-sm mt-2 font-medium">Решта: {formatMoney(change)}</p>}
-              {cashInput && cashReceived < toPay && <p className="text-red-400 text-center text-sm mt-2">Не вистачає: {formatMoney(toPay - cashReceived)}</p>}
+              {cashReceived >= collect && cashReceived > 0 && <p className="text-green-400 text-center text-sm mt-2 font-medium">Решта: {formatMoney(change)}</p>}
+              {cashInput && cashReceived < collect && <p className="text-red-400 text-center text-sm mt-2">Не вистачає: {formatMoney(collect - cashReceived)}</p>}
             </div>
           )}
 

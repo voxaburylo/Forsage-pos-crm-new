@@ -118,3 +118,15 @@ describe('period report cost rounding', () => {
     expect(result.profit).toBe(49)
   })
 })
+
+// 25.11.2026: замовлення, видане з боргом, — передоплата рахується в день оплати, борг — у день видачі, без подвоєння.
+describe('period report: order handed over on credit', () => {
+  it('counts the prepayment once and the unpaid rest as debt', () => {
+    const data = fixture(100, 1, 3000)
+    Object.assign(data.sales[0], { payment_method: 'mixed', cash_amount: 1000, debt_amount: 2000, is_debt: true, customer_id: 'c', customer: { id: 'c', phone: '1', full_name: 'СТО' } })
+    data.orders.push({ id: 'order', sale_id: 'sale' })
+    data.payments.push({ id: 'pay', order_id: 'order', amount: 1000, method: 'cash', created_at: at })
+    const result = report(data) as any
+    expect(result.by_method).toMatchObject({ cash: 1000, debt: 2000 })
+  })
+})

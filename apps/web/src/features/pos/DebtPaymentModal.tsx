@@ -1,12 +1,16 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useDialogEscape } from '@/hooks/useDialogEscape'
-import { DollarSign, Wallet, X } from 'lucide-react'
+import { DollarSign, Package, Wallet, X } from 'lucide-react'
 import { formatMoney } from '@/lib/utils'
 import { toast } from '@/components/ui/Toast'
 import { usePOSStore } from '@/stores/posStore'
 import { useAuthStore } from '@/stores/authStore'
 import { posCustomerMoneyApi } from './posCustomerMoneyApi'
 import { parseCustomerMoney } from '@/features/customers/customerUi'
+import { customerApi } from '@/features/customers/customerApi'
+import { desktopBridge } from '@/lib/desktopBridge'
+import { ReadyOrdersPanel } from './ReadyOrdersPanel'
+import { customerOrdersSummary } from './customerOrdersSummary'
 
 interface MoneyCustomer {
   id: string
@@ -16,20 +20,40 @@ interface MoneyCustomer {
   deposit_balance?: number
 }
 
+export type CustomerMoneyMode = 'debt' | 'orders' | 'deposit' | 'payout'
+
 interface Props {
   open: boolean
   onClose: () => void
   onPaid: () => void
   initialCustomer?: MoneyCustomer | null
+  /** Яку вкладку відкрити (кнопка «Борг» чи «Замовлення» в чеку); без неї — за станом клієнта. */
+  initialMode?: CustomerMoneyMode | null
 }
 
-// Одне касове вікно для боргу, поповнення і фактичної видачі коштів.
+/** 25.11.2026: початкова вкладка — явно вибрана, інакше борг, видача з рахунку або поповнення (як і раніше). */
+export function initialSettlementMode(customer: MoneyCustomer, options: { requested?: CustomerMoneyMode | null; ordersAvailable: boolean; canPayout: boolean }): CustomerMoneyMode {
+  const { requested, ordersAvailable, canPayout } = options
+  if (requested === 'orders' && ordersAvailable) return 'orders'
+  if (requested === 'payout' && canPayout) return 'payout'
+  if (requested === 'debt' || requested === 'deposit') return requested
+  if (customer.debt_balance > 0) return 'debt'
+  return canPayout && (customer.deposit_balance ?? 0) > 0 ? 'payout' : 'deposit'
+}
+
+/** Сума, яку підставляємо у поле: весь борг або весь залишок рахунку; для поповнення й замовлень — порожньо. */
+function availableFor(mode: CustomerMoneyMode, customer: MoneyCustomer | null): number {
+  if (!customer) return 0
+  return mode === 'debt' ? customer.debt_balance : mode === 'payout' ? (customer.deposit_balance ?? 0) : 0
+}
+
+// Одне касове вікно «Розрахунки клієнта»: борг, замовлення (передоплата, доплата, видача), поповнення і видача коштів.
 // Видавати кошти можуть лише касир або власник; менеджер тільки скасовує замовлення.
 /** Поповнення від 1000 грн підтверджується окремо. */
 export const LARGE_TOP_UP_KOPECKS = 100_000
 
-export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null }: Props) {
-  const [mode, setMode] = useState<'debt' | 'deposit' | 'payout'>('debt')
+export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null, initialMode = null }: Props) {
+  const [mode, setMode] = useState<CustomerMoneyMode>('debt')
   const [search, setSearch] = useState('')
   const [customers, setCustomers] = useState<MoneyCustomer[]>([])
   const [loading, setLoading] = useState(false)
@@ -45,22 +69,64 @@ export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null
   const role = useAuthStore((state) => (state.session?.user?.app_metadata?.role as string) ?? 'cashier')
   const canPayout = role === 'cashier' || role === 'owner' || role === 'admin'
   const currentShift = usePOSStore((state) => state.currentShift)
+  // Замовлення каса читає зі своєї бази; без неї (веб) вкладки «Замовлення» немає.
+  const ordersAvailable = Boolean(desktopBridge()?.orders?.listReady)
+  const [orderSummary, setOrderSummary] = useState<{ customerId: string; count: number; due: number; ready: number } | null>(null)
+  // Касир сам вибрав вкладку — не перемикаємо її, коли довантажились замовлення.
+  const tabChosen = useRef(false)
+  const selectedId = selected?.id ?? null
+
+  const loadOrderSummary = useCallback(async (customerId: string) => {
+    const read = desktopBridge()?.orders?.listReady
+    if (!read) return null
+    try {
+      const rows = await read({ customer_id: customerId, limit: 50 })
+      return { customerId, ...customerOrdersSummary(Array.isArray(rows) ? rows : []) }
+    } catch { return null }
+  }, [])
+
+  useEffect(() => {
+    setOrderSummary(null)
+    if (!open || !selectedId) return
+    let active = true
+    void loadOrderSummary(selectedId).then((summary) => {
+      if (!active || !summary) return
+      setOrderSummary(summary)
+      // Боргу немає, а відкриті замовлення є — одразу показуємо їх (якщо вкладку не вибрано явно).
+      if (summary.count > 0 && !tabChosen.current) setMode((current) => current === 'deposit' || current === 'payout' ? 'orders' : current)
+    })
+    return () => { active = false }
+  }, [open, selectedId, loadOrderSummary])
+
+  /** Після оплати чи видачі замовлення оновлюємо підсумки та баланси клієнта у вікні. */
+  async function refreshSelected() {
+    if (!selectedId) return
+    const id = selectedId
+    void loadOrderSummary(id).then((summary) => { if (summary) setOrderSummary((current) => current === null || current.customerId === id ? summary : current) })
+    try {
+      const { data } = await customerApi.get(id)
+      setSelected((current) => current?.id === id ? { ...current, debt_balance: Number(data.debt_balance) || 0, deposit_balance: Number(data.deposit_balance ?? 0) || 0 } : current)
+    } catch { /* баланси оновляться при наступному відкритті */ }
+    onPaid()
+  }
 
   useEffect(() => {
     if (!open) {
       setSelected(null); setAmount(''); setMethod('cash'); setSearch(''); setCustomers([]); setMode('debt'); setPayoutReason('payout')
+      tabChosen.current = false
       return
     }
+    tabChosen.current = Boolean(initialMode)
     if (initialCustomer) {
-      const nextMode = initialCustomer.debt_balance > 0
-        ? 'debt'
-        : canPayout && (initialCustomer.deposit_balance ?? 0) > 0 ? 'payout' : 'deposit'
+      const nextMode = initialSettlementMode(initialCustomer, { requested: initialMode, ordersAvailable, canPayout })
       setMode(nextMode)
       setSelected(initialCustomer)
-      const available = nextMode === 'debt' ? initialCustomer.debt_balance : (initialCustomer.deposit_balance ?? 0)
+      const available = availableFor(nextMode, initialCustomer)
       setAmount(available > 0 ? (available / 100).toFixed(2) : '')
+    } else if (initialMode) {
+      setMode(initialSettlementMode({ id: '', full_name: null, phone: null, debt_balance: 0 }, { requested: initialMode, ordersAvailable, canPayout }))
     }
-  }, [open, initialCustomer, canPayout])
+  }, [open, initialCustomer, initialMode, canPayout, ordersAvailable])
 
   // Скан картки клієнта при відкритій модалці — одразу вибирає клієнта тут,
   // а не чіпляє його до чека
@@ -78,7 +144,7 @@ export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null
         debt_balance: c.debt_balance ?? 0,
         deposit_balance: c.deposit_balance ?? 0,
       })
-      const available = mode === 'debt' ? (c.debt_balance ?? 0) : mode === 'payout' ? (c.deposit_balance ?? 0) : 0
+      const available = availableFor(mode, { id: c.id, full_name: null, phone: null, debt_balance: c.debt_balance ?? 0, deposit_balance: c.deposit_balance ?? 0 })
       setAmount(available > 0 ? (available / 100).toFixed(2) : '')
       toast.success(`Картка клієнта: ${c.full_name ?? c.phone}`)
     }
@@ -154,31 +220,37 @@ export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null
   if (!open) return null
   const isDebt = mode === 'debt'
   const isPayout = mode === 'payout'
+  const isOrders = mode === 'orders'
+  const summary = orderSummary && orderSummary.customerId === selectedId ? orderSummary : null
+  const tabs = ([
+    { id: 'debt', label: 'Борг' },
+    { id: 'orders', label: summary?.count ? `Замовлення (${summary.count})` : 'Замовлення' },
+    { id: 'deposit', label: 'Поповнити' },
+    { id: 'payout', label: 'Зняти з рахунку' },
+  ] as const).filter((tab) => (tab.id !== 'payout' || canPayout) && (tab.id !== 'orders' || ordersAvailable))
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/70" onClick={safeClose} />
-      <div className="relative bg-[#1A1A1A] rounded-2xl border border-gray-700 w-full max-w-md mx-4 p-6">
+      <div className={`relative bg-[#1A1A1A] rounded-2xl border border-gray-700 w-full ${isOrders ? 'max-w-lg' : 'max-w-md'} mx-4 p-6 max-h-[calc(100dvh-2rem)] overflow-y-auto`}>
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
-            {isDebt ? <DollarSign size={18} className="text-red-400" /> : <Wallet size={18} className={isPayout ? 'text-yellow-400' : 'text-emerald-400'} />}
-            <h2 className="text-white text-lg font-bold">Гроші клієнта</h2>
+            {isDebt ? <DollarSign size={18} className="text-red-400" /> : isOrders ? <Package size={18} className="text-blue-300" /> : <Wallet size={18} className={isPayout ? 'text-yellow-400' : 'text-emerald-400'} />}
+            <h2 className="text-white text-lg font-bold">Розрахунки клієнта</h2>
           </div>
           <button onClick={safeClose} disabled={saving} aria-label="Закрити" className="text-gray-500 hover:text-white"><X size={20} /></button>
         </div>
         <fieldset disabled={saving}>
-        <div className={`mb-4 grid ${canPayout ? 'grid-cols-3' : 'grid-cols-2'} gap-2 rounded-xl bg-[#111] p-1`}>
-          {([
-            { id: 'debt', label: 'Закрити борг' },
-            { id: 'deposit', label: 'Поповнити' },
-            { id: 'payout', label: 'Зняти з рахунку' },
-          ] as const).filter((tab) => tab.id !== 'payout' || canPayout).map((tab) => (
+        <div className={`mb-4 grid ${tabs.length === 4 ? 'grid-cols-4' : tabs.length === 3 ? 'grid-cols-3' : 'grid-cols-2'} gap-1.5 rounded-xl bg-[#111] p-1`}>
+          {tabs.map((tab) => (
             <button
               key={tab.id}
               type="button"
+              data-settlement-tab={tab.id}
               onClick={() => {
+                tabChosen.current = true
                 setMode(tab.id)
-                const available = selected ? tab.id === 'debt' ? selected.debt_balance : tab.id === 'payout' ? (selected.deposit_balance ?? 0) : 0 : 0
+                const available = availableFor(tab.id, selected)
                 setAmount(available > 0 ? (available / 100).toFixed(2) : '')
               }}
               className={`rounded-lg px-2 py-2 text-xs font-bold transition ${
@@ -197,8 +269,10 @@ export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null
               ? 'Сторно: якщо рахунок поповнили помилково (клієнт грошей не вносив). Баланс зменшиться, а в зміні буде видача тієї ж суми — це зніме зайвий прихід у касі.'
               : 'Видача зменшує баланс клієнта. Можна видати всю суму або лише частину.')
             : mode === 'deposit'
-              ? <>Передоплату приймайте через <b>«Замовлення / передоплата»</b>, щоб гроші були прив’язані до замовлення.</>
-              : 'Тут касир приймає повну або часткову оплату боргу клієнта.'}
+              ? <>Поповнення — гроші на рахунку клієнта, не привʼязані до замовлення. Передоплату за замовлення вносьте у вкладці <b>«Замовлення»</b>.</>
+              : isOrders
+                ? 'Передоплата, доплата й видача замовлень цього клієнта. «Видати товар» зʼявляється, коли все в замовленні прибуло.'
+                : 'Тут касир приймає повну або часткову оплату боргу клієнта.'}
           {!canPayout && <p className="mt-1 text-yellow-300">Зняти кошти з рахунку може власник, адміністратор або касир.</p>}
         </div>
         {isPayout && (
@@ -213,7 +287,8 @@ export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null
         )}
 
         <div className="space-y-4">
-          <div>
+          {/* Клієнта вже вибрано — пошук не потрібен; «Змінити» повертає його. */}
+          {!selected && <div>
             <label className="text-gray-400 text-xs mb-1 block">
               {isDebt ? 'Пошук у списку боржників' : 'Пошук клієнта (телефон або ПІБ)'}
             </label>
@@ -224,12 +299,12 @@ export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null
               className={`w-full bg-[#2C2C2C] text-white rounded-xl px-4 py-3 border border-gray-700 focus:outline-none text-sm ${
                 isDebt ? 'focus:border-red-500' : 'focus:border-emerald-500'
               }`} />
-          </div>
+          </div>}
 
-          {loading && <p className="text-gray-500 text-xs text-center">Пошук...</p>}
+          {loading && !selected && <p className="text-gray-500 text-xs text-center">Пошук...</p>}
 
           {selected ? (
-            <div className={`rounded-xl border p-3 ${isDebt ? 'bg-red-900/20 border-red-500/30' : isPayout ? 'bg-yellow-900/20 border-yellow-500/30' : 'bg-emerald-900/20 border-emerald-500/30'}`}>
+            <div className={`rounded-xl border p-3 ${isDebt ? 'bg-red-900/20 border-red-500/30' : isOrders ? 'bg-blue-900/20 border-blue-500/30' : isPayout ? 'bg-yellow-900/20 border-yellow-500/30' : 'bg-emerald-900/20 border-emerald-500/30'}`}>
               <div className="flex justify-between items-start">
                 <div>
                   <p className="text-white font-medium text-sm">{selected.full_name || '—'}</p>
@@ -244,6 +319,11 @@ export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null
                         <p className="text-red-400 text-xs">Борг:</p>
                         <p className="text-red-400 font-bold text-lg">{formatMoney(selected.debt_balance)}</p>
                       </>
+                    ) : isOrders ? (
+                      <>
+                        <p className="text-blue-300 text-xs">Доплатити за замовлення:</p>
+                        <p className="text-blue-200 font-bold text-lg">{summary ? formatMoney(summary.due) : '…'}</p>
+                      </>
                     ) : (
                       <>
                         <p className="text-emerald-400 text-xs">На рахунку:</p>
@@ -252,6 +332,14 @@ export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null
                     )}
                   </div>
                 </div>
+              </div>
+              {/* Усе про гроші клієнта одним рядком, хоч би яка вкладка відкрита. */}
+              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 border-t border-white/10 pt-2 text-[11px]" data-settlement-summary>
+                <span className={selected.debt_balance > 0 ? 'text-red-300' : 'text-gray-500'}>Борг: {formatMoney(selected.debt_balance)}</span>
+                <span className={(selected.deposit_balance ?? 0) > 0 ? 'text-emerald-300' : 'text-gray-500'}>На рахунку: {formatMoney(selected.deposit_balance ?? 0)}</span>
+                {ordersAvailable && (summary
+                  ? <span className={summary.count ? 'text-blue-300' : 'text-gray-500'}>Замовлень: {summary.count}{summary.ready ? ` · готові: ${summary.ready}` : ''}{summary.due ? ` · доплатити ${formatMoney(summary.due)}` : ''}</span>
+                  : <span className="text-gray-500">Замовлення…</span>)}
               </div>
             </div>
           ) : (
@@ -290,7 +378,19 @@ export function DebtPaymentModal({ open, onClose, onPaid, initialCustomer = null
             </div>
           )}
 
-          {selected && (
+          {selected && isOrders && (
+            <>
+              <div className="rounded-xl border border-gray-800 bg-[#151515]" data-settlement-orders>
+                <ReadyOrdersPanel embeddedCustomerId={selected.id} onChanged={() => { void refreshSelected() }} />
+              </div>
+              <button type="button" onClick={safeClose}
+                className="w-full py-3 rounded-xl bg-[#2C2C2C] text-gray-300 font-semibold hover:bg-gray-700">
+                Готово
+              </button>
+            </>
+          )}
+
+          {selected && !isOrders && (
             <>
               <div>
                 <label className="text-gray-400 text-xs mb-1 block">

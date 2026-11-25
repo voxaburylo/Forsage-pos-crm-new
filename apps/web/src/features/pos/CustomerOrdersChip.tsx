@@ -8,8 +8,10 @@ import { customerOrdersSummary, type CustomerOrderMoney } from './customerOrders
  * 22.11.2026 (етап 5 плану замовлень): щойно в чек вибрано клієнта, касир бачить його відкриті замовлення,
  * скільки вже внесено і скільки лишилось доплатити, а також борг. Натиск відкриває ці замовлення для видачі.
  * Лише читання; помилка читання не показується як «замовлень немає».
+ * 25.11.2026 (власник: «не найду где закрыть долг клиента»): борг — кнопка; і борг, і замовлення відкривають
+ * одне вікно «Розрахунки клієнта» на потрібній вкладці.
  */
-export function CustomerOrdersChip({ customerId, phone, debtBalance }: { customerId: string; phone: string | null; debtBalance: number }) {
+export function CustomerOrdersChip({ customerId, debtBalance }: { customerId: string; phone?: string | null; debtBalance: number }) {
   const [, setSearchParams] = useSearchParams()
   const [state, setState] = useState<{ customerId: string; orders: CustomerOrderMoney[] | null } | null>(null)
 
@@ -29,15 +31,24 @@ export function CustomerOrdersChip({ customerId, phone, debtBalance }: { custome
     return () => { cancelled = true; window.removeEventListener('forsage:desktop-sync-completed', refresh) }
   }, [customerId])
 
-  const debt = debtBalance > 0 ? <span className="text-red-400">Борг клієнта: {formatMoney(debtBalance)}</span> : null
+  // Відкриває «Розрахунки клієнта» (POSPage читає customerMoney і customerMoneyTab з адреси).
+  const settle = (tab: 'debt' | 'orders') => setSearchParams(prev => {
+    const next = new URLSearchParams(prev)
+    next.set('customerMoney', customerId)
+    next.set('customerMoneyTab', tab)
+    return next
+  }, { replace: true })
+  // Гроші приймає лише каса; у вебі борг лишається підписом.
+  const atTill = Boolean(desktopBridge()?.pos?.payDebt)
+  const debt = debtBalance <= 0 ? null : atTill
+    ? <button type="button" onClick={() => settle('debt')} data-customer-debt-pay title="Прийняти оплату боргу клієнта"
+        className="rounded bg-red-600 px-1.5 py-0.5 font-semibold text-white hover:bg-red-500">Закрити борг {formatMoney(debtBalance)}</button>
+    : <span className="text-red-400">Борг клієнта: {formatMoney(debtBalance)}</span>
   if (!state || state.customerId !== customerId) return debt ? <span className="text-[10px]">{debt}</span> : null
   if (state.orders === null) return <span className="text-[10px] text-amber-400">Замовлення клієнта не завантажились{debt ? ' · ' : ''}{debt}</span>
   const summary = customerOrdersSummary(state.orders)
   if (!summary.count) return debt ? <span className="text-[10px]">{debt}</span> : null
-  const open = () => {
-    const query = (phone ?? '').trim()
-    if (query) setSearchParams(prev => { const next = new URLSearchParams(prev); next.set('customer', query); return next }, { replace: true })
-  }
+  const open = () => settle('orders')
   return (
     <span className="flex flex-wrap items-center gap-x-2 text-[10px]">
       <button type="button" onClick={open} title="Показати замовлення цього клієнта"
@@ -47,7 +58,7 @@ export function CustomerOrdersChip({ customerId, phone, debtBalance }: { custome
       {summary.paid > 0 && <span className="text-green-400">внесено {formatMoney(summary.paid)}</span>}
       {summary.due > 0 && <span className="text-yellow-300">доплатити {formatMoney(summary.due)}</span>}
       {/* 22.11.2026 (етап 5): задаток і доплата — з чека, в тій самій панелі замовлень клієнта, що й видача. */}
-      {summary.due > 0 && phone && (
+      {summary.due > 0 && (
         <button type="button" onClick={open} data-customer-orders-pay
           className="rounded bg-yellow-400 px-1.5 py-0.5 font-semibold text-black hover:bg-yellow-300">
           Внести / доплатити

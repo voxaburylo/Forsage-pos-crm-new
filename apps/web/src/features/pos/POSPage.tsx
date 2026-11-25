@@ -17,7 +17,7 @@ import { QuickCustomerModal } from '@/features/customers/QuickCustomerModal'
 import { QuickCustomerEditModal } from '@/features/customers/QuickCustomerEditModal'
 import { customerApi } from '@/features/customers/customerApi'
 import { CashOperationModal } from './CashOperationModal'
-import { DebtPaymentModal } from './DebtPaymentModal'
+import { DebtPaymentModal, type CustomerMoneyMode } from './DebtPaymentModal'
 import { CashReconciliationModal } from './CashReconciliationModal'
 import { FavoritesPanel } from './FavoritesPanel'
 import { CrossSellPanel } from './CrossSellPanel'
@@ -168,17 +168,22 @@ export default function POSPage() {
   const [reconcileOpen, setReconcileOpen] = useState(false)
   const [debtPayOpen, setDebtPayOpen] = useState(false)
   const [debtCustomer, setDebtCustomer] = useState<Customer | null>(null)
+  const [debtMode, setDebtMode] = useState<CustomerMoneyMode | null>(null)
   const [customerParams, setCustomerParams] = useSearchParams()
   useEffect(() => {
     const customerId = customerParams.get('customerMoney')
     if (!customerId) return
+    // 25.11.2026: кнопки «Борг» і «Замовлення» в чеку відкривають «Розрахунки клієнта» одразу на потрібній вкладці.
+    const tab = customerParams.get('customerMoneyTab')
     let active = true
     customerApi.get(customerId).then(({ data }) => {
       if (!active) return
       setDebtCustomer(data)
+      setDebtMode(tab === 'debt' || tab === 'orders' || tab === 'deposit' || tab === 'payout' ? tab : null)
       setDebtPayOpen(true)
       const next = new URLSearchParams(customerParams)
       next.delete('customerMoney')
+      next.delete('customerMoneyTab')
       setCustomerParams(next, { replace: true })
     }).catch(() => { if (active) toast.error('Не вдалося відкрити рахунок клієнта') })
     return () => { active = false }
@@ -776,6 +781,15 @@ export default function POSPage() {
         {/* Desktop права частина — щоденні дії з підписами, решта в меню «Ще» */}
         <div className="hidden md:flex items-center gap-0.5">
           <ReadyOrdersPanel />
+          {/* 25.11.2026 (власник не знайшов, де закрити борг): список боржників і «Розрахунки клієнта» одним кліком. */}
+          {desktopRuntime && (
+            <button onClick={() => { setDebtCustomer(null); setDebtMode('debt'); setDebtPayOpen(true) }}
+              data-pos-debts
+              className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-red-300 hover:text-red-200 hover:bg-gray-800 transition-colors text-xs font-medium"
+              title="Борги клієнтів: закрити борг, замовлення, рахунок клієнта">
+              <CircleDollarSign size={15} /><span className="hidden lg:inline">Борги</span>
+            </button>
+          )}
           <button onClick={() => setCashOpen(true)}
             className="flex items-center gap-1.5 h-10 px-2.5 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors text-xs font-medium"
             title="Внесення та витрата готівки">
@@ -1094,9 +1108,11 @@ export default function POSPage() {
       <DebtPaymentModal
         open={debtPayOpen}
         initialCustomer={debtCustomer}
+        initialMode={debtMode}
         onClose={() => {
           setDebtPayOpen(false)
           setDebtCustomer(null)
+          setDebtMode(null)
         }}
         onPaid={() => {}}
       />

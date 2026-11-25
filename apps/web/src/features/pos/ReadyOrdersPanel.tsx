@@ -11,6 +11,7 @@ import { canIssueOrderFromPos, isUnpricedOrder } from '@/features/orders/orderWo
 import { desktopBridge } from '@/lib/desktopBridge'
 import { createReadPoller } from '@/lib/readPoller'
 import { OrderHandoverItems } from './OrderHandoverItems'
+import { handOverConfirmText } from '@/features/orders/HandOverOrderButton'
 
 interface OrderItem {
   id: string
@@ -56,7 +57,16 @@ function canIssueOrder(order: ReadyOrder) {
   return canIssueOrderFromPos(order)
 }
 
-export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileInline?: boolean; onCloseMobile?: () => void } = {}) {
+/**
+ * 25.11.2026 (власник: «долги, предоплата за заказ и выдача — в одном окне»): embeddedCustomerId вбудовує
+ * список замовлень одного клієнта у вікно «Розрахунки клієнта». Оплата, передоплата й видача — ті самі
+ * функції цієї панелі; вбудований список не слухає сканер і посилання (це робить саме вікно та головна панель).
+ */
+export function ReadyOrdersPanel({ isMobileInline: mobileInline, onCloseMobile, embeddedCustomerId, onChanged }: {
+  isMobileInline?: boolean; onCloseMobile?: () => void; embeddedCustomerId?: string; onChanged?: () => void
+} = {}) {
+  const embedded = Boolean(embeddedCustomerId)
+  const isMobileInline = mobileInline || embedded
   const store = usePOSStore()
   const [searchParams, setSearchParams] = useSearchParams()
   const [open, setOpen] = useState(false)
@@ -90,7 +100,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
   const payOrderCustomerId = payOrder?.customer?.id
   // Рішення власника 20.11.2026: бонуси — гроші клієнта, ними можна оплатити замовлення повністю або частково.
   const bonusBalance = Math.max(0, Math.round(Number(payOrder?.customer?.bonus_balance ?? 0)))
-  const selectedCustomerId = store.customer?.id ?? null
+  const selectedCustomerId = embeddedCustomerId ?? store.customer?.id ?? null
 
   useEffect(() => {
     paymentAttemptRef.current = null
@@ -114,7 +124,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
 
   // Скан картки клієнта при відкритій панелі «Видати» → показуємо ЙОГО замовлення
   useEffect(() => {
-    if (!(open || isMobileInline)) return
+    if (embedded || !(open || isMobileInline)) return
     const handler = (event: Event) => {
       const c = (event as CustomEvent<any>).detail
       if (!c?.phone && !c?.full_name) return
@@ -124,10 +134,11 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     }
     window.addEventListener('forsage:pos-customer-scanned', handler)
     return () => window.removeEventListener('forsage:pos-customer-scanned', handler)
-  }, [open, isMobileInline])
+  }, [open, isMobileInline, embedded])
 
   // Скан штрих-коду замовлення (ORD-1043) на касі → відкриває список з діями
   useEffect(() => {
+    if (embedded) return
     const handler = async (event: Event) => {
       const num = (event as CustomEvent<{ number?: string }>).detail?.number
       if (!num) return
@@ -145,9 +156,10 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     }
     window.addEventListener('forsage:pos-pay-order', handler)
     return () => window.removeEventListener('forsage:pos-pay-order', handler)
-  }, [])
+  }, [embedded])
 
   useEffect(() => {
+    if (embedded) return
     const orderQuery = (searchParams.get('order') ?? searchParams.get('customer') ?? '').trim()
     if (!orderQuery) return
     setSearch(orderQuery)
@@ -156,7 +168,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     next.delete('order')
     next.delete('customer')
     setSearchParams(next, { replace: true })
-  }, [searchParams, setSearchParams])
+  }, [embedded, searchParams, setSearchParams])
 
   const load = useCallback(async () => {
     if (isDesktopAccessLocked() || document.visibilityState === 'hidden') return
@@ -303,6 +315,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
       } else {
         toast.success(payAction === 'full' ? 'Повну оплату внесено!' : (payMethod === 'bonus' ? 'Оплачено бонусами!' : payMethod === 'account' ? 'Списано з рахунку клієнта!' : 'Передоплату внесено!'))
         await load()
+        onChanged?.()
       }
     } catch (e) {
       toast.error(getErrorMessage(e, 'Помилка внесення оплати'))
@@ -341,10 +354,30 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
       )
       if (!options.quietSuccess) toast.success('Замовлення видано!')
       await load()
+      onChanged?.()
       return true
     } catch (e) {
       toast.error(getErrorMessage(e, 'Помилка видачі замовлення'))
       return false
+    } finally {
+      setCompleting(null)
+    }
+  }
+
+  /** 25.11.2026 (рішення власника): видати без повної оплати — неоплачене одразу борг клієнта. */
+  async function handOverOnDebt(order: ReadyOrder) {
+    const remaining = remainingDue(order)
+    if (!order.customer?.id) { toast.error('Неоплачене замовлення видається в борг лише клієнту'); return }
+    if (!window.confirm(handOverConfirmText({ number: '№' + (order.order_number ?? order.id.slice(0, 8)), customer: order.customer.full_name ?? order.customer.phone, remaining }))) return
+    setCompleting(order.id)
+    try {
+      const result = await posOrderApi.handOver(order.id)
+      const debt = Number(result?.data?.debt_amount ?? 0)
+      toast.success(debt > 0 ? `Замовлення видано. Борг клієнта: +${formatMoney(debt)}` : 'Замовлення видано!')
+      await load()
+      onChanged?.()
+    } catch (e) {
+      toast.error(getErrorMessage(e, 'Помилка видачі замовлення'))
     } finally {
       setCompleting(null)
     }
@@ -394,15 +427,30 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
             {isCompleting ? <Loader2 size={12} className="animate-spin mx-auto" /> : 'Видати товар'}
           </button>
         )}
+        {canIssueAction && remaining > 0 && order.customer?.id && posOrderApi.canHandOver() && (
+          <button
+            onClick={() => { void handOverOnDebt(order) }}
+            disabled={isCompleting}
+            data-order-hand-over-debt
+            style={minHeight}
+            title="Видати зараз; неоплачене стане боргом клієнта"
+            className={`py-2.5 text-sm ${rounded} font-semibold transition-colors disabled:opacity-50 border border-red-500/60 text-red-200 hover:bg-red-900/40`}
+          >
+            Видати, решта в борг
+          </button>
+        )}
       </div>
     )
   }
 
   const count = orders.length
+  // Вбудований список не блимає під час фонового оновлення кожні 10 с.
+  const spinner = loading && (!embedded || orders.length === 0)
 
   if (isMobileInline) {
     return (
-      <div className="flex flex-col h-full bg-[#1A1A1A] text-white">
+      <div className={embedded ? 'flex flex-col text-white' : 'flex flex-col h-full bg-[#1A1A1A] text-white'}>
+        {!embedded && <>
         <div className="flex items-center justify-between px-4 py-3.5 border-b border-gray-800 shrink-0 bg-[#0D0D0D]">
           <span className="text-base font-bold tracking-wide">Замовлення / передоплата</span>
           {onCloseMobile && (
@@ -422,21 +470,22 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                        border border-gray-700 focus:outline-none focus:border-yellow-400"
           />
         </div>
+        </>}
 
-        <div className="flex-1 overflow-y-auto pb-4">
-          {loading && (
+        <div className={embedded ? 'pb-2' : 'flex-1 overflow-y-auto pb-4'}>
+          {spinner && (
             <div className="flex justify-center py-12">
               <Loader2 size={24} className="animate-spin text-gray-400" />
             </div>
           )}
 
-          {!loading && orders.length === 0 && (
+          {!spinner && orders.length === 0 && (
             <div className="text-center py-12 text-gray-500 text-sm">
-              {search.trim() ? 'Нічого не знайдено' : 'Немає активних замовлень'}
+              {search.trim() ? 'Нічого не знайдено' : embedded ? 'У клієнта немає відкритих замовлень' : 'Немає активних замовлень'}
             </div>
           )}
 
-          {!loading && orders.map((order) => {
+          {!spinner && orders.map((order) => {
             const remaining = remainingDue(order)
             
             let statusLabel = order.status

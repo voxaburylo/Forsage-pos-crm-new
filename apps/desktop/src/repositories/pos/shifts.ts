@@ -304,6 +304,8 @@ export class LocalPosShifts extends LocalPosFiscalGuards {
       }
       // Бонуси — не гроші в касі: оплата замовлення бонусами не входить у виторг зміни.
       for (const payment of orderPayments) if (payment.method !== 'bonus') addPayment(payment.method, payment.amount)
+      // 25.11.2026: замовлення, видане в борг, — гроші не надійшли, але зміна показує борг, як і в звичайного чека.
+      for (const sale of settled) if (sale.is_order_sale === 1 && Number(sale.debt_amount ?? 0) > 0) addPayment('debt', Number(sale.debt_amount))
 
       const refunds = readShiftRefunds(this.db, tenantId, shift)
       const grossRevenue = settled.reduce((sum, sale) => cashSum(sum, cashAmount(sale.total)), 0)

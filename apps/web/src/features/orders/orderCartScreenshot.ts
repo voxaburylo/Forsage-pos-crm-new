@@ -37,14 +37,17 @@ export function cartScreenshotRows(products: unknown): { rows: CartScreenshotRow
 
 const INSTRUCTION = 'Це скриншот КОШИКА на сайті постачальника автозапчастин, а не накладна. Перенеси кожний рядок кошика: назву, артикул (код біля назви), бренд, кількість і ціну за одиницю як закупівельну. Колонки наявності по складах і підсумкову суму рядка не плутай із кількістю та ціною. Якщо в рядку є картинка товару, у image_box вкажи її межі: [ліво, верх, ширина, висота] у відсотках від усього скриншота; немає картинки — не заповнюй.'
 
+/** 25.11.2026: текст, вставлений з буфера, програма малює на картинці — помічник читає його як список позицій. */
+export const CART_TEXT_INSTRUCTION = 'Це текст, скопійований з кошика на сайті постачальника автозапчастин або зі списку запчастин (його надруковано на картинці). Перенеси кожну позицію: назву, артикул (код товару), бренд, кількість і ціну за одиницю як закупівельну. Колонки наявності по складах, суму рядка й загальний підсумок не плутай із кількістю та ціною. Нічого не вигадуй: чого немає в тексті — не заповнюй.'
+
 /** Розпізнає скриншот кошика через помічника (потрібен інтернет і ввімкнений ШІ). */
-export async function recognizeCartScreenshot(file: Blob): Promise<{ rows: CartScreenshotRow[]; skipped: number }> {
+export async function recognizeCartScreenshot(file: Blob, instruction = INSTRUCTION): Promise<{ rows: CartScreenshotRow[]; skipped: number }> {
   if (!file.type.startsWith('image/')) throw new Error('Вставте зображення: скриншот кошика у форматі PNG або JPG')
   const compressed = dataUrlToBlob(await prepareImageDataUrl(file, { maxDimension: 2000, quality: 0.86 }))
   const uploaded = await uploadProcessingBlob(compressed, 'ai')
   try {
     const response = await api.post<{ data: { actions?: Array<{ payload?: { products?: unknown } }> } }>('/api/v1/ai/supply-invoice-photo', {
-      message: INSTRUCTION,
+      message: instruction,
       images: [{ mime_type: compressed.type === 'image/png' ? 'image/png' : compressed.type === 'image/webp' ? 'image/webp' : 'image/jpeg', storage_path: uploaded.path }],
     }, undefined, { timeoutMs: 180_000, silent: true })
     const products = response.data.actions?.[0]?.payload?.products
