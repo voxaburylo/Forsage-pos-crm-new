@@ -57,8 +57,8 @@ describe('stock analogs in «Товари»', () => {
 
   it('the card shows the block above the numbers, the list has the button in both layouts', () => {
     const card = read('./ProductDetailPage.tsx')
-    expect(card.indexOf('<StockAnalogsCard productId={product.id} />')).toBeGreaterThan(-1)
-    expect(card.indexOf('<StockAnalogsCard productId={product.id} />')).toBeLessThan(card.indexOf('Крос-номери та аналоги</h3>'))
-    expect(read('./ProductsPage.tsx').match(/<AnalogsButton productId=\{p\.id\} name=\{p\.name\} \/>/g)?.length).toBe(2)
+    expect(card.indexOf('<StockAnalogsCard productId={product.id} sku={product.sku} />')).toBeGreaterThan(-1)
+    expect(card.indexOf('<StockAnalogsCard productId={product.id} sku={product.sku} />')).toBeLessThan(card.indexOf('Крос-номери та аналоги</h3>'))
+    expect(read('./ProductsPage.tsx').match(/<AnalogsButton productId=\{p\.id\} name=\{p\.name\} sku=\{p\.sku\} \/>/g)?.length).toBe(2)
   })
 })

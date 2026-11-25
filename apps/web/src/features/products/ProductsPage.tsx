@@ -789,7 +789,7 @@ export default function ProductsPage() {
                         <div className="mt-1 flex flex-wrap items-center gap-1.5">
                           <span className="font-mono text-[11px] text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded">{p.sku}</span>
                           <CrossNumberBadge count={p.cross_numbers_count} onEdit={() => open(`/products/${p.id}`)} />
-                          <AnalogsButton productId={p.id} name={p.name} />
+                          <AnalogsButton productId={p.id} name={p.name} sku={p.sku} />
                           {p.category && <span className="text-[11px] text-gray-400">{p.category.name}</span>}
                           {p.brand?.name && <span className="text-[11px] text-gray-400">{p.brand.name}</span>}
                         </div>
@@ -939,7 +939,7 @@ export default function ProductsPage() {
                             </div>
                           </div>
                         </td>
-                        <td className="px-1 py-3 text-center"><CrossNumberBadge count={p.cross_numbers_count} onEdit={() => open(`/products/${p.id}`)} /><AnalogsButton productId={p.id} name={p.name} /></td>
+                        <td className="px-1 py-3 text-center"><CrossNumberBadge count={p.cross_numbers_count} onEdit={() => open(`/products/${p.id}`)} /><AnalogsButton productId={p.id} name={p.name} sku={p.sku} /></td>
                         <td className="px-3 py-3 text-sm text-gray-500">{p.brand?.name ?? '—'}</td>
                         <td className="px-3 py-3">
                           {editBinId === p.id ? (

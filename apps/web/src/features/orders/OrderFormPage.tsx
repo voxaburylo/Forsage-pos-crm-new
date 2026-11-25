@@ -24,6 +24,7 @@ import { toast } from '@/components/ui/Toast'
 import { OrderProductResults } from './OrderProductResults'
 import { OrderPartSuggestions, type OrderPartSuggestion } from './OrderPartSuggestions'
 import { SupplierOfferSuggestions, expectedDate, type SupplierOfferPick } from './SupplierOfferSuggestions'
+import { SupplierCrossHints } from './SupplierCrossHints'
 import { useStaffRights } from '@/lib/staffRights'
 import { readOrderItemPhotos } from './orderItemPhotos'
 import { availableStock, orderNumber, stockFirst, validateOrderRows, replaceOrderProduct } from './orderUx'
@@ -1798,6 +1799,8 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
               {/* Довідник запчастин «під замовлення»: спершу склад (вище), потім те, що вже замовляли. */}
               {replaceIndex === null && <OrderPartSuggestions query={search} onPick={addSuggestedPart} />}
               {replaceIndex === null && <SupplierOfferSuggestions query={search} onPick={addSupplierOffer} showPurchase={canSeeSupplierPurchase} />}
+              {/* 25.11.2026: аналоги з крос-номерів Омеги — натиск підставляє аналог у пошук. */}
+              {replaceIndex === null && <SupplierCrossHints query={search} onSearch={setSearch} />}
 
               {/* Не знайдено → пропонуємо додати під замовлення */}
               {replaceIndex === null && !searchLoading && !searchError && search.trim().length >= 2 && searchResults.length === 0 && (

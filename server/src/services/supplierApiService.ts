@@ -15,7 +15,8 @@ export const OMEGA_PAGE_SIZE = 1000
 /** Скільки сторінок прайсу забирати за один виклик планувальника (виклик живе до 5 хв; сторінка ~20 с). */
 export const PAGES_PER_RUN = 8
 /** Повний прохід прайсу не частіше, ніж раз на годину. */
-export const FULL_PASS_EVERY_MS = 60 * 60_000
+// 25.11.2026 (власник: «нехай кроси качаються ~13 діб, у нас є час»): прайс оновлюється раз на 3 год, щоб ліміт ішов кросам.
+export const FULL_PASS_EVERY_MS = 3 * 60 * 60_000
 /**
  * Ліміти Омеги (з її опису API): 30 запитів на хвилину та/або 300 на годину; за перевищення обліковий запис блокують
  * автоматично. Тримаємо запас: не більше 250 на годину й 20 на хвилину — на ВСІ запити разом (прайс і фото).
@@ -36,7 +37,9 @@ export const warehouseCity = (name: string) => name.split(/[\s_]+/)[0]?.replace(
 export interface OmegaItem { ProductId?: unknown; Card?: unknown; Number?: unknown; BrandDescription?: unknown; Description?: unknown; DescriptionUkr?: unknown
   Price?: unknown; BarCode?: unknown; ImageUrl?: unknown; Rests?: Array<{ Key?: unknown; Value?: unknown }> }
 export interface OfferRow { external_id: string; number: string; number_code: string; brand: string | null; name: string; barcode: string | null; image_url: string | null
-  purchase_price: number; retail_price: number; stock: Array<{ w: string; q: number }>; total_qty: number }
+  purchase_price: number; retail_price: number; stock: Array<{ w: string; q: number }>; total_qty: number
+  /** 25.11.2026: опис і категорія від постачальника (GPL дає їх у прайсі; Омега — ні). */
+  description?: string | null; category_name?: string | null }
 
 /** Залишок Омеги — рядок: «1», «>10», «10+», «4,000». Невідоме — 0. */
 export function restQty(value: unknown): number {
@@ -60,7 +63,7 @@ export function omegaOffer(item: OmegaItem, retail: (purchase: number) => number
 
 export interface OmegaDeps { fetchImpl?: typeof fetch }
 
-async function omegaCall<T>(path: string, key: string, body: Record<string, unknown>, deps: OmegaDeps = {}, timeoutMs = 120_000): Promise<T> {
+export async function omegaCall<T>(path: string, key: string, body: Record<string, unknown>, deps: OmegaDeps = {}, timeoutMs = 120_000): Promise<T> {
   let response: Response
   try {
     response = await (deps.fetchImpl ?? fetch)(OMEGA_BASE + path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -85,35 +88,70 @@ export async function omegaPage(key: string, page: number, deps: OmegaDeps = {})
 // ── Налаштування (власник) ─────────────────────────────────────────────────────────────────────
 
 const hint = (key: string) => '…' + key.slice(-4)
+/** Що показати про збережений доступ: кінець ключа (Омега) або логін (GPL) — пароль ніколи. */
+function accessHint(provider: string, stored: string): string {
+  if (provider !== 'gpl') return hint(stored)
+  try { const login = String(JSON.parse(stored)?.login ?? ''); return 'логін ' + (login.length > 4 ? login.slice(0, 3) + '…' + login.slice(-1) : '…') } catch { return '…' }
+}
 
 export async function listConnections(tenantId: string) {
   const { rows } = await pool.query(
-    `SELECT c.id, c.provider, c.name, c.api_key, c.enabled, c.supplier_id, c.sync_page, c.sync_started_at, c.last_full_sync_at, c.last_error, c.total_offers, c.updated_at,
+    `SELECT c.id, c.provider, c.name, c.api_key, c.meta, c.enabled, c.supplier_id, c.sync_page, c.sync_started_at, c.last_full_sync_at, c.last_error, c.total_offers, c.updated_at,
             (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id)::int AS offers,
-            (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.product_id IS NOT NULL)::int AS linked
+            (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.product_id IS NOT NULL)::int AS linked,
+            (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.crosses_checked_at IS NOT NULL)::int AS crosses_done,
+            (SELECT count(*) FROM supplier_offer_crosses x WHERE x.connection_id = c.id)::int AS crosses_total,
+            (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.details_checked_at IS NOT NULL)::int AS details_done
        FROM supplier_api_connections c WHERE c.tenant_id = $1 ORDER BY c.created_at`, [tenantId])
   const warehouses = (await pool.query('SELECT id, connection_id, code, name, city, days_to_ship, is_active FROM supplier_warehouses WHERE tenant_id = $1 ORDER BY name', [tenantId])).rows
   return rows.map((row: any) => ({
-    id: row.id, provider: row.provider, name: row.name, key_hint: hint(String(row.api_key)), enabled: row.enabled, supplier_id: row.supplier_id,
+    id: row.id, provider: row.provider, name: row.name, key_hint: accessHint(String(row.provider), String(row.api_key)), enabled: row.enabled, supplier_id: row.supplier_id,
+    meta: row.meta && typeof row.meta === 'object' ? row.meta : {},
     syncing: Boolean(row.sync_started_at), sync_page: row.sync_page, last_full_sync_at: row.last_full_sync_at ? new Date(row.last_full_sync_at).toISOString() : null,
     last_error: row.last_error, total_offers: row.total_offers, offers: row.offers, linked: row.linked,
+    crosses_done: row.crosses_done ?? 0, crosses_total: row.crosses_total ?? 0, details_done: row.details_done ?? 0,
     warehouses: warehouses.filter((w: any) => w.connection_id === row.id).map((w: any) => ({ id: w.id, code: w.code, name: w.name, city: w.city, days_to_ship: w.days_to_ship, is_active: w.is_active })),
   }))
 }
 
-export const connectionSchema = z.object({
-  provider: z.literal('omega'),
-  name: z.string().trim().min(1).max(80).default('Омега'),
-  api_key: z.string().trim().min(8).max(200).regex(/^[A-Za-z0-9_-]+$/).optional(),
-  enabled: z.boolean().default(true),
-  supplier_id: z.string().uuid().nullable().optional(),
-}).strict()
+export const connectionSchema = z.union([
+  z.object({
+    provider: z.literal('omega'),
+    name: z.string().trim().min(1).max(80).default('Омега'),
+    api_key: z.string().trim().min(8).max(200).regex(/^[A-Za-z0-9_-]+$/).optional(),
+    enabled: z.boolean().default(true),
+    supplier_id: z.string().uuid().nullable().optional(),
+  }).strict(),
+  // 25.11.2026: GPL входить логіном і паролем; зберігаються лише на сервері, назад не віддаються.
+  z.object({
+    provider: z.literal('gpl'),
+    name: z.string().trim().min(1).max(80).default('GPL'),
+    login: z.string().trim().min(2).max(120).optional(),
+    password: z.string().min(4).max(200).optional(),
+    enabled: z.boolean().default(true),
+    supplier_id: z.string().uuid().nullable().optional(),
+  }).strict(),
+])
 
 /** Зберегти підключення. Ключ перевіряємо в Омеги ДО запису — хибний ключ не затре робочий. */
-export async function saveConnection(tenantId: string, userId: string, input: z.infer<typeof connectionSchema>, deps: OmegaDeps = {}) {
-  if (input.api_key) {
-    const account = await omegaAccount(input.api_key, deps)
-    if (!account.access) throw new AppError('SUPPLIER_REFUSED', 'Омега не прийняла ключ', 422)
+export async function saveConnection(tenantId: string, userId: string, rawInput: z.infer<typeof connectionSchema>, deps: OmegaDeps = {}) {
+  let input: { provider: 'omega' | 'gpl'; name: string; enabled: boolean; supplier_id?: string | null; api_key?: string }
+  if (rawInput.provider === 'gpl') {
+    if (Boolean(rawInput.login) !== Boolean(rawInput.password)) throw new AppError('VALIDATION_ERROR', 'Вкажіть і логін, і пароль GPL', 422)
+    let stored: string | undefined
+    if (rawInput.login && rawInput.password) {
+      // Логін і пароль перевіряємо в GPL ДО запису — хибні не затруть робочі.
+      const { gplLogin } = await import('./supplierGpl.js')
+      await gplLogin({ login: rawInput.login, password: rawInput.password }, deps)
+      stored = JSON.stringify({ login: rawInput.login, password: rawInput.password })
+    }
+    input = { provider: 'gpl', name: rawInput.name, enabled: rawInput.enabled, supplier_id: rawInput.supplier_id, api_key: stored }
+  } else {
+    if (rawInput.api_key) {
+      const account = await omegaAccount(rawInput.api_key, deps)
+      if (!account.access) throw new AppError('SUPPLIER_REFUSED', 'Омега не прийняла ключ', 422)
+    }
+    input = rawInput
   }
   const existing = (await pool.query('SELECT id FROM supplier_api_connections WHERE tenant_id = $1 AND provider = $2', [tenantId, input.provider])).rows[0]
   if (!existing && !input.api_key) throw new AppError('VALIDATION_ERROR', 'Вкажіть ключ API', 422)
@@ -167,14 +205,15 @@ async function writeOffers(tenantId: string, connectionId: string, rawOffers: Of
   const offers = pricedOffers(rawOffers, retail)
   if (!offers.length) return
   await pool.query(
-    `INSERT INTO supplier_offers (tenant_id, connection_id, external_id, number, number_code, brand, name, barcode, image_url, purchase_price, retail_price, stock, total_qty, seen_at, updated_at)
-     SELECT $1, $2, x.external_id, x.number, x.number_code, x.brand, x.name, x.barcode, x.image_url, x.purchase_price, x.retail_price, x.stock, x.total_qty, now(), now()
+    `INSERT INTO supplier_offers (tenant_id, connection_id, external_id, number, number_code, brand, name, barcode, image_url, purchase_price, retail_price, stock, total_qty, description, category_name, seen_at, updated_at)
+     SELECT $1, $2, x.external_id, x.number, x.number_code, x.brand, x.name, x.barcode, x.image_url, x.purchase_price, x.retail_price, x.stock, x.total_qty, x.description, x.category_name, now(), now()
        FROM jsonb_to_recordset($3::jsonb) AS x(external_id text, number text, number_code text, brand text, name text, barcode text, image_url text,
-            purchase_price bigint, retail_price bigint, stock jsonb, total_qty int)
+            purchase_price bigint, retail_price bigint, stock jsonb, total_qty int, description text, category_name text)
      ON CONFLICT (connection_id, external_id) DO UPDATE SET
        number = EXCLUDED.number, number_code = EXCLUDED.number_code, brand = EXCLUDED.brand, name = EXCLUDED.name, barcode = EXCLUDED.barcode,
        image_url = COALESCE(EXCLUDED.image_url, supplier_offers.image_url), purchase_price = EXCLUDED.purchase_price, retail_price = EXCLUDED.retail_price,
        stock = EXCLUDED.stock, total_qty = EXCLUDED.total_qty, seen_at = now(),
+       description = COALESCE(EXCLUDED.description, supplier_offers.description), category_name = COALESCE(EXCLUDED.category_name, supplier_offers.category_name),
        -- Час змінюємо лише коли змінилось те, що бачить сайт: так сайт забирає справжні зміни, а не весь прайс щогодини.
        updated_at = CASE WHEN supplier_offers.retail_price IS DISTINCT FROM EXCLUDED.retail_price OR supplier_offers.stock IS DISTINCT FROM EXCLUDED.stock
                            OR supplier_offers.name IS DISTINCT FROM EXCLUDED.name THEN now() ELSE supplier_offers.updated_at END`,
@@ -330,9 +369,14 @@ export async function linkedOfferPhotos(tenantId: string, since: string | null) 
 }
 
 /** Одна порція прайсу (до PAGES_PER_RUN сторінок). Наприкінці повного проходу — зниклі товари обнуляються. */
-export async function syncConnectionStep(connection: { id: string; tenant_id: string; api_key: string; sync_page: number; sync_started_at: string | null; last_full_sync_at: string | null }, deps: OmegaDeps & { now?: number } = {}) {
+export async function syncConnectionStep(connection: { id: string; tenant_id: string; api_key: string; provider?: string; sync_page: number; sync_started_at: string | null; last_full_sync_at: string | null }, deps: OmegaDeps & { now?: number } = {}) {
   const now = deps.now ?? Date.now()
   if (!connection.sync_started_at && connection.last_full_sync_at && now - Date.parse(connection.last_full_sync_at) < FULL_PASS_EVERY_MS) return { ran: false }
+  // 25.11.2026: GPL — свій прайс (логін → сторінки), той самий запис, привʼязка й завершення проходу.
+  const gpl = connection.provider === 'gpl' ? await import('./supplierGpl.js') : null
+  let gplToken: string | null = null
+  const priceNames = new Set<string>()
+  let purchaseName: string | null = null
   const passStarted = connection.sync_started_at ? new Date(connection.sync_started_at) : new Date(now)
   let page = connection.sync_started_at ? connection.sync_page : 1
   const retail = await retailFor(connection.tenant_id)
@@ -341,6 +385,22 @@ export async function syncConnectionStep(connection: { id: string; tenant_id: st
     for (let step = 0; step < PAGES_PER_RUN; step++) {
       // Ліміт запитів Омеги спільний для прайсу й фото: не дали дозволу — продовжимо з цієї ж сторінки наступного разу.
       if (!await takeCall(connection.id)) break
+      if (gpl) {
+        if (!gplToken) {
+          gplToken = await gpl.gplLogin(gpl.gplCredentials(connection.api_key), deps)
+          if (!await takeCall(connection.id)) break
+        }
+        const answer = await gpl.gplPage(gplToken, page, deps)
+        total = answer.total
+        for (const item of answer.items) for (const price of item.prices ?? []) if (price?.name) priceNames.add(String(price.name).slice(0, 80))
+        purchaseName = answer.items.map(item => gpl.gplPurchase(item.prices).name).find(Boolean) ?? purchaseName
+        const offers = answer.items.map(item => gpl.gplOffer(item)).filter((offer): offer is NonNullable<typeof offer> => Boolean(offer))
+        await writeOffers(connection.tenant_id, connection.id, offers, retail)
+        fetched += answer.items.length
+        if (!answer.items.length || page >= answer.lastPage) { done = true; break }
+        page += 1
+        continue
+      }
       const { items, total: reported } = await omegaPage(connection.api_key, page, deps)
       total = reported
       const offers = items.map(item => omegaOffer(item, retail)).filter((offer): offer is OfferRow => Boolean(offer))
@@ -354,6 +414,8 @@ export async function syncConnectionStep(connection: { id: string; tenant_id: st
       [connection.id, page, passStarted.toISOString(), (error instanceof Error ? error.message : 'Помилка завантаження').slice(0, 500)])
     throw error
   }
+  if (priceNames.size) await pool.query(`UPDATE supplier_api_connections SET meta = meta || jsonb_build_object('price_names', $2::jsonb, 'purchase_price_name', $3::text) WHERE id = $1`,
+    [connection.id, JSON.stringify([...priceNames].slice(0, 20)), purchaseName])
   if (done) {
     // Чого в цьому проході не було — того в постачальника вже немає: залишок 0 (рядок лишається для історії й сайту).
     await pool.query(`UPDATE supplier_offers SET stock = '[]'::jsonb, total_qty = 0, updated_at = now() WHERE connection_id = $1 AND seen_at < $2 AND total_qty > 0`, [connection.id, passStarted.toISOString()])
@@ -370,14 +432,29 @@ export async function syncConnectionStep(connection: { id: string; tenant_id: st
 
 /** Виклик планувальника: по одній порції для кожного увімкненого підключення. */
 export async function runSupplierSync(deps: OmegaDeps = {}) {
-  const { rows } = await pool.query('SELECT id, tenant_id, api_key, sync_page, sync_started_at, last_full_sync_at, photos_enabled FROM supplier_api_connections WHERE enabled ORDER BY updated_at LIMIT 5')
+  const { rows } = await pool.query('SELECT id, tenant_id, provider, api_key, sync_page, sync_started_at, last_full_sync_at, photos_enabled FROM supplier_api_connections WHERE enabled ORDER BY updated_at LIMIT 5')
   const results = []
   for (const row of rows) {
     try { results.push({ id: row.id, ...(await syncConnectionStep({ ...row, sync_started_at: row.sync_started_at ? new Date(row.sync_started_at).toISOString() : null,
       last_full_sync_at: row.last_full_sync_at ? new Date(row.last_full_sync_at).toISOString() : null }, deps)) }) }
     catch (error) { results.push({ id: row.id, error: error instanceof Error ? error.message : 'error' }) }
+    // Кроси, опис і фото — методи API Омеги; у GPL їх немає (аналоги для GPL беруться з кросів Омеги за артикулом).
+    if (row.provider !== 'omega') continue
+    // 25.11.2026: кроси для наших карток — після прайсу, перед фото (кілька запитів за прохід, той самий лічильник).
+    try {
+      const { syncCrossesStep } = await import('./supplierCrosses.js')
+      results.push({ id: row.id, crosses: await syncCrossesStep(row, deps) })
+    } catch (error) { results.push({ id: row.id, crosses_error: error instanceof Error ? error.message : 'error' }) }
+    // 25.11.2026: опис (OE-номери, застосовність, характеристики) — пачкою, один запит за прохід.
+    try {
+      const { syncDetailsStep } = await import('./supplierDetails.js')
+      results.push({ id: row.id, details: await syncDetailsStep(row, deps) })
+    } catch (error) { results.push({ id: row.id, details_error: error instanceof Error ? error.message : 'error' }) }
     // Фото — після прайсу й лише в межах того самого лічильника запитів.
-    if (row.photos_enabled) {
+    // 25.11.2026: поки кроси не докачано, фото на паузі — весь ліміт іде кросам (рішення власника).
+    const crossesLeft = await pool.query('SELECT 1 FROM supplier_offers WHERE connection_id = $1 AND crosses_checked_at IS NULL LIMIT 1', [row.id])
+      .then(result => result.rows.length > 0, () => false)
+    if (row.photos_enabled && !crossesLeft) {
       try { results.push({ id: row.id, photos: await syncPhotosStep(row, deps) }) }
       catch (error) { results.push({ id: row.id, photos_error: error instanceof Error ? error.message : 'error' }) }
     }
@@ -401,7 +478,7 @@ export async function searchOffers(tenantId: string, query: string, withPurchase
   const needle = code(query)
   if (needle.length < 3) return []
   const { rows } = await pool.query(
-    `SELECT o.connection_id, c.name AS supplier, c.supplier_id, o.external_id, o.number, o.brand, o.name, o.image_url, o.purchase_price, o.retail_price, o.stock, o.total_qty, o.product_id, o.updated_at
+    `SELECT o.connection_id, c.name AS supplier, c.supplier_id, o.external_id, o.number, o.brand, o.name, o.image_url, o.purchase_price, o.retail_price, o.stock, o.total_qty, o.product_id, o.updated_at, o.description, o.category_name
        FROM supplier_offers o JOIN supplier_api_connections c ON c.id = o.connection_id AND c.enabled
       WHERE o.tenant_id = $1 AND (o.number_code = $2 OR (length($2) >= 5 AND o.number_code LIKE $2 || '%'))
       ORDER BY (o.number_code = $2) DESC, o.total_qty > 0 DESC, o.retail_price LIMIT 30`, [tenantId, needle])
@@ -415,6 +492,7 @@ export async function searchOffers(tenantId: string, query: string, withPurchase
     }).filter((rest: { active: boolean }) => rest.active).sort((a: any, b: any) => (a.days_to_ship ?? 99) - (b.days_to_ship ?? 99) || b.qty - a.qty)
     return { supplier: row.supplier, supplier_id: row.supplier_id, external_id: row.external_id, number: row.number, brand: row.brand, name: row.name, image_url: row.image_url,
       retail_price: Number(row.retail_price), ...(withPurchase ? { purchase_price: Number(row.purchase_price) } : {}),
-      total_qty: Number(row.total_qty), product_id: row.product_id, stock, updated_at: new Date(row.updated_at).toISOString() }
+      total_qty: Number(row.total_qty), product_id: row.product_id, stock, updated_at: new Date(row.updated_at).toISOString(),
+      description: row.description ?? null, category_name: row.category_name ?? null }
   })
 }
