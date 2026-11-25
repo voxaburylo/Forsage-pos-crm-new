@@ -83,7 +83,7 @@ describe('background name job: one batch', () => {
   })
 
   it('wiring: cron every minute, chat tool prepares (never starts) a job, supplier names go to custom_name only', () => {
-    const migration = readFileSync(new URL('../../../../supabase/migrations/20261126090000_ai_jobs_site_catalog.sql', import.meta.url), 'utf8')
+    const migration = readFileSync(new URL('../../../../supabase/migrations/20261126090000_ai_jobs_site_catalog.sql', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
     expect(migration).toContain("'forsage-ai-jobs',\n  '* * * * *'")
     expect(migration).toContain('/api/v1/internal/ai-jobs')
     expect(migration).toContain('COALESCE(o.custom_name, o.name) AS name')

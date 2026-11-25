@@ -202,7 +202,7 @@ export function requestCostQuantiles(costs: readonly number[]): { typical_usd?: 
 // ─── Інструменти (function-calling) ──────────────────────────────────────────
 // READ-інструменти виконуються одразу. WRITE-інструменти НЕ виконуються, а
 // повертаються користувачу як «пропозиція змін» (було → стане) на підтвердження.
-const READ_TOOLS = new Set(['search_products', 'get_product', 'list_categories', 'list_brands', 'search_customers', 'list_products_page', 'find_duplicate_products'])
+const READ_TOOLS = new Set(['search_products', 'get_product', 'list_categories', 'list_brands', 'search_customers', 'list_products_page', 'find_duplicate_products', 'list_supplier_offers'])
 const WRITE_TOOLS = new Set(['update_product', 'create_product', 'create_customer', 'update_customer', 'create_category', 'create_order'])
 // Масові дії: одна картка-пропозиція з багатьма рядками, застосовується пакетом
 /** Коди й числа старої назви, яких у новій уже немає, — показуємо власнику, що саме прибирає «наведення порядку». */
@@ -213,7 +213,7 @@ export function droppedNameTokens(before: string, after: string): string[] {
   return [...new Set(tokens.filter(token => /\d/.test(token) && !kept.includes(compact(token))))]
 }
 
-const BULK_TOOLS = new Set(['create_customers_bulk', 'create_products_bulk', 'create_categories_bulk', 'rename_categories_bulk', 'update_products_bulk', 'merge_products_bulk', 'add_cross_numbers_bulk'])
+const BULK_TOOLS = new Set(['create_customers_bulk', 'create_products_bulk', 'create_categories_bulk', 'rename_categories_bulk', 'update_products_bulk', 'merge_products_bulk', 'add_cross_numbers_bulk', 'update_supplier_offers_bulk'])
 /** Пошук у інтернеті (веб-пошук Anthropic) — окремо від читання бази: довший і платний. */
 const RESEARCH_TOOL = 'search_cross_numbers'
 
@@ -454,6 +454,44 @@ const toolDeclarations: FunctionDeclaration[] = [
     },
   },
   {
+    // 26.11.2026 (власник: «і ШІ має доступ до цієї бази теж — перекладати, сортувати і так далі»).
+    name: 'list_supplier_offers',
+    description: 'Товари ПОСТАЧАЛЬНИКІВ за API (Омега, GPL) — «під замовлення», окремо від наших карток. Сторінками до 200: key, supplier, number (артикул), brand, name, category (наша категорія), supplier_category, qty. Фільтри: messy_names — брудні назви, russian_names — російською, no_category — без нашої категорії, all. q — пошук за словами (назва, артикул, штрихкод). Для зміни — update_supplier_offers_bulk.',
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        supplier: { type: SchemaType.STRING, description: 'Омега чи GPL; порожньо — усі' },
+        page: { type: SchemaType.NUMBER, description: 'Номер сторінки, з 1' },
+        per_page: { type: SchemaType.NUMBER, description: '1-200 (за замовч. 200)' },
+        filter: { type: SchemaType.STRING, description: 'messy_names | russian_names | no_category | all' },
+        q: { type: SchemaType.STRING, description: 'Пошук: слова з назви, артикул чи штрихкод' },
+      },
+    },
+  },
+  {
+    name: 'update_supplier_offers_bulk',
+    description: 'МАСОВА зміна товарів ПОСТАЧАЛЬНИКА: наша назва (переклад українською чи порядок у назві — за тими самими правилами, що й для наших товарів), наша категорія (лише наявна, з list_categories), hidden=true — прибрати з сайту й підказок. Прайс постачальника цих змін не перезапише. До 200 за виклик; key бери ТІЛЬКИ з list_supplier_offers. Одна пропозиція, власник підтвердить.',
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        updates: {
+          type: SchemaType.ARRAY,
+          items: {
+            type: SchemaType.OBJECT,
+            properties: {
+              key: { type: SchemaType.STRING, description: 'key з list_supplier_offers' },
+              new_name: { type: SchemaType.STRING, description: 'Нова назва (не вигадуй чисел; артикул лишай у назві)' },
+              category_name: { type: SchemaType.STRING, description: 'Наявна категорія програми' },
+              hidden: { type: SchemaType.BOOLEAN, description: 'true — прибрати з сайту й підказок, false — повернути' },
+            },
+            required: ['key'],
+          },
+        },
+      },
+      required: ['updates'],
+    },
+  },
+  {
     // 26.11.2026 (власник: «по 200 за раз дуже довго, товарів мільйони — хай працює на сервері у фоні»).
     name: 'prepare_bulk_job',
     description: 'ФОНОВА ЗАДАЧА на сервері: порядок у назвах і/або переклад для ВСІХ відповідних товарів одразу (наших або товарів постачальника за API) — без сторінок по 200. Нічого не змінює в картках: лише готує задачу; власник запускає її кнопкою у «Фонових задачах» над чатом, а потім переглядає й застосовує результат. Використовуй, коли просять навести порядок/перекласти «усі», «весь каталог», «товари Омеги/GPL» або товарів більше ніж на одну сторінку.',
@@ -685,6 +723,7 @@ const SYSTEM_PROMPT = `Ти — AI-помічник «Директор» для 
 
 МАСОВЕ НАВЕДЕННЯ ПОРЯДКУ В КАТАЛОЗІ (переклад, сортування, дублі):
 - ФОНОВА ЗАДАЧА (26.11.2026): коли просять навести порядок у назвах чи перекласти УСІ товари, весь каталог або товари постачальника (Омега, GPL), чи товарів явно більше за одну сторінку (200) — НЕ гортай сторінки, а виклич prepare_bulk_job (target, task, filter). Вона нічого не змінює: лише готує задачу на сервері. Скажи власнику кількість, орієнтовну вартість і час і що запуск — кнопка «Запустити» у «Фонових задачах» над чатом. Сторінки list_products_page + update_products_bulk — для кількох конкретних товарів чи однієї сторінки.
+- ТОВАРИ ПОСТАЧАЛЬНИКІВ (Омега, GPL; 26.11.2026): це окрема база «під замовлення», не наші картки. Знайти, переглянути — list_supplier_offers; перекласти, навести порядок у назві, розкласти по НАШИХ категоріях (list_categories), прибрати з сайту — update_supplier_offers_bulk (до 200 за раз; key лише з list_supplier_offers; правила назви ті самі). Для всього асортименту постачальника (тисячі назв) — prepare_bulk_job з target=supplier_offers. Ціну, залишок і закупку постачальника не змінюй.
 - Переклад назв українською: виклич list_products_page(page=1, filter='russian_names') → отримаєш до 200 товарів → переклади НАЗВИ (бренди, артикули, коди, розміри, латиницю НЕ чіпай) → виклич update_products_bulk з парами product_id + new_name. ОДНА сторінка = ОДИН виклик update_products_bulk. Далі скажи користувачу, скільки сторінок лишилось, і чекай наступної команди «далі».
 - Розкладання по категоріях: list_products_page(filter='no_category') + list_categories → update_products_bulk з category_name: спершу наявна категорія за призначенням; якщо підхожої немає — коротка загальна назва нової українською (каса створить її сама). Не плоди категорії за брендом чи розміром.
 - Назви категорій українською: list_categories → rename_categories_bulk з парами category_id + new_name лише для тих, що російською чи з помилками («Фильтра» → «Фільтри», «Масла-ATF» → «Оливи-ATF»). Якщо українська назва вже є в іншої категорії — не перейменовуй, а скажи про дубль.
@@ -760,6 +799,8 @@ async function executeReadTool(name: string, args: any, tenantId: string, budget
     }
     case 'list_categories': return readAiLookup(db, tenantId, 'categories', budget)
     case 'list_brands': return readAiLookup(db, tenantId, 'brands', budget)
+    // 26.11.2026: товари постачальників за API (Омега, GPL) — помічник бачить і їх.
+    case 'list_supplier_offers': return (await import('./aiSupplierTools.js')).listSupplierOffersForAi(tenantId, args ?? {})
     case 'list_products_page': {
       const perPage = Math.min(Math.max(Number(args?.per_page) || 200, 1), 200)
       const page = Math.max(Number(args?.page) || 1, 1)
@@ -847,6 +888,19 @@ async function buildPendingAction(name: string, args: any, tenantId: string, bud
       changes: [], count: list.length,
       columns: ['Артикул', 'Назва', 'Бренд', 'Категорія', 'Штрихкод', 'Кількість', 'Закупівля', 'Продаж'], items,
       payload: { products: list, ...(args.invoice_total === undefined ? {} : { invoice_total: args.invoice_total }) },
+    }
+  }
+
+  if (name === 'update_supplier_offers_bulk') {
+    // 26.11.2026: товари постачальників — «було → стане»; записує сервер кнопкою власника/адміністратора.
+    const list: any[] = (Array.isArray(args?.updates) ? args.updates : []).slice(0, 200)
+    const { supplierOffersPreview } = await import('./aiSupplierTools.js')
+    const items = await budget.run(() => supplierOffersPreview(tenantId, list))
+    return {
+      id, tool: name, title: `Змінити товари постачальника: ${list.length}`,
+      changes: [], count: list.length,
+      columns: ['Артикул', 'Було', 'Стане', 'Категорія', ...(list.some(u => typeof u?.hidden === 'boolean') ? ['Сайт'] : [])], items,
+      payload: { updates: list },
     }
   }
 

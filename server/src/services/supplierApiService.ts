@@ -520,9 +520,9 @@ export async function searchOffers(tenantId: string, query: string, withPurchase
   const needle = code(query)
   if (needle.length < 3) return []
   const { rows } = await pool.query(
-    `SELECT o.connection_id, c.name AS supplier, c.supplier_id, o.external_id, o.number, o.brand, o.name, o.image_url, o.purchase_price, o.retail_price, o.stock, o.total_qty, o.product_id, o.updated_at, o.description, o.category_name
+    `SELECT o.connection_id, c.name AS supplier, c.supplier_id, o.external_id, o.number, o.brand, COALESCE(o.custom_name, o.name) AS name, o.image_url, o.purchase_price, COALESCE(o.custom_price, o.retail_price) AS retail_price, o.stock, o.total_qty, o.product_id, o.updated_at, o.description, o.category_name
        FROM supplier_offers o JOIN supplier_api_connections c ON c.id = o.connection_id AND c.enabled
-      WHERE o.tenant_id = $1 AND (o.number_code = $2 OR (length($2) >= 5 AND o.number_code LIKE $2 || '%'))
+      WHERE o.tenant_id = $1 AND NOT o.hidden AND (o.number_code = $2 OR (length($2) >= 5 AND o.number_code LIKE $2 || '%'))
       ORDER BY (o.number_code = $2) DESC, o.total_qty > 0 DESC, o.retail_price LIMIT 30`, [tenantId, needle])
   if (!rows.length) return []
   const warehouses = (await pool.query('SELECT connection_id, code, name, city, days_to_ship, is_active FROM supplier_warehouses WHERE tenant_id = $1', [tenantId])).rows

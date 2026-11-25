@@ -8,6 +8,7 @@ import {
   createSiteOrder, issueSiteKey, readSiteAccessIds, saveSiteAccessIds, siteAccessSchema, siteSectionAllowed, listSiteAdminCategories, listSiteOrders, readSiteAdmin, revokeSiteKey, saveSiteAdmin, siteAccess, siteAdminUpdateSchema,
   siteCategories, siteInfo, siteOrderStatus, siteProductById, siteProducts, type SiteAccess,
 } from '../services/siteService.js'
+import { bulkSupplierOffers, catalogQuerySchema, getSupplierOffer, listSiteCatalog, offerBulkSchema, offerPatchSchema, patchSupplierOffer } from '../services/siteCatalogService.js'
 
 /**
  * Розділ «Сайт» у програмі (рішення власника 24.11.2026): лише власник. Тут він вмикає сайт, видає ключ,
@@ -80,6 +81,34 @@ siteAdminRouter.post('/gateway', requireSiteSection, async (req, res, next) => {
 })
 siteAdminRouter.get('/categories', requireSiteSection, async (req, res, next) => {
   try { res.json({ data: await listSiteAdminCategories(req.user!.tenant_id) }) } catch (err) { next(err) }
+})
+
+// 26.11.2026: «Сайт → Усі товари» — наші й постачальників в одному списку (див. services/siteCatalogService.ts).
+siteAdminRouter.get('/catalog', requireSiteSection, async (req, res, next) => {
+  try {
+    const parsed = catalogQuerySchema.safeParse(req.query)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Некоректний запит списку товарів', 422)
+    res.setHeader('Cache-Control', 'no-store')
+    res.json({ data: await listSiteCatalog(req.user!.tenant_id, req.user!.role, parsed.data) })
+  } catch (err) { next(err) }
+})
+siteAdminRouter.get('/catalog/offers/:key', requireSiteSection, async (req, res, next) => {
+  try { res.setHeader('Cache-Control', 'no-store'); res.json({ data: await getSupplierOffer(req.user!.tenant_id, req.user!.role, String(req.params.key)) }) } catch (err) { next(err) }
+})
+siteAdminRouter.patch('/catalog/offers/:key', requireSiteSection, async (req, res, next) => {
+  try {
+    const parsed = offerPatchSchema.safeParse(req.body)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', parsed.error.issues[0]?.message ?? 'Некоректні дані', 422)
+    await patchSupplierOffer(req.user!.tenant_id, String(req.params.key), parsed.data)
+    res.json({ data: await getSupplierOffer(req.user!.tenant_id, req.user!.role, String(req.params.key)) })
+  } catch (err) { next(err) }
+})
+siteAdminRouter.post('/catalog/offers/bulk', requireSiteSection, async (req, res, next) => {
+  try {
+    const parsed = offerBulkSchema.safeParse(req.body)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Некоректні дані', 422)
+    res.json({ data: await bulkSupplierOffers(req.user!.tenant_id, parsed.data) })
+  } catch (err) { next(err) }
 })
 siteAdminRouter.get('/orders', ownerOnly, async (req, res, next) => {
   try { res.setHeader('Cache-Control', 'no-store'); res.json({ data: await listSiteOrders(req.user!.tenant_id) }) } catch (err) { next(err) }

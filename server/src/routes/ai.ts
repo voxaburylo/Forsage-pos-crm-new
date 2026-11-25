@@ -393,6 +393,15 @@ router.put('/chat-state', requireRole('owner', 'admin', 'manager', 'cashier'), a
   } catch (err) { next(err) }
 })
 
+// 26.11.2026: підтверджена пачка змін товарів постачальників із чату (наша назва, категорія, «прибрати»).
+router.post('/supplier-offers/apply', requireRole('owner', 'admin'), async (req, res, next) => {
+  try {
+    const updates = z.object({ updates: z.array(z.record(z.unknown())).min(1).max(500) }).parse(req.body?.payload ?? {}).updates
+    const { applySupplierOfferUpdates } = await import('../services/aiSupplierTools.js')
+    res.json({ data: { result: await applySupplierOfferUpdates(req.user!.tenant_id, updates) } })
+  } catch (err) { next(err) }
+})
+
 // ─── 26.11.2026: фонові задачі помічника (порядок у назвах, переклад) — власник і адміністратор ──────
 const jobKeys = z.object({ keys: z.array(z.string().min(1).max(160)).min(1).max(5000) })
 router.get('/jobs', requireRole('owner', 'admin'), async (req, res, next) => {

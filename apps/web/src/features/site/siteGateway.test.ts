@@ -80,7 +80,7 @@ describe('site section through the gateway', () => {
     const server = read('../../../../../server/src/services/siteGatewayService.ts')
     for (const field of SITE_SETTING_FIELDS) expect(server, field.key).toContain(`'${field.key}'`)
     expect(SITE_SETTING_FIELDS).toHaveLength(13)
-    expect(SITE_TABS.map(tab => tab.label)).toEqual(['Замовлення', 'Клієнти', 'Товари на сайті', 'Категорії', 'Банери', 'Акції', 'Головна сторінка', 'Сторінки і статті', 'Відгуки', 'Налаштування', 'Каталог для сайту', 'Доступ'])
+    expect(SITE_TABS.map(tab => tab.label)).toEqual(['Усі товари', 'Замовлення', 'Клієнти', 'Товари на сайті', 'Категорії', 'Банери', 'Акції', 'Головна сторінка', 'Сторінки і статті', 'Відгуки', 'Налаштування', 'Каталог для сайту', 'Доступ'])
   })
 
   it('the site key never reaches the window: it calls only its own server', () => {

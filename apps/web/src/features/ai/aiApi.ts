@@ -110,5 +110,7 @@ export const aiApi = {
     api.post<{ data: AiChatResponse }>('/api/v1/ai/supply-invoice-photo', body, undefined, { timeoutMs: 660_000, silent: true }),
 
   applyAction: (body: { tool: string; payload: Record<string, any>; operation_id?: string }): Promise<{ data: AiApplyResult }> =>
-    writesToMainPc() ? applyLocalAiAction(body.tool, body.payload, body.operation_id) : api.post<{ data: AiApplyResult }>('/api/v1/ai/apply-action', body),
+    // 26.11.2026: товари постачальників — лише в хмарі: записує сервер, головний ПК не потрібен.
+    body.tool === 'update_supplier_offers_bulk' ? api.post<{ data: AiApplyResult }>('/api/v1/ai/supplier-offers/apply', { payload: body.payload }, undefined, { timeoutMs: 120_000 })
+    : writesToMainPc() ? applyLocalAiAction(body.tool, body.payload, body.operation_id) : api.post<{ data: AiApplyResult }>('/api/v1/ai/apply-action', body),
 }

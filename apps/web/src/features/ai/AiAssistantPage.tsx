@@ -944,6 +944,18 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
 
       const errors = Array.isArray(r?.errors) ? r.errors : []
 
+      // 26.11.2026: зміни товарів постачальників (наша назва, категорія, «прибрати») — записує сервер.
+      if (action.tool === 'update_supplier_offers_bulk' && r && typeof r.updated === 'number') {
+        const failed = Number(r.failed) || 0
+        const msg = `Змінено товарів постачальника: ${r.updated}` + (failed ? `, пропущено ${failed}` : '') + '. Прайс постачальника цих змін не перезапише.'
+        setApplyErrors((prev) => ({ ...prev, [action.id]: errors }))
+        setApplyMsg((prev) => ({ ...prev, [action.id]: msg }))
+        setApplyStatus((prev) => ({ ...prev, [action.id]: failed || !r.updated ? 'warn' : 'ok' }))
+        setApplied((prev) => ({ ...prev, [action.id]: 'ok' }))
+        if (failed || !r.updated) toast.warning(msg); else toast.success(msg)
+        return true
+      }
+
       if (r && typeof r.created === 'number') {
         // Масова дія: created / failed
         const created = r.created

@@ -52,3 +52,15 @@ describe('shared chat on every device', () => {
     expect(page).not.toContain("navigate('/ai-agent')")
   })
 })
+
+describe('supplier goods changed from the chat', () => {
+  it('owner/admin can apply without the main PC (the data lives only in the cloud); others cannot; the server applies it', async () => {
+    const { canApplyAiWrite, aiWriteBlockReason } = await import('./aiWritePolicy')
+    expect(canApplyAiWrite('update_supplier_offers_bulk', 'owner', false)).toBe(true)
+    expect(canApplyAiWrite('update_supplier_offers_bulk', 'admin', false)).toBe(true)
+    expect(canApplyAiWrite('update_supplier_offers_bulk', 'cashier', true)).toBe(false)
+    expect(aiWriteBlockReason('update_supplier_offers_bulk', 'manager', true)).toContain('лише власник або адміністратор')
+    const api = readFileSync(new URL('./aiApi.ts', import.meta.url), 'utf8')
+    expect(api).toContain("body.tool === 'update_supplier_offers_bulk' ? api.post<{ data: AiApplyResult }>('/api/v1/ai/supplier-offers/apply'")
+  })
+})

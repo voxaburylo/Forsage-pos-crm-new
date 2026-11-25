@@ -1,11 +1,13 @@
 // UX preflight only: the authenticated desktop IPC remains the authoritative guard.
 export function canApplyAiWrite(tool: string, role: unknown, desktop: boolean): boolean {
+  // 26.11.2026: товари постачальників живуть лише в хмарі — головний ПК не потрібен; лише власник/адміністратор.
+  if (tool === 'update_supplier_offers_bulk') return typeof role === 'string' && ['owner', 'admin'].includes(role)
   // Зміни карток із чату пишуться в базу каси захищеним шляхом «Помічника каталогу» — лише власник/адміністратор.
   if (['update_products_bulk', 'create_categories_bulk', 'rename_categories_bulk', 'merge_products_bulk', 'add_cross_numbers_bulk'].includes(tool)) return desktop && typeof role === 'string' && ['owner', 'admin'].includes(role)
   return desktop && ['create_order', 'create_supply_invoice_bulk'].includes(tool)
     && typeof role === 'string' && ['owner', 'admin', 'manager', 'cashier', 'storekeeper'].includes(role)
 }
-const CATALOG_TOOLS = ['update_products_bulk', 'create_categories_bulk', 'rename_categories_bulk', 'merge_products_bulk', 'add_cross_numbers_bulk']
+const CATALOG_TOOLS = ['update_products_bulk', 'create_categories_bulk', 'rename_categories_bulk', 'merge_products_bulk', 'add_cross_numbers_bulk', 'update_supplier_offers_bulk']
 /**
  * Чому пропозицію не можна застосувати — людськими словами й із тим, що робити (24.11.2026: власник побачив
  * «Ця дія недоступна для запису» без кнопок і не зрозумів, що сталося). null — застосувати можна.

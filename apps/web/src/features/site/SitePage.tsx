@@ -8,11 +8,12 @@ import { SiteOrdersTab } from './SiteOrdersTab'
 import { SiteCustomersTab, SiteHomeTab, SiteReviewsTab, SiteSettingsTab } from './SiteSimpleTabs'
 import { BANNERS, CATEGORIES, PAGES, PROMOS, SiteCrudTab } from './SiteCrudTab'
 import { SiteProductsTab } from './SiteProductsTab'
+import { SiteAllProductsTab } from './SiteAllProductsTab'
 import { SiteCatalogAccess } from './SiteCatalogAccess'
 import { SiteAccessTab, useSiteSection } from './siteAccess'
 
 export const SITE_TABS = [
-  { id: 'orders', label: 'Замовлення' }, { id: 'customers', label: 'Клієнти' }, { id: 'products', label: 'Товари на сайті' },
+  { id: 'all', label: 'Усі товари' }, { id: 'orders', label: 'Замовлення' }, { id: 'customers', label: 'Клієнти' }, { id: 'products', label: 'Товари на сайті' },
   { id: 'categories', label: 'Категорії' }, { id: 'banners', label: 'Банери' }, { id: 'promos', label: 'Акції' },
   { id: 'home', label: 'Головна сторінка' }, { id: 'pages', label: 'Сторінки і статті' }, { id: 'reviews', label: 'Відгуки' },
   { id: 'settings', label: 'Налаштування' }, { id: 'catalog', label: 'Каталог для сайту', ownerOnly: true }, { id: 'access', label: 'Доступ', ownerOnly: true },
@@ -21,6 +22,7 @@ type TabId = typeof SITE_TABS[number]['id']
 
 /** Для чого кожна вкладка і що на ній робити — одним-двома реченнями (24.11.2026: власник: «не зрозуміло, що для чого»). */
 export const SITE_TAB_INTRO: Record<TabId, string> = {
+  all: 'Усі товари разом — наші й від постачальників (Омега, GPL): міні-фото, назва, артикул, штрихкод, ціна й кількість в одному рядку. Натисніть рядок — відкриється картка. Позначте кілька — масові дії: ціни, категорія, штрихкоди, видалення наших; ціна ±% і «прибрати з сайту» для товарів постачальників. Наші товари змінюються через головний ПК, як у «Товарах»; ціна ніколи не нижча за закупку.',
   orders: 'Замовлення, які покупці оформили на сайті. Відкрийте замовлення, щоб змінити статус, вписати ТТН чи коментар — покупець побачить це у своєму кабінеті. «Створити замовлення в програмі» кладе його у звичайні «Замовлення», щоб зібрати й видати товар. Оплату приймає лише каса.',
   customers: 'Покупці, які зареєструвались на сайті. Це лише перегляд: з клієнтами програми вони не зливаються.',
   products: 'Те, чого немає в програмі, але видно на сайті: опис, характеристики, фото, «сховати на сайті». Назву, ціну й залишок сайт бере з програми сам. Знайдіть товар за назвою чи артикулом і заповніть.',
@@ -90,6 +92,7 @@ export default function SitePage() {
           ))}
         </div>
         <p data-site-intro className="rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm leading-relaxed text-gray-700">{SITE_TAB_INTRO[tab]}</p>
+        {tab === 'all' && <SiteAllProductsTab />}
         {tab === 'orders' && <SiteOrdersTab />}
         {tab === 'customers' && <SiteCustomersTab />}
         {tab === 'products' && <SiteProductsTab />}
