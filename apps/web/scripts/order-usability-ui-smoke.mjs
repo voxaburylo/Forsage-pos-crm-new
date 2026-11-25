@@ -127,7 +127,8 @@ try {
   await garage.getByRole('button', { name: /Клієнт з авто/ }).click()
   await garage.getByRole('alert').filter({ hasText: 'автомобілі клієнта' }).waitFor()
   assert.equal(await garage.getByText("Немає прив'язаних автомобілів", { exact: true }).count(), 0)
-  assert.equal(await garage.getByRole('button', { name: 'Додати новий автомобіль', exact: true }).isDisabled(), true)
+  // 25.11.2026 (власник, ПК менеджера): збій списку авто не блокує додавання нового — замовлення не зупиняється.
+  assert.equal(await garage.getByRole('button', { name: 'Додати новий автомобіль', exact: true }).isEnabled(), true)
   await garage.evaluate(() => fixture.vehicleFail = false)
   await garage.getByRole('button', { name: 'Повторити завантаження', exact: true }).click()
   await garage.getByText("Немає прив'язаних автомобілів", { exact: true }).waitFor()

@@ -218,13 +218,22 @@ describe('actual AI service budget wiring, synthetic Claude SDK and database onl
   expect(request).toContain('з урахуванням заборгованості')
   expect(request).not.toContain('накладної до сплати')
  })
- it('rejects an incomplete multi-photo invoice before publishing any proposal',async()=>{
+ // 25.11.2026 (власник: «постачальники роблять суму зі знижкою»): інший підсумок — примітка в пропозиції, не відмова.
+ it('flags a multi-photo invoice whose printed total differs, keeping printed line prices',async()=>{
   for(const data of [
    {products:[{name:'Фільтр',qty:2,purchase_price_uah:120}],page_number:1,page_count:2},
    {products:[{name:'Гайка',qty:1,purchase_price_uah:10}],page_number:2,page_count:2,invoice_total:300},
   ]) mocks.create.mockResolvedValueOnce(json(data))
-  await expect(recognizeSupplyInvoicePhoto('shop','user',{images:[photo,photo]})).rejects.toMatchObject({code:'AI_INVALID_RESPONSE'})
+  const result=await recognizeSupplyInvoicePhoto('shop','user',{images:[photo,photo]})
+  expect(result.actions[0].payload.products.map((p:any)=>p.purchase_price_uah)).toEqual([120,10])
+  expect(result.actions[0].payload).not.toHaveProperty('invoice_total')
+  expect(String(result.actions[0].payload.total_note)).toContain('Підсумок накладної 300,00 грн')
+  expect(result.reply).toContain('⚠️')
   expect(mocks.create).toHaveBeenCalledTimes(2)
+ })
+ it('still rejects a missing numbered page before publishing any proposal',async()=>{
+  mocks.create.mockResolvedValueOnce(json({products:[{name:'Фільтр',qty:2,purchase_price_uah:120}],page_number:1,page_count:2}))
+  await expect(recognizeSupplyInvoicePhoto('shop','user',{images:[photo]})).rejects.toMatchObject({code:'AI_INVALID_RESPONSE'})
  })
  it('accepts a totals-only continuation photo without retrying it or creating a zero-price item',async()=>{
   mocks.create.mockResolvedValueOnce(json({products:[{name:'Фільтр',qty:2,purchase_price_uah:120}]}))

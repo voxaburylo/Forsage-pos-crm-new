@@ -90,7 +90,7 @@ import { createPortableReleaseSource, downloadPortableUpdate, launchPortableUpda
 import { LanOrderClient } from './lan/orderClient'
 import { isSpoolerGuardError, postflightPrinter, preflightPrinter } from './print/spoolerGuard'
 import { disposePrintWarmShell, prewarmPrintShell } from './print/printWarmShell'
-import { desktopTenantArgumentPositions, isDesktopChannelAllowed, isManagerDepositChannel, isManagerSaleChannel, PUBLIC_DESKTOP_CHANNELS } from './security/desktopAuthorization'
+import { desktopTenantArgumentPositions, normalizeRemoteTenantArguments, isDesktopChannelAllowed, isManagerDepositChannel, isManagerSaleChannel, PUBLIC_DESKTOP_CHANNELS } from './security/desktopAuthorization'
 import { cardBatchCodes, generateCardBatch, isFreeCard, listCardBatches } from './repositories/customerCardBatches'
 import { buildStatusReport } from './link/statusReport'
 import { nightlyCheckTick, readNightlySummary } from './diagnostics/nightlyCheckRunner'
@@ -805,7 +805,6 @@ async function executeWebRequest(userId: unknown, channel: unknown, args: unknow
   // замовчуванням у дії каси спрацьовує лише для undefined — каса шукала клієнта магазину null і відповідала
   // «Клієнта не знайдено» (картка боржника з телефона). Магазин null ніколи не має змісту: повертаємо «не вказано».
   const list = Array.isArray(args) ? [...args] : []
-  for (const position of desktopTenantArgumentPositions(channel)) if (list[position] === null) list[position] = undefined
   try { return await executeLanCommand(channel, list, session) } finally { getOutboxPusher().soon() }
 }
 
@@ -885,7 +884,7 @@ function getTillDeviceLink(): TillDeviceLink {
 async function executeLanCommand(channel: string, args: unknown[], session: LanSession): Promise<unknown> {
   const listener = desktopCommandHandlers.get(channel)
   if (!listener) throw new Error('Локальну команду не знайдено')
-  return executeDesktopCommand(channel, listener, {} as IpcMainInvokeEvent, args, session)
+  return executeDesktopCommand(channel, listener, {} as IpcMainInvokeEvent, normalizeRemoteTenantArguments(channel, args), session)
 }
 
 async function createWindow(): Promise<void> {

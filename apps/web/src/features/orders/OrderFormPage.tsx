@@ -823,7 +823,8 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
   async function handleCreateVehicle(e: React.FormEvent) {
     e.preventDefault()
     if (vehicleCreateBusy.current || savingRef.current) return
-    if (customerVehiclesLoading || customerVehiclesError) return
+    // 25.11.2026: список авто міг не завантажитись (ПК менеджера) — додати авто все одно можна, щоб не зупиняти замовлення.
+    if (customerVehiclesLoading) return
     if (!newVehBrand.trim() || !newVehModel.trim()) {
       toast.error('Введіть марку та модель')
       return
@@ -1613,7 +1614,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
               {!showAddVehicle ? (
                 <div className="flex flex-col gap-2">
                   <button
-                    disabled={customerVehiclesLoading || Boolean(customerVehiclesError)}
+                    disabled={customerVehiclesLoading}
                     onClick={() => setShowAddVehicle(true)}
                     className="w-full border-2 border-dashed border-gray-200 hover:border-yellow-400 hover:bg-yellow-50/20 text-gray-600 hover:text-yellow-700 font-semibold py-3 px-4 rounded-xl text-center text-sm transition-all duration-200 cursor-pointer flex items-center justify-center gap-2"
                   >
@@ -1686,7 +1687,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
                   </div>
                   <div className="flex justify-end gap-2">
                     <Button variant="secondary" size="sm" onClick={() => { invalidateVehicleRead(); setShowAddVehicle(false) }}>Скасувати</Button>
-                    <Button type="submit" size="sm" disabled={addingVehicle || customerVehiclesLoading || Boolean(customerVehiclesError)}>Додати автомобіль</Button>
+                    <Button type="submit" size="sm" disabled={addingVehicle || customerVehiclesLoading}>Додати автомобіль</Button>
                   </div>
                 </form>
               )}

@@ -624,13 +624,16 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
         new Error(`${failureMessage}. Накладну не створено; вкладення збережено для повторної спроби.`), { cause: failureReason })
 
       let actions = requestInvoice ? [] : responses.flatMap((response) => response.actions)
+      let totalNote = ''
       if (requestInvoice) {
         try {
           const collected = collectSupplyResponse(responses, partsToSend.length, attachment?.sourceChecks)
           const metadata = collected.metadata
+          // 25.11.2026: сума не збіглась (знижка постачальника?) — не відмова, а примітка в чернетці й у відповіді.
+          totalNote = metadata.total_note ?? ''
           // Текстове джерело: модельні номери в назвах мають бути у файлі (ШІ не «виправляє» LX-303D2 на D4).
           const products = attachment?.parts?.length ? flagNamesNotInSource(collected.products, attachment.parts.join('\n')) : collected.products
-          const action = supplyImportAction(sourceCurrency ? convertSupplyPrices(products, importRate) : products, (attachment?.name ?? 'Фото накладної') + currencyNote)
+          const action = supplyImportAction(sourceCurrency ? convertSupplyPrices(products, importRate) : products, (attachment?.name ?? 'Фото накладної') + currencyNote + (totalNote ? ' ⚠️ ' + totalNote : ''))
           actions = [{ ...action, payload: { ...metadata, ...action.payload } }]
         } catch (error) {
           reportLocalError(new Error(error instanceof AiSupplyResponseError && error.kind === 'missing-table'
@@ -642,7 +645,9 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
       const cost = responses.reduce((sum, response) => sum + response.usage.cost_usd, 0)
       const completedAllParts = failedAt < 0
       const reply = requestInvoice
-        ? `Розпізнано ${actions[0].count} позицій для приходу. Перевірте кількість, закупівельні ціни та зіставлення з базою. Відкривається звичайна накладна. Спірні рядки підсвічено червоним; залишки поки не змінюються.`
+        ? `Розпізнано ${actions[0].count} позицій для приходу. Перевірте кількість, закупівельні ціни та зіставлення з базою. Відкривається звичайна накладна. Спірні рядки підсвічено червоним; залишки поки не змінюються.` + (totalNote ? `
+
+⚠️ ${totalNote}` : '')
         : completedAllParts
         ? responses.length > 1
           ? `Файл оброблено повністю: ${attachment?.rowCount ?? 0} рядків у ${responses.length} частинах. Перевірте підготовлені товари нижче та підтвердьте додавання.`

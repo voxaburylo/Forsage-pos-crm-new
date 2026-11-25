@@ -1,7 +1,8 @@
 import { AppError } from '../middleware/errorHandler.js'
 
 type InvoiceRow = { name: string; qty: number; purchase_price_uah: number; [key: string]: string | number }
-type InvoicePage = { supplier_name?: string; invoice_number?: string; invoice_total?: number; products: InvoiceRow[] }
+type InvoicePage = { supplier_name?: string; invoice_number?: string; invoice_total?: number; total_note?: string; products: InvoiceRow[] }
+const uah = (kopecks: bigint) => (Number(kopecks) / 100).toLocaleString('uk-UA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' грн'
 const invalidInvoice = (message: string): never => { throw new AppError('AI_INVALID_RESPONSE', message + ' Неповну накладну не створено; повторіть розбір.', 422) }
 const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value)
 function invoiceNumber(value: unknown, quantity: boolean, location: string): number {
@@ -52,8 +53,13 @@ export function hasAiInvoicePhotoContent(value: unknown): boolean {
     ['invoice_total', 'page_total', 'brought_forward_total', 'carried_forward_total'].some(key => present(value[key])))
 }
 
-/** Sum rounded line kopecks. Never allocate VAT/discounts or silently drop repeated goods. */
-function checkPrintedTotals(controls: PageControl[]): number | undefined {
+/**
+ * Sum rounded line kopecks. Never allocate VAT/discounts or silently drop repeated goods.
+ * 25.11.2026 (власник: «деякі постачальники роблять суму зі знижкою»): розбіжність СУМ більше не скасовує розбір —
+ * вона стає помітною приміткою в чернетці, яку все одно перевіряє й проводить людина. Плутанина сторінок — і далі помилка.
+ */
+function checkPrintedTotals(controls: PageControl[]): { total?: number; notes: string[] } {
+  const notes: string[] = []
   let invoice: bigint | undefined
   let count: number | undefined
   let sum = 0n
@@ -90,17 +96,26 @@ function checkPrintedTotals(controls: PageControl[]): number | undefined {
     return invalidInvoice('Не вдалося визначити порядок сторінок для перевірки перенесеної суми. Додайте фото з номерами сторінок.')
   let cumulative = 0n
   for (const page of pages) {
-    if (page.page !== undefined && page.page !== page.sum)
-      return invalidInvoice(page.location + ': підсумок сторінки не збігається з її товарами. Перевірте пропущені або повторні рядки.')
+    // 25.11.2026 (власник: «веб не розпізнає фото накладної»; фото 3 — низ накладної з підсумком): без номерів сторінок
+    // підсумок на фото, що дорівнює сумі товарів УСІХ фото до нього включно, — це підсумок накладної, а не сторінки.
+    const runningTotal = !numbered && page.page !== undefined && page.page !== page.sum && page.page === cumulative + page.sum
+    if (page.page !== undefined && page.page !== page.sum && !runningTotal) {
+      // Пронумерована сторінка — строго: два фото однієї сторінки подвоїли б товар на складі.
+      if (numbered) return invalidInvoice(page.location + ': підсумок сторінки не збігається з її товарами. Перевірте пропущені або повторні рядки.')
+      notes.push(page.location + ': підсумок сторінки ' + uah(page.page) + ', а сума рядків ' + uah(page.sum) + ' — перевірте знижку, пропущені або повторні рядки.')
+    }
     if (page.brought !== undefined && page.brought !== cumulative)
       return invalidInvoice(page.location + ': перенесена сума з попередніх сторінок не збігається.')
     cumulative += page.sum
     if (page.carried !== undefined && page.carried !== cumulative)
       return invalidInvoice(page.location + ': перенесена сума на наступну сторінку не збігається.')
   }
-  if (invoice !== undefined && invoice !== sum)
-    return invalidInvoice('Загальний підсумок накладної не збігається із сумою товарів. Перевірте всі сторінки, знижку та ПДВ; ціни й кількість не підмінено.')
-  return invoice === undefined ? undefined : Number(invoice) / 100
+  if (invoice !== undefined && invoice !== sum) {
+    const diff = sum - invoice
+    notes.push('Підсумок накладної ' + uah(invoice) + ', сума рядків ' + uah(sum) + ' (різниця ' + uah(diff < 0n ? -diff : diff) + (diff > 0n ? ', можлива знижка постачальника' : '') + '). Ціни в рядках — як надруковано; перевірте закупівлю перед проведенням.')
+    return { notes }
+  }
+  return { total: invoice === undefined ? undefined : Number(invoice) / 100, notes }
 }
 
 /** Validate every photo and row before publishing a proposal; no guessed 1/0 or filtered rows. */
@@ -145,7 +160,11 @@ export function mergeAiInvoicePages(pages: readonly unknown[]): InvoicePage {
       if (raw.line_total !== undefined && raw.line_total !== null && raw.line_total !== '') {
         const total = invoiceNumber(raw.line_total, false, rowLocation)
         const expected = rowKopecks(product)
-        if (expected !== BigInt(Math.round(total * 100))) return invalidInvoice(rowLocation + ': кількість × закупівля не збігається із сумою рядка. Перевірте ціну, знижку та ПДВ.')
+        // 25.11.2026: сума рядка зі знижкою — не помилка розбору, а примітка до рядка; ціну не підмінюємо.
+        if (expected !== BigInt(Math.round(total * 100))) {
+          const note = 'Сума рядка в накладній ' + uah(BigInt(Math.round(total * 100))) + ', а кількість × ціна = ' + uah(expected) + ' — можлива знижка, перевірте закупівлю.'
+          product.purchase_price_note = product.purchase_price_note ? product.purchase_price_note + ' ' + note : note
+        }
         product.line_total = total
       }
       merged.products.push(product)
@@ -153,8 +172,9 @@ export function mergeAiInvoicePages(pages: readonly unknown[]): InvoicePage {
     }
   }
   if (!merged.products.length) return invalidInvoice('Відсутня таблиця товарів.')
-  const total = checkPrintedTotals(controls)
-  if (total !== undefined) merged.invoice_total = total
+  const checked = checkPrintedTotals(controls)
+  if (checked.total !== undefined) merged.invoice_total = checked.total
+  if (checked.notes.length) merged.total_note = checked.notes.join(' ')
   return merged
 }
 

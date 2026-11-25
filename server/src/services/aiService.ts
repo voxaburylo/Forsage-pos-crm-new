@@ -1189,9 +1189,10 @@ async function recognizeSupplyInvoicePhotoWithinBudget(
     supplier_name: String(parsed?.supplier_name ?? '').trim() || null,
     invoice_number: String(parsed?.invoice_number ?? '').trim() || null,
     ...(parsed.invoice_total === undefined ? {} : { invoice_total: parsed.invoice_total }),
+    ...(parsed.total_note ? { total_note: parsed.total_note } : {}),
   }
   return {
-    reply: `Розпізнано ${products.length} позицій. Перевірте таблицю та натисніть «Застосувати».`,
+    reply: `Розпізнано ${products.length} позицій. Перевірте таблицю та натисніть «Застосувати».` + (parsed.total_note ? ' ⚠️ ' + parsed.total_note : ''),
     actions: [action],
     usage: {
       prompt_tokens: promptTokens,

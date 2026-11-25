@@ -13,14 +13,27 @@ describe('printed photo invoice totals and page completeness', () => {
     expect(result.products).toHaveLength(6)
     expect(result).toHaveProperty('invoice_total',19214)
   })
-  it('rejects a missing row even when every surviving row total is correct', () => {
-    expect(()=>mergeAiInvoicePages([page(100,{invoice_total:250})])).toThrow('підсумок накладної')
+  it('25.11.2026: a different invoice total (supplier discount or a missing row) is a visible note, not a refusal', () => {
+    const result=mergeAiInvoicePages([page(100,{invoice_total:250})])
+    expect(result).not.toHaveProperty('invoice_total')
+    expect(result.total_note).toContain('Підсумок накладної 250,00 грн, сума рядків 100,00 грн (різниця 150,00 грн)')
+    expect(mergeAiInvoicePages([page(100,{invoice_total:90})]).total_note).toContain('можлива знижка постачальника')
   })
   it('rejects different document totals instead of summing or choosing the first', () => {
     expect(()=>mergeAiInvoicePages([page(100,{invoice_total:250}),page(150,{invoice_total:240})])).toThrow('різні підсумки')
   })
   it('checks page subtotals separately from the invoice total', () => {
-    expect(()=>mergeAiInvoicePages([page(100,{page_total:99}),page(150,{invoice_total:250})])).toThrow('підсумок сторінки')
+    expect(mergeAiInvoicePages([page(100,{page_total:99}),page(150,{invoice_total:250})]).total_note).toContain('Фото 1: підсумок сторінки 99,00 грн')
+  })
+  it('25.11.2026: a last unnumbered photo whose total equals all goods so far is the invoice total, not its own page', () => {
+    // Фото власника: два фото з товарами й третє — низ накладної з підсумком; ШІ назвав його «підсумком сторінки».
+    const footerOnly = { products: [], page_total: 350 }
+    expect(mergeAiInvoicePages([page(100), page(250), footerOnly]).products).toHaveLength(2)
+    expect(mergeAiInvoicePages([page(100), page(150, { page_total: 250 })]).products).toHaveLength(2)
+    // Підсумок не дорівнює ні сторінці, ні всім товарам — помітна примітка (знижка чи пропущений рядок), а не відмова.
+    expect(mergeAiInvoicePages([page(100), page(250), { products: [], page_total: 400 }]).total_note).toContain('Фото 3: підсумок сторінки 400,00 грн')
+    // Пронумеровані сторінки перевіряються строго, як і раніше.
+    expect(() => mergeAiInvoicePages([page(100, { page_number: 1 }), page(150, { page_number: 2, page_total: 250 })])).toThrow('підсумок сторінки')
   })
   it('checks cumulative totals in printed page order without changing source row order', () => {
     const result=mergeAiInvoicePages([page(150,{page_number:2,page_count:2,brought_forward_total:100,carried_forward_total:250,invoice_total:250}),
@@ -41,7 +54,7 @@ describe('printed photo invoice totals and page completeness', () => {
   })
   it('accepts a separate footer photo only after checking the entire document', () => {
     expect(mergeAiInvoicePages([page(100),{products:[],invoice_total:100}]).products).toHaveLength(1)
-    expect(()=>mergeAiInvoicePages([page(100),{products:[],invoice_total:200}])).toThrow('підсумок накладної')
+    expect(mergeAiInvoicePages([page(100),{products:[],invoice_total:200}]).total_note).toContain('Підсумок накладної 200,00 грн')
     expect(()=>mergeAiInvoicePages([{products:[],invoice_total:0}])).toThrow('Відсутня таблиця')
   })
   it.each([true,{},[],'1e3',-1,'wrong',1.001])('rejects invalid total %j instead of ignoring it', invoice_total => {
@@ -51,7 +64,7 @@ describe('printed photo invoice totals and page completeness', () => {
     expect(mergeAiInvoicePages([page(0,{page_total:0,invoice_total:0})])).toHaveProperty('invoice_total',0)
     const product={...row(1.01),qty:1.5,line_total:1.52}
     expect(mergeAiInvoicePages([{products:[product,product],invoice_total:'3,04'}])).toHaveProperty('invoice_total',3.04)
-    expect(()=>mergeAiInvoicePages([{products:[product,product],invoice_total:3.03}])).toThrow('підсумок накладної')
+    expect(mergeAiInvoicePages([{products:[product,product],invoice_total:3.03}]).total_note).toContain('Підсумок накладної 3,03 грн')
   })
   it.each([
     [page(100,{page_number:1,page_count:2})],
@@ -79,8 +92,13 @@ describe('printed photo invoice totals and page completeness', () => {
     expect(result.products).toHaveLength(2)
     expect(result).not.toHaveProperty('invoice_total')
   })
-  it('rejects whole-document discounts/VAT mismatches rather than altering line prices', () => {
-    expect(()=>mergeAiInvoicePages([page(100,{invoice_total:90})])).toThrow('ПДВ')
-    expect(()=>mergeAiInvoicePages([page(100,{invoice_total:120})])).toThrow('ПДВ')
+  it('25.11.2026: whole-document discounts/VAT keep line prices as printed and are flagged for the person', () => {
+    const discount=mergeAiInvoicePages([page(100,{invoice_total:90})])
+    expect(discount.products[0].purchase_price_uah).toBe(100)
+    expect(discount.total_note).toContain('можлива знижка постачальника')
+    const vat=mergeAiInvoicePages([page(100,{invoice_total:120})])
+    expect(vat.products[0].purchase_price_uah).toBe(100)
+    expect(vat.total_note).toContain('різниця 20,00 грн')
+    expect(vat.total_note).not.toContain('знижка постачальника')
   })
 })

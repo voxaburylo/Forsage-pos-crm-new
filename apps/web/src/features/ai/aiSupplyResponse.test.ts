@@ -9,8 +9,12 @@ describe('Printed total at the client response boundary', () => {
   it('compares one invoice total with every part, without adding repeated footer totals', () => {
     expect(collectSupplyResponse([response(totalAction(250)),response(totalAction(250,150))],2).products).toHaveLength(2)
   })
-  it.each([90,110])('rejects a partial/duplicated response at stated total %s', total => {
-    expect(()=>collectSupplyResponse([response(totalAction(total))],1)).toThrow('підсумок')
+  // 25.11.2026 (власник: «деякі постачальники роблять суму зі знижкою»): інший підсумок — помітна примітка, не відмова.
+  it.each([90,110])('flags (not rejects) a different stated total %s', total => {
+    const result=collectSupplyResponse([response(totalAction(total))],1)
+    expect(result.products).toHaveLength(1)
+    expect(result.metadata.total_note).toContain('Підсумок накладної')
+    expect(result.metadata.total_note?.includes('можлива знижка')).toBe(total===90)
   })
   it('does not choose between contradictory totals', () => {
     expect(()=>collectSupplyResponse([response(totalAction(250)),response(totalAction(251,150))],2)).toThrow('різні підсумки')
@@ -23,7 +27,7 @@ describe('Printed total at the client response boundary', () => {
     const products=[{...row,qty:1.5,purchase_price_uah:1.01},{...row,qty:1.5,purchase_price_uah:1.01}]
     const payload={products,invoice_total:3.04}
     expect(collectSupplyResponse([response({tool:'create_products_bulk',payload})],1).products).toHaveLength(2)
-    expect(()=>collectSupplyResponse([response({tool:'create_products_bulk',payload:{...payload,invoice_total:3.03}})],1)).toThrow('підсумок')
+    expect(collectSupplyResponse([response({tool:'create_products_bulk',payload:{...payload,invoice_total:3.03}})],1).metadata.total_note).toContain('3,03 грн')
   })
 })
 describe('Complete AI invoice response contract', () => {
@@ -50,6 +54,8 @@ describe('Complete AI invoice response contract', () => {
   it('preserves compatible metadata from later parts without adopting arbitrary payload fields', () => {
     const result=collectSupplyResponse([response(action()),response({tool:'create_supply_invoice_bulk',payload:{products:[row],supplier_name:' Автокомфорт ',invoice_number:'001',posted:true}})],2)
     expect(result.metadata).toEqual({supplier_name:'Автокомфорт',invoice_number:'001'})
+    // Примітку сервера про суму переносимо в чернетку.
+    expect(collectSupplyResponse([response({tool:'create_products_bulk',payload:{products:[row],total_note:'Підсумок накладної 1,00 грн'}})],1).metadata.total_note).toBe('Підсумок накладної 1,00 грн')
   })
   it.each(['supplier_name','supplier_id','invoice_number'])('rejects conflicting %s instead of taking the first part', key => {
     const item=(value:unknown)=>({tool:'create_products_bulk',payload:{products:[row],[key]:value}})

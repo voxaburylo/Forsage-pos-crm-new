@@ -3,8 +3,10 @@ export async function readOrderList<T>(read: () => Promise<{ data: T[] }>, error
   try {
     const result = await read()
     return Array.isArray(result?.data) ? { data: result.data } : { error }
-  } catch {
-    return { error }
+  } catch (cause) {
+    // 25.11.2026 (ПК менеджера: «не підтягує авто»): причину відмови показуємо — інакше її не бачить ніхто.
+    const reason = cause instanceof Error ? cause.message.replace(/\s+/g, ' ').trim().slice(0, 200) : ''
+    return { error: reason && !error.includes(reason) ? `${error} Причина: ${reason}` : error }
   }
 }
 

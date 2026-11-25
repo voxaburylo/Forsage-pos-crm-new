@@ -234,6 +234,17 @@ const TENANT_ARGUMENT_POSITIONS = new Map<string, readonly number[]>([
   ['desktop:pos:check-sale-after-payment', [2]],
 ])
 
+/**
+ * 25.11.2026 (ПК менеджера: «не підтягує авто клієнта, не дає додати нове»). «Магазин не вказано» (undefined) у
+ * мережі (JSON) стає null, а значення за замовчуванням у дії каси спрацьовує лише для undefined — головний ПК шукав
+ * клієнта магазину null і відмовляв. Для вебу це виправлено 23.11; тепер те саме для кожної команди з мережі.
+ */
+export function normalizeRemoteTenantArguments(channel: string, args: readonly unknown[]): unknown[] {
+  const list = Array.isArray(args) ? [...args] : []
+  for (const position of desktopTenantArgumentPositions(channel)) if (list[position] === null) list[position] = undefined
+  return list
+}
+
 export function desktopTenantArgumentPositions(channel: string): readonly number[] {
   return TENANT_ARGUMENT_POSITIONS.get(channel) ?? []
 }
