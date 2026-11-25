@@ -1,6 +1,8 @@
 import { adminApi } from '@/features/admin/adminApi'
 
-import { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react'
+import { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo } from 'react'
+import { useSharedAiChat, type SharedChatState } from './aiSharedChat'
+import { AiJobsPanel } from './AiJobsPanel'
 import { fileToCompressedImage } from './aiImageInput'
 import { aiActionOperationId } from './aiActionOperation'
 import { isPastedTable } from './aiPasteKind'
@@ -105,6 +107,8 @@ interface ChatEntry {
   text: string
   actions?: AiPendingAction[]
   cost?: number
+  // 26.11.2026: номер запиту — та сама репліка з сервера (спільний чат) і з екрана не дублюється.
+  rid?: string
 }
 
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
@@ -345,6 +349,25 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
     }
   }, [storageKey, entries, applied, applyMsg, applyStatus, applyErrors])
 
+  // 26.11.2026 (слово власника): той самий чат на телефоні й на ПК. На касі — лише чат власника: там помічник
+  // працює ключем ПК від імені власника, і чужий працівник не має бачити його розмову.
+  const sharedSnapshot = useMemo<SharedChatState>(() => ({ entries, applied, applyMsg, applyStatus, applyErrors }), [entries, applied, applyMsg, applyStatus, applyErrors])
+  useSharedAiChat({
+    kind: invoiceOnly ? 'invoice' : 'assistant',
+    enabled: !isDesktopRuntime() || role === 'owner',
+    storageKey,
+    snapshot: sharedSnapshot,
+    busy: () => sendBusy.current || applyBusy.current || attachmentBusy.current > 0,
+    adopt: state => {
+      if (!isCurrentContext()) return
+      setEntries(state.entries as ChatEntry[])
+      setApplied((state.applied ?? {}) as Record<string, 'ok' | 'rejected'>)
+      setApplyMsg((state.applyMsg ?? {}) as Record<string, string>)
+      setApplyStatus((state.applyStatus ?? {}) as Record<string, 'ok' | 'warn'>)
+      setApplyErrors((state.applyErrors ?? {}) as Record<string, Array<{ item: string; error: string }>>)
+    },
+  })
+
   function clearChat() {
     if (!isCurrentContext() || sendBusy.current || applyBusy.current || attachmentBusy.current) return
     completedActions.current.clear()
@@ -500,6 +523,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
     const userEntry: ChatEntry = {
       role: 'user',
       text: message + (attachmentNote ? `\n\n${attachmentNote}` : ''),
+      rid: sendToken,
     }
     setEntries((prev) => [...prev, userEntry])
     const fileParts = attachment?.parts ?? []
@@ -587,7 +611,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
               history: index === 0 && !requestInvoice ? history : undefined,
               file_text: partsToSend[index],
               images: index === 0 ? images : undefined,
-              ...(pending && index === 0 ? { request_id: pending.id } : {}),
+              ...(pending && index === 0 ? { request_id: pending.id, chat_kind: invoiceOnly ? 'invoice' as const : 'assistant' as const } : {}),
             }, event => {
               if (!isCurrentContext()) return
               setSendingProgress(partsToSend.length > 1
@@ -654,7 +678,11 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
           : responses[0].reply
         : `Оброблено ${responses.length} із ${partsToSend.length} частин. Готові товари збережено нижче. Частина ${failedAt + 1} не відповіла вчасно; решта файлу залишилася прикріпленою — натисніть «Надіслати» ще раз, щоб продовжити без повторної обробки готових частин.`
       if (pending) { finishedReplies.current.add(pending.id); clearPendingReply(storageKey, localStorage, pending.id) }
-      setEntries((prev) => [...prev, { role: 'model', text: reply, actions, cost }])
+      // Відповідь могла вже прийти зі спільного чату (сервер дописав її сам) — тоді не дублюємо.
+      setEntries((prev) => pending && prev.some(entry => entry.role === 'model' && entry.rid === pending.id) ? prev
+        : [...prev, { role: 'model', text: reply, actions, cost, ...(pending ? { rid: pending.id } : {}) }])
+      // Помічник міг підготувати фонову задачу — панель задач перечитає список.
+      if (!invoiceOnly) window.dispatchEvent(new CustomEvent('forsage:ai-jobs-changed'))
       const invoiceAction = actions.find((action) => action.tool === 'create_supply_invoice_bulk')
       if (invoiceAction) await openInvoice(invoiceAction, [...entries, userEntry, { role: 'model', text: reply, actions, cost }])
       if (completedAllParts) {
@@ -726,7 +754,8 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
       clearPendingReply(storageKey, localStorage, pending.id)
       if (outcome.kind === 'reply') {
         const cost = Number(outcome.data.usage?.cost_usd ?? 0) || 0
-        setEntries(prev => [...prev, { role: 'model', text: outcome.data.reply, actions: outcome.data.actions as AiPendingAction[], cost }])
+        setEntries(prev => prev.some(entry => entry.role === 'model' && entry.rid === pending.id) ? prev
+          : [...prev, { role: 'model', text: outcome.data.reply, actions: outcome.data.actions as AiPendingAction[], cost, rid: pending.id }])
         void loadStatus()
       } else {
         setInput(current => current || pending.message)
@@ -1020,7 +1049,6 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
 
   return (
     <Layout title={invoiceOnly ? "Розбір товарів (AI)" : "ШІ-помічник"}>
-      {!invoiceOnly && canConfigure && isDesktopRuntime() && <button className="mb-3 text-sm text-gray-600 underline" onClick={() => navigate('/ai-agent')}>Порядок у товарах →</button>}
       <div
         className="max-w-3xl mx-auto flex flex-col relative"
         style={{ height: 'calc(100vh - 140px)' }}
@@ -1029,6 +1057,8 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
+        {/* 26.11.2026: фонові задачі помічника — порядок у назвах і переклад на сервері. */}
+        {!invoiceOnly && canConfigure && <AiJobsPanel />}
         {invoiceOnly && (
           <Card className="mb-3 border-purple-200 bg-purple-50/70">
             <div className="flex items-start gap-3">

@@ -118,6 +118,9 @@ app.use('/api/v1/sync/push', express.json({ limit: '4mb' }))
 app.use('/api/v1/till-rpc', express.json({ limit: '4mb' }))
 // Те саме, коли відповідь каси віддає сам головний ПК своїм ключем зв'язку.
 // 24.11.2026: помічник на головному ПК ключем ПК — ті самі обсяги, що й у звичайних адрес помічника.
+// 26.11.2026: спільний чат помічника — стан чату до 2 МБ.
+app.use('/api/v1/ai/chat-state', express.json({ limit: '3mb' }))
+app.use('/api/v1/till-device/ai/chat-state', express.json({ limit: '3mb' }))
 app.use('/api/v1/till-device/ai/chat', express.json({ limit: '25mb' }))
 app.use('/api/v1/till-device/assistant-upload', express.json({ limit: '18mb' }))
 app.use('/api/v1/till-device/vin/ocr', express.json({ limit: '10mb' }))

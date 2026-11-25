@@ -454,6 +454,21 @@ const toolDeclarations: FunctionDeclaration[] = [
     },
   },
   {
+    // 26.11.2026 (власник: «по 200 за раз дуже довго, товарів мільйони — хай працює на сервері у фоні»).
+    name: 'prepare_bulk_job',
+    description: 'ФОНОВА ЗАДАЧА на сервері: порядок у назвах і/або переклад для ВСІХ відповідних товарів одразу (наших або товарів постачальника за API) — без сторінок по 200. Нічого не змінює в картках: лише готує задачу; власник запускає її кнопкою у «Фонових задачах» над чатом, а потім переглядає й застосовує результат. Використовуй, коли просять навести порядок/перекласти «усі», «весь каталог», «товари Омеги/GPL» або товарів більше ніж на одну сторінку.',
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        target: { type: SchemaType.STRING, description: 'products — наші товари | supplier_offers — товари постачальника за API (Омега, GPL)' },
+        task: { type: SchemaType.STRING, description: 'cleanup — порядок у назвах | translate — переклад українською | cleanup_translate — обидва' },
+        filter: { type: SchemaType.STRING, description: 'messy_names — лише «брудні» назви (за замовч.) | russian_names — лише російські | all — усі' },
+        supplier: { type: SchemaType.STRING, description: 'Для supplier_offers: назва постачальника (Омега, GPL)' },
+      },
+      required: ['target', 'task'],
+    },
+  },
+  {
     name: 'list_products_page',
     description: 'Посторінковий обхід каталогу для масового наведення порядку. Повертає до 200 товарів за раз (product_id, sku, name, category). Фільтри: russian_names — назви з ознаками російської мови (для перекладу), messy_names — назви зі сміттям: задовгі, зі службовими кодами й числами з прайсів, з «Знайдено за», з подвійними пробілами (для наведення порядку в назвах), no_category — товари без категорії (для сортування), all — всі. Викликай наступну сторінку лише після обробки поточної.',
     parameters: {
@@ -669,6 +684,7 @@ const SYSTEM_PROMPT = `Ти — AI-помічник «Директор» для 
 - Зберігай кожен товарний рядок, зокрема повторені товари. Не додавай підсумки/переноси/ПДВ як товари. Явні суми рядків → line_total, остаточний підсумок товарів усієї накладної («Разом»/«Всього») → invoice_total; попередній борг, переплату, взаєморозрахунки й «до сплати з урахуванням заборгованості» не бери. Не обчислюй і не виправляй їх, щоб приховати розбіжність.
 
 МАСОВЕ НАВЕДЕННЯ ПОРЯДКУ В КАТАЛОЗІ (переклад, сортування, дублі):
+- ФОНОВА ЗАДАЧА (26.11.2026): коли просять навести порядок у назвах чи перекласти УСІ товари, весь каталог або товари постачальника (Омега, GPL), чи товарів явно більше за одну сторінку (200) — НЕ гортай сторінки, а виклич prepare_bulk_job (target, task, filter). Вона нічого не змінює: лише готує задачу на сервері. Скажи власнику кількість, орієнтовну вартість і час і що запуск — кнопка «Запустити» у «Фонових задачах» над чатом. Сторінки list_products_page + update_products_bulk — для кількох конкретних товарів чи однієї сторінки.
 - Переклад назв українською: виклич list_products_page(page=1, filter='russian_names') → отримаєш до 200 товарів → переклади НАЗВИ (бренди, артикули, коди, розміри, латиницю НЕ чіпай) → виклич update_products_bulk з парами product_id + new_name. ОДНА сторінка = ОДИН виклик update_products_bulk. Далі скажи користувачу, скільки сторінок лишилось, і чекай наступної команди «далі».
 - Розкладання по категоріях: list_products_page(filter='no_category') + list_categories → update_products_bulk з category_name: спершу наявна категорія за призначенням; якщо підхожої немає — коротка загальна назва нової українською (каса створить її сама). Не плоди категорії за брендом чи розміром.
 - Назви категорій українською: list_categories → rename_categories_bulk з парами category_id + new_name лише для тих, що російською чи з помилками («Фильтра» → «Фільтри», «Масла-ATF» → «Оливи-ATF»). Якщо українська назва вже є в іншої категорії — не перейменовуй, а скажи про дубль.
@@ -1221,7 +1237,7 @@ export function chatEffort(params: { message: string; fileText?: string; images?
 export async function runChat(
   tenantId: string,
   userId: string | null,
-  params: { history?: ChatMessage[]; message: string; fileText?: string; images?: ChatImage[]; onProgress?: ChatProgress },
+  params: { history?: ChatMessage[]; message: string; fileText?: string; images?: ChatImage[]; onProgress?: ChatProgress; role?: string },
 ): Promise<{ reply: string; actions: PendingAction[]; usage: { prompt_tokens: number; completion_tokens: number; cost_usd: number } }> {
   // 21.11.2026: тривалість кожного запиту в журналі сервера — щоб «швидше» можна було довести цифрами.
   const startedAt = Date.now()
@@ -1236,7 +1252,7 @@ export async function runChat(
 async function runChatWithinBudget(
   tenantId: string,
   userId: string | null,
-  params: { history?: ChatMessage[]; message: string; fileText?: string; images?: ChatImage[]; onProgress?: ChatProgress },
+  params: { history?: ChatMessage[]; message: string; fileText?: string; images?: ChatImage[]; onProgress?: ChatProgress; role?: string },
   budget: AiExecutionBudget,
 ): Promise<{ reply: string; actions: PendingAction[]; usage: { prompt_tokens: number; completion_tokens: number; cost_usd: number } }> {
   const cfg = await budget.run(signal => getAiConfig(tenantId, signal))
@@ -1252,8 +1268,33 @@ async function runChatWithinBudget(
   const record = () => budget.run(signal => recordAiUsage(tenantId, userId, cfg.model, usage.promptTokens, usage.completionTokens, signal, usage.costAdjustUsd ?? 0))
   const reserveToolCalls = createAiToolBudget()
   let corrections = 0
+  let preparedJobs = 0
 
   const handleCall = async (name: string, args: Record<string, unknown>): Promise<unknown> => {
+    if (name === 'prepare_bulk_job') {
+      // Фонова задача лише готується (стан «готова»): картки не змінюються, запуск і застосування — кнопками власника.
+      if (!['owner', 'admin'].includes(String(params.role ?? ''))) return { error: 'Фонові задачі готує й запускає власник або адміністратор.' }
+      if (!userId) return { error: 'Невідомий користувач' }
+      try {
+        const { createJob, createJobSchema } = await import('./aiJobService.js')
+        let connectionId: string | undefined
+        if (args?.target === 'supplier_offers') {
+          const wanted = String(args?.supplier ?? '').trim().toLocaleLowerCase('uk-UA')
+          const { data } = await budget.run(signal => db.from('supplier_api_connections').select('id, name, provider').eq('tenant_id', tenantId).abortSignal(signal))
+          const found = (data ?? []).filter((row: any) => !wanted || String(row.name).toLocaleLowerCase('uk-UA').includes(wanted) || String(row.provider).includes(wanted.replace('омега', 'omega')))
+          if (found.length !== 1) return { error: found.length ? 'Уточніть постачальника: ' + found.map((row: any) => row.name).join(', ') : 'Постачальника за API не знайдено' }
+          connectionId = found[0].id
+        }
+        const input = createJobSchema.parse({ target: args?.target, task: args?.task, filter: args?.filter ?? 'messy_names', connection_id: connectionId })
+        const job = await budget.run(() => createJob(tenantId, userId, input))
+        preparedJobs += 1
+        return { prepared: true, title: job.title, total: job.total, estimate_cost_usd: job.estimate.cost_usd, estimate_minutes: job.estimate.minutes,
+          hint: 'Задачу підготовлено, але НЕ запущено. Скажи власнику: кількість товарів, орієнтовну вартість і час, і що запуск — кнопка «Запустити» у «Фонових задачах» над чатом; потім він переглядає готові назви й застосовує.' }
+      } catch (e: any) {
+        if (isAiBudgetError(e)) throw e
+        return { error: e instanceof AppError ? e.message : 'Не вдалося підготувати задачу' }
+      }
+    }
     if (name === RESEARCH_TOOL) {
       try {
         const ids = Array.isArray((args as any)?.product_ids) ? (args as any).product_ids.map(String).slice(0, CROSS_RESEARCH_PRODUCTS) : []
@@ -1317,7 +1358,7 @@ async function runChatWithinBudget(
       corrections++
       return 'СИСТЕМА: Ти питаєш дозволу текстом, але без виклику інструмента власник не бачить жодної кнопки й не може погодитись. Для пунктів, де ти впевнений, виклич інструмент ЗАРАЗ (дублі — merge_products_bulk з причиною до кожної пари; назви/категорії — update_products_bulk; кроси — add_cross_numbers_bulk). Сумнівні пункти лиши текстом окремим списком. Кнопка «Переглянути та підтвердити» і є згода власника.'
     }
-    if (actions.length === 0 && claimsDone) {
+    if (actions.length === 0 && claimsDone && preparedJobs === 0) {
       corrections++
       return 'СИСТЕМА: Ти відрапортував, ніби виконав дію, але НЕ підготував жодної пропозиції (не викликав інструмент створення/зміни) — у базі НІЧОГО не змінилося, і користувач нічого не побачить. Якщо у повідомленні/файлі є дані для заведення (клієнти, товари, категорії) — виклич відповідний інструмент ЗАРАЗ: для 2+ записів — масовий (create_customers_bulk / create_products_bulk / create_categories_bulk), для одного — одиничний. Якщо ж це було лише запитання — дай відповідь без слів «готово/створив/додав».'
     }

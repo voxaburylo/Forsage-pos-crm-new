@@ -99,7 +99,7 @@ export const aiApi = {
   /** Готова відповідь помічника за номером запиту (якщо зʼєднання обірвалось); null — ще немає. */
   chatResult: (id: string) => api.get<{ data: StoredAiReply | null }>('/api/v1/ai/chat-result/' + encodeURIComponent(id), { silent: true, timeoutMs: 15_000 }),
 
-  chat: (body: { message: string; history?: AiChatMessage[]; file_text?: string; images?: AiChatImage[]; request_id?: string }, onProgress?: (event: AiChatProgress) => void) =>
+  chat: (body: { message: string; history?: AiChatMessage[]; file_text?: string; images?: AiChatImage[]; request_id?: string; chat_kind?: 'assistant' | 'invoice' }, onProgress?: (event: AiChatProgress) => void) =>
     api.post<{ data: AiChatResponse }>('/api/v1/ai/chat', { ...body, history: body.history ? aiRequestHistory(body.history) : undefined },
       onProgress ? { 'X-AI-Progress': '1' } : undefined, {
       timeoutMs: 780_000, silent: true,
