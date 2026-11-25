@@ -45,6 +45,6 @@ describe('AI assistant navigation and role boundaries', () => {
     const source = readFileSync(new URL('../App.tsx', import.meta.url), 'utf8')
     expect(source.match(/<Route path="\/ai-assistant"[^\n]+/)?.[0]).toContain('roles={AI_ASSISTANT_ROLES}')
     // «Перевірка каталогу» прибрана (25.11.2026): старе посилання лише веде до помічника, а там діють його ролі.
-    expect(source.match(/<Route path="\/ai-agent"[^\n]+/)?.[0]).toBe('<Route path="/ai-agent" element={<Navigate to="/ai-assistant" replace />} />')
+    expect(source.match(/<Route path="\/ai-agent"[^\n]+/)?.[0]?.trim()).toBe('<Route path="/ai-agent" element={<Navigate to="/ai-assistant" replace />} />')
   })
 })
