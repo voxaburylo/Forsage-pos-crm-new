@@ -10,6 +10,8 @@ import { formatMoney } from '@/lib/utils'
 export interface SupplierOffer {
   supplier: string; supplier_id: string | null; external_id: string; number: string; brand: string | null; name: string; image_url: string | null
   retail_price: number; purchase_price?: number; total_qty: number; product_id: string | null
+  /** 25.11.2026: опис і категорія від постачальника (GPL дає їх у прайсі). */
+  description?: string | null; category_name?: string | null
   stock: Array<{ warehouse: string; city: string | null; qty: number; days_to_ship: number | null }>
 }
 export interface SupplierOfferPick { offer: SupplierOffer; warehouse: SupplierOffer['stock'][number] | null }
@@ -59,6 +61,9 @@ export function SupplierOfferSuggestions({ query, onPick, showPurchase }: { quer
               {[offer.supplier, offer.brand, offer.number, showPurchase && offer.purchase_price ? 'закупка ' + formatMoney(offer.purchase_price) : '',
                 offer.product_id ? 'є така картка в програмі' : ''].filter(Boolean).join(' · ')}
             </p>
+            {(offer.category_name || offer.description) && (
+              <p className="line-clamp-2 break-words text-xs text-gray-600" title={offer.description ?? undefined}>{[offer.category_name, offer.description].filter(Boolean).join(' · ')}</p>
+            )}
             {offer.stock.length === 0
               ? <p className="mt-1 text-xs text-red-700">Зараз немає на складах постачальника.</p>
               : (
