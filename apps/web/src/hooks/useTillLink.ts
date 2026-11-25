@@ -98,6 +98,8 @@ export function useTillLink(serverOnline: boolean) {
       busy = true
       const photos = await import('@/features/site/sitePhotoImport')
       try { await photos.runSitePhotoImport() } catch { /* сайт чи шлюз недоступні — наступна година повторить */ }
+      // 25.11.2026: кроси й OE-номери Омеги — у крос-номери наших карток (працюють скрізь, навіть офлайн).
+      try { await (await import('@/features/products/supplierCrossImport')).runSupplierCrossImport() } catch { /* наступна година повторить */ }
       // Фото постачальника (Омега) для наших карток, що збіглися з його товарами.
       try { await photos.runSupplierPhotoImport() } catch { /* наступна година повторить */ }
       finally { busy = false }

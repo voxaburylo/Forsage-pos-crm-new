@@ -57,3 +57,15 @@ describe('supplier cross numbers (Omega /product/getAllCrosses)', () => {
     expect(till).toContain('supplier-offers\\/(?:search|crosses|details)')
   })
 })
+
+describe('crosses for our cards (main PC writes them into card cross numbers)', () => {
+  beforeEach(() => query.mockReset())
+  it('merges Omega crosses and OE numbers per card without repeats, with a resume marker', async () => {
+    const { linkedOfferCrossNumbers } = await import('../supplierCrosses.js')
+    query.mockResolvedValueOnce({ rows: [{ product_id: 'p1', found_at: '2026-11-25T20:00:00Z',
+      crosses: [{ code: 'OC 90', brand: 'Knecht' }, { code: 'W712/75', brand: null }], oe: ['OC90', '15400-PLM-A01', 'X'] }] })
+    expect(await linkedOfferCrossNumbers('t', null)).toEqual([{ program_product_id: 'p1', found_at: '2026-11-25T20:00:00.000Z',
+      numbers: [{ number: 'OC 90', brand: 'Knecht' }, { number: 'W712/75', brand: null }, { number: '15400-PLM-A01', brand: null }] }])
+    expect(String(query.mock.calls[0][0])).toContain('o.product_id IS NOT NULL')
+  })
+})

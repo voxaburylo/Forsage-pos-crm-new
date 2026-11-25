@@ -133,6 +133,15 @@ tillDeviceRouter.get('/supplier-photos', requireTillDevice, async (req: DeviceRe
     res.json({ data: await linkedOfferPhotos(req.tillDevice!.tenant_id, since) })
   } catch (err) { next(err) }
 })
+// 25.11.2026: кроси й OE-номери постачальника для НАШИХ карток — головний ПК пише їх у крос-номери карток (джерело «omega»).
+tillDeviceRouter.get('/supplier-crosses', requireTillDevice, async (req: DeviceRequest, res, next) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store')
+    const since = typeof req.query.since === 'string' && !Number.isNaN(Date.parse(req.query.since)) ? new Date(req.query.since).toISOString() : null
+    const { linkedOfferCrossNumbers } = await import('../services/supplierCrosses.js')
+    res.json({ data: await linkedOfferCrossNumbers(req.tillDevice!.tenant_id, since) })
+  } catch (err) { next(err) }
+})
 // 24.11.2026: розділ «Сайт» на головному ПК — тим самим ключем; пускає лише власника (requireRole у самому розділі).
 tillDeviceRouter.use('/site-admin', requireTillDevice, actAsTillStaff, siteAdminRouter)
 // 24.11.2026: товари постачальників під замовлення — на головному ПК тим самим ключем.

@@ -145,3 +145,40 @@ export function sortCrosses<T extends { code: string; ours: Array<{ qty_on_hand:
     || Number(b.supplier.length > 0) - Number(a.supplier.length > 0)
     || a.code.localeCompare(b.code))
 }
+
+/** Скільки кросів одного товару переносимо в картку (захист від завеликих списків). */
+export const CARD_CROSSES_MAX = 150
+
+/**
+ * 25.11.2026 (власник: «кроси мають працювати скрізь — і в пошуку по нашій базі товарів, щоб підтягувати інші
+ * фільтри, які є в нас»): кроси й OE-номери товарів постачальника, що збіглися з НАШИМИ картками. Головний ПК
+ * записує їх у крос-номери карток (джерело «omega») — і їх одразу бачать пошук, «Аналоги», каса, замовлення, навіть офлайн.
+ * Порціями по 100 карток, у порядку часу отримання; found_at — позначка, з якої продовжувати.
+ */
+export async function linkedOfferCrossNumbers(tenantId: string, since: string | null) {
+  const { rows } = await pool.query(
+    `WITH ready AS (
+       SELECT o.connection_id, o.external_id, o.product_id,
+              GREATEST(COALESCE(o.crosses_checked_at, 'epoch'::timestamptz), COALESCE(o.details_checked_at, 'epoch'::timestamptz)) AS found_at
+         FROM supplier_offers o
+        WHERE o.tenant_id = $1 AND o.product_id IS NOT NULL AND (o.crosses_checked_at IS NOT NULL OR o.details_checked_at IS NOT NULL)
+          AND GREATEST(COALESCE(o.crosses_checked_at, 'epoch'::timestamptz), COALESCE(o.details_checked_at, 'epoch'::timestamptz)) > COALESCE($2::timestamptz, 'epoch'::timestamptz)
+        ORDER BY found_at LIMIT 100)
+     SELECT r.product_id, r.found_at,
+            COALESCE((SELECT json_agg(json_build_object('code', x.code, 'brand', NULLIF(x.brand, ''))) FROM supplier_offer_crosses x
+                       WHERE x.connection_id = r.connection_id AND x.external_id = r.external_id), '[]'::json) AS crosses,
+            COALESCE((SELECT json_agg(DISTINCT e.code) FROM supplier_offer_oe e
+                       WHERE e.connection_id = r.connection_id AND e.external_id = r.external_id), '[]'::json) AS oe
+       FROM ready r ORDER BY r.found_at`, [tenantId, since])
+  return rows.map((row: any) => {
+    const crosses = (Array.isArray(row.crosses) ? row.crosses : []).map((item: any) => ({ number: String(item.code), brand: item.brand ? String(item.brand) : null }))
+    const oe = (Array.isArray(row.oe) ? row.oe : []).map((value: unknown) => ({ number: String(value), brand: null }))
+    const seen = new Set<string>()
+    const numbers = [...crosses, ...oe].filter(item => {
+      const key = code(item.number)
+      if (key.length < 3 || seen.has(key)) return false
+      seen.add(key); return true
+    }).slice(0, CARD_CROSSES_MAX)
+    return { program_product_id: String(row.product_id), numbers, found_at: new Date(row.found_at).toISOString() }
+  })
+}
