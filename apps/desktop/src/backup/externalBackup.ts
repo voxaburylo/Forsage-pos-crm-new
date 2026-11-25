@@ -204,8 +204,10 @@ export class ExternalBackupService {
     /** Для тестів: замість окремого потоку. */
     private readonly excelExporter?: (input: { snapshot: string; output: string; stamp: string; capturedAt: string }) => Promise<unknown>) {}
 
-  start() {
-    void this.runIfDue()
+  /** initialDelayMs — 25.11.2026: копія на флешку не в мить запуску каси. */
+  start(initialDelayMs = 0) {
+    if (initialDelayMs > 0) setTimeout(() => { void this.runIfDue() }, initialDelayMs).unref?.()
+    else void this.runIfDue()
     this.timer = setInterval(() => { void this.runIfDue() }, 10 * 60_000)
     this.timer.unref?.()
   }

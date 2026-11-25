@@ -152,7 +152,8 @@ export class TillDeviceLink {
       method: input.method,
       headers: { 'Content-Type': 'application/json', Authorization: `Device ${deviceId}.${key.token}`, 'X-Forsage-Client': 'desktop', 'X-Forsage-Staff-Role': input.role, ...(input.staffId ? { 'X-Forsage-Staff-Id': input.staffId } : {}) },
       ...(input.method === 'GET' ? {} : { body: input.body ?? '{}' }),
-      signal: AbortSignal.timeout(280_000),
+      // 25.11.2026: помічник на сервері працює до 12 хв — головний ПК чекає відповідь трохи довше.
+      signal: AbortSignal.timeout(790_000),
     })
     return { status: response.status, content_type: response.headers.get('content-type') ?? '', text: await response.text() }
   }

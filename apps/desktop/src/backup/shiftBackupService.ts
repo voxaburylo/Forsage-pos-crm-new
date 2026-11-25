@@ -42,11 +42,13 @@ export class ShiftBackupService {
       .run(id, last?.tenant_id ?? DEFAULT_TENANT_ID, deviceId, at, at)
     return id
   }
-  start() {
+  /** initialDelayMs — 25.11.2026: перший прохід не в мить запуску, щоб не змагатись за диск із відкриттям каси. */
+  start(initialDelayMs = 0) {
     this.stopped = false
     if (this.timer) return
     this.timer = setInterval(() => { void this.tick() }, 30_000)
-    void this.tick()
+    if (initialDelayMs > 0) setTimeout(() => { void this.tick() }, initialDelayMs).unref?.()
+    else void this.tick()
   }
   async stop() { this.stopped = true; if (this.timer) clearInterval(this.timer); this.timer = null; await this.running }
   tick(): Promise<void> {
