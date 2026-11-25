@@ -56,7 +56,16 @@ function canIssueOrder(order: ReadyOrder) {
   return canIssueOrderFromPos(order)
 }
 
-export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileInline?: boolean; onCloseMobile?: () => void } = {}) {
+/**
+ * 25.11.2026 (власник: «долги, предоплата за заказ и выдача — в одном окне»): embeddedCustomerId вбудовує
+ * список замовлень одного клієнта у вікно «Розрахунки клієнта». Оплата, передоплата й видача — ті самі
+ * функції цієї панелі; вбудований список не слухає сканер і посилання (це робить саме вікно та головна панель).
+ */
+export function ReadyOrdersPanel({ isMobileInline: mobileInline, onCloseMobile, embeddedCustomerId, onChanged }: {
+  isMobileInline?: boolean; onCloseMobile?: () => void; embeddedCustomerId?: string; onChanged?: () => void
+} = {}) {
+  const embedded = Boolean(embeddedCustomerId)
+  const isMobileInline = mobileInline || embedded
   const store = usePOSStore()
   const [searchParams, setSearchParams] = useSearchParams()
   const [open, setOpen] = useState(false)
@@ -90,7 +99,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
   const payOrderCustomerId = payOrder?.customer?.id
   // Рішення власника 20.11.2026: бонуси — гроші клієнта, ними можна оплатити замовлення повністю або частково.
   const bonusBalance = Math.max(0, Math.round(Number(payOrder?.customer?.bonus_balance ?? 0)))
-  const selectedCustomerId = store.customer?.id ?? null
+  const selectedCustomerId = embeddedCustomerId ?? store.customer?.id ?? null
 
   useEffect(() => {
     paymentAttemptRef.current = null
@@ -114,7 +123,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
 
   // Скан картки клієнта при відкритій панелі «Видати» → показуємо ЙОГО замовлення
   useEffect(() => {
-    if (!(open || isMobileInline)) return
+    if (embedded || !(open || isMobileInline)) return
     const handler = (event: Event) => {
       const c = (event as CustomEvent<any>).detail
       if (!c?.phone && !c?.full_name) return
@@ -124,10 +133,11 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     }
     window.addEventListener('forsage:pos-customer-scanned', handler)
     return () => window.removeEventListener('forsage:pos-customer-scanned', handler)
-  }, [open, isMobileInline])
+  }, [open, isMobileInline, embedded])
 
   // Скан штрих-коду замовлення (ORD-1043) на касі → відкриває список з діями
   useEffect(() => {
+    if (embedded) return
     const handler = async (event: Event) => {
       const num = (event as CustomEvent<{ number?: string }>).detail?.number
       if (!num) return
@@ -145,9 +155,10 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     }
     window.addEventListener('forsage:pos-pay-order', handler)
     return () => window.removeEventListener('forsage:pos-pay-order', handler)
-  }, [])
+  }, [embedded])
 
   useEffect(() => {
+    if (embedded) return
     const orderQuery = (searchParams.get('order') ?? searchParams.get('customer') ?? '').trim()
     if (!orderQuery) return
     setSearch(orderQuery)
@@ -156,7 +167,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
     next.delete('order')
     next.delete('customer')
     setSearchParams(next, { replace: true })
-  }, [searchParams, setSearchParams])
+  }, [embedded, searchParams, setSearchParams])
 
   const load = useCallback(async () => {
     if (isDesktopAccessLocked() || document.visibilityState === 'hidden') return
@@ -303,6 +314,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
       } else {
         toast.success(payAction === 'full' ? 'Повну оплату внесено!' : (payMethod === 'bonus' ? 'Оплачено бонусами!' : payMethod === 'account' ? 'Списано з рахунку клієнта!' : 'Передоплату внесено!'))
         await load()
+        onChanged?.()
       }
     } catch (e) {
       toast.error(getErrorMessage(e, 'Помилка внесення оплати'))
@@ -341,6 +353,7 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
       )
       if (!options.quietSuccess) toast.success('Замовлення видано!')
       await load()
+      onChanged?.()
       return true
     } catch (e) {
       toast.error(getErrorMessage(e, 'Помилка видачі замовлення'))
@@ -399,10 +412,13 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
   }
 
   const count = orders.length
+  // Вбудований список не блимає під час фонового оновлення кожні 10 с.
+  const spinner = loading && (!embedded || orders.length === 0)
 
   if (isMobileInline) {
     return (
-      <div className="flex flex-col h-full bg-[#1A1A1A] text-white">
+      <div className={embedded ? 'flex flex-col text-white' : 'flex flex-col h-full bg-[#1A1A1A] text-white'}>
+        {!embedded && <>
         <div className="flex items-center justify-between px-4 py-3.5 border-b border-gray-800 shrink-0 bg-[#0D0D0D]">
           <span className="text-base font-bold tracking-wide">Замовлення / передоплата</span>
           {onCloseMobile && (
@@ -422,21 +438,22 @@ export function ReadyOrdersPanel({ isMobileInline, onCloseMobile }: { isMobileIn
                        border border-gray-700 focus:outline-none focus:border-yellow-400"
           />
         </div>
+        </>}
 
-        <div className="flex-1 overflow-y-auto pb-4">
-          {loading && (
+        <div className={embedded ? 'pb-2' : 'flex-1 overflow-y-auto pb-4'}>
+          {spinner && (
             <div className="flex justify-center py-12">
               <Loader2 size={24} className="animate-spin text-gray-400" />
             </div>
           )}
 
-          {!loading && orders.length === 0 && (
+          {!spinner && orders.length === 0 && (
             <div className="text-center py-12 text-gray-500 text-sm">
-              {search.trim() ? 'Нічого не знайдено' : 'Немає активних замовлень'}
+              {search.trim() ? 'Нічого не знайдено' : embedded ? 'У клієнта немає відкритих замовлень' : 'Немає активних замовлень'}
             </div>
           )}
 
-          {!loading && orders.map((order) => {
+          {!spinner && orders.map((order) => {
             const remaining = remainingDue(order)
             
             let statusLabel = order.status
