@@ -22,6 +22,16 @@ describe('printed photo invoice totals and page completeness', () => {
   it('checks page subtotals separately from the invoice total', () => {
     expect(()=>mergeAiInvoicePages([page(100,{page_total:99}),page(150,{invoice_total:250})])).toThrow('підсумок сторінки')
   })
+  it('25.11.2026: a last unnumbered photo whose total equals all goods so far is the invoice total, not its own page', () => {
+    // Фото власника: два фото з товарами й третє — низ накладної з підсумком; ШІ назвав його «підсумком сторінки».
+    const footerOnly = { products: [], page_total: 350 }
+    expect(mergeAiInvoicePages([page(100), page(250), footerOnly]).products).toHaveLength(2)
+    expect(mergeAiInvoicePages([page(100), page(150, { page_total: 250 })]).products).toHaveLength(2)
+    // Пропущений рядок і далі не проходить: підсумок не дорівнює ні сторінці, ні всім товарам.
+    expect(() => mergeAiInvoicePages([page(100), page(250), { products: [], page_total: 400 }])).toThrow('підсумок сторінки')
+    // Пронумеровані сторінки перевіряються строго, як і раніше.
+    expect(() => mergeAiInvoicePages([page(100, { page_number: 1 }), page(150, { page_number: 2, page_total: 250 })])).toThrow('підсумок сторінки')
+  })
   it('checks cumulative totals in printed page order without changing source row order', () => {
     const result=mergeAiInvoicePages([page(150,{page_number:2,page_count:2,brought_forward_total:100,carried_forward_total:250,invoice_total:250}),
       page(100,{page_number:1,page_count:2,page_total:100,carried_forward_total:100})])

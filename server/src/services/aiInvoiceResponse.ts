@@ -90,7 +90,10 @@ function checkPrintedTotals(controls: PageControl[]): number | undefined {
     return invalidInvoice('Не вдалося визначити порядок сторінок для перевірки перенесеної суми. Додайте фото з номерами сторінок.')
   let cumulative = 0n
   for (const page of pages) {
-    if (page.page !== undefined && page.page !== page.sum)
+    // 25.11.2026 (власник: «веб не розпізнає фото накладної»; фото 3 — низ накладної з підсумком): без номерів сторінок
+    // підсумок на фото, що дорівнює сумі товарів УСІХ фото до нього включно, — це підсумок накладної, а не сторінки.
+    const runningTotal = !numbered && page.page !== undefined && page.page !== page.sum && page.page === cumulative + page.sum
+    if (page.page !== undefined && page.page !== page.sum && !runningTotal)
       return invalidInvoice(page.location + ': підсумок сторінки не збігається з її товарами. Перевірте пропущені або повторні рядки.')
     if (page.brought !== undefined && page.brought !== cumulative)
       return invalidInvoice(page.location + ': перенесена сума з попередніх сторінок не збігається.')
