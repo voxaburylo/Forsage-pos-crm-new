@@ -52,6 +52,23 @@ export const posOrderApi = {
     return moneyOnlyAtTill()
   },
 
+  /**
+   * 25.11.2026 (рішення власника): видача замовлення без прийому грошей — внесене зараховується,
+   * неоплачене одразу стає боргом клієнта. Лише на касі та ПК менеджера.
+   */
+  canHandOver: () => Boolean(localOrders()?.handOver),
+
+  /** itemIds — часткова видача: вибрані прибулі позиції; решта переходить у нове замовлення. */
+  handOver: async (orderId: string, itemIds?: string[]) => {
+    const local = localOrders()
+    if (local?.handOver) {
+      const result = await local.handOver(orderId, itemIds)
+      requestDesktopSync()
+      return result
+    }
+    return moneyOnlyAtTill()
+  },
+
   complete: async (orderId: string, body: any, _opts: Options = {}) => {
     const local = localOrders()
     if (local?.complete) {

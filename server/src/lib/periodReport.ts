@@ -88,7 +88,12 @@ export function aggregatePeriod(data: PeriodSnapshot, from: string, to: string) 
     selected.push(sale); revenue = sum(revenue,sale.total)
     netCost = addCost(netCost,costs.get(sale.id)!)
     const row = day(sale.completed_at); row.sales++; row.gross_revenue = sum(row.gross_revenue,sale.total)
-    if (orderSales.has(sale.id)) continue // Payments are counted on their own dates.
+    if (orderSales.has(sale.id)) {
+      // Payments are counted on their own dates. 25.11.2026: an order handed over on credit adds its debt here.
+      if (sale.debt_amount !== null && !money(sale.debt_amount)) invalid()
+      if (sale.debt_amount) byMethod.debt = sum(byMethod.debt, sale.debt_amount)
+      continue
+    }
     const methods = ['cash','card','transfer','debt']
     if (!methods.includes(sale.payment_method) && sale.payment_method !== 'mixed') invalid()
     const parts = { cash: 0, card: 0, transfer: 0, debt: 0 }

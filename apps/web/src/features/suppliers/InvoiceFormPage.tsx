@@ -1125,7 +1125,8 @@ export default function InvoiceFormPage() {
   }
   function bindExistingProductToItem(item: LineItem, product: Product): LineItem {
     const purchase = item.ai_review || item.purchase_price > 0 ? item.purchase_price : product.purchase_price
-    const retail = item.retail_price > 0 ? item.retail_price : product.retail_price
+    // 25.11.2026: ціна з накладної не знижує ціну наявної картки (знизити — лише вручну в рядку).
+    const retail = Math.max(item.retail_price > 0 ? item.retail_price : 0, product.retail_price ?? 0)
     return {
       ...item,
       product_id: product.id,

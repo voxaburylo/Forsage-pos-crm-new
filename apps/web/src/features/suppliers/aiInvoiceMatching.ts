@@ -30,7 +30,9 @@ export function bindInvoiceCandidate(item: LineItem, product: InvoiceCandidate):
     category_id: product.category_id ?? null, storage_bin: product.storage_bin ?? null,
     photo_url: product.photo_url ?? null, ai_category_name: undefined,
     // Quantity, unit and invoice purchase price must never be taken from stock/card.
-    retail_price: item.retail_price > 0 ? item.retail_price : product.retail_price ?? 0,
+    // 25.11.2026 (правило власника «ціни автоматично не знижувати»; накладна 11870 знизила 1430→1185 тощо):
+    // ціна за сіткою може лише підняти ціну наявної картки; знизити — тільки людина вручну в бланку.
+    retail_price: Math.max(item.retail_price > 0 ? item.retail_price : 0, product.retail_price ?? 0),
     ai_review: item.ai_review ? { ...item.ai_review, choice: product.id } : undefined }
 }
 export function applyInvoiceMatch(item: LineItem, review: InvoiceMatch): LineItem {

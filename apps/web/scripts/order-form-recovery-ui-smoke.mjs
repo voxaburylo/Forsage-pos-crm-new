@@ -11,7 +11,9 @@ const {createServer,transformWithEsbuild}=await import(pathToFileURL(require.res
 const {default:tailwindcss}=await import(pathToFileURL(require.resolve('@tailwindcss/vite')).href)
 const mocks={
   '@/features/orders/orderApi':'export const orderApi=window.fixture.orders',
-  '@/features/products/productApi':'export const productApi={search:async()=>({data:[]})}',
+  '@/features/products/productApi':'export const productApi={search:async q=>({data:q==="oc-90"?[{id:"p1",name:"Фільтр оливи KNECHT OC90",sku:"OC 90",retail_price:32000,purchase_price:21000,qty_on_hand:5}]:[]})}',
+  // 25.11.2026: вставка з буфера — розпізнавання без платного ШІ, лише запис, що саме йому передали.
+  '@/features/orders/orderCartScreenshot':'export const CART_TEXT_INSTRUCTION="TEXT";export async function recognizeCartScreenshot(file,instruction){fixture.recognized.push({type:file.type,size:file.size,instruction:instruction??"IMAGE"});return{rows:[{name:"Фільтр оливи",sku:"oc-90",qty:"2",buy_price:"150"},{name:"Колодки дискові",sku:"XYZ-77",qty:"1",buy_price:"900"}],skipped:0}}',
   '@/features/customers/customerApi':'export const customerApi=window.fixture.customers',
   '@/features/customers/customerVehiclesApi':'export const customerVehiclesApi=window.fixture.vehicles',
   '@/features/suppliers/supplierApi':'export const supplierApi={list:async()=>({data:[]})}',
@@ -25,7 +27,7 @@ const mocks={
 }
 const entry=`import React from 'react';import{createRoot}from'react-dom/client';import{MemoryRouter,Routes,Route,useLocation}from'react-router-dom';import Form from '/src/features/orders/OrderFormPage.tsx';import '/src/index.css';function Location(){return <div data-testid="location">{useLocation().pathname}</div>}createRoot(document.getElementById('root')).render(<MemoryRouter initialEntries={[fixture.route]}><Location/><Routes><Route path='/orders/new' element={<Form/>}/><Route path='/orders/:id/edit' element={<Form/>}/><Route path='*' element={<p>Saved destination</p>}/></Routes></MemoryRouter>);`
 const bootstrap=`
-window.forsageDesktop={};window.fixture={errors:[],warnings:[],messages:[],writes:[],lookups:[],photoRequests:[],vinRequests:[],mode:window.testMode??'normal',route:window.testRoute??'/orders/new'};
+window.forsageDesktop={};window.fixture={recognized:[],errors:[],warnings:[],messages:[],writes:[],lookups:[],photoRequests:[],vinRequests:[],mode:window.testMode??'normal',route:window.testRoute??'/orders/new'};
 const a={id:'a',full_name:'Перший клієнт',phone:'111',debt_balance:0},b={id:'b',full_name:'Другий клієнт',phone:'222',debt_balance:0};
 fixture.base={id:'order',status:'lead',updated_at:'r1',customer_id:'a',customer:a,vehicle_info:{make:'Old',model:'Original',vin:'OLDVIN'},total:10000,total_paid:0,items:[{id:'line',name:'Фільтр тестовий',sku:'W67',qty:2,sell_price:5000,buy_price:3000,source_type:'supplier',item_status:'pending',item_type:'product'}]};
 fixture.customers={list:async()=>({data:[a,b]}),get:id=>new Promise(resolve=>fixture.resolveCustomer=()=>resolve({data:id==='a'?a:b}))};
@@ -173,6 +175,26 @@ try{
   await savedDuringRead.waitForTimeout(100)
   assert.equal(await savedDuringRead.evaluate(()=>fixture.writes[0].body.vehicle_info.vin),'WVWZZZ1JZXW000001')
   assert.equal(await savedDuringRead.evaluate(()=>fixture.messages.some(m=>m.includes('LATE'))),false);await savedDuringRead.close()
+  // 25.11.2026: Ctrl+V у вікні замовлення поза полями — текст розпізнається й розкладається по полях;
+  // у поле вводу текст вставляється як завжди; картинка з буфера — як скриншот кошика.
+  const pasted=await setup()
+  await pasted.evaluate(()=>{const dt=new DataTransfer();dt.setData('text/plain','Фільтр оливи OC-90  2 шт  150 грн\nКолодки дискові XYZ-77  1 шт  900 грн');document.body.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}))})
+  await pasted.waitForFunction(()=>fixture.recognized.length===1)
+  assert.deepEqual(await pasted.evaluate(()=>({type:fixture.recognized[0].type,instruction:fixture.recognized[0].instruction})),{type:'image/png',instruction:'TEXT'})
+  await pasted.waitForFunction(()=>{const items=JSON.parse(localStorage.getItem(fixture.key))?.data?.items??[];return items.some(i=>i.product_id==='p1')&&items.some(i=>i.sku==='XYZ-77')})
+  const placed=await pasted.evaluate(()=>JSON.parse(localStorage.getItem(fixture.key)).data.items.map(i=>({name:i.name,sku:i.sku,qty:i.qty,source:i.source_type,product:i.product_id??null,sell:i.sell_price,buy:i.buy_price})))
+  assert.deepEqual(placed.slice(-2),[
+    {name:'Фільтр оливи KNECHT OC90',sku:'OC 90',qty:'2',source:'warehouse',product:'p1',sell:'320.00',buy:'210.00'},
+    {name:'Колодки дискові',sku:'XYZ-77',qty:'1',source:'supplier',product:null,sell:'0',buy:'900'}])
+  assert.ok(await pasted.evaluate(()=>fixture.messages.some(m=>m.includes('з тексту')&&m.includes('на складі: 1'))))
+  await pasted.getByLabel('Кількість',{exact:true}).first().evaluate(input=>{const dt=new DataTransfer();dt.setData('text/plain','Просто текст у полі');input.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}))})
+  await pasted.waitForTimeout(300)
+  assert.equal(await pasted.evaluate(()=>fixture.recognized.length),1,'text pasted into a field is not recognized')
+  await pasted.evaluate(()=>{const dt=new DataTransfer();dt.items.add(new File([new Uint8Array([137,80,78,71])],'cart.png',{type:'image/png'}));document.body.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}))})
+  await pasted.waitForFunction(()=>fixture.recognized.length===2)
+  assert.equal(await pasted.evaluate(()=>fixture.recognized[1].instruction),'IMAGE')
+  assert.equal(await pasted.getByRole('button',{name:'📋 Вставити з буфера'}).count(),1)
+  await pasted.close()
   assert.deepEqual(errors,[]);assert.deepEqual(blocked,[])
-  console.log('PASS: durable restart, double click/final quantity, lost reply, pending restart/check-only recovery, absent result retry, corrupt storage, late customer/garage response, stale version retained, manual price protected; vehicle OCR/decode manual corrections, out-of-order photos, stale errors, cancel, client switch, save/unmount, authoritative edited vehicle payload; no live services or DB.')
+  console.log('PASS: clipboard text/image paste placed by article (stock vs supplier), field paste untouched; durable restart, double click/final quantity, lost reply, pending restart/check-only recovery, absent result retry, corrupt storage, late customer/garage response, stale version retained, manual price protected; vehicle OCR/decode manual corrections, out-of-order photos, stale errors, cancel, client switch, save/unmount, authoritative edited vehicle payload; no live services or DB.')
 }finally{await browser?.close();await server.close()}

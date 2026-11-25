@@ -26,6 +26,7 @@ import { canUseOrderCash, orderEditPath } from './orderUx'
 import { useAuthStore } from '@/stores/authStore'
 import { OrderLanBadge, OrderLanNotice } from './OrderLanNotice'
 import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
+import { HandOverOrderButton } from './HandOverOrderButton'
 
 interface Payment {
   id: string
@@ -341,6 +342,8 @@ export default function OrderDetailPage() {
               {remaining > 0 ? <>💰<span className="hidden sm:inline">&nbsp;Оплата / видача в касі</span></> : <>📦<span className="hidden sm:inline">&nbsp;Видати товар</span></>}
             </Button>
           )}
+          {/* 25.11.2026: видає менеджер (або касир) — неоплачене одразу борг клієнта, гроші приймає каса. */}
+          {serverActionsReady && !terminal && <HandOverOrderButton order={order} onDone={() => { void load() }} />}
           {serverActionsReady && hasPendingWarehouseItems && !terminal && (
             <Button className="bg-yellow-500 hover:bg-yellow-600 text-black font-semibold" onClick={() => navigate(`/inventory/picking?orderId=${id}`)}>
               📦<span className="hidden sm:inline">&nbsp;Зібрати</span>

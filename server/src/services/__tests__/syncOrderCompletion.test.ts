@@ -53,3 +53,16 @@ describe('order paid with bonuses (owner decision 20.11.2026)', () => {
     expect(cancelSource).toContain('if (!operation.balance_mirrored)')
   })
 })
+
+describe('order handed over with the unpaid rest on credit (owner decision 25.11.2026)', () => {
+  it('accepts only the exact unpaid rest as debt and only with a customer', () => {
+    expect(completionSource).toContain('authoritativePaid + debtAmount === amountDue && isUuid(order.customer_id)')
+    expect(completionSource).toContain('if (authoritativePaid !== amountDue && !debtAccepted) {')
+  })
+  it('records the debt on the sale and on the customer unless the till mirrors balances', () => {
+    expect(completionSource).toContain("(usedPaymentMethods.length ? 'mixed' : 'debt')")
+    expect(completionSource).toContain('saleDebt > 0,\n        saleDebt,'.replace(/\n/g, completionSource.includes('\r\n') ? '\r\n' : '\n'))
+    expect(completionSource).toContain('if (saleDebt > 0 && !operation.balance_mirrored) {')
+    expect(completionSource).toContain('debt_balance = COALESCE(debt_balance, 0) + $3')
+  })
+})

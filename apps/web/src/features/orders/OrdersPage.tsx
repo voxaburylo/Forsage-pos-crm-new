@@ -15,6 +15,7 @@ import { orderApi } from './orderApi'
 import { OrderLanBadge, OrderLanNotice } from './OrderLanNotice'
 import { canDeleteDraftOrder, isCompletedOrderStatus, isTerminalOrderStatus } from './orderStatus'
 import { startRepeatOrder, formatOrderNo } from './orderActions'
+import { HandOverOrderButton } from './HandOverOrderButton'
 import { customerApi } from '@/features/customers/customerApi'
 import { supplierApi } from '@/features/suppliers/supplierApi'
 import { customerVehiclesApi } from '@/features/customers/customerVehiclesApi'
@@ -2141,6 +2142,7 @@ export default function OrdersPage() {
                 onChangeStatus={(s) => changeOrderStatus(selectedOrder.id, s)}
                 onItemStatus={(itemId, s) => updateItemStatus(selectedOrder.id, itemId, s)}
                 onPay={() => openOrderPaymentInPos(selectedOrder)}
+                onHandedOver={() => { orderCacheRef.current.clear(); void loadOrders(false) }}
                 onCancel={() => setCancelModal(selectedOrder)}
                 onRepeat={() => startRepeatOrder(selectedOrder, navigate)}
               />
@@ -2336,7 +2338,7 @@ export default function OrdersPage() {
 
 function OrderInlineView({
   order, now, onOpenFull, onEditDraft, onOpenChat,
-  onChangeStatus, onItemStatus, onPay, onCancel, onRepeat,
+  onChangeStatus, onItemStatus, onPay, onHandedOver, onCancel, onRepeat,
 }: {
   order: CustomerOrder
   now: Date
@@ -2346,6 +2348,7 @@ function OrderInlineView({
   onChangeStatus: (status: string) => void
   onItemStatus: (itemId: string, status: string) => void
   onPay: () => void
+  onHandedOver: () => void
   onCancel: () => void
   onRepeat: () => void
 }) {
@@ -2430,6 +2433,8 @@ function OrderInlineView({
           ) : canUseCash && canComplete && (
             <Button onClick={onPay} className="bg-green-600 hover:bg-green-700 text-white">{remaining > 0 ? '💰 Оплата / видача в касі' : '📦 Видати товар'}</Button>
           )}
+          {/* 25.11.2026: видає менеджер (або касир) — неоплачене одразу борг клієнта, гроші приймає каса. */}
+          {!draft && !terminal && <HandOverOrderButton order={order} onDone={onHandedOver} />}
           {order.status === 'arrived' && (
             <>
               <Button size="sm" variant="secondary" onClick={() => onChangeStatus('called')}>📞 Подзвонив</Button>

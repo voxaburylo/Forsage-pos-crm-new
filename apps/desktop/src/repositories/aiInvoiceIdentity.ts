@@ -211,6 +211,18 @@ function variant(name: string) {
     light: side(/(?:^|[^\p{L}])(?:светл[а-яіїєґ]*|світл[а-яіїєґ]*)(?=$|[^\p{L}])/u, /(?:^|[^\p{L}])темн[а-яіїєґ]*(?=$|[^\p{L}])/u),
   }
 }
+/**
+ * 25.11.2026 (накладна 11870): код постачальника «3883» (брелок Citroen) збігся з нашим старим внутрішнім артикулом
+ * «3883» (викрутка ARIDOO) — рядок сам привʼязався до чужої картки, і та отримала нову назву й ціну.
+ * Назви без жодного спільного слова (перші 4 літери слова від 4 літер; цифри не враховуються) — різні товари.
+ */
+export function unrelatedNames(a: string, b: string): boolean {
+  const stems = (value: string) => new Set((text(value).toLocaleLowerCase().match(/\p{L}{4,}/gu) ?? []).map(word => word.slice(0, 4)))
+  const left = stems(a), right = stems(b)
+  if (!left.size || !right.size) return false
+  for (const stem of left) if (right.has(stem)) return false
+  return true
+}
 function incompatible(source: string, brand: string, product: AiInvoiceCandidate): boolean {
   const sourceVariant = variant(source), productVariant = variant(product.name)
   for (const key of Object.keys(sourceVariant) as Array<keyof typeof sourceVariant>) {
@@ -408,6 +420,11 @@ export class AiInvoiceMatcher {
     }
     if (ids.size === 1) {
       const product = this.products.get([...ids][0])!
+      // Збіг лише за артикулом (не штрихкодом і не підтверджений людиною), а назва зовсім інша — на перевірку.
+      const viaBarcode = (this.barcodes.get(code(raw.barcode ?? raw.ean)) ?? new Set<string>()).has(product.id)
+      if (!viaBarcode && !reason.startsWith('Цей артикул ви вже') && unrelatedNames(source + ' ' + brand, product.name + ' ' + (product.brand ?? ''))) {
+        return { ...result, status: 'review', reason: 'Артикул збігається, але назва зовсім інша — це може бути інший товар. Перевірте рядок', candidates: [product] }
+      }
       if (!incompatible(source, brand, product)) return { ...result, status: 'matched', product_id: product.id, name: product.name, brand: product.brand ?? '', reason, candidates: [product] }
       return { ...result, status: 'review', reason: 'Код збігається, але бренд, фасування, в’язкість або сторона відрізняються — перевірте рядок', candidates: [product] }
     }

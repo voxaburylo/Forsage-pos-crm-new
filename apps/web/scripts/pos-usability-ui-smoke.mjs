@@ -16,6 +16,8 @@ const mocks = {
   '@/features/admin/adminApi': 'export const adminApi={getSettings:async()=>({data:{bank_terminal_enabled:false}})}',
   '@/lib/api': 'export const api={get:async url=>fixture.readBonusLimit(url)}',
   '@/lib/desktopBridge': 'export const desktopBridge=()=>fixture.serverMode?null:({fiscal:{getConfig:async()=>({enabled:false})}})',
+  // 25.11.2026: оплата чека може закрити борг клієнта (без касового bridge.pos галочки немає) — тут боргів не платимо.
+  '@/features/pos/posCustomerMoneyApi': 'export const posCustomerMoneyApi={payDebt:async()=>{throw Error("Unexpected debt payment")}}',
   '@/components/ui/Toast': 'export const toast={error:message=>fixture.errors.push(message)};export function ToastContainer(){return null}',
   '@/features/pos/saleApi': 'export const saleApi={list:params=>fixture.readReceipts(params)}',
 }

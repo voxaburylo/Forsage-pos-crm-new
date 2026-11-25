@@ -15,6 +15,8 @@ const mocks = {
   '@/features/admin/adminApi': 'export const adminApi={getSettings:async()=>({data:{bank_terminal_enabled:false}})}',
   '@/lib/api': 'export const api={get:async()=>{throw Error("Unexpected network API")}}',
   '@/lib/desktopBridge': 'export const desktopBridge=()=>({fiscal:{getConfig:async()=>({enabled:false})}})',
+  // 25.11.2026: оплата чека може закрити борг клієнта (без касового bridge.pos галочки немає) — тут боргів не платимо.
+  '@/features/pos/posCustomerMoneyApi': 'export const posCustomerMoneyApi={payDebt:async()=>{throw Error("Unexpected debt payment")}}',
 }
 const entry = `
 import React from 'react';import{createRoot}from'react-dom/client';

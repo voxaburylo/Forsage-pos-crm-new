@@ -256,6 +256,7 @@ export function createDesktopApi(ipcRenderer: DesktopInvoker) {
       listPaymentsByPeriod: (input?: unknown) => ipcRenderer.invoke('desktop:orders:list-payments-period', input),
       addPayment: (orderId: string, input: unknown) => ipcRenderer.invoke('desktop:orders:add-payment', orderId, input),
       complete: (orderId: string, input?: unknown) => ipcRenderer.invoke('desktop:orders:complete', orderId, input),
+      handOver: (orderId: string, itemIds?: string[]) => ipcRenderer.invoke('desktop:orders:hand-over', orderId, itemIds),
     },
     supply: {
       listSuppliers: (input?: unknown) => ipcRenderer.invoke('desktop:supply:list-suppliers', input),
