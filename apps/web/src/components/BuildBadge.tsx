@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'react'
 import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
 import { buildLabel, type BuildLabel } from './buildLabel'
+import type { LanUpdateReport } from '@/lib/desktopBridge'
+import { lanUpdateLines } from '@/features/settings/LanUpdateStatus'
 
 /** Номер збірки під назвою програми — у меню й на сторінці входу (див. buildLabel). */
 export function BuildBadge({ className = '' }: { className?: string }) {
+  const [lanUpdate, setLanUpdate] = useState<LanUpdateReport | null>(null)
   const [label, setLabel] = useState<BuildLabel | null>(() => isDesktopRuntime()
     ? null
     : buildLabel({ desktop: false, webBuiltAt: typeof __WEB_BUILT_AT__ === 'string' ? __WEB_BUILT_AT__ : null, webCommit: typeof __WEB_COMMIT__ === 'string' ? __WEB_COMMIT__ : null }))
@@ -16,6 +19,7 @@ export function BuildBadge({ className = '' }: { className?: string }) {
         const bridge = desktopBridge()
         // getBuildInfo працює й до входу; у старій програмі його немає — тоді як раніше (після входу).
         const info = await (bridge?.getBuildInfo ? bridge.getBuildInfo() : bridge?.getRuntimeInfo?.())
+        if (info && !stopped) setLanUpdate(info.lanUpdate ?? null)
         if (info && !stopped) setLabel(buildLabel({ desktop: true, build: info.build, stagedUpdateReleaseId: info.stagedUpdateReleaseId, managerPc: info.lan?.mode === 'client' }))
       } catch { /* без підпису */ }
     }
@@ -25,10 +29,13 @@ export function BuildBadge({ className = '' }: { className?: string }) {
     return () => { stopped = true; window.clearInterval(timer) }
   }, [])
   if (!label) return null
+  const problem = lanUpdate ? lanUpdateLines(lanUpdate).find(line => line.tone === 'bad')?.text ?? null : null
   return (
     <div className={`text-[11px] leading-tight text-gray-400 ${className}`} title={label.title} data-build-label>
       {label.text}
       {label.updateWaiting && <span className="ml-1 text-amber-600">· оновлення встановиться при закритті</span>}
+      {/* 25.11.2026: ПК менеджера не оновлюється — причина прямо під номером збірки (для фото власнику). */}
+      {problem && <span className="mt-0.5 block text-red-500" data-lan-update-problem>{problem}</span>}
     </div>
   )
 }
