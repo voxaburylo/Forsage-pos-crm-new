@@ -102,7 +102,7 @@ function accessHint(provider: string, stored: string): string {
  */
 export type LoadProgress = { fraction: number | null; eta_ms: number | null; loading: boolean; next_at: string | null }
 /** Розмір сторінки прайсу; для GPL — те саме, що GPL_PAGE_SIZE у supplierGpl.ts (перевіряє тест). */
-export const PAGE_SIZE_BY_PROVIDER: Readonly<Record<string, number>> = { omega: OMEGA_PAGE_SIZE, gpl: 200 }
+export const PAGE_SIZE_BY_PROVIDER: Readonly<Record<string, number>> = { omega: OMEGA_PAGE_SIZE, gpl: 100 }
 
 export function pricePassProgress(row: { provider: string; sync_page: number | null; sync_started_at: string | Date | null; last_full_sync_at: string | Date | null; total_offers: number | null }, now = Date.now()): LoadProgress {
   const pageSize = PAGE_SIZE_BY_PROVIDER[row.provider] ?? OMEGA_PAGE_SIZE

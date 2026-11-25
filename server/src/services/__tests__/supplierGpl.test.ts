@@ -37,7 +37,7 @@ describe('GPL supplier', () => {
     expect(JSON.parse(String(calls[0][1].body))).toEqual({ login: 'shop', password: 'secret' })
     const page = await gplPage('T0K3N', 2, { fetchImpl })
     expect(page).toMatchObject({ total: 401, lastPage: 3 })
-    expect(calls[1][0]).toContain('/api/v2/prices?page=2&perPage=200')
+    expect(calls[1][0]).toContain('/api/v2/prices?page=2&perPage=100')
     expect((calls[1][1].headers as Record<string, string>).Authorization).toBe('Bearer T0K3N')
   })
 
