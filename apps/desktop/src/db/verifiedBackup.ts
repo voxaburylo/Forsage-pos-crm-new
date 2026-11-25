@@ -63,3 +63,34 @@ export function createVerifiedBackup(source: string, destination: string): Promi
     })
   })
 }
+
+const QUICK_CHECK_WORKER = `
+const { workerData, parentPort } = require('node:worker_threads');
+const { DatabaseSync } = require('node:sqlite');
+try {
+  const db = new DatabaseSync(workerData.source, { readOnly: true, timeout: 5000 });
+  try {
+    const rows = db.prepare('PRAGMA quick_check').all();
+    parentPort.postMessage({ result: rows.length === 1 && rows[0].quick_check === 'ok' ? 'ok' : String(rows.map(row => row.quick_check).slice(0, 5).join('; ')) });
+  } finally { db.close(); }
+} catch (error) { parentPort.postMessage({ error: error.message }); }
+`
+
+/**
+ * 25.11.2026 (холодний пуск): перевірка всіх сторінок робочої бази в окремому потоці, без блокування каси.
+ * 'ok' — база ціла; інший рядок — опис пошкодження від SQLite. Помилка відкриття — reject.
+ */
+export function quickCheckInWorker(source: string, timeoutMs = 10 * 60_000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(QUICK_CHECK_WORKER, { eval: true, workerData: { source } })
+    let outcome: { result?: string; error?: string } = {}
+    const timeout = setTimeout(() => { outcome = { error: 'LOCAL_QUICK_CHECK_TIMEOUT' }; void worker.terminate() }, timeoutMs)
+    worker.on('message', (message: { result?: string; error?: string }) => { outcome = message })
+    worker.on('error', (error) => { outcome = { error: error.message } })
+    worker.once('exit', () => {
+      clearTimeout(timeout)
+      if (typeof outcome.result === 'string') resolve(outcome.result)
+      else reject(new Error(outcome.error ?? 'LOCAL_QUICK_CHECK_INCOMPLETE'))
+    })
+  })
+}

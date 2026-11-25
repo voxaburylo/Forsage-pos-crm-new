@@ -1,6 +1,7 @@
 import { AppError } from '../middleware/errorHandler.js'
 
-export const AI_TIME_LIMITS = { chat: 240_000, invoice: 150_000, keyTest: 15_000, read: 30_000 } as const
+// 25.11.2026 (Vercel Pro, функція до 800 с): довгі завдання помічника (порядок у сотнях назв, великі накладні) не обриваються.
+export const AI_TIME_LIMITS = { chat: 720_000, invoice: 600_000, keyTest: 15_000, read: 30_000 } as const
 
 export function isAiBudgetError(error: unknown): boolean {
   return error instanceof AppError && (error.code === 'AI_TIMEOUT' || error.code === 'AI_READ_LIMIT')

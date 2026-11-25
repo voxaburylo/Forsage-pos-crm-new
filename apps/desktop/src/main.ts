@@ -86,7 +86,7 @@ import { OutboxPusher } from './link/outboxPush'
 import { LanOrderQueue } from './lan/orderQueue'
 import { buildLanDiagnosis, readFirewallState, requestFirewallRule } from './lan/diagnostics'
 import { assertLanIdentityConnection, canPairEmptyClient, cacheLanIdentity, hasLanIdentity, loginLanClient } from './lan/clientIdentity'
-import { createPortableReleaseSource, downloadPortableUpdate, launchPortableUpdateAfterQuit, readPortableUpdateOutcome, type StagedUpdate } from './updates/portableUpdate'
+import { createPortableReleaseSource, downloadPortableUpdate, launchPortableUpdateAfterQuit, readPortableUpdateOutcome, settleInterruptedPortableUpdate, type StagedUpdate } from './updates/portableUpdate'
 import { LanOrderClient } from './lan/orderClient'
 import { isSpoolerGuardError, postflightPrinter, preflightPrinter } from './print/spoolerGuard'
 import { disposePrintWarmShell, prewarmPrintShell } from './print/printWarmShell'
@@ -103,6 +103,7 @@ import { spawn } from 'node:child_process'
 import { rehearsalRootFrom, runStartupRehearsal } from './diagnostics/startupRehearsal'
 import { allStaffRights, effectiveStaffRights, setStaffRight } from './security/staffRights'
 import { compactOutbox, previewOutboxCompaction } from './repositories/outboxCompaction'
+import { quickCheckInWorker } from './db/verifiedBackup'
 
 // Keep the existing encryption profile stable across package/product renames.
 // Перевірки (смоки) запускають справжню програму поруч із робочою касою — їм окремий профіль; у зібраній програмі цього немає.
@@ -218,6 +219,20 @@ let lanUpdateTimer: ReturnType<typeof setInterval> | null = null
 let lanUpdateFlight: Promise<void> | null = null
 let lanUpdateAbort: AbortController | null = null
 let stagedLanUpdate: StagedUpdate | null = null
+/**
+ * 25.11.2026 (власник: «на втором ПК программа не обновляется — подумай почему»): причина була лише в чорній скриньці
+ * ПК менеджера. Тепер стан оновлення видно на екрані («Налаштування» → «ПК і копії»): коли перевіряв, що завантажив,
+ * чому не завантажив, чому не встановив і чим закінчилась остання установка.
+ */
+const lanUpdateStatus: { checkedAt: string | null; error: string | null; installError: string | null } = { checkedAt: null, error: null, installError: null }
+function lanUpdateReport() {
+  let outcome: unknown = null
+  try { outcome = process.env.LOCALAPPDATA ? readPortableUpdateOutcome(process.env.LOCALAPPDATA) : null }
+  catch (error) { outcome = { state: 'unknown', message: error instanceof Error ? error.message : String(error) } }
+  return { ...lanUpdateStatus, staged: stagedLanUpdate?.releaseId ?? null, outcome,
+    portable: Boolean(process.env.PORTABLE_EXECUTABLE_FILE), executable: process.env.PORTABLE_EXECUTABLE_FILE ?? null }
+}
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error)).slice(0, 300)
 type DesktopIpcListener = (event: IpcMainInvokeEvent, ...args: any[]) => unknown
 const desktopCommandHandlers = new Map<string, DesktopIpcListener>()
 const activeDesktopCommands = new Set<Promise<unknown>>()
@@ -310,21 +325,28 @@ function checkLanUpdate(): Promise<void> {
   const network = localNetwork
   lanUpdateAbort = new AbortController()
   const signal = lanUpdateAbort.signal
-  lanUpdateFlight = downloadPortableUpdate({
-    localAppData: process.env.LOCALAPPDATA,
+  const localAppData = process.env.LOCALAPPDATA
+  // 25.11.2026: перервана установка (вимкнули ПК) більше не блокує оновлення назавжди — див. settleInterruptedPortableUpdate.
+  lanUpdateFlight = settleInterruptedPortableUpdate(localAppData)
+    .then(state => { if (state) blackBox?.record('lan-update-settled', { state }) })
+    .catch(error => { blackBox?.record('lan-update-settle-failed', { error }) })
+    .then(() => downloadPortableUpdate({
+    localAppData,
     currentReleaseId: desktopBuildInfo.releaseId,
     signal,
     transport: {
       describe: () => network.requestUpdateMetadata(session, signal),
       chunk: input => network.requestUpdateChunk(input, session, signal),
     },
-  }).then(result => {
+  })).then(result => {
+    lanUpdateStatus.checkedAt = new Date().toISOString(); lanUpdateStatus.error = null
     if (result.state === 'ready') {
       stagedLanUpdate = result.update
       blackBox?.record('lan-update-ready', { release: result.update.releaseId })
     }
   }).catch(error => {
     // Offline is expected. No repeated global banner, no attempt to use the cloud.
+    lanUpdateStatus.checkedAt = new Date().toISOString(); lanUpdateStatus.error = errorText(error)
     blackBox?.record('lan-update-deferred', { error })
   }).finally(() => { lanUpdateFlight = null; lanUpdateAbort = null })
   return lanUpdateFlight
@@ -1323,7 +1345,22 @@ app.whenReady().then(async () => {
   const opened = openLocalDatabaseOrExplain(dataRoot)
   if (!opened) return
   localDatabase = opened.database
-  blackBox?.record('database-opened', { schemaVersion: localDatabase.info().schemaVersion })
+  blackBox?.record('database-opened', { schemaVersion: localDatabase.info().schemaVersion, integrityChecked: localDatabase.integrityChecked })
+  // 25.11.2026 (власник: «холодний пуск довгий»): відмітки кроків запуску — щоб у журналі було видно, що саме гальмує.
+  const startupPhase = (phase: string) => blackBox?.record('startup-phase', { phase, ms: Math.round(performance.now()) })
+  // Базу закрито штатно — повна перевірка сторінок не на запуску, а за 5 хв в окремому потоці (каса не чекає).
+  if (!localDatabase.integrityChecked) {
+    const checkedDb = localDatabase
+    setTimeout(() => {
+      if (localDatabase !== checkedDb || databaseMaintenance) return
+      void quickCheckInWorker(checkedDb.databasePath).then(result => {
+        blackBox?.record('integrity-check', { ok: result === 'ok' })
+        if (result !== 'ok') recordDesktopProblem({ source: 'database', code: 'database.integrity_failed',
+          title: 'База каси пошкоджена: потрібне відновлення з резервної копії',
+          detail: 'Перевірка сторінок бази знайшла пошкодження. Не закривайте зміну й зверніться до власника. ' + result.slice(0, 300) })
+      }).catch(error => writeDesktopDiagnostic('integrity-check-failed', error))
+    }, 5 * 60_000).unref()
+  }
   localCatalog = new LocalCatalogRepository(localDatabase)
   localInventory = new LocalInventoryRepository(localDatabase)
   localOrders = new LocalOrderRepository(localDatabase)
@@ -1340,6 +1377,7 @@ app.whenReady().then(async () => {
   }), createBackgroundSyncExecutor(localDatabase))
   localSupplierCatalog = new LocalSupplierCatalogRepository(localDatabase)
   localProblems = new LocalProblemRepository(localDatabase)
+  startupPhase('repositories')
   shiftBackups = new ShiftBackupService(localDatabase,
     // Вивантаження змін — поруч із portable-EXE, як і раніше; не в теці програми, яку оновлення замінює.
     process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(resolvePortableExecutable(process.env, process.execPath) ?? process.execPath), error => {
@@ -1348,7 +1386,8 @@ app.whenReady().then(async () => {
         title: 'Не вдалося зберегти резервну копію бази',
         detail: 'Копія бази (після зміни або щоденна) повториться сама. ' + (error instanceof Error ? error.message : String(error)) })
     }, undefined, { dailyCopy: true })
-  shiftBackups.start()
+  // 25.11.2026: копії бази — не в мить запуску (після ввімкнення ПК вони змагались за диск із відкриттям каси).
+  shiftBackups.start(2 * 60_000)
   // Зв'язок головного ПК із сервером власним ключем: веб працює через ПК і тоді, коли в програмі ніхто не увійшов.
   getTillDeviceLink().start()
   getOutboxPusher().start()
@@ -1402,13 +1441,14 @@ app.whenReady().then(async () => {
       title: 'Не вдалося записати копію на флешку',
       detail: 'Робочі дані не змінено. ' + (error instanceof Error ? error.message : String(error)) })
   })
-  externalBackups.start()
+  externalBackups.start(4 * 60_000)
   stopBackupScheduler =startBackupScheduler(localDatabase, (error) => {
     writeDesktopDiagnostic('local-backup-failed', error)
     recordDesktopProblem({ source: 'database', code: 'database.backup_failed',
       title: 'Не вдалося створити резервну копію',
       detail: 'Робочі дані не змінено. ' + (error instanceof Error ? error.message : String(error)) })
-  })
+  }, 3 * 60_000)
+  startupPhase('services')
   cashalot = new CashalotService(dataRoot)
   let releaseSource: ReturnType<typeof createPortableReleaseSource> = null
   try {
@@ -1456,11 +1496,14 @@ app.whenReady().then(async () => {
 
   // 21.11.2026: ПК менеджера бачить, що нову версію з головного ПК уже завантажено (встановиться при закритті).
   handleDesktopIpc('desktop:get-runtime-info', () => ({ ...requireLocalDatabase().info(), build: desktopBuildInfo,
-    stagedUpdateReleaseId: stagedLanUpdate?.releaseId ?? null }))
+    stagedUpdateReleaseId: stagedLanUpdate?.releaseId ?? null,
+    lanUpdate: localNetwork?.getStatus().mode === 'client' ? lanUpdateReport() : null }))
 
   // 23.11.2026: номер збірки видно й на екрані входу (власник звіряє версії двох ПК, не входячи). Лише збірка й режим ПК.
   handleDesktopIpc('desktop:get-runtime-info-build', () => ({ build: desktopBuildInfo, stagedUpdateReleaseId: stagedLanUpdate?.releaseId ?? null,
-    lan: { mode: localNetwork?.getStatus().mode ?? 'standalone' } }))
+    lan: { mode: localNetwork?.getStatus().mode ?? 'standalone' },
+    // 25.11.2026: стан автооновлення ПК менеджера — без шляху до файлу (екран входу бачать усі).
+    lanUpdate: localNetwork?.getStatus().mode === 'client' ? { ...lanUpdateReport(), executable: null } : null }))
 
   handleDesktopIpc('desktop:lan:first-run-status', () => {
     const status = localNetwork!.getStatus()
@@ -2605,6 +2648,7 @@ app.whenReady().then(async () => {
   try { assertLanIdentityConnection(localDatabase, localNetwork.getStatus()); safeNetworkConfig = true }
   catch (error) { writeDesktopDiagnostic('lan-client-config-blocked', error) }
   if (safeNetworkConfig) await localNetwork.startConfigured()
+  startupPhase('ready')
   if (backgroundMode) {
     // Фон: вікна немає. Щойно хтось відкрив касу на екрані — коректно закриваємось і віддаємо базу вікну.
     blackBox?.record('background-started')
@@ -2680,7 +2724,7 @@ app.on('before-quit', (event) => {
         try {
           await launchPortableUpdateAfterQuit({ packaged: app.isPackaged, portableExecutable: process.env.PORTABLE_EXECUTABLE_FILE,
             localAppData: process.env.LOCALAPPDATA, update: stagedLanUpdate, parentPid: process.pid, quitConfirmed: true })
-        } catch (error) { writeDesktopDiagnostic('lan-update-install-deferred', error) }
+        } catch (error) { lanUpdateStatus.installError = errorText(error); writeDesktopDiagnostic('lan-update-install-deferred', error) }
       }
     } catch (error) { writeDesktopDiagnostic('database-close-failed', error) }
     finally {

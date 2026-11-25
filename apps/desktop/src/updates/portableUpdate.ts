@@ -301,3 +301,51 @@ export async function launchPortableUpdateAfterQuit(input: {
     if (!dispatched) for (const entry of owned.reverse()) await removeOwned(entry.file, entry.stat)
   }
 }
+
+/**
+ * 25.11.2026 (власник: «на втором ПК программа не обновляется»): якщо установку перервано (ПК вимкнули, пропало світло,
+ * помічник не запустився), стан лишався «невідомо» назавжди — і launchPortableUpdateAfterQuit відмовляв у будь-якому
+ * наступному оновленні («Previous update outcome requires inspection»). Через 15 хв після строку завдання програма сама
+ * «перевіряє»: фактичний файл програми за контрольною сумою — це або нова версія (установлено), або попередня (не
+ * встановлено). Лише тоді записує підсумок і знімає замки ЦЬОГО завдання. Інший вміст файлу — нічого не чіпає.
+ */
+export async function settleInterruptedPortableUpdate(localAppData: string, now = Date.now()): Promise<PortableUpdateOutcome['state'] | null> {
+  const directory = updateRoot(localAppData), lastFile = path.join(directory, 'last-job.json')
+  if (!optionalStat(lastFile)) return null
+  const last = readSmallJson(lastFile)
+  const jobId = typeof last.jobId === 'string' && /^[a-f0-9-]{36}$/.test(last.jobId) ? last.jobId : null
+  const destination = typeof last.destination === 'string' ? last.destination : null
+  const deadline = typeof last.deadline === 'string' ? Date.parse(last.deadline) : NaN
+  if (!jobId || !destination || !Number.isFinite(deadline) || now < deadline + 15 * 60_000) return null
+  if (typeof last.sha256 !== 'string' || !SHA256.test(last.sha256) || typeof last.previousHash !== 'string' || !SHA256.test(last.previousHash)) return null
+  const resultFile = path.join(directory, `${jobId}.result.json`)
+  const ownLock = (file: string) => {
+    if (!optionalStat(file)) return true
+    try { return readSmallJson(file).jobId === jobId } catch { return false }
+  }
+  const locks = [path.join(directory, 'install.lock'), localAbsolute(destination) + '.update-lock']
+  if (!locks.every(ownLock)) return null
+  let state: 'installed' | 'failed'
+  if (!optionalStat(resultFile)) {
+    const executable = localAbsolute(destination)
+    if (!optionalStat(executable)) return null
+    assertExecutable(executable)
+    const actual = await fileHash(executable)
+    if (actual === last.sha256) state = 'installed'
+    else if (actual === last.previousHash) state = 'failed'
+    else return null
+    const result = await open(resultFile, 'wx')
+    try {
+      await result.writeFile(JSON.stringify({ protocol: 1, jobId, releaseId: last.releaseId, state,
+        message: state === 'installed' ? 'Установку завершено (перевірено за контрольною сумою після перерви)' : 'Установку перервано (ПК вимкнули або помічник не запустився) — програма спробує ще раз',
+        sha256: actual, previousHash: last.previousHash, finishedAt: new Date(now).toISOString() }))
+      await result.sync()
+    } finally { await result.close() }
+  } else {
+    const written = readSmallJson(resultFile).state
+    if (written !== 'installed' && written !== 'failed' && written !== 'rolled-back') return null
+    state = written === 'installed' ? 'installed' : 'failed'
+  }
+  for (const lock of locks) if (optionalStat(lock)) await unlink(lock)
+  return state
+}
