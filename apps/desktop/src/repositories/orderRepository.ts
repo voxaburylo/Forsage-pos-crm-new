@@ -1209,34 +1209,154 @@ export class LocalOrderRepository {
     shift_id?: string | null
     payment_method?: 'cash' | 'card' | 'mixed'
     is_fiscal?: boolean
-  } = {}): { data: { success: true; sale_id: string; sale_number: string } } {
+    /**
+     * 25.11.2026 (рішення власника: «менеджер видає товар, клієнт оплачує на касі»; неоплачене одразу — борг):
+     * видача без прийому грошей. Внесене за замовлення зараховується, решта — борг клієнта в тому ж чеку.
+     * Менеджер без своєї зміни видає в межах відкритої зміни каси.
+     */
+    on_debt?: boolean
+  } = {}): { data: { success: true; sale_id: string; sale_number: string; debt_amount?: number } } {
     return this.db.transaction(() => this.completeOrderInTransaction(orderId, input))
   }
 
-  private completeOrderInTransaction(orderId: string, input: NonNullable<Parameters<LocalOrderRepository['completeOrder']>[1]>): { data: { success: true; sale_id: string; sale_number: string } } {
+  /**
+   * 25.11.2026 (власник: «часть запчастей приехала, а часть нет, и клиент уже хочет забрать половину»):
+   * часткова видача. Вибрані прибулі позиції лишаються в цьому замовленні й видаються (неоплачене — борг клієнта),
+   * решта переходить у НОВЕ замовлення з тими самими позиціями (звʼязок із замовленням постачальнику й фото зберігаються).
+   * Так у кожного замовлення, як і раніше, один чек видачі. Надлишок передоплати (внесли більше, ніж забирають) —
+   * на рахунок клієнта (рішення власника: «или выдача с кассы, или остаться на счету по желанию клиента»).
+   */
+  handOverItems(orderId: string, input: { tenant_id?: string; user_id: string; item_ids: string[] }): {
+    data: { success: true; sale_id: string; sale_number: string; debt_amount?: number; moved_to_account?: number; rest_order_id?: string; rest_order_number?: number }
+  } {
+    return this.db.transaction(() => {
+      const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
+      const order = this.getOrder(orderId, tenantId)
+      if (!order) throw new Error('Замовлення не знайдено')
+      if (TERMINAL_STATUSES.has(String(order.status)) || NON_ISSUEABLE.has(order.status)) throw new Error('Це замовлення вже закрите — видачу не проведено')
+      const wanted = new Set((Array.isArray(input.item_ids) ? input.item_ids : []).map(String))
+      const open = order.items.filter((item: any) => !['canceled', 'handed', 'returned'].includes(String(item.item_status)))
+      const selected = open.filter((item: any) => wanted.has(String(item.id)))
+      if (!selected.length || selected.length !== wanted.size) throw new Error('Виберіть позиції для видачі (вибрану позицію не знайдено або її вже видано)')
+      const notArrived = selected.filter((item: any) => item.item_status !== 'arrived')
+      if (notArrived.length) throw new Error(`Видати можна лише прибулі позиції. Ще не прибуло: ${notArrived.slice(0, 3).map((item: any) => `«${item.name || 'Без назви'}»`).join(', ')}`)
+      const rest = open.filter((item: any) => !wanted.has(String(item.id)))
+      // Усе, що лишилось, видається — звичайна видача (неоплачене — борг).
+      if (!rest.length) return this.completeOrderInTransaction(orderId, { tenant_id: tenantId, user_id: input.user_id, on_debt: true })
+
+      if (!order.customer_id) throw new Error('Частково видати можна лише замовлення з клієнтом. Виберіть клієнта в замовленні.')
+      if (num(order.discount_amount) > 0) throw new Error('Замовлення має знижку на все замовлення — його видають повністю. Частково видати не можна.')
+      const ledger = this.db.prepare(`SELECT COALESCE(SUM(amount), 0) AS paid, COALESCE(SUM(CASE WHEN method = 'bonus' THEN amount ELSE 0 END), 0) AS bonus
+        FROM order_payments WHERE tenant_id = ? AND order_id = ? AND deleted_at IS NULL`).get(tenantId, orderId) as { paid: number; bonus: number }
+      if (num(ledger.bonus) > 0) throw new Error('Замовлення частково оплачене бонусами — його видають повністю. Частково видати не можна.')
+      // Видача записується в зміну каси — перевіряємо до розділення, щоб не розділити замовлення даремно.
+      if (!this.handoverShift(input.user_id, tenantId)) throw new Error('Касова зміна не відкрита. Видача записується в зміну каси — спочатку відкрийте зміну на касі.')
+
+      const timestamp = this.nextTimestamp(tenantId, orderId)
+      const lineTotal = (item: any) => Math.round(num(item.sell_price) * stockQuantity(item.qty)) + Math.round(num(item.core_deposit_amount) * stockQuantity(item.qty))
+      const handedTotal = selected.reduce((sum: number, item: any) => sum + lineTotal(item), 0)
+      const restTotal = rest.reduce((sum: number, item: any) => sum + lineTotal(item), 0)
+      assertOrderTotal(handedTotal); assertOrderTotal(restTotal)
+
+      // Нове замовлення для решти: той самий клієнт, менеджер, авто, коментар; грошей у ньому ще немає.
+      const restId = randomUUID()
+      const restNumber = this.nextOrderNumber(tenantId, timestamp)
+      const restStatus = rest.every((item: any) => item.item_status === 'arrived') ? 'ready'
+        : rest.some((item: any) => item.item_status === 'ordered' || item.item_status === 'arrived') ? 'ordered' : 'new'
+      const sourceNumber = order.order_number ?? orderId.slice(0, 8)
+      const restComment = [String(order.comment ?? '').trim(), `Залишок замовлення №${sourceNumber} (частину видано ${timestamp.slice(0, 10)})`].filter(Boolean).join('\n')
+      this.db.prepare(`
+        INSERT INTO customer_orders (
+          id, tenant_id, order_number, kp_number, customer_id, chat_id, manager_id,
+          vehicle_info_json, status, prepayment, prepayment_method,
+          prepayment_is_fiscal, total_amount, total_paid, discount_amount,
+          pickup_deadline_at, pickup_cell, comment, source, dirty_at, created_at, updated_at
+        )
+        SELECT ?, tenant_id, ?, NULL, customer_id, chat_id, manager_id,
+          vehicle_info_json, ?, 0, NULL,
+          0, ?, 0, 0,
+          pickup_deadline_at, pickup_cell, ?, source, ?, ?, ?
+        FROM customer_orders WHERE id = ? AND tenant_id = ?
+      `).run(restId, restNumber, restStatus, restTotal, restComment, timestamp, timestamp, timestamp, orderId, tenantId)
+      const moveItem = this.db.prepare(`UPDATE customer_order_items SET order_id = ?, dirty_at = ?, updated_at = ?
+        WHERE id = ? AND order_id = ? AND tenant_id = ? AND deleted_at IS NULL`)
+      for (const item of rest) {
+        if (Number(moveItem.run(restId, timestamp, timestamp, item.id, orderId, tenantId).changes) !== 1) throw new Error('Позицію замовлення не перенесено — видачу скасовано')
+      }
+
+      // Надлишок передоплати — на рахунок клієнта; у замовленні лишається рівно стільки, скільки коштує видане.
+      const paid = Math.max(num(order.total_paid), num(order.prepayment), num(ledger.paid))
+      const surplus = Math.max(0, paid - handedTotal)
+      this.db.prepare(`UPDATE customer_orders SET total_amount = ?, status = 'ready', total_paid = ?, prepayment = ?, dirty_at = ?, updated_at = ?
+        WHERE id = ? AND tenant_id = ?`).run(handedTotal, paid - surplus, Math.min(num(order.prepayment), paid - surplus), timestamp, timestamp, orderId, tenantId)
+      this.syncOrderReserves(orderId, tenantId)
+      this.syncOrderReserves(restId, tenantId)
+
+      // Спершу замовлення (сервер замінює позиції знімком: старе віддає перенесені позиції, нове їх приймає), потім гроші й видача.
+      this.addOutbox(tenantId, 'customer_order', orderId, 'order.updated', this.getOrder(orderId, tenantId), timestamp)
+      this.addOutbox(tenantId, 'customer_order', restId, 'order.created', this.getOrder(restId, tenantId), timestamp)
+      if (surplus > 0) {
+        const customer = this.db.prepare(`SELECT id, COALESCE(deposit_balance, 0) AS deposit_balance FROM customers
+          WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL LIMIT 1`).get(order.customer_id, tenantId) as { id: string; deposit_balance: number } | undefined
+        if (!customer) throw new Error('Клієнта замовлення не знайдено — видачу не проведено')
+        const balanceAfter = num(customer.deposit_balance) + surplus
+        const transactionId = randomUUID()
+        const notes = `Надлишок передоплати замовлення №${sourceNumber}: видано частину, решта — замовлення №${restNumber}`
+        this.db.prepare('UPDATE customers SET deposit_balance = ?, dirty_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?')
+          .run(balanceAfter, timestamp, timestamp, customer.id, tenantId)
+        this.db.prepare(`INSERT INTO customer_deposit_transactions (
+            id, tenant_id, customer_id, amount, balance_after, method, order_id, notes, created_by, dirty_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, 'account', ?, ?, ?, ?, ?, ?)`)
+          .run(transactionId, tenantId, customer.id, surplus, balanceAfter, orderId, notes, input.user_id, timestamp, timestamp, timestamp)
+        this.addOutbox(tenantId, 'customer', customer.id, 'customer.deposit_changed', {
+          customer_id: customer.id, transaction_id: transactionId, amount: surplus, method: 'account', order_id: orderId,
+          notes, created_by: input.user_id, created_at: timestamp, balance_after: balanceAfter,
+        }, timestamp)
+      }
+      const issued = this.completeOrderInTransaction(orderId, { tenant_id: tenantId, user_id: input.user_id, on_debt: true })
+      return { data: { ...issued.data, moved_to_account: surplus, rest_order_id: restId, rest_order_number: restNumber } }
+    })
+  }
+
+  /** Відкрита зміна для видачі: своя, а якщо її немає (менеджер) — найсвіжіша відкрита зміна каси. */
+  private handoverShift(userId: string, tenantId: string): string | null {
+    const own = this.pos.findOpenShift(userId, tenantId)
+    if (own) return own
+    const row = this.db.prepare(`SELECT id FROM shifts WHERE tenant_id = ? AND status = 'open' AND deleted_at IS NULL
+      ORDER BY opened_at DESC LIMIT 1`).get(tenantId) as { id: string } | undefined
+    return row?.id ?? null
+  }
+
+  private completeOrderInTransaction(orderId: string, input: NonNullable<Parameters<LocalOrderRepository['completeOrder']>[1]>): { data: { success: true; sale_id: string; sale_number: string; debt_amount?: number } } {
     const tenantId = input.tenant_id ?? DEFAULT_TENANT_ID
     const order = this.getOrder(orderId, tenantId)
     if (!order) throw new Error('Замовлення не знайдено')
     if (order.status === 'completed' && order.sale_id) {
       const existingSale = this.db.prepare(`
-        SELECT id, sale_number
+        SELECT id, sale_number, COALESCE(debt_amount, 0) AS debt_amount
         FROM sales
         WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
         LIMIT 1
-      `).get(order.sale_id, tenantId) as { id: string; sale_number: string } | undefined
+      `).get(order.sale_id, tenantId) as { id: string; sale_number: string; debt_amount: number } | undefined
       if (!existingSale) throw new Error('Замовлення позначене виданим, але пов’язаний чек відсутній')
+      // Повтор того самого запиту відповідає так само, як перший раз (разом із боргом видачі).
       return {
         data: {
           success: true,
           sale_id: existingSale.id,
           sale_number: existingSale.sale_number,
+          debt_amount: Number(existingSale.debt_amount),
         },
       }
     }
     if (NON_ISSUEABLE.has(order.status)) throw new Error('Це замовлення не можна видати через касу')
     if (input.is_fiscal) throw new Error('Фіскалізація видачі замовлення ще не підтримується цим каналом. Фіскальний чек не створено; видачу не проведено.')
+    const onDebt = input.on_debt === true
     const remaining = this.remainingDue(order)
-    if (remaining > 0) throw new Error('Не всі оплати проведено')
+    if (remaining > 0 && !onDebt) throw new Error('Не всі оплати проведено')
+    if (remaining > 0 && !order.customer_id) {
+      throw new Error('Неоплачене замовлення можна видати в борг лише клієнту. Виберіть клієнта в замовленні або прийміть оплату.')
+    }
 
     const activeItems = order.items.filter((item: any) => item.item_status !== 'canceled')
     if (activeItems.length === 0) {
@@ -1254,10 +1374,11 @@ export class LocalOrderRepository {
     }
 
     const cashierId = input.user_id ?? order.manager_id ?? 'local'
-    const shiftId = input.shift_id ?? this.pos.findOpenShift(cashierId, tenantId)
-    if (!shiftId) throw new Error('Спочатку відкрийте касову зміну')
+    const shiftId = input.shift_id ?? (onDebt ? this.handoverShift(cashierId, tenantId) : this.pos.findOpenShift(cashierId, tenantId))
+    if (!shiftId) throw new Error(onDebt ? 'Касова зміна не відкрита. Видача записується в зміну каси — спочатку відкрийте зміну на касі.' : 'Спочатку відкрийте касову зміну')
+    // Видача без грошей (менеджер) може йти в чужу відкриту зміну каси; гроші — лише у свою.
     if (!this.db.prepare(`SELECT id FROM shifts WHERE id = ? AND tenant_id = ?
-      AND cashier_id = ? AND status = 'open' AND deleted_at IS NULL`).get(shiftId, tenantId, cashierId)) {
+      AND (cashier_id = ? OR ?) AND status = 'open' AND deleted_at IS NULL`).get(shiftId, tenantId, cashierId, onDebt ? 1 : 0)) {
       throw new Error('Касову зміну закрито або вона належить іншому касиру')
     }
     const timestamp = this.nextTimestamp(tenantId, orderId)
@@ -1270,6 +1391,15 @@ export class LocalOrderRepository {
       else if (payment.method === 'card') paymentTotals.card += amount
       else if (payment.method === 'transfer' || payment.method === 'account') paymentTotals.transfer += amount
       else paymentTotals.cash += amount
+    }
+    // 25.11.2026: при частковій видачі надлишок передоплати переведено на рахунок клієнта (handOverItems) —
+    // ці гроші вже не належать замовленню. Знімаємо їх із готівки, потім переказу, потім картки.
+    let movedOut = Math.max(0, Math.round(num((this.db.prepare(`SELECT COALESCE(SUM(amount), 0) AS amount FROM customer_deposit_transactions
+      WHERE tenant_id = ? AND order_id = ? AND amount > 0 AND id <> ? AND deleted_at IS NULL`).get(tenantId, orderId, orderId) as { amount: number }).amount)))
+    for (const kind of ['cash', 'transfer', 'card'] as const) {
+      const take = Math.min(paymentTotals[kind], movedOut)
+      paymentTotals[kind] -= take
+      movedOut -= take
     }
     const listedPaid = paymentTotals.cash + paymentTotals.card + paymentTotals.transfer + paymentTotals.bonus
     const legacyPaid = Math.max(0, Math.round(Math.max(num(order.total_paid), num(order.prepayment))) - listedPaid)
@@ -1375,15 +1505,22 @@ export class LocalOrderRepository {
       const discount = Math.max(0, Math.round(num(order.discount_amount))) + bonusesSpent
       const total = Math.max(0, subtotal - discount)
       const paidForOrder = paymentTotals.cash + paymentTotals.card + paymentTotals.transfer
+      // Неоплачена частина при видачі в борг (рішення власника 25.11.2026: одразу борг клієнта).
+      let debtAmount = 0
       if (paidForOrder !== total) {
         const difference = Math.abs(paidForOrder - total)
         if (paidForOrder > total) {
           throw new Error(`Передоплата перевищує суму замовлення на ${(difference / 100).toFixed(2)} грн. Поверніть надлишок або зарахуйте його на рахунок клієнта.`)
         }
-        throw new Error(`Не всі оплати проведено. Залишилось ${(difference / 100).toFixed(2)} грн.`)
+        if (!onDebt || !order.customer_id) throw new Error(`Не всі оплати проведено. Залишилось ${(difference / 100).toFixed(2)} грн.`)
+        debtAmount = difference
       }
+      const salePaymentMethod: 'cash' | 'card' | 'mixed' | 'transfer' | 'debt' = debtAmount === 0
+        ? paymentMethod
+        : paidForOrder === 0 ? 'debt' : 'mixed'
       const saleNumber = this.nextSaleNumber(tenantId, timestamp)
       const notes = `Видача замовлення #${order.order_number ?? order.id.slice(0, 8)}`
+        + (debtAmount > 0 ? ` — у борг ${(debtAmount / 100).toFixed(2)} грн` : '')
 
       this.db.prepare(`
         INSERT INTO sales (
@@ -1392,7 +1529,7 @@ export class LocalOrderRepository {
           cash_amount, card_amount, transfer_amount, debt_amount, pickup_cell, notes,
           completed_at, dirty_at, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, 0, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         saleId,
         tenantId,
@@ -1404,11 +1541,13 @@ export class LocalOrderRepository {
         subtotal,
         discount,
         total,
-        paymentMethod,
+        salePaymentMethod,
+        debtAmount > 0 ? 1 : 0,
         isFiscal ? 1 : 0,
         paymentTotals.cash,
         paymentTotals.card,
         paymentTotals.transfer,
+        debtAmount,
         order.pickup_cell ?? null,
         notes,
         timestamp,
@@ -1493,6 +1632,16 @@ export class LocalOrderRepository {
         WHERE id = ? AND tenant_id = ?
       `).run(saleId, timestamp, timestamp, orderId, tenantId)
 
+      if (debtAmount > 0) {
+        const customer = this.db.prepare(`SELECT COALESCE(debt_balance, 0) AS debt_balance FROM customers
+          WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL LIMIT 1`).get(order.customer_id, tenantId) as { debt_balance: number } | undefined
+        if (!customer) throw new Error('Клієнта замовлення не знайдено — видачу в борг не проведено')
+        const debtAfter = Number(customer.debt_balance ?? 0) + debtAmount
+        if (!Number.isSafeInteger(debtAfter)) throw new Error('Борг клієнта завеликий')
+        this.db.prepare(`UPDATE customers SET debt_balance = ?, dirty_at = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`)
+          .run(debtAfter, timestamp, timestamp, order.customer_id, tenantId)
+      }
+
       const syncItems = preparedItems.map(({ qty_on_hand: _qtyOnHand, ...item }: any) => item)
       this.addOutbox(tenantId, 'customer_order', orderId, 'order.completed', {
         order_id: orderId,
@@ -1502,7 +1651,7 @@ export class LocalOrderRepository {
         cashier_id: cashierId,
         customer_id: order.customer_id ?? null,
         manager_id: order.manager_id ?? cashierId,
-        payment_method: paymentMethod,
+        payment_method: salePaymentMethod,
         is_fiscal: isFiscal,
         subtotal,
         discount,
@@ -1511,7 +1660,8 @@ export class LocalOrderRepository {
         card_amount: paymentTotals.card,
         transfer_amount: paymentTotals.transfer,
         bonuses_spent: bonusesSpent,
-        debt_amount: 0,
+        debt_amount: debtAmount,
+        is_debt: debtAmount > 0,
         pickup_cell: order.pickup_cell ?? null,
         notes,
         completed_at: timestamp,
@@ -1524,7 +1674,7 @@ export class LocalOrderRepository {
           cashier_id: cashierId,
           customer_id: order.customer_id ?? null,
           manager_id: order.manager_id ?? cashierId,
-          payment_method: paymentMethod,
+          payment_method: salePaymentMethod,
           is_fiscal: isFiscal,
           subtotal,
           discount,
@@ -1533,7 +1683,8 @@ export class LocalOrderRepository {
           card_amount: paymentTotals.card,
           transfer_amount: paymentTotals.transfer,
           bonuses_spent: bonusesSpent,
-          debt_amount: 0,
+          debt_amount: debtAmount,
+        is_debt: debtAmount > 0,
           pickup_cell: order.pickup_cell ?? null,
           notes,
           completed_at: timestamp,
@@ -1543,7 +1694,7 @@ export class LocalOrderRepository {
 
       // The issue, stock movement and payroll accrual must commit together.
       new LocalStaffRepository(this.db).recordOrderCommissions(orderId, tenantId, cashierId)
-      return { data: { success: true as const, sale_id: saleId, sale_number: saleNumber } }
+      return { data: { success: true as const, sale_id: saleId, sale_number: saleNumber, debt_amount: debtAmount } }
     })
   }
 

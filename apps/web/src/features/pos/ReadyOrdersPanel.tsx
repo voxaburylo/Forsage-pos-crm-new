@@ -11,6 +11,7 @@ import { canIssueOrderFromPos, isUnpricedOrder } from '@/features/orders/orderWo
 import { desktopBridge } from '@/lib/desktopBridge'
 import { createReadPoller } from '@/lib/readPoller'
 import { OrderHandoverItems } from './OrderHandoverItems'
+import { handOverConfirmText } from '@/features/orders/HandOverOrderButton'
 
 interface OrderItem {
   id: string
@@ -363,6 +364,25 @@ export function ReadyOrdersPanel({ isMobileInline: mobileInline, onCloseMobile, 
     }
   }
 
+  /** 25.11.2026 (рішення власника): видати без повної оплати — неоплачене одразу борг клієнта. */
+  async function handOverOnDebt(order: ReadyOrder) {
+    const remaining = remainingDue(order)
+    if (!order.customer?.id) { toast.error('Неоплачене замовлення видається в борг лише клієнту'); return }
+    if (!window.confirm(handOverConfirmText({ number: '№' + (order.order_number ?? order.id.slice(0, 8)), customer: order.customer.full_name ?? order.customer.phone, remaining }))) return
+    setCompleting(order.id)
+    try {
+      const result = await posOrderApi.handOver(order.id)
+      const debt = Number(result?.data?.debt_amount ?? 0)
+      toast.success(debt > 0 ? `Замовлення видано. Борг клієнта: +${formatMoney(debt)}` : 'Замовлення видано!')
+      await load()
+      onChanged?.()
+    } catch (e) {
+      toast.error(getErrorMessage(e, 'Помилка видачі замовлення'))
+    } finally {
+      setCompleting(null)
+    }
+  }
+
   function renderOrderActions(order: ReadyOrder, density: 'mobile' | 'desktop') {
     const remaining = remainingDue(order)
     const isCompleting = completing === order.id
@@ -405,6 +425,18 @@ export function ReadyOrdersPanel({ isMobileInline: mobileInline, onCloseMobile, 
             className={`py-2.5 text-sm ${rounded} font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-green-600 hover:bg-green-500 active:bg-green-700 text-white ${canDeposit || canFullPay ? '' : 'col-span-2'}`}
           >
             {isCompleting ? <Loader2 size={12} className="animate-spin mx-auto" /> : 'Видати товар'}
+          </button>
+        )}
+        {canIssueAction && remaining > 0 && order.customer?.id && posOrderApi.canHandOver() && (
+          <button
+            onClick={() => { void handOverOnDebt(order) }}
+            disabled={isCompleting}
+            data-order-hand-over-debt
+            style={minHeight}
+            title="Видати зараз; неоплачене стане боргом клієнта"
+            className={`py-2.5 text-sm ${rounded} font-semibold transition-colors disabled:opacity-50 border border-red-500/60 text-red-200 hover:bg-red-900/40`}
+          >
+            Видати, решта в борг
           </button>
         )}
       </div>

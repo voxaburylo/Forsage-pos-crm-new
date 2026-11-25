@@ -73,6 +73,9 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   ['desktop:pos:delete-customer', OWNER_ROLES],
   ['desktop:orders:add-payment', TILL_ROLES],
   ['desktop:orders:complete', TILL_ROLES],
+  // 25.11.2026 (рішення власника): замовлення видає менеджер, гроші приймає каса; неоплачене — борг клієнта.
+  // Грошей ця дія не бере, тому менеджеру не потрібен дозвіл «Може продавати».
+  ['desktop:orders:hand-over', TILL_ROLES],
   ...['checkout', 'create-return', 'refund-core-deposit', 'open-shift', 'close-shift', 'create-cash-operation',
     'pay-debt', 'add-customer-deposit', 'payout-customer-deposit'].map((name): [string, readonly DesktopRole[]] => [`desktop:pos:${name}`, TILL_ROLES]),
 

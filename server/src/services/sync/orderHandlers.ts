@@ -577,9 +577,27 @@ export async function applyOrderCompleted(tenantId: string, userId: string, oper
       else if (payment.method === 'transfer' || payment.method === 'account') paymentTotals.transfer += amount
       else paymentTotals.cash += amount
     }
+    // 25.11.2026: при частковій видачі надлишок передоплати каса переводить на рахунок клієнта
+    // (customer.deposit_changed з order_id приходить раніше за видачу) — ці гроші вже не належать замовленню.
+    const movedResult = await client.query(
+      `SELECT COALESCE(SUM(amount), 0)::bigint AS amount FROM customer_deposit_transactions
+       WHERE tenant_id = $1 AND order_id = $2 AND amount > 0 AND id <> $2`,
+      [tenantId, orderId],
+    )
+    let movedOut = Math.max(0, Math.round(Number(movedResult.rows[0]?.amount ?? 0)))
+    for (const kind of ['cash', 'transfer', 'card'] as const) {
+      const take = Math.min(paymentTotals[kind], movedOut)
+      paymentTotals[kind] -= take
+      movedOut -= take
+    }
     const authoritativePaid = paymentTotals.cash + paymentTotals.card + paymentTotals.transfer + paymentTotals.bonus
     const amountDue = Math.max(0, Number(order.total_amount ?? 0) - Number(order.discount_amount ?? 0))
-    if (authoritativePaid !== amountDue) {
+    // 25.11.2026 (рішення власника): видача без повної оплати — неоплачене одразу борг клієнта. Каса присилає суму боргу;
+    // приймаємо лише точний залишок і лише з клієнтом у замовленні.
+    const debtAmount = Number(payload.debt_amount ?? 0)
+    const debtAccepted = Number.isSafeInteger(debtAmount) && debtAmount > 0 && authoritativePaid < amountDue
+      && authoritativePaid + debtAmount === amountDue && isUuid(order.customer_id)
+    if (authoritativePaid !== amountDue && !debtAccepted) {
       const code = authoritativePaid > amountDue ? 'SYNC_ORDER_OVERPAID' : 'SYNC_ORDER_INCOMPLETE_PAYMENT'
       const message = authoritativePaid > amountDue
         ? 'Оплата перевищує суму замовлення. Спочатку поверніть або зарахуйте надлишок.'
@@ -791,7 +809,10 @@ export async function applyOrderCompleted(tenantId: string, userId: string, oper
       paymentTotals.card > 0 ? 'card' : null,
       paymentTotals.transfer > 0 ? 'transfer' : null,
     ].filter(Boolean)
-    const paymentMethod = usedPaymentMethods.length > 1 ? 'mixed' : String(usedPaymentMethods[0] ?? 'cash')
+    const saleDebt = debtAccepted ? debtAmount : 0
+    const paymentMethod = saleDebt > 0
+      ? (usedPaymentMethods.length ? 'mixed' : 'debt')
+      : usedPaymentMethods.length > 1 ? 'mixed' : String(usedPaymentMethods[0] ?? 'cash')
     const cashAmount = paymentTotals.cash
     const cardAmount = paymentTotals.card
     const transferAmount = paymentTotals.transfer
@@ -812,11 +833,13 @@ export async function applyOrderCompleted(tenantId: string, userId: string, oper
       `INSERT INTO sales (
         id, tenant_id, sale_number, customer_id, cashier_id, shift_id, status,
         subtotal, discount, total, payment_method, is_debt, notes, manager_id,
-        cash_amount, card_amount, transfer_amount, is_fiscal, completed_at, created_at, updated_at, pickup_cell, bonuses_spent
+        cash_amount, card_amount, transfer_amount, is_fiscal, completed_at, created_at, updated_at, pickup_cell, bonuses_spent,
+        debt_amount
       ) VALUES (
         $1, $2, $3, $4, $5, $6, 'completed',
-        $7, $8, $9, $10, false, $11, $12,
-        $13, $14, $15, $16, $17, $17, $18, $19, $20
+        $7, $8, $9, $10, $21, $11, $12,
+        $13, $14, $15, $16, $17, $17, $18, $19, $20,
+        $22
       )`,
       [
         saleId,
@@ -839,8 +862,17 @@ export async function applyOrderCompleted(tenantId: string, userId: string, oper
         appliedAt,
         payload.pickup_cell ?? order.pickup_cell ?? null,
         bonusesSpent,
+        saleDebt > 0,
+        saleDebt,
       ],
     )
+    // Борг клієнта: якщо каса присилає знімок балансів, його веде знімок; інакше — тут, як для оплати боргу.
+    if (saleDebt > 0 && !operation.balance_mirrored) {
+      await client.query(
+        'UPDATE customers SET debt_balance = COALESCE(debt_balance, 0) + $3, updated_at = $4 WHERE id = $1 AND tenant_id = $2',
+        [order.customer_id, tenantId, saleDebt, appliedAt],
+      )
+    }
 
     for (const item of items) {
       await client.query(
@@ -896,7 +928,7 @@ export async function applyOrderCompleted(tenantId: string, userId: string, oper
       [
         orderId,
         cashierId,
-        { method: paymentMethod, offline: true, shift_id: shiftId, sale_id: saleId },
+        { method: paymentMethod, offline: true, shift_id: shiftId, sale_id: saleId, ...(saleDebt > 0 ? { debt_amount: saleDebt } : {}) },
         appliedAt,
       ],
     )

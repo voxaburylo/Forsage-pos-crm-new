@@ -16,7 +16,7 @@ const mocks = {
   '@/features/customers/customerApi': 'export const customerApi={get:async id=>{fixture.customerReads++;return{data:{id,bonus_balance:0,...fixture.customer}}}}',
   '@/features/admin/adminApi': 'export const adminApi={getSettings:async()=>({data:{bank_terminal_enabled:false}})}',
   '@/lib/api': 'export const api={get:async()=>{throw Error("Unexpected network API")}}',
-  '@/lib/desktopBridge': 'export const desktopBridge=()=>({fiscal:{getConfig:async()=>({enabled:false})},pos:{payDebt:async()=>({data:{}})},orders:{listReady:async()=>fixture.orders},catalog:{}})',
+  '@/lib/desktopBridge': 'export const desktopBridge=()=>({fiscal:{getConfig:async()=>({enabled:false})},pos:{payDebt:async()=>({data:{}})},orders:{listReady:async()=>fixture.orders,handOver:async()=>{throw Error("bridge handOver must go through posOrderApi")}},catalog:{}})',
   '@/features/pos/posCustomerMoneyApi': `export const posCustomerMoneyApi={
     payDebt:async(id,body)=>{fixture.debtPayments.push({id,...body});if(fixture.failDebt)throw Error("тестова відмова");fixture.customer.debt_balance-=body.amount;return{data:{}}},
     getDeposit:async()=>({data:{balance:fixture.customer.deposit_balance??0}}),
@@ -24,6 +24,8 @@ const mocks = {
     addDeposit:async()=>{throw Error("not expected")},payOutDeposit:async()=>{throw Error("not expected")}}`,
   '@/features/pos/posOrderApi': `export const posOrderApi={
     listReady:async()=>({data:fixture.orders}),
+    canHandOver:()=>true,
+    handOver:async(id,itemIds)=>{fixture.handOvers.push(id);fixture.handOverItems.push(itemIds??null);if(itemIds)return{data:{success:true,sale_id:'s2',sale_number:'L-2',debt_amount:0,moved_to_account:2000,rest_order_number:78}};const o=fixture.orders.find(x=>x.id===id);const debt=o.total_amount-o.total_paid;fixture.orders=fixture.orders.filter(x=>x.id!==id);fixture.customer.debt_balance+=debt;return{data:{success:true,sale_id:'s1',sale_number:'L-1',debt_amount:debt}}},
     addPayment:async(id,body)=>{fixture.orderPayments.push({id,...body});const o=fixture.orders.find(x=>x.id===id);o.total_paid+=body.amount;return{data:{}}},
     complete:async(id,body)=>{fixture.completed.push({id,...body});fixture.orders=fixture.orders.filter(x=>x.id!==id);return{data:{}}}}`,
   '@/features/orders/orderItemPhotos': 'export const useOrderItemPhotos=()=>({})',
@@ -32,17 +34,17 @@ const mocks = {
 const entry = `
 import React from 'react';import{createRoot}from'react-dom/client';import{MemoryRouter}from'react-router-dom';
 import{usePOSStore}from'/src/stores/posStore.ts';import{PaymentModal}from'/src/features/pos/PaymentModal.tsx';
-import{DebtPaymentModal}from'/src/features/pos/DebtPaymentModal.tsx';import{ToastContainer}from'/src/components/ui/Toast.tsx';import'/src/index.css';
+import{DebtPaymentModal}from'/src/features/pos/DebtPaymentModal.tsx';import{ToastContainer}from'/src/components/ui/Toast.tsx';import{HandOverOrderButton}from'/src/features/orders/HandOverOrderButton.tsx';import'/src/index.css';
 const params=new URLSearchParams(location.search);const view=params.get('view');
 const s=usePOSStore.getState();s.replaceOpenReceipts([]);
 s.setCustomer({id:'client-1',name:'Тест',phone:'0670000000',debtBalance:1,tierDiscountPct:0,tierName:null,vipLevel:'standard',riskProfile:'low'});
 s.addItem({productId:'part',sku:'TEST-1',name:'Тестовий товар',unit:'шт',qty:1,unitPrice:10000,discount:0,qtyOnHand:10});
 const customer={id:'client-1',full_name:'Тест',phone:'0670000000',debt_balance:fixture.customer.debt_balance,deposit_balance:fixture.customer.deposit_balance};
-createRoot(document.getElementById('root')).render(<MemoryRouter><ToastContainer/>{view==='payment'
+createRoot(document.getElementById('root')).render(<MemoryRouter><ToastContainer/>{view==='handover'?<HandOverOrderButton order={fixture.orders[0]} onDone={()=>fixture.paid++}/>:view==='payment'
   ?<PaymentModal open onClose={()=>fixture.closes++} onConfirm={async(...args)=>{fixture.sales.push(args);return true}}/>
   :<DebtPaymentModal open initialCustomer={params.get('nocustomer')?null:customer} initialMode={params.get('mode')||null} onClose={()=>fixture.closes++} onPaid={()=>fixture.paid++}/>}</MemoryRouter>);
 `
-const fixtureScript = (state) => `<script>window.fixture=Object.assign({sales:[],debtPayments:[],orderPayments:[],completed:[],closes:0,paid:0,customerReads:0},${JSON.stringify(state)})</script>`
+const fixtureScript = (state) => `<script>window.fixture=Object.assign({sales:[],debtPayments:[],orderPayments:[],completed:[],handOvers:[],handOverItems:[],closes:0,paid:0,customerReads:0},${JSON.stringify(state)})</script>`
 const server = await createServer({ cacheDir: createSmokeCache(), configFile: false, root: path.join(root, 'apps/web'), logLevel: 'error',
   esbuild: { jsx: 'automatic' }, resolve: { alias: { '@': path.join(root, 'apps/web/src') } }, server: { host: '127.0.0.1', port: 0 }, plugins: [tailwindcss(), {
     name: 'customer-settlements-fixture', enforce: 'pre',
@@ -171,6 +173,39 @@ try {
     await page.locator('[data-settlement-orders]').getByText('Забрати з комірки: A1', { exact: false }).waitFor({ timeout: 7000 })
     await page.close()
   }
+  // 9. «Видати, решта в борг»: касир видає без оплати; після цього вікно показує новий борг клієнта.
+  {
+    const page = await open('settlements', { customer: { debt_balance: 0, deposit_balance: 0 }, orders: [readyOrder] }, 'orders')
+    await page.locator('[data-order-hand-over-debt]').waitFor({ timeout: 7000 })
+    page.once('dialog', dialog => { if (!dialog.message().includes('стануть боргом клієнта')) throw Error('unexpected confirm: ' + dialog.message()); void dialog.accept() })
+    await page.locator('[data-order-hand-over-debt]').click()
+    await page.waitForFunction(() => fixture.handOvers.length === 1, null, { timeout: 7000 })
+    await page.locator('[data-settlement-summary]').getByText('Борг: 200,00', { exact: false }).waitFor({ timeout: 7000 })
+    assert.deepEqual((await fx(page)).orderPayments, [], 'hand-over on credit takes no money')
+    await page.close()
+  }
+  // 10. Менеджер видає частину: прибуле позначене, неприбуле не вибрати; передоплата 3000 за видане 1000 — 2000 на рахунок.
+  {
+    const partial = { ...readyOrder, status: 'ordered', total_amount: 30000, total_paid: 30000, prepayment: 30000, customer_id: 'client-1',
+      items: [{ ...readyOrder.items[0], id: 'i1', name: 'Фільтр', sell_price: 10000 }, { ...readyOrder.items[0], id: 'i2', name: 'Колодки', sell_price: 20000, item_status: 'ordered' }] }
+    const page = await open('handover', { customer: { debt_balance: 0, deposit_balance: 0 }, orders: [partial] })
+    await page.locator('[data-order-hand-over]').click()
+    const dialog = page.locator('[data-hand-over-dialog]')
+    await dialog.waitFor()
+    const boxes = dialog.locator('input[type=checkbox]')
+    assert.equal(await boxes.nth(0).isChecked(), true, 'arrived line is preselected')
+    assert.equal(await boxes.nth(1).isDisabled(), true, 'not-arrived line cannot be handed over')
+    const plan = page.locator('[data-hand-over-plan]')
+    await plan.getByText('Зайве — на рахунок клієнта').waitFor()
+    await plan.getByText('200,00', { exact: false }).first().waitFor()
+    await plan.getByText('переходять у нове замовлення', { exact: false }).waitFor()
+    if (process.env.SETTLEMENTS_SHOTS) await page.screenshot({ path: path.join(process.env.SETTLEMENTS_SHOTS, 'hand-over-partial.png') })
+    await page.locator('[data-hand-over-confirm]').click()
+    await page.waitForFunction(() => fixture.handOvers.length === 1 && fixture.paid === 1, null, { timeout: 7000 })
+    assert.deepEqual((await fx(page)).handOverItems, [['i1']])
+    await page.getByText('Решта — замовлення №78', { exact: false }).waitFor()
+    await page.close()
+  }
   // 8. Кнопка «Борги» на касі: клієнта ще не вибрано — список боржників, вибір, оплата.
   {
     const debtors = [{ id: 'client-9', full_name: 'Боржник', phone: '0679999999', debt_balance: 25000, deposit_balance: 0 }]
@@ -186,5 +221,5 @@ try {
     await page.close()
   }
   assert.deepEqual(errors, []); assert.deepEqual(blocked, [])
-  console.log(JSON.stringify({ passed: true, cases: ['purchase+debt-cash', 'purchase+debt-terminal', 'mixed-and-credit-excluded', 'debt-failure-keeps-sale', 'orders-tab-issue', 'debt-tab-first', 'orders-tab-requested', 'debtors-button'], liveWrites: 0 }))
+  console.log(JSON.stringify({ passed: true, cases: ['purchase+debt-cash', 'purchase+debt-terminal', 'mixed-and-credit-excluded', 'debt-failure-keeps-sale', 'orders-tab-issue', 'debt-tab-first', 'orders-tab-requested', 'debtors-button', 'hand-over-on-credit', 'manager-partial-hand-over'], liveWrites: 0 }))
 } finally { await browser?.close(); await server.close() }
