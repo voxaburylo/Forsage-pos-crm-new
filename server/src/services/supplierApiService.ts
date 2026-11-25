@@ -15,7 +15,8 @@ export const OMEGA_PAGE_SIZE = 1000
 /** Скільки сторінок прайсу забирати за один виклик планувальника (виклик живе до 5 хв; сторінка ~20 с). */
 export const PAGES_PER_RUN = 8
 /** Повний прохід прайсу не частіше, ніж раз на годину. */
-export const FULL_PASS_EVERY_MS = 60 * 60_000
+// 25.11.2026 (власник: «нехай кроси качаються ~13 діб, у нас є час»): прайс оновлюється раз на 3 год, щоб ліміт ішов кросам.
+export const FULL_PASS_EVERY_MS = 3 * 60 * 60_000
 /**
  * Ліміти Омеги (з її опису API): 30 запитів на хвилину та/або 300 на годину; за перевищення обліковий запис блокують
  * автоматично. Тримаємо запас: не більше 250 на годину й 20 на хвилину — на ВСІ запити разом (прайс і фото).
@@ -391,7 +392,10 @@ export async function runSupplierSync(deps: OmegaDeps = {}) {
       results.push({ id: row.id, details: await syncDetailsStep(row, deps) })
     } catch (error) { results.push({ id: row.id, details_error: error instanceof Error ? error.message : 'error' }) }
     // Фото — після прайсу й лише в межах того самого лічильника запитів.
-    if (row.photos_enabled) {
+    // 25.11.2026: поки кроси не докачано, фото на паузі — весь ліміт іде кросам (рішення власника).
+    const crossesLeft = await pool.query('SELECT 1 FROM supplier_offers WHERE connection_id = $1 AND crosses_checked_at IS NULL LIMIT 1', [row.id])
+      .then(result => result.rows.length > 0, () => false)
+    if (row.photos_enabled && !crossesLeft) {
       try { results.push({ id: row.id, photos: await syncPhotosStep(row, deps) }) }
       catch (error) { results.push({ id: row.id, photos_error: error instanceof Error ? error.message : 'error' }) }
     }
