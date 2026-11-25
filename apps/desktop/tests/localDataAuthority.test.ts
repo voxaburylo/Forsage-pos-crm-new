@@ -113,7 +113,7 @@ describe('one local source of stock', () => {
     const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8')
     const body = main.slice(main.indexOf('async function executeDesktopCommand('), main.indexOf('function resolveLanSession'))
     expect(body.indexOf('assertLocalDataAuthority(channel)')).toBeLessThan(body.indexOf('listener(event, ...args)'))
-    expect(main).toContain('return executeDesktopCommand(channel, listener, {} as IpcMainInvokeEvent, args, session)')
+    expect(main).toContain('return executeDesktopCommand(channel, listener, {} as IpcMainInvokeEvent, normalizeRemoteTenantArguments(channel, args), session)')
     const preload = (readFileSync(new URL('../src/preload.ts', import.meta.url), 'utf8') + readFileSync(new URL('../src/desktopApi.ts', import.meta.url), 'utf8'))
     expect(preload).not.toContain('applyPullChanges:')
     expect(preload).not.toContain('importSnapshot:')

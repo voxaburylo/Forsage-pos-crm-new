@@ -583,7 +583,7 @@ function CustomerPanel({ chat, messages, onCustomerLinked }: {
                       <Check size={11} /> Вже в гаражі
                     </span>
                   ) : (
-                    <button onClick={() => addDetectedVin(vin)} disabled={addingVin === vin || loading || Boolean(vehicleError)}
+                    <button onClick={() => addDetectedVin(vin)} disabled={addingVin === vin || loading}
                       className="mt-1 bg-blue-500 text-white rounded px-2 py-1 text-[11px] font-semibold hover:bg-blue-600 disabled:opacity-50 self-start transition-colors">
                       + Додати в гараж
                     </button>
@@ -602,7 +602,7 @@ function CustomerPanel({ chat, messages, onCustomerLinked }: {
             <p className="text-xs font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2">
               <Car size={13} /> Автомобілі
             </p>
-            <button onClick={() => setShowAddVehicle(!showAddVehicle)} disabled={loading || Boolean(vehicleError)}
+            <button onClick={() => setShowAddVehicle(!showAddVehicle)} disabled={loading}
               className="text-yellow-500 hover:text-yellow-600 hover:bg-yellow-50 p-1 rounded-lg transition-colors">
               <Plus size={16} />
             </button>
@@ -635,7 +635,7 @@ function CustomerPanel({ chat, messages, onCustomerLinked }: {
               ))}
             </div>
           )}
-          {showAddVehicle && !vehicleError && !loading && (
+          {showAddVehicle && !loading && (
             <div className="mt-3 pt-3 border-t border-gray-100 space-y-2">
               <div className="grid grid-cols-2 gap-2">
                 {(['brand', 'model', 'year', 'vin'] as const).map((field) => (

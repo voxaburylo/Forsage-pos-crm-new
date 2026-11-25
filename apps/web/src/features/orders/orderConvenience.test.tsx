@@ -8,7 +8,8 @@ describe('order customer read outcomes', () => {
   it('distinguishes a successful empty response from a failed request and retries the same query', async () => {
     const read = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({ data: [] })
     const query = '0671234567'
-    expect(await readOrderList(() => read(query), 'Не вдалося перевірити клієнта')).toEqual({ error: 'Не вдалося перевірити клієнта' })
+    // 25.11.2026: причина відмови видна людині (ПК менеджера бачив лише загальний текст).
+    expect(await readOrderList(() => read(query), 'Не вдалося перевірити клієнта')).toEqual({ error: 'Не вдалося перевірити клієнта Причина: offline' })
     expect(await readOrderList(() => read(query), 'Не вдалося перевірити клієнта')).toEqual({ data: [] })
     expect(read.mock.calls).toEqual([[query], [query]])
   })
