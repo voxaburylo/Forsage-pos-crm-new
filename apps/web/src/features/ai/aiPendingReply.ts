@@ -10,8 +10,8 @@ export type StoredAiReply = {
   error?: { code?: string; message?: string; status?: number }
 }
 
-/** Скільки чекати готову відповідь: сервер працює до 5 хв, плюс запас. */
-export const AI_PENDING_MAX_MS = 7 * 60 * 1000
+/** Скільки чекати готову відповідь: сервер працює до 12 хв (25.11.2026), плюс запас. */
+export const AI_PENDING_MAX_MS = 14 * 60 * 1000
 export const AI_PENDING_POLL_MS = 3000
 
 type KeyValue = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>

@@ -103,6 +103,7 @@ import { spawn } from 'node:child_process'
 import { rehearsalRootFrom, runStartupRehearsal } from './diagnostics/startupRehearsal'
 import { allStaffRights, effectiveStaffRights, setStaffRight } from './security/staffRights'
 import { compactOutbox, previewOutboxCompaction } from './repositories/outboxCompaction'
+import { quickCheckInWorker } from './db/verifiedBackup'
 
 // Keep the existing encryption profile stable across package/product renames.
 // Перевірки (смоки) запускають справжню програму поруч із робочою касою — їм окремий профіль; у зібраній програмі цього немає.
@@ -1344,7 +1345,22 @@ app.whenReady().then(async () => {
   const opened = openLocalDatabaseOrExplain(dataRoot)
   if (!opened) return
   localDatabase = opened.database
-  blackBox?.record('database-opened', { schemaVersion: localDatabase.info().schemaVersion })
+  blackBox?.record('database-opened', { schemaVersion: localDatabase.info().schemaVersion, integrityChecked: localDatabase.integrityChecked })
+  // 25.11.2026 (власник: «холодний пуск довгий»): відмітки кроків запуску — щоб у журналі було видно, що саме гальмує.
+  const startupPhase = (phase: string) => blackBox?.record('startup-phase', { phase, ms: Math.round(performance.now()) })
+  // Базу закрито штатно — повна перевірка сторінок не на запуску, а за 5 хв в окремому потоці (каса не чекає).
+  if (!localDatabase.integrityChecked) {
+    const checkedDb = localDatabase
+    setTimeout(() => {
+      if (localDatabase !== checkedDb || databaseMaintenance) return
+      void quickCheckInWorker(checkedDb.databasePath).then(result => {
+        blackBox?.record('integrity-check', { ok: result === 'ok' })
+        if (result !== 'ok') recordDesktopProblem({ source: 'database', code: 'database.integrity_failed',
+          title: 'База каси пошкоджена: потрібне відновлення з резервної копії',
+          detail: 'Перевірка сторінок бази знайшла пошкодження. Не закривайте зміну й зверніться до власника. ' + result.slice(0, 300) })
+      }).catch(error => writeDesktopDiagnostic('integrity-check-failed', error))
+    }, 5 * 60_000).unref()
+  }
   localCatalog = new LocalCatalogRepository(localDatabase)
   localInventory = new LocalInventoryRepository(localDatabase)
   localOrders = new LocalOrderRepository(localDatabase)
@@ -1361,6 +1377,7 @@ app.whenReady().then(async () => {
   }), createBackgroundSyncExecutor(localDatabase))
   localSupplierCatalog = new LocalSupplierCatalogRepository(localDatabase)
   localProblems = new LocalProblemRepository(localDatabase)
+  startupPhase('repositories')
   shiftBackups = new ShiftBackupService(localDatabase,
     // Вивантаження змін — поруч із portable-EXE, як і раніше; не в теці програми, яку оновлення замінює.
     process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(resolvePortableExecutable(process.env, process.execPath) ?? process.execPath), error => {
@@ -1369,7 +1386,8 @@ app.whenReady().then(async () => {
         title: 'Не вдалося зберегти резервну копію бази',
         detail: 'Копія бази (після зміни або щоденна) повториться сама. ' + (error instanceof Error ? error.message : String(error)) })
     }, undefined, { dailyCopy: true })
-  shiftBackups.start()
+  // 25.11.2026: копії бази — не в мить запуску (після ввімкнення ПК вони змагались за диск із відкриттям каси).
+  shiftBackups.start(2 * 60_000)
   // Зв'язок головного ПК із сервером власним ключем: веб працює через ПК і тоді, коли в програмі ніхто не увійшов.
   getTillDeviceLink().start()
   getOutboxPusher().start()
@@ -1423,13 +1441,14 @@ app.whenReady().then(async () => {
       title: 'Не вдалося записати копію на флешку',
       detail: 'Робочі дані не змінено. ' + (error instanceof Error ? error.message : String(error)) })
   })
-  externalBackups.start()
+  externalBackups.start(4 * 60_000)
   stopBackupScheduler =startBackupScheduler(localDatabase, (error) => {
     writeDesktopDiagnostic('local-backup-failed', error)
     recordDesktopProblem({ source: 'database', code: 'database.backup_failed',
       title: 'Не вдалося створити резервну копію',
       detail: 'Робочі дані не змінено. ' + (error instanceof Error ? error.message : String(error)) })
-  })
+  }, 3 * 60_000)
+  startupPhase('services')
   cashalot = new CashalotService(dataRoot)
   let releaseSource: ReturnType<typeof createPortableReleaseSource> = null
   try {
@@ -2629,6 +2648,7 @@ app.whenReady().then(async () => {
   try { assertLanIdentityConnection(localDatabase, localNetwork.getStatus()); safeNetworkConfig = true }
   catch (error) { writeDesktopDiagnostic('lan-client-config-blocked', error) }
   if (safeNetworkConfig) await localNetwork.startConfigured()
+  startupPhase('ready')
   if (backgroundMode) {
     // Фон: вікна немає. Щойно хтось відкрив касу на екрані — коректно закриваємось і віддаємо базу вікну.
     blackBox?.record('background-started')

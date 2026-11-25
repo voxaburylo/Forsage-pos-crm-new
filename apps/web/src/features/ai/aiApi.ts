@@ -102,12 +102,12 @@ export const aiApi = {
   chat: (body: { message: string; history?: AiChatMessage[]; file_text?: string; images?: AiChatImage[]; request_id?: string }, onProgress?: (event: AiChatProgress) => void) =>
     api.post<{ data: AiChatResponse }>('/api/v1/ai/chat', { ...body, history: body.history ? aiRequestHistory(body.history) : undefined },
       onProgress ? { 'X-AI-Progress': '1' } : undefined, {
-      timeoutMs: 600000, silent: true,
+      timeoutMs: 780_000, silent: true,
       ...(onProgress ? { onProgressLine: (event: unknown) => onProgress(event as AiChatProgress) } : {}),
     }),
 
   recognizeSupplyInvoice: (body: { message?: string; images: AiChatImage[] }) =>
-    api.post<{ data: AiChatResponse }>('/api/v1/ai/supply-invoice-photo', body, undefined, { timeoutMs: 180000, silent: true }),
+    api.post<{ data: AiChatResponse }>('/api/v1/ai/supply-invoice-photo', body, undefined, { timeoutMs: 660_000, silent: true }),
 
   applyAction: (body: { tool: string; payload: Record<string, any>; operation_id?: string }): Promise<{ data: AiApplyResult }> =>
     writesToMainPc() ? applyLocalAiAction(body.tool, body.payload, body.operation_id) : api.post<{ data: AiApplyResult }>('/api/v1/ai/apply-action', body),

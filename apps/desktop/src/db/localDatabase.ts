@@ -79,9 +79,14 @@ export class LocalDatabase {
   readonly databasePath: string
   readonly backupsPath: string
   readonly deviceId: string
+  /** Чи робилась повна перевірка сторінок (PRAGMA quick_check) під час цього відкриття. */
+  integrityChecked = false
+  /** Основне зʼєднання каси (не допоміжне з потоку): лише воно ставить позначку штатного закриття. */
+  private readonly primary: boolean
 
   constructor(dataRoot: string, existing?: ExistingDatabaseIdentity) {
     this.dataRoot = dataRoot
+    this.primary = !existing
     const dataPath = path.join(dataRoot, 'data')
     this.backupsPath = path.join(dataRoot, 'backups')
     this.databasePath = path.join(dataPath, DATABASE_FILE)
@@ -124,7 +129,12 @@ export class LocalDatabase {
         deviceId = existing.deviceId
       } else {
         this.migrate()
-        this.assertIntegrity()
+        // 25.11.2026 (власник: «холодний пуск довгий»): перевірка всіх сторінок бази (115 МБ) після ввімкнення ПК — ~7 с.
+        // Робимо її, лише якщо минулого разу базу НЕ закрито штатно (збій, світло, примусове завершення) або позначки
+        // немає (стара збірка, відновлена копія). Після штатного закриття її перевіряє нічна перевірка.
+        this.integrityChecked = !this.closedCleanly()
+        if (this.integrityChecked) this.assertIntegrity()
+        this.database.prepare("DELETE FROM app_meta WHERE key = 'clean_close'").run()
         restoreEmbeddedPhotos(this.database, dataRoot)
         deviceId = this.getOrCreateDeviceId()
       }
@@ -270,6 +280,11 @@ export class LocalDatabase {
     const databaseVersion = Math.max(0, ...applied)
     const buildVersion = Math.max(0, ...LOCAL_MIGRATIONS.map((migration) => migration.version))
     if (databaseVersion > buildVersion) throw new OutdatedBuildError(databaseVersion, buildVersion)
+  }
+
+  private closedCleanly(): boolean {
+    const row = this.database.prepare("SELECT value_json FROM app_meta WHERE key = 'clean_close'").get() as { value_json: string } | undefined
+    return row?.value_json === 'true'
   }
 
   private assertIntegrity(): void {
@@ -432,6 +447,10 @@ export class LocalDatabase {
   close(): void {
     if (this.backgroundWriteActive) throw new Error('Копіювання ще триває. Базу поки не закрито.')
     if (!this.database.isOpen) return
+    // Позначка штатного закриття: наступне відкриття може не перевіряти всі сторінки (див. конструктор).
+    if (this.primary) try {
+      this.database.prepare("INSERT OR REPLACE INTO app_meta(key, value_json, updated_at) VALUES ('clean_close', 'true', ?)").run(new Date().toISOString())
+    } catch { /* без позначки наступний запуск просто перевірить базу повністю */ }
     try { this.database.exec('PRAGMA wal_checkpoint(TRUNCATE)') }
     finally {
       this.statements.clear()

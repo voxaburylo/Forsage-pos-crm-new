@@ -60,6 +60,9 @@ function databaseFingerprint(db, photoUrls = new Map(), options = {}) {
     statement.setReadBigInts(true)
     const hashes = []
     for (const row of statement.iterate()) {
+      // 25.11.2026: «clean_close» — службова позначка штатного закриття (холодний пуск без повної перевірки сторінок),
+      // а не дані магазину: відкриття бази її знімає, закриття ставить. У порівнянні копій не враховується.
+      if (name === 'app_meta' && row.key === 'clean_close') continue
       if (name === 'products' && photoUrls.has(row.photo_url)) row.photo_url = photoUrls.get(row.photo_url)
       const values = Object.entries(row).map(([key, value]) => [key, valueHash(value)])
       hashes.push(createHash('sha256').update(JSON.stringify(values)).digest('hex'))
