@@ -40,11 +40,8 @@ const photo={name:'photo.png',mimeType:'image/png',buffer:Buffer.from('iVBORw0KG
 await page.locator('input[type=file]').setInputFiles(photo)
 await page.waitForFunction(()=>fixture.messages.some(message=>message.includes('прикріплено')))
 await page.getByRole('button',{name:'Надіслати повідомлення',exact:true}).click()
-await page.getByText(/Загальний підсумок накладної не збігається/).waitFor()
-assert.equal(await page.locator('[data-supply-invoice-form]').count(),0)
-assert.equal(await page.getByRole('button',{name:/Видалити фото/}).count(),1)
-await page.evaluate(()=>fixture.response.actions[0].payload.invoice_total=240)
-await page.getByRole('button',{name:'Надіслати повідомлення',exact:true}).click()
+// 25.11.2026 (власник: «постачальники роблять суму зі знижкою»): інший підсумок — помітна примітка, накладна відкривається.
+await page.getByText(/Підсумок накладної 241,00 грн, сума рядків 240,00 грн/).first().waitFor()
 await page.locator('[data-supply-invoice-form]').waitFor()
 assert.equal((await getDraft()).items[0].total,24000)
 assert.equal(await page.evaluate(()=>fixture.aiCalls.length),0)

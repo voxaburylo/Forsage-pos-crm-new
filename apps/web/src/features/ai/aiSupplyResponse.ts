@@ -3,7 +3,8 @@ import { MAX_SUPPLY_ROWS, normalizeSupplyRows } from './aiSupplyImport'
 import { readSupplyNumber } from './aiSupplyNumber'
 import { assertSupplySourceChecks, type SupplySourceCheck } from './aiSupplySourceChecks'
 
-type Metadata = { supplier_id?: string; supplier_name?: string; invoice_number?: string }
+type Metadata = { supplier_id?: string; supplier_name?: string; invoice_number?: string; total_note?: string }
+const uah = (kopecks: bigint) => (Number(kopecks) / 100).toLocaleString('uk-UA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' грн'
 export class AiSupplyResponseError extends Error {
   constructor(message: string, readonly kind: 'missing-table' | 'invalid-part' | 'conflict' | 'source-mismatch') {
     super(message)
@@ -43,6 +44,9 @@ export function collectSupplyResponse(responses: readonly unknown[], expectedPar
           throw new AiSupplyResponseError('У частинах різні підсумки накладної. Повторіть розбір усіх сторінок.', 'conflict')
         invoiceTotal = total
       }
+      // 25.11.2026: розбіжність сум сервер описує приміткою (знижка постачальника) — переносимо її в чернетку.
+      const serverNote = action.payload.total_note
+      if (typeof serverNote === 'string' && serverNote.trim()) metadata.total_note = [metadata.total_note, serverNote.trim().slice(0, 1000)].filter(Boolean).join(' ')
       const rows = action.payload.products
       if (action.count !== undefined && (!Number.isInteger(action.count) || action.count !== rows.length))
         throw new AiSupplyResponseError(part + ': заявлена кількість позицій не збігається з таблицею. Повторіть розбір.', 'invalid-part')
@@ -63,8 +67,12 @@ export function collectSupplyResponse(responses: readonly unknown[], expectedPar
     }
   }
   const sum = products.reduce((total, row) => total + (BigInt(Math.round(row.qty * 1000)) * BigInt(Math.round(row.purchase_price_uah * 100)) + 500n) / 1000n, 0n)
-  if (invoiceTotal !== undefined && invoiceTotal !== sum)
-    throw new AiSupplyResponseError('Загальний підсумок накладної не збігається із сумою товарів. Перевірте всі сторінки, знижку та ПДВ; числа не виправлено автоматично.', 'invalid-part')
+  // 25.11.2026 (власник: «деякі постачальники роблять суму зі знижкою»): не скасовуємо, а пишемо помітну примітку.
+  if (invoiceTotal !== undefined && invoiceTotal !== sum) {
+    const diff = sum - invoiceTotal
+    const note = 'Підсумок накладної ' + uah(invoiceTotal) + ', сума рядків ' + uah(sum) + ' (різниця ' + uah(diff < 0n ? -diff : diff) + (diff > 0n ? ', можлива знижка постачальника' : '') + '). Ціни в рядках — як у джерелі; перевірте закупівлю перед проведенням.'
+    metadata.total_note = [metadata.total_note, note].filter(Boolean).join(' ')
+  }
   try { assertSupplySourceChecks(products, sourceChecks) }
   catch (error) {
     throw new AiSupplyResponseError('Відповідь ШІ не збігається з підсумком джерела. ' + (error instanceof Error ? error.message : 'Перевірте вихідну таблицю.'), 'source-mismatch')

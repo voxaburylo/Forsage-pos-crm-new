@@ -24,7 +24,10 @@ describe('photo invoice integrity', () => {
     expect(mergeAiInvoicePages([{currency:'UAH',products:[product]}]).products[0].purchase_price_uah).toBe(1.01)
   })
   it('does not ignore inconsistent line totals or wrong metadata types', () => {
-    expect(()=>mergeAiInvoicePages([{products:[{...product,line_total:1.51}]}])).toThrow('сумою рядка')
+    // 25.11.2026: сума рядка зі знижкою — примітка до рядка, ціна як надрукована.
+    const discounted=mergeAiInvoicePages([{products:[{...product,line_total:1.51}]}]).products[0]
+    expect(discounted.purchase_price_uah).toBe(product.purchase_price_uah)
+    expect(String(discounted.purchase_price_note)).toContain('можлива знижка')
     expect(()=>mergeAiInvoicePages([{products:[{...product,barcode:123}]}])).toThrow('текстове поле')
     expect(()=>mergeAiInvoicePages([{products:[product],supplier_name:[]}])).toThrow('реквізити')
     expect(()=>mergeAiInvoicePages([{products:[product],supplier_name:'Перший'},{products:[product],supplier_name:'Другий'}])).toThrow('різні постачальники')
