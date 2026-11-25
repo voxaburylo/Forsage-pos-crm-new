@@ -7,6 +7,7 @@ import { Card, Modal } from '@/components/ui'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
 import { productApi } from './productApi'
+import { SupplierCrossAnalogs } from './SupplierCrossAnalogs'
 import { analogActions, analogOrderPath, analogReceiptPath, analogRows, analogStock, analogsInStock } from './analogModel'
 
 type State = { rows: Product[] | null; error: boolean }
@@ -73,7 +74,7 @@ function AnalogRows({ rows, error, reload, onLeave }: State & { reload: () => vo
 }
 
 /** Картка товару: аналоги зі складу — вище списку номерів, щоб не гортати. */
-export function StockAnalogsCard({ productId }: { productId: string }) {
+export function StockAnalogsCard({ productId, sku }: { productId: string; sku?: string | null }) {
   const analogs = useAnalogs(productId, true)
   const inStock = analogs.rows ? analogsInStock(analogs.rows) : null
   return (
@@ -83,12 +84,14 @@ export function StockAnalogsCard({ productId }: { productId: string }) {
         {analogs.rows && analogs.rows.length > 0 && <span className="text-xs text-gray-500">знайдено {analogs.rows.length}, у наявності {inStock}</span>}
       </div>
       <AnalogRows {...analogs} />
+      {/* 25.11.2026: аналоги за кросами Омеги — і те, що є в нас, і те, що можна замовити. */}
+      <SupplierCrossAnalogs sku={sku} />
     </Card>
   )
 }
 
 /** Список товарів: «Аналоги» — подивитись заміну зі складу, не відкриваючи картку. Шукає лише після натискання. */
-export function AnalogsButton({ productId, name }: { productId: string; name: string }) {
+export function AnalogsButton({ productId, name, sku }: { productId: string; name: string; sku?: string | null }) {
   const [open, setOpen] = useState(false)
   const analogs = useAnalogs(productId, open)
   return (
@@ -101,6 +104,7 @@ export function AnalogsButton({ productId, name }: { productId: string; name: st
         <div onClick={event => event.stopPropagation()}>
           <Modal open onClose={() => setOpen(false)} title={`Аналоги: ${name}`} size="lg">
             <AnalogRows {...analogs} onLeave={() => setOpen(false)} />
+            <SupplierCrossAnalogs sku={sku} onLeave={() => setOpen(false)} />
           </Modal>
         </div>
       )}

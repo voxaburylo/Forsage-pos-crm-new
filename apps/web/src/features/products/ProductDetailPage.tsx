@@ -499,7 +499,7 @@ function ProductDetail() {
 
 
         {/* 23.11.2026 (план B1b): аналоги зі складу — вище списку номерів, із залишком, ціною та «у чек / у замовлення». */}
-        <StockAnalogsCard productId={product.id} />
+        <StockAnalogsCard productId={product.id} sku={product.sku} />
 
         {/* Matches are derived from local cross-numbers, not independent cloud links. */}
         <Card>

@@ -33,8 +33,18 @@ supplierApiRouter.put('/warehouses/:id', async (req, res, next) => {
 })
 
 /** Пошук товару постачальника за артикулом — для бланка замовлення. Закупку бачать власник, адмін і менеджер. */
+/** 25.11.2026: аналоги за артикулом з крос-номерів постачальника (Омега). Закупку бачать власник, адмін і менеджер. */
+async function crossesHandler(req: any, res: any, next: any) {
+  try {
+    res.setHeader('Cache-Control', 'no-store')
+    const q = typeof req.query.q === 'string' ? req.query.q.slice(0, 80) : ''
+    const { searchCrosses } = await import('../services/supplierCrosses.js')
+    res.json({ data: await searchCrosses(req.user!.tenant_id, q, ['owner', 'admin', 'manager'].includes(req.user!.role)) })
+  } catch (err) { next(err) }
+}
 export const supplierOffersRouter = Router()
 supplierOffersRouter.use(requireAuth, requireRole('owner', 'admin', 'manager', 'cashier'))
+supplierOffersRouter.get('/crosses', crossesHandler)
 supplierOffersRouter.get('/search', async (req, res, next) => {
   try {
     res.setHeader('Cache-Control', 'no-store')

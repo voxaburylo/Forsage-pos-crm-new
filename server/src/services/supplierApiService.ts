@@ -60,7 +60,7 @@ export function omegaOffer(item: OmegaItem, retail: (purchase: number) => number
 
 export interface OmegaDeps { fetchImpl?: typeof fetch }
 
-async function omegaCall<T>(path: string, key: string, body: Record<string, unknown>, deps: OmegaDeps = {}, timeoutMs = 120_000): Promise<T> {
+export async function omegaCall<T>(path: string, key: string, body: Record<string, unknown>, deps: OmegaDeps = {}, timeoutMs = 120_000): Promise<T> {
   let response: Response
   try {
     response = await (deps.fetchImpl ?? fetch)(OMEGA_BASE + path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -376,6 +376,11 @@ export async function runSupplierSync(deps: OmegaDeps = {}) {
     try { results.push({ id: row.id, ...(await syncConnectionStep({ ...row, sync_started_at: row.sync_started_at ? new Date(row.sync_started_at).toISOString() : null,
       last_full_sync_at: row.last_full_sync_at ? new Date(row.last_full_sync_at).toISOString() : null }, deps)) }) }
     catch (error) { results.push({ id: row.id, error: error instanceof Error ? error.message : 'error' }) }
+    // 25.11.2026: кроси для наших карток — після прайсу, перед фото (кілька запитів за прохід, той самий лічильник).
+    try {
+      const { syncCrossesStep } = await import('./supplierCrosses.js')
+      results.push({ id: row.id, crosses: await syncCrossesStep(row, deps) })
+    } catch (error) { results.push({ id: row.id, crosses_error: error instanceof Error ? error.message : 'error' }) }
     // Фото — після прайсу й лише в межах того самого лічильника запитів.
     if (row.photos_enabled) {
       try { results.push({ id: row.id, photos: await syncPhotosStep(row, deps) }) }
