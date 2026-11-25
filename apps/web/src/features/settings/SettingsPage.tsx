@@ -30,6 +30,7 @@ import { SettingsLinksCard } from './SettingsLinksCard'
 import { CatalogDictionaries } from '@/features/admin/AdminPage'
 import { SettingsFormOnly, SettingsRareToggle, SettingsSection, SettingsTabBar, SettingsTabsProvider } from './SettingsTabs'
 import { OwnerBotConnect } from './OwnerBotConnect'
+import { LanUpdateStatus } from './LanUpdateStatus'
 
 import { loadReceiptPrinterSettings, saveReceiptPrinterSettings } from '@/features/pos/receiptPrinterSettings'
 import { loadSellerRequisites, saveSellerRequisites, type SellerRequisites } from '@/features/orders/orderDocuments'
@@ -447,6 +448,7 @@ export default function SettingsPage() {
                       Нову версію завантажено з головного ПК. Вона встановиться сама, коли ви закриєте програму.
                     </p>
                   )}
+                  {desktopRuntime?.lanUpdate && <LanUpdateStatus report={desktopRuntime.lanUpdate} />}
                 </div>
               </div>
             </Card>

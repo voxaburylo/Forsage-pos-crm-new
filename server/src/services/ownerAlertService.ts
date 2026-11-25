@@ -32,7 +32,9 @@ export interface OwnerAlertFacts {
   till_seen_at: string | null
   open_shifts: Array<{ id: string; opened_at: string; cashier_name?: string | null }>
   /** Зміни, закриті за останні дві доби. */
-  closed_shifts: Array<{ id: string; closed_at: string; cash_variance: number | null; cashier_name?: string | null; closing_cash?: number | null }>
+  closed_shifts: Array<{ id: string; closed_at: string; cash_variance: number | null; cashier_name?: string | null; closing_cash?: number | null
+    /** 25.11.2026 (власник: «где полный отчёт — выторг, осталось, отдал властнику»): підсумки зміни. */
+    summary?: ShiftCloseSummary | null }>
   negative_products: Array<{ id: string; name: string; sku: string | null; qty_on_hand: number }>
   /** Час останньої перевіреної хмарної копії; undefined — дізнатися не вдалося (тривоги немає). */
   last_backup_at: string | null | undefined
@@ -56,6 +58,23 @@ export const CLOUD_NEAR_LIMIT = 0.8
 export const cloudDatabaseLimitBytes = () => (Number(process.env.CLOUD_DATABASE_LIMIT_MB) > 0 ? Number(process.env.CLOUD_DATABASE_LIMIT_MB) : 500) * 1024 * 1024
 const megabytes = (bytes: number) => (bytes / 1024 / 1024).toFixed(bytes < 100 * 1024 * 1024 ? 1 : 0).replace('.', ',')
 export interface OwnerAlert { key: string; text: string }
+export interface ShiftCloseSummary { revenue: number; receipts: number; cash: number; card: number; transfer: number; debt: number; handed: number }
+
+const money = (kopecks: number) => (kopecks / 100).toLocaleString('uk-UA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' грн'
+/** Повідомлення про закриття зміни: хто й коли, виторг, як заплатили, скільки здано власнику й лишилось у касі. */
+export function shiftClosedText(shift: OwnerAlertFacts['closed_shifts'][number]): string {
+  const lines = [`✅ Зміну закрито: ${who(shift.cashier_name)}, ${kyivTime(shift.closed_at)}.`]
+  const sum = shift.summary
+  if (sum) {
+    lines.push(`💰 Виторг: ${money(sum.revenue)} (чеків: ${sum.receipts})`)
+    const parts = [sum.cash ? 'готівка ' + money(sum.cash) : '', sum.card ? 'картка ' + money(sum.card) : '',
+      sum.transfer ? 'переказ ' + money(sum.transfer) : '', sum.debt ? 'у борг ' + money(sum.debt) : ''].filter(Boolean)
+    if (parts.length) lines.push('   ' + parts.join(', '))
+    if (sum.handed > 0) lines.push(`💵 Здано власнику: ${money(sum.handed)}`)
+  }
+  if (shift.closing_cash != null) lines.push(sum ? `🏦 У касі лишилось: ${money(shift.closing_cash)}` : `У касі лишилось ${uah(shift.closing_cash)}.`)
+  return sum ? lines.join('\n') : lines.join(' ')
+}
 
 const KYIV = 'Europe/Kyiv'
 const kyivDate = (now: Date) => now.toLocaleDateString('sv-SE', { timeZone: KYIV })
@@ -110,7 +129,7 @@ export function planOwnerAlerts(facts: OwnerAlertFacts, now: Date, settings: Own
   for (const shift of facts.closed_shifts) {
     if (hoursBetween(shift.closed_at, now) < 3) alerts.push({
       key: `shift_closed:${shift.id}`,
-      text: `✅ Зміну закрито: ${who(shift.cashier_name)}, ${kyivTime(shift.closed_at)}.` + (shift.closing_cash == null ? '' : ` У касі лишилось ${uah(shift.closing_cash)}.`),
+      text: shiftClosedText(shift),
     })
   }
 
@@ -232,6 +251,17 @@ async function cloudDatabaseBytes(): Promise<number | null> {
 const CASHIER_NAME_SQL = `(SELECT u.raw_user_meta_data->>'full_name' FROM auth.users u WHERE u.id = s.cashier_id)`
 const who = (name: string | null | undefined) => name?.trim() || 'касир'
 
+/** Підсумки зміни з копії на сервері: чеки зміни й «здано власнику при закритті» (каса пише цей рядок). */
+const SHIFT_SUMMARY_SQL = `(SELECT json_build_object('revenue', COALESCE(SUM(x.total), 0), 'receipts', COUNT(*), 'cash', COALESCE(SUM(x.cash_amount), 0),
+    'card', COALESCE(SUM(x.card_amount), 0), 'transfer', COALESCE(SUM(x.transfer_amount), 0), 'debt', COALESCE(SUM(x.debt_amount), 0))
+  FROM sales x WHERE x.tenant_id = s.tenant_id AND x.shift_id = s.id AND x.status IN ('completed', 'returned')) AS sales_summary,
+  (SELECT COALESCE(SUM(c.amount), 0) FROM cash_operations c WHERE c.tenant_id = s.tenant_id AND c.shift_id = s.id AND c.note = 'Здано власнику при закритті зміни') AS handed`
+function readSummary(row: Record<string, unknown>): ShiftCloseSummary | null {
+  const sales = row.sales_summary as Record<string, unknown> | null | undefined
+  if (!sales) return null
+  const n = (value: unknown) => { const v = Number(value); return Number.isFinite(v) ? Math.round(v) : 0 }
+  return { revenue: n(sales.revenue), receipts: n(sales.receipts), cash: n(sales.cash), card: n(sales.card), transfer: n(sales.transfer), debt: n(sales.debt), handed: n(row.handed) }
+}
 async function collectFacts(tenantId: string): Promise<OwnerAlertFacts> {
   const [presence, open, closed, negative, backup] = await Promise.all([
     pool.query('SELECT seen_at FROM till_presence WHERE tenant_id = $1', [tenantId]),
@@ -240,6 +270,12 @@ async function collectFacts(tenantId: string): Promise<OwnerAlertFacts> {
     pool.query(`SELECT id, name, sku, qty_on_hand FROM products WHERE tenant_id = $1 AND deleted_at IS NULL AND qty_on_hand < 0 ORDER BY updated_at DESC LIMIT 50`, [tenantId]),
     lastVerifiedBackup(tenantId),
   ])
+  // 25.11.2026: підсумки зміни — окремим запитом; помилка в ньому не зупиняє решту тривог (тоді — коротке повідомлення).
+  const summaries = new Map<string, ShiftCloseSummary>()
+  const freshIds = closed.rows.map(row => String(row.id))
+  if (freshIds.length) await pool.query(`SELECT s.id, ${SHIFT_SUMMARY_SQL} FROM shifts s WHERE s.tenant_id = $1 AND s.id = ANY($2::uuid[])`, [tenantId, freshIds])
+    .then(result => { for (const row of result.rows) { const summary = readSummary(row); if (summary) summaries.set(String(row.id), summary) } })
+    .catch(error => logger.warn({ err: error }, 'shift close summary unavailable'))
   // Окремо й останнім: розмір бази не має зупинити решту тривог.
   const databaseBytes = await cloudDatabaseBytes()
   // Теж окремо: до міграції 20261123100000 цих колонок немає — тоді просто без цієї тривоги.
@@ -249,7 +285,7 @@ async function collectFacts(tenantId: string): Promise<OwnerAlertFacts> {
     till_seen_at: presence.rows[0]?.seen_at ? new Date(presence.rows[0].seen_at).toISOString() : null,
     open_shifts: open.rows.map(row => ({ id: String(row.id), opened_at: new Date(row.opened_at).toISOString(), cashier_name: row.cashier_name ? String(row.cashier_name) : null })),
     closed_shifts: closed.rows.map(row => ({ id: String(row.id), closed_at: new Date(row.closed_at).toISOString(), cash_variance: row.cash_variance == null ? null : Number(row.cash_variance),
-      cashier_name: row.cashier_name ? String(row.cashier_name) : null, closing_cash: row.closing_cash == null ? null : Number(row.closing_cash) })),
+      cashier_name: row.cashier_name ? String(row.cashier_name) : null, closing_cash: row.closing_cash == null ? null : Number(row.closing_cash), summary: summaries.get(String(row.id)) ?? null })),
     negative_products: negative.rows.map(row => ({ id: String(row.id), name: String(row.name ?? ''), sku: row.sku ? String(row.sku) : null, qty_on_hand: Number(row.qty_on_hand) })),
     last_backup_at: backup === undefined ? undefined : backup.at,
     last_backup_bytes: backup?.bytes ?? null,

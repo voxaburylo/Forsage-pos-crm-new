@@ -54,6 +54,19 @@ describe('owner alerts in Telegram (stage 11, owner decision 22.11.2026: all ale
     const diff = planOwnerAlerts(facts({ closed_shifts: [{ id: 'a', closed_at: at('10:00').toISOString(), cash_variance: -25_000, cashier_name: 'Олексій' }] }), at('12:00'))
     expect(diff.find(alert => alert.key === 'cash_diff:a')!.text).toContain('(Олексій, ')
   })
+  // 25.11.2026 (власник: «где полный отчёт — выторг 47 тысяч, осталось 4, 10 отдал властнику»).
+  it('the shift-closed message carries the revenue, payments, money handed to the owner and what stays in the till', () => {
+    const closed = facts({ closed_shifts: [{ id: 'v', closed_at: at('18:07').toISOString(), cash_variance: 0, cashier_name: 'Володимир', closing_cash: 400_000,
+      summary: { revenue: 4_795_500, receipts: 54, cash: 1_422_000, card: 3_373_500, transfer: 0, debt: 0, handed: 1_022_000 } }] })
+    const text = planOwnerAlerts(closed, at('18:10')).find(alert => alert.key === 'shift_closed:v')!.text
+    expect(text.split('\n')[0]).toMatch(/^✅ Зміну закрито: Володимир, .*18:07\.$/)
+    expect(text).toContain('💰 Виторг: 47')
+    expect(text).toContain('955,00 грн (чеків: 54)')
+    expect(text).toContain('готівка 14')
+    expect(text).toContain('💵 Здано власнику: 10')
+    expect(text).toContain('🏦 У касі лишилось: 4')
+    expect(text).not.toContain('переказ')
+  })
   it('reports a cash difference at shift close from the threshold, once per shift', () => {
     const closed = facts({ closed_shifts: [
       { id: 'a', closed_at: at('10:00').toISOString(), cash_variance: -25_000 },

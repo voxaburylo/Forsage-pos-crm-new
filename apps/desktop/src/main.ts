@@ -86,7 +86,7 @@ import { OutboxPusher } from './link/outboxPush'
 import { LanOrderQueue } from './lan/orderQueue'
 import { buildLanDiagnosis, readFirewallState, requestFirewallRule } from './lan/diagnostics'
 import { assertLanIdentityConnection, canPairEmptyClient, cacheLanIdentity, hasLanIdentity, loginLanClient } from './lan/clientIdentity'
-import { createPortableReleaseSource, downloadPortableUpdate, launchPortableUpdateAfterQuit, readPortableUpdateOutcome, type StagedUpdate } from './updates/portableUpdate'
+import { createPortableReleaseSource, downloadPortableUpdate, launchPortableUpdateAfterQuit, readPortableUpdateOutcome, settleInterruptedPortableUpdate, type StagedUpdate } from './updates/portableUpdate'
 import { LanOrderClient } from './lan/orderClient'
 import { isSpoolerGuardError, postflightPrinter, preflightPrinter } from './print/spoolerGuard'
 import { disposePrintWarmShell, prewarmPrintShell } from './print/printWarmShell'
@@ -218,6 +218,20 @@ let lanUpdateTimer: ReturnType<typeof setInterval> | null = null
 let lanUpdateFlight: Promise<void> | null = null
 let lanUpdateAbort: AbortController | null = null
 let stagedLanUpdate: StagedUpdate | null = null
+/**
+ * 25.11.2026 (власник: «на втором ПК программа не обновляется — подумай почему»): причина була лише в чорній скриньці
+ * ПК менеджера. Тепер стан оновлення видно на екрані («Налаштування» → «ПК і копії»): коли перевіряв, що завантажив,
+ * чому не завантажив, чому не встановив і чим закінчилась остання установка.
+ */
+const lanUpdateStatus: { checkedAt: string | null; error: string | null; installError: string | null } = { checkedAt: null, error: null, installError: null }
+function lanUpdateReport() {
+  let outcome: unknown = null
+  try { outcome = process.env.LOCALAPPDATA ? readPortableUpdateOutcome(process.env.LOCALAPPDATA) : null }
+  catch (error) { outcome = { state: 'unknown', message: error instanceof Error ? error.message : String(error) } }
+  return { ...lanUpdateStatus, staged: stagedLanUpdate?.releaseId ?? null, outcome,
+    portable: Boolean(process.env.PORTABLE_EXECUTABLE_FILE), executable: process.env.PORTABLE_EXECUTABLE_FILE ?? null }
+}
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error)).slice(0, 300)
 type DesktopIpcListener = (event: IpcMainInvokeEvent, ...args: any[]) => unknown
 const desktopCommandHandlers = new Map<string, DesktopIpcListener>()
 const activeDesktopCommands = new Set<Promise<unknown>>()
@@ -310,21 +324,28 @@ function checkLanUpdate(): Promise<void> {
   const network = localNetwork
   lanUpdateAbort = new AbortController()
   const signal = lanUpdateAbort.signal
-  lanUpdateFlight = downloadPortableUpdate({
-    localAppData: process.env.LOCALAPPDATA,
+  const localAppData = process.env.LOCALAPPDATA
+  // 25.11.2026: перервана установка (вимкнули ПК) більше не блокує оновлення назавжди — див. settleInterruptedPortableUpdate.
+  lanUpdateFlight = settleInterruptedPortableUpdate(localAppData)
+    .then(state => { if (state) blackBox?.record('lan-update-settled', { state }) })
+    .catch(error => { blackBox?.record('lan-update-settle-failed', { error }) })
+    .then(() => downloadPortableUpdate({
+    localAppData,
     currentReleaseId: desktopBuildInfo.releaseId,
     signal,
     transport: {
       describe: () => network.requestUpdateMetadata(session, signal),
       chunk: input => network.requestUpdateChunk(input, session, signal),
     },
-  }).then(result => {
+  })).then(result => {
+    lanUpdateStatus.checkedAt = new Date().toISOString(); lanUpdateStatus.error = null
     if (result.state === 'ready') {
       stagedLanUpdate = result.update
       blackBox?.record('lan-update-ready', { release: result.update.releaseId })
     }
   }).catch(error => {
     // Offline is expected. No repeated global banner, no attempt to use the cloud.
+    lanUpdateStatus.checkedAt = new Date().toISOString(); lanUpdateStatus.error = errorText(error)
     blackBox?.record('lan-update-deferred', { error })
   }).finally(() => { lanUpdateFlight = null; lanUpdateAbort = null })
   return lanUpdateFlight
@@ -1456,11 +1477,14 @@ app.whenReady().then(async () => {
 
   // 21.11.2026: ПК менеджера бачить, що нову версію з головного ПК уже завантажено (встановиться при закритті).
   handleDesktopIpc('desktop:get-runtime-info', () => ({ ...requireLocalDatabase().info(), build: desktopBuildInfo,
-    stagedUpdateReleaseId: stagedLanUpdate?.releaseId ?? null }))
+    stagedUpdateReleaseId: stagedLanUpdate?.releaseId ?? null,
+    lanUpdate: localNetwork?.getStatus().mode === 'client' ? lanUpdateReport() : null }))
 
   // 23.11.2026: номер збірки видно й на екрані входу (власник звіряє версії двох ПК, не входячи). Лише збірка й режим ПК.
   handleDesktopIpc('desktop:get-runtime-info-build', () => ({ build: desktopBuildInfo, stagedUpdateReleaseId: stagedLanUpdate?.releaseId ?? null,
-    lan: { mode: localNetwork?.getStatus().mode ?? 'standalone' } }))
+    lan: { mode: localNetwork?.getStatus().mode ?? 'standalone' },
+    // 25.11.2026: стан автооновлення ПК менеджера — без шляху до файлу (екран входу бачать усі).
+    lanUpdate: localNetwork?.getStatus().mode === 'client' ? { ...lanUpdateReport(), executable: null } : null }))
 
   handleDesktopIpc('desktop:lan:first-run-status', () => {
     const status = localNetwork!.getStatus()
@@ -2680,7 +2704,7 @@ app.on('before-quit', (event) => {
         try {
           await launchPortableUpdateAfterQuit({ packaged: app.isPackaged, portableExecutable: process.env.PORTABLE_EXECUTABLE_FILE,
             localAppData: process.env.LOCALAPPDATA, update: stagedLanUpdate, parentPid: process.pid, quitConfirmed: true })
-        } catch (error) { writeDesktopDiagnostic('lan-update-install-deferred', error) }
+        } catch (error) { lanUpdateStatus.installError = errorText(error); writeDesktopDiagnostic('lan-update-install-deferred', error) }
       }
     } catch (error) { writeDesktopDiagnostic('database-close-failed', error) }
     finally {

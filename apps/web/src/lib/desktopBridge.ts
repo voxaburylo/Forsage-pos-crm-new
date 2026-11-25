@@ -99,6 +99,14 @@ export interface DesktopRuntimeInfo {
   lan?: DesktopLanStatus | null
   /** ПК менеджера: нова версія з головного ПК завантажена й встановиться при закритті програми. */
   stagedUpdateReleaseId?: string | null
+  /** 25.11.2026: ПК менеджера — стан автооновлення з головного ПК (щоб причину було видно на екрані). */
+  lanUpdate?: LanUpdateReport | null
+}
+
+export interface LanUpdateReport {
+  checkedAt: string | null; error: string | null; installError: string | null; staged: string | null
+  outcome: { state?: string; releaseId?: string; message?: string; finishedAt?: string } | null
+  portable: boolean; executable: string | null
 }
 
 export interface NegativeStockRow {
@@ -557,7 +565,7 @@ export interface ForsageDesktopBridge {
   }
   getRuntimeInfo: () => Promise<DesktopRuntimeInfo>
   /** Збірка й режим ПК без входу (екран входу); у старих програмах немає. */
-  getBuildInfo?: () => Promise<Pick<DesktopRuntimeInfo, 'build' | 'stagedUpdateReleaseId'> & { lan?: { mode?: string } | null }>
+  getBuildInfo?: () => Promise<Pick<DesktopRuntimeInfo, 'build' | 'stagedUpdateReleaseId' | 'lanUpdate'> & { lan?: { mode?: string } | null }>
   /** 22.11.2026: повертає клавіатуру в поля після системного вікна confirm/alert. */
   restoreInputFocus?: () => void
   lan?: {
