@@ -247,7 +247,7 @@ export function isAssistantRequest(method: string, path: string): boolean {
   if (['GET', 'POST', 'PUT', 'DELETE'].includes(method) && /^\/site-admin(?:\/[a-z][a-z-]{0,40})?$/.test(path)) return true
   // 24.11.2026: товари постачальників під замовлення (пошук) і налаштування ключів постачальників.
   // 25.11.2026: і аналоги з крос-номерів постачальника (Омега).
-  if (method === 'GET' && /^\/supplier-offers\/(?:search|crosses)\?q=[A-Za-z0-9%._~-]{1,240}$/.test(path)) return true
+  if (method === 'GET' && /^\/supplier-offers\/(?:search|crosses|details)\?q=[A-Za-z0-9%._~-]{1,240}$/.test(path)) return true
   if (['GET', 'PUT', 'POST', 'DELETE'].includes(method) && /^\/supplier-api(?:\/[A-Za-z0-9-]{1,60}){0,2}$/.test(path)) return true
   // 24.11.2026: фото, знайдені сайтом, — головний ПК забирає список своїм ключем.
   if (method === 'GET' && /^\/(?:site|supplier)-photos(?:\?since=[A-Za-z0-9%._:-]{1,60})?$/.test(path)) return true

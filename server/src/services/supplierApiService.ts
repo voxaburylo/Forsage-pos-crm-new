@@ -92,14 +92,15 @@ export async function listConnections(tenantId: string) {
             (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id)::int AS offers,
             (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.product_id IS NOT NULL)::int AS linked,
             (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.crosses_checked_at IS NOT NULL)::int AS crosses_done,
-            (SELECT count(*) FROM supplier_offer_crosses x WHERE x.connection_id = c.id)::int AS crosses_total
+            (SELECT count(*) FROM supplier_offer_crosses x WHERE x.connection_id = c.id)::int AS crosses_total,
+            (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.details_checked_at IS NOT NULL)::int AS details_done
        FROM supplier_api_connections c WHERE c.tenant_id = $1 ORDER BY c.created_at`, [tenantId])
   const warehouses = (await pool.query('SELECT id, connection_id, code, name, city, days_to_ship, is_active FROM supplier_warehouses WHERE tenant_id = $1 ORDER BY name', [tenantId])).rows
   return rows.map((row: any) => ({
     id: row.id, provider: row.provider, name: row.name, key_hint: hint(String(row.api_key)), enabled: row.enabled, supplier_id: row.supplier_id,
     syncing: Boolean(row.sync_started_at), sync_page: row.sync_page, last_full_sync_at: row.last_full_sync_at ? new Date(row.last_full_sync_at).toISOString() : null,
     last_error: row.last_error, total_offers: row.total_offers, offers: row.offers, linked: row.linked,
-    crosses_done: row.crosses_done ?? 0, crosses_total: row.crosses_total ?? 0,
+    crosses_done: row.crosses_done ?? 0, crosses_total: row.crosses_total ?? 0, details_done: row.details_done ?? 0,
     warehouses: warehouses.filter((w: any) => w.connection_id === row.id).map((w: any) => ({ id: w.id, code: w.code, name: w.name, city: w.city, days_to_ship: w.days_to_ship, is_active: w.is_active })),
   }))
 }
@@ -384,6 +385,11 @@ export async function runSupplierSync(deps: OmegaDeps = {}) {
       const { syncCrossesStep } = await import('./supplierCrosses.js')
       results.push({ id: row.id, crosses: await syncCrossesStep(row, deps) })
     } catch (error) { results.push({ id: row.id, crosses_error: error instanceof Error ? error.message : 'error' }) }
+    // 25.11.2026: опис (OE-номери, застосовність, характеристики) — пачкою, один запит за прохід.
+    try {
+      const { syncDetailsStep } = await import('./supplierDetails.js')
+      results.push({ id: row.id, details: await syncDetailsStep(row, deps) })
+    } catch (error) { results.push({ id: row.id, details_error: error instanceof Error ? error.message : 'error' }) }
     // Фото — після прайсу й лише в межах того самого лічильника запитів.
     if (row.photos_enabled) {
       try { results.push({ id: row.id, photos: await syncPhotosStep(row, deps) }) }

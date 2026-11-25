@@ -54,6 +54,6 @@ describe('supplier cross numbers (Omega /product/getAllCrosses)', () => {
     expect(service.indexOf('syncCrossesStep(row, deps)')).toBeGreaterThan(service.indexOf('syncConnectionStep({ ...row'))
     expect(service.indexOf('syncCrossesStep(row, deps)')).toBeLessThan(service.indexOf('syncPhotosStep(row, deps)'))
     const till = readFileSync(new URL('../../../../apps/desktop/src/link/tillDeviceLink.ts', import.meta.url), 'utf8')
-    expect(till).toContain('supplier-offers\\/(?:search|crosses)')
+    expect(till).toContain('supplier-offers\\/(?:search|crosses|details)')
   })
 })

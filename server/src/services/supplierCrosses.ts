@@ -107,7 +107,15 @@ export async function searchCrosses(tenantId: string, query: string, withPurchas
      SELECT DISTINCT o.number AS code, o.number_code AS code_key, COALESCE(o.brand, '') AS brand, NULL AS replacement_type
        FROM supplier_offer_crosses x JOIN supplier_offers o ON o.connection_id = x.connection_id AND o.external_id = x.external_id
       WHERE x.tenant_id = $1 AND x.code_key = $2 AND o.number_code <> $2
-     LIMIT 200`, [tenantId, needle])
+     UNION
+     SELECT DISTINCT e.code, e.code_key, '' AS brand, 'OE' AS replacement_type
+       FROM supplier_offer_oe e JOIN supplier_offers o ON o.connection_id = e.connection_id AND o.external_id = e.external_id
+      WHERE e.tenant_id = $1 AND o.number_code = $2
+     UNION
+     SELECT DISTINCT o.number AS code, o.number_code AS code_key, COALESCE(o.brand, '') AS brand, 'за OE-номером' AS replacement_type
+       FROM supplier_offer_oe e JOIN supplier_offers o ON o.connection_id = e.connection_id AND o.external_id = e.external_id
+      WHERE e.tenant_id = $1 AND e.code_key = $2 AND o.number_code <> $2
+     LIMIT 300`, [tenantId, needle])
   const rows = crossList.filter((row: any) => String(row.code_key) !== needle)
   const keys = [...new Set(rows.map((row: any) => String(row.code_key)))]
   if (!keys.length) return { query: needle, crosses: [], pending }

@@ -45,6 +45,15 @@ async function crossesHandler(req: any, res: any, next: any) {
 export const supplierOffersRouter = Router()
 supplierOffersRouter.use(requireAuth, requireRole('owner', 'admin', 'manager', 'cashier'))
 supplierOffersRouter.get('/crosses', crossesHandler)
+/** 25.11.2026: опис товару постачальника (OE-номери, застосовність, характеристики) за артикулом. */
+supplierOffersRouter.get('/details', async (req, res, next) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store')
+    const q = typeof req.query.q === 'string' ? req.query.q.slice(0, 80) : ''
+    const { searchDetails } = await import('../services/supplierDetails.js')
+    res.json({ data: await searchDetails(req.user!.tenant_id, q) })
+  } catch (err) { next(err) }
+})
 supplierOffersRouter.get('/search', async (req, res, next) => {
   try {
     res.setHeader('Cache-Control', 'no-store')
