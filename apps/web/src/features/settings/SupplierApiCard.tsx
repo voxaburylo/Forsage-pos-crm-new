@@ -11,7 +11,7 @@ import { api } from '@/lib/api'
  */
 interface Warehouse { id: string; code: string; name: string; city: string | null; days_to_ship: number | null; is_active: boolean }
 interface Connection { id: string; provider: 'omega'; name: string; key_hint: string; enabled: boolean; syncing: boolean; sync_page: number
-  last_full_sync_at: string | null; last_error: string | null; total_offers: number; offers: number; linked: number; warehouses: Warehouse[] }
+  last_full_sync_at: string | null; last_error: string | null; total_offers: number; offers: number; linked: number; crosses_done?: number; crosses_total?: number; warehouses: Warehouse[] }
 
 const BASE = '/api/v1/supplier-api'
 const message = (reason: unknown, fallback: string) => reason instanceof Error && reason.message ? reason.message : fallback
@@ -78,6 +78,8 @@ export function SupplierApiCard() {
             <p className="mt-3 text-sm text-gray-700" data-supplier-status>
               Товарів під замовлення: <b>{omega.offers.toLocaleString('uk-UA')}</b>{omega.total_offers ? ` з ${omega.total_offers.toLocaleString('uk-UA')}` : ''}
               {' · '}збігаються з вашими картками: <b>{omega.linked.toLocaleString('uk-UA')}</b>
+              {/* 25.11.2026: кроси Омеги завантажуються фоном, у межах ліміту запитів. */}
+              {omega.crosses_done != null && <>{' · '}кроси отримано для <b>{omega.crosses_done.toLocaleString('uk-UA')}</b> з {omega.offers.toLocaleString('uk-UA')} товарів (номерів-аналогів: {(omega.crosses_total ?? 0).toLocaleString('uk-UA')})</>}
               {' · '}{omega.syncing ? `оновлюється (сторінка ${omega.sync_page})` : omega.last_full_sync_at ? 'оновлено ' + new Date(omega.last_full_sync_at).toLocaleString('uk-UA') : 'ще не завантажувалось'}
             </p>
             {omega.last_error && <p role="alert" className="mt-1 text-sm text-red-700">Остання помилка: {omega.last_error}</p>}

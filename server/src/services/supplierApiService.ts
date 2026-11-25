@@ -90,13 +90,16 @@ export async function listConnections(tenantId: string) {
   const { rows } = await pool.query(
     `SELECT c.id, c.provider, c.name, c.api_key, c.enabled, c.supplier_id, c.sync_page, c.sync_started_at, c.last_full_sync_at, c.last_error, c.total_offers, c.updated_at,
             (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id)::int AS offers,
-            (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.product_id IS NOT NULL)::int AS linked
+            (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.product_id IS NOT NULL)::int AS linked,
+            (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.crosses_checked_at IS NOT NULL)::int AS crosses_done,
+            (SELECT count(*) FROM supplier_offer_crosses x WHERE x.connection_id = c.id)::int AS crosses_total
        FROM supplier_api_connections c WHERE c.tenant_id = $1 ORDER BY c.created_at`, [tenantId])
   const warehouses = (await pool.query('SELECT id, connection_id, code, name, city, days_to_ship, is_active FROM supplier_warehouses WHERE tenant_id = $1 ORDER BY name', [tenantId])).rows
   return rows.map((row: any) => ({
     id: row.id, provider: row.provider, name: row.name, key_hint: hint(String(row.api_key)), enabled: row.enabled, supplier_id: row.supplier_id,
     syncing: Boolean(row.sync_started_at), sync_page: row.sync_page, last_full_sync_at: row.last_full_sync_at ? new Date(row.last_full_sync_at).toISOString() : null,
     last_error: row.last_error, total_offers: row.total_offers, offers: row.offers, linked: row.linked,
+    crosses_done: row.crosses_done ?? 0, crosses_total: row.crosses_total ?? 0,
     warehouses: warehouses.filter((w: any) => w.connection_id === row.id).map((w: any) => ({ id: w.id, code: w.code, name: w.name, city: w.city, days_to_ship: w.days_to_ship, is_active: w.is_active })),
   }))
 }

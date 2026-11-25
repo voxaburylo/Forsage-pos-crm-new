@@ -9,8 +9,12 @@ import { code, omegaCall, takeCall, type OmegaDeps } from './supplierApiService.
  * (Омега блокує обліковий запис за >30 запитів/хв чи >300/год). Ключ постачальника не виходить за межі сервера.
  */
 
-/** Скільки товарів за один прохід планувальника отримують кроси заздалегідь. Решту ліміту — прайсу й фото. */
-export const CROSSES_PER_RUN = 3
+/**
+ * Скільки товарів за один прохід планувальника (раз на 5 хв) отримують кроси: 8 → ~96 запитів/год із 250.
+ * Слово власника 25.11.2026: «щоб скачались усі кроси, що є в Омеги, — по мірі можливості, не порушуючи лімітів».
+ * Черга: наші картки → товари в наявності (ходові першими) → решта. Прайс іде раніше, фото — на залишок ліміту.
+ */
+export const CROSSES_PER_RUN = 8
 
 export interface OfferCross { code: string; code_key: string; brand: string; replacement_type: string | null }
 
@@ -60,11 +64,11 @@ export async function fetchOfferCrosses(connection: Connection, externalId: stri
   return true
 }
 
-/** Заздалегідь — кроси товарів постачальника, що збіглися з НАШИМИ картками (те, що ми продаємо). Порціями. */
+/** Фоном — кроси ВСІХ товарів постачальника, порціями: спершу наші картки, далі ті, що є в наявності. */
 export async function syncCrossesStep(connection: Connection, deps: OmegaDeps = {}, max = CROSSES_PER_RUN) {
   const { rows } = await pool.query(
-    `SELECT external_id FROM supplier_offers WHERE connection_id = $1 AND product_id IS NOT NULL AND crosses_checked_at IS NULL
-     ORDER BY total_qty DESC LIMIT $2`, [connection.id, max])
+    `SELECT external_id FROM supplier_offers WHERE connection_id = $1 AND crosses_checked_at IS NULL
+     ORDER BY (product_id IS NOT NULL) DESC, total_qty DESC, external_id LIMIT $2`, [connection.id, max])
   let fetched = 0
   for (const row of rows) {
     if (!await fetchOfferCrosses(connection, String(row.external_id), deps)) return { fetched, stopped: 'limit' as const }
