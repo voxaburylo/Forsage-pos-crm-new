@@ -1,7 +1,7 @@
 import { customerDiscountPct } from '@/features/customers/customerDiscount'
 import { stockWarningText } from './stockWarning'
 import { useState, useRef, useEffect, forwardRef, useImperativeHandle, memo } from 'react'
-import { Search, Plus, MapPin, Camera, ShoppingCart, WifiOff, Database } from 'lucide-react'
+import { Search, Plus, MapPin, ShoppingCart, WifiOff, Database } from 'lucide-react'
 import { supplierImportsApi } from '@/features/suppliers/supplierImportsApi'
 import { api } from '@/lib/api'
 import type { Product } from '@/types/product'
@@ -10,7 +10,7 @@ import { usePOSStore } from '@/stores/posStore'
 import { toast } from '@/components/ui/Toast'
 import { posSaleBlockReason } from './posMoney'
 import { playSuccessBeep, playWarning, initAudio, playErrorTone } from '@/lib/audioService'
-import { CameraScanner } from './CameraScanner'
+import { LiveCameraButton } from '@/components/LiveCameraButton'
 import { findProductByScanOffline, searchCustomersOffline, searchProductsOffline } from '@/lib/offlineDB'
 import { useServerStatus } from '@/hooks/useServerStatus'
 import { useAuthStore } from '@/stores/authStore'
@@ -95,7 +95,6 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
   const [importingId, setImportingId] = useState<string | null>(null)
 
 
-  const [cameraOpen, setCameraOpen] = useState(false)
   const [mobileWeb, setMobileWeb] = useState(false)
   const [zoomedPhoto, setZoomedPhoto] = useState<string | null>(null)
   const [pricingModalItem, setPricingModalItem] = useState<any | null>(null)
@@ -154,14 +153,10 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
   useEffect(() => {
     if (desktopRuntime) {
       setMobileWeb(false)
-      setCameraOpen(false)
       return
     }
     const media = window.matchMedia('(max-width: 767px) and (pointer: coarse)')
-    const update = () => {
-      setMobileWeb(media.matches)
-      if (!media.matches) setCameraOpen(false)
-    }
+    const update = () => setMobileWeb(media.matches)
     update()
     media.addEventListener('change', update)
     return () => media.removeEventListener('change', update)
@@ -589,18 +584,10 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
           />
         </div>
         {mobileWeb && (
-          <button onClick={() => setCameraOpen(true)}
-            className="bg-[#2C2C2C] hover:bg-gray-700 active:bg-gray-600 text-white rounded-xl flex items-center justify-center transition-all border-2 border-gray-700 hover:border-yellow-400/50 w-[44px] h-[44px] shrink-0"
-            title="Сканувати камерою">
-            <Camera size={20} />
-          </button>
+          <LiveCameraButton
+            className="bg-[#2C2C2C] hover:bg-gray-700 active:bg-gray-600 text-white rounded-xl flex items-center justify-center transition-all border-2 border-gray-700 hover:border-yellow-400/50 w-[44px] h-[44px] shrink-0" />
         )}
       </div>
-
-      {mobileWeb && (
-        <CameraScanner open={cameraOpen} onClose={() => setCameraOpen(false)}
-          onScan={(code) => { setCameraOpen(false); queueBarcodeScan(code) }} />
-      )}
 
       {/* Нещодавні скани */}
       {query === '' && getRecentItems('recent_scans').length > 0 && (

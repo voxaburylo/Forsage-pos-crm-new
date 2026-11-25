@@ -90,7 +90,6 @@ const CATALOG_EDITOR_ROLES = ['owner', 'admin', 'manager', 'cashier', 'storekeep
 const SUPPLIER_ROLES = ['owner', 'admin', 'manager', 'storekeeper']
 const RECEIVING_ROLES = ['owner', 'admin', 'manager', 'cashier', 'storekeeper']
 const REPORT_ROLES = ['owner', 'admin', 'manager', 'cashier']
-const CatalogAgentPage = lazyPage(() => import('@/features/ai/CatalogAgentPage'))
 const CatalogCleanupPage = lazyPage(() => import('@/features/admin/CatalogCleanupPage'))
 const AiAssistantPage       = lazyPage(() => import('@/features/ai/AiAssistantPage'))
 import { AI_ASSISTANT_ROLES } from '@/features/ai/aiAccess'
@@ -286,7 +285,8 @@ function Workspace() {
           <Route path="/audit"           element={<TillOnly what="Журнал аудиту"><ProtectedRoute roles={ADMIN_ROLES}><AuditLogPage /></ProtectedRoute></TillOnly>} />
           <Route path="/settings/templates" element={<TillOnly what="Шаблони"><ProtectedRoute roles={ADMIN_ROLES}><TemplateEditor /></ProtectedRoute></TillOnly>} />
           <Route path="/notifications"  element={<TillOnly what="Сповіщення"><ProtectedRoute roles={OFFICE_ROLES}><InboxPage /></ProtectedRoute></TillOnly>} />
-          <Route path="/ai-agent" element={<TillOnly what="AI-агент"><ProtectedRoute roles={ADMIN_ROLES}><CatalogAgentPage /></ProtectedRoute></TillOnly>} />
+          {/* 25.11.2026 (слово власника): «Перевірка каталогу» більше не потрібна — усе робить ШІ-помічник; старі посилання ведуть туди. */}
+          <Route path="/ai-agent" element={<Navigate to="/ai-assistant" replace />} />
           <Route path="/admin/catalog-cleanup" element={<TillOnly what="Очищення номенклатури" remote={false}><ProtectedRoute roles={ADMIN_ROLES}><CatalogCleanupPage /></ProtectedRoute></TillOnly>} />
           <Route path="/ai-assistant"   element={<TillOnly what="ШІ-помічник"><ProtectedRoute roles={AI_ASSISTANT_ROLES}><AiAssistantPage /></ProtectedRoute></TillOnly>} />
 

@@ -18,6 +18,19 @@ describe('AI assistant navigation and role boundaries', () => {
     expect(render()).toContain('href="/ai-assistant"')
     expect(render()).toContain('ШІ-помічник')
   })
+  // 25.11.2026, слово власника: «вкладка “Перевірка каталогу” нам більше не потрібна — усе можемо зробити через ШІ».
+  it('no «Перевірка каталогу» in the menu for anyone; its old link opens the AI assistant', () => {
+    for (const role of ['owner', 'admin']) {
+      state.role = role; state.desktop = true
+      const html = render()
+      expect(html).not.toContain('href="/ai-agent"')
+      expect(html).not.toContain('Перевірка каталогу')
+      expect(html).toContain('href="/ai-assistant"')
+    }
+    const app = readFileSync(new URL('../App.tsx', import.meta.url), 'utf8')
+    expect(app).toContain('<Route path="/ai-agent" element={<Navigate to="/ai-assistant" replace />} />')
+    expect(app).not.toContain('CatalogAgentPage')
+  })
   it('does not grant the cashier catalog-agent or settings navigation', () => {
     state.role = 'cashier'; state.desktop = true
     const html = render()
@@ -31,6 +44,7 @@ describe('AI assistant navigation and role boundaries', () => {
   it('uses the same assistant roles for direct URL access and keeps catalog maintenance restricted', () => {
     const source = readFileSync(new URL('../App.tsx', import.meta.url), 'utf8')
     expect(source.match(/<Route path="\/ai-assistant"[^\n]+/)?.[0]).toContain('roles={AI_ASSISTANT_ROLES}')
-    expect(source.match(/<Route path="\/ai-agent"[^\n]+/)?.[0]).toContain('roles={ADMIN_ROLES}')
+    // «Перевірка каталогу» прибрана (25.11.2026): старе посилання лише веде до помічника, а там діють його ролі.
+    expect(source.match(/<Route path="\/ai-agent"[^\n]+/)?.[0]).toBe('<Route path="/ai-agent" element={<Navigate to="/ai-assistant" replace />} />')
   })
 })

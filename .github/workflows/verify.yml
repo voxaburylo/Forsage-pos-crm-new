@@ -138,7 +138,6 @@ jobs:
       - run: node apps/web/scripts/tire-service-ui-smoke.mjs
       - run: node apps/web/scripts/ai-supply-input-ui-smoke.mjs
       - run: node apps/web/scripts/ai-invoice-review-ui-smoke.mjs
-      - run: node apps/web/scripts/catalog-agent-safety-ui-smoke.mjs
       - run: node apps/web/scripts/catalog-cleanup-ui-smoke.mjs
       - run: node apps/web/scripts/customer-creation-ui-smoke.mjs
       - run: node apps/web/scripts/customer-card-ui-smoke.mjs
@@ -154,6 +153,7 @@ jobs:
       - run: node apps/web/scripts/web-order-form-ui-smoke.mjs
       - run: node apps/web/scripts/web-invoice-photo-ui-smoke.mjs
       - run: node apps/web/scripts/responsive-shell-ui-smoke.mjs
+      - run: node apps/web/scripts/settings-api-ui-smoke.mjs
       # 23.11.2026 (план T8): ключові екрани — ще й у Microsoft Edge (сканер каси працював у Chrome і не працював в Edge).
       - run: node apps/web/scripts/run-in-edge.mjs apps/web/scripts/pos-dialog-ui-smoke.mjs
       - run: node apps/web/scripts/run-in-edge.mjs apps/web/scripts/pos-usability-ui-smoke.mjs

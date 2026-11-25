@@ -54,3 +54,20 @@ export function deliverCameraScan(code: string, target: Pick<Window, 'dispatchEv
 }
 
 export const CAMERA_FORMATS = ['ean_13', 'ean_8', 'code_128', 'code_39', 'upc_a', 'upc_e', 'qr_code'] as const
+
+/**
+ * 25.11.2026, слово власника: «я пробував, але все одно довго працює і відкривається камера; мені не треба відкривати
+ * картинку». Значок камери в полях пошуку відкривав старе вікно з картинкою (повільна бібліотека, 10 кадрів/с).
+ * Тепер значок лише вмикає/вимикає постійний сканер (смужка вгорі), курсор лишається в полі.
+ */
+export const LIVE_CAMERA_TOGGLE_EVENT = 'forsage:live-camera-toggle'
+export const LIVE_CAMERA_STATE_EVENT = 'forsage:live-camera-state'
+export const LIVE_CAMERA_STORAGE_KEY = 'forsage.camera-scanner'
+
+export function toggleLiveCamera(target: Pick<Window, 'dispatchEvent'> = window): void {
+  target.dispatchEvent(new CustomEvent(LIVE_CAMERA_TOGGLE_EVENT))
+}
+
+export function liveCameraStoredOn(storage: Pick<Storage, 'getItem'> | null = typeof sessionStorage === 'undefined' ? null : sessionStorage): boolean {
+  try { return storage?.getItem(LIVE_CAMERA_STORAGE_KEY) === 'on' } catch { return false }
+}
