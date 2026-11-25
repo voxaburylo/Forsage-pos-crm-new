@@ -42,7 +42,7 @@ export function SupplierCrossAnalogs({ sku, onLeave }: { sku: string | null | un
         <h4 className="text-sm font-semibold text-gray-800">Аналоги за кросами Омеги</h4>
         {answer && answer.crosses.length > 0 && <span className="text-xs text-gray-500">{crossSummary(answer)}</span>}
       </div>
-      {error && <p role="alert" className="text-sm text-amber-700">Не вдалося отримати кроси Омеги. <button type="button" className="font-semibold underline" onClick={() => setAttempt(value => value + 1)}>Повторити</button></p>}
+      {error && <p role="status" className="text-sm text-amber-700">Не вдалося отримати кроси Омеги. <button type="button" className="font-semibold underline" onClick={() => setAttempt(value => value + 1)}>Повторити</button></p>}
       {!error && !answer && <p role="status" className="text-sm text-gray-500">Питаємо кроси в Омеги…</p>}
       {answer && answer.crosses.length === 0 && (
         <p className="text-sm text-gray-500">{answer.pending
