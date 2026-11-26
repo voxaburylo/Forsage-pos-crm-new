@@ -32,6 +32,7 @@ export interface SeoDeps {
   productNames: (ids: string[]) => Promise<Map<string, { name: string; sku: string | null }>>
   fetchPage: (path: string) => Promise<string>
   startTextJob: (input: { scope: 'in_stock' | 'all'; overwrite: boolean; style_note?: string }) => Promise<{ total: number }>
+  startCategorySort: () => Promise<{ waiting: number }>
 }
 
 const newId = () => 'seo_' + Math.random().toString(36).slice(2, 10)
@@ -111,6 +112,12 @@ export async function handleSeoTool(name: string, args: Record<string, any>, dep
         return { status: 'samples_in_progress', total: started.total, note: 'Зразки зʼявляться вгорі вкладки за 1–2 хвилини; на сайт нічого не записано. Після «годиться» власника решта піде сама.' }
       } catch (error) { return { error: error instanceof AppError ? error.message : 'Не вдалося почати масову роботу' } }
     }
+    case 'start_category_sort': {
+      try {
+        const state = await deps.startCategorySort()
+        return { status: 'started', waiting: state.waiting, note: 'Розкладка йде на сервері сама; хід видно вгорі вкладки. Нові товари з API розкладатимуться автоматично.' }
+      } catch (error) { return { error: error instanceof AppError ? error.message : 'Не вдалося почати розкладку' } }
+    }
     case 'draft_forum_post': {
       const body = str(args.body, 12_000)
       if (body.length < 80) return { error: 'Текст надто короткий' }
@@ -140,6 +147,7 @@ export function realSeoDeps(user: SeoUser): SeoDeps {
       return new Map(rows.map((row: any) => [String(row.id), { name: String(row.name), sku: row.sku && !/^AUTO-/i.test(row.sku) ? String(row.sku) : null }]))
     },
     startTextJob: async input => (await import('./siteTextJobService.js')).createTextJob(user.tenant_id, user.id, input),
+    startCategorySort: async () => (await import('./supplierCategorySort.js')).setSortEnabled(user.tenant_id, user.id, true),
     fetchPage: async path => {
       const response = await fetch(SITE_ORIGIN + path, { redirect: 'follow', signal: AbortSignal.timeout(15_000), headers: { 'User-Agent': 'ForsageSeoAssistant/1.0', Accept: 'text/html,application/xml' } })
       if (!response.ok || !new URL(response.url).origin.startsWith(SITE_ORIGIN)) throw new Error('HTTP ' + response.status)

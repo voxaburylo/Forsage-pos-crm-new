@@ -96,9 +96,11 @@ router.get('/ai-jobs', async (req, res, next) => {
     res.setHeader('Cache-Control', 'no-store')
     const { runAiJobsStep } = await import('../services/aiJobService.js')
     // 26.11.2026: той самий будильник веде й масову роботу над текстами товарів для сайту (окрема помилка одну одній не заважає).
-    const [names, texts] = await Promise.allSettled([runAiJobsStep(), import('../services/siteTextJobService.js').then(module => module.runSiteTextStep())])
+    const [names, texts, sorting] = await Promise.allSettled([runAiJobsStep(), import('../services/siteTextJobService.js').then(module => module.runSiteTextStep()),
+      import('../services/supplierCategorySort.js').then(module => module.runCategorySortStep())])
     if (names.status === 'rejected' && texts.status === 'rejected') throw names.reason
-    res.json({ data: { ...(names.status === 'fulfilled' ? names.value : { error: true }), site_texts: texts.status === 'fulfilled' ? texts.value : { error: true } } })
+    res.json({ data: { ...(names.status === 'fulfilled' ? names.value : { error: true }), site_texts: texts.status === 'fulfilled' ? texts.value : { error: true },
+      category_sort: sorting.status === 'fulfilled' ? sorting.value : { error: true } } })
   } catch (error) {
     next(error)
   }

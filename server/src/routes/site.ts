@@ -119,6 +119,18 @@ siteAdminRouter.get('/text-jobs/:id/items', requireSiteSection, async (req, res,
     res.json({ data: await (await import('../services/siteTextJobService.js')).listTextItems(req.user!.tenant_id, String(req.params.id), state, Number(req.query.page) || 1) })
   } catch (err) { next(err) }
 })
+// 26.11.2026: розкладка товарів постачальників по наших категоріях (supplierCategorySort): стан, увімкнути/зупинити, повернути як було.
+siteAdminRouter.get('/category-sort', requireSiteSection, async (req, res, next) => {
+  try { res.setHeader('Cache-Control', 'no-store'); res.json({ data: await (await import('../services/supplierCategorySort.js')).sortStatus(req.user!.tenant_id) }) } catch (err) { next(err) }
+})
+siteAdminRouter.post('/category-sort', requireSiteSection, async (req, res, next) => {
+  try {
+    const action = String(req.body?.action ?? '')
+    if (!['start', 'stop', 'undo'].includes(action)) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422)
+    const sort = await import('../services/supplierCategorySort.js')
+    res.json({ data: action === 'undo' ? await sort.undoSort(req.user!.tenant_id, req.user!.id) : await sort.setSortEnabled(req.user!.tenant_id, req.user!.id, action === 'start') })
+  } catch (err) { next(err) }
+})
 siteAdminRouter.get('/categories', requireSiteSection, async (req, res, next) => {
   try { res.json({ data: await listSiteAdminCategories(req.user!.tenant_id) }) } catch (err) { next(err) }
 })

@@ -6,6 +6,7 @@ import { api } from '@/lib/api'
 import { ReplyText } from '@/features/ai/ReplyText'
 import { errorText, siteCall, SITE_URL } from './siteGateway'
 import { SITE_SETTING_FIELDS } from './SiteSimpleTabs'
+import { SiteCategorySortPanel } from './SiteCategorySortPanel'
 import { SiteTextJobPanel } from './SiteTextJobPanel'
 import { applyArticle, applyProductTexts, applySiteSeo, SEO_QUICK, seoHistory, type SeoAction, type SeoEntry } from './siteSeo'
 
@@ -73,6 +74,7 @@ export function SiteSeoAssistantTab() {
   const busy = sending || Boolean(applying)
   return (
     <div className="flex min-h-[60vh] flex-col gap-3" data-site-seo>
+      <SiteCategorySortPanel refresh={entries.length} />
       <SiteTextJobPanel refresh={entries.length} />
       {entries.length === 0 && (
         <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-700">
