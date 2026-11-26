@@ -16,7 +16,7 @@ import { Layout } from '@/components/Layout'
 import { Button, Input, Card } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/stores/authStore'
-import { createdProductReference, productEditorPayload, productHasNegativeMargin, productMoneyInput, sameNameCard, sameNameQuestion, suggestedRetailText } from './productFormModel'
+import { createdProductReference, productEditorPayload, productHasNegativeMargin, productMoneyInput, findSameNameCard, sameNameQuestion, suggestedRetailText } from './productFormModel'
 import { ProductReferenceField } from './ProductReferenceField'
 
 const EMPTY: ProductFormData = {
@@ -283,7 +283,7 @@ export function ProductEditor({ embedded = false, disabled = false, onSaved, onB
         toast.success('Товар оновлено')
       } else {
         // 26.11.2026 (аудит): дубль за назвою — питаємо до створення; пошук не вдався — не заважаємо зберегти.
-        const twin = sameNameCard(payload.name ?? '', await productApi.search(String(payload.name ?? ''), 10, { silent: true }).then(answer => answer.data as Array<{ id: string; name: string; sku?: string | null; qty_on_hand?: number; retail_price?: number }>, () => []))
+        const twin = await findSameNameCard(String(payload.name ?? ''), query => productApi.search(query, 10, { silent: true }))
         if (!attempt.isCurrent()) return
         if (twin && !window.confirm(sameNameQuestion(twin))) return
         const { data } = await productApi.create(payload)

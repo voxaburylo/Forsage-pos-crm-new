@@ -85,6 +85,19 @@ export function sameNameCard<T extends { id?: string; name?: string | null }>(na
   return found.find(item => key(item.name) === wanted) ?? null
 }
 
+type TwinCard = { id?: string; name?: string | null; sku?: string | null; qty_on_hand?: number | string | null; retail_price?: number | string | null }
+/**
+ * Пошук картки-двійника перед створенням. Це лише підказка: якщо пошук недоступний чи впав — повертаємо «не знайдено»,
+ * і картка створюється як завжди (підказка ніколи не має заважати зберегти товар).
+ */
+export async function findSameNameCard(name: string, search: (query: string) => Promise<{ data?: unknown }>): Promise<TwinCard | null> {
+  if (!name.trim()) return null
+  try {
+    const answer = await search(name.trim())
+    return sameNameCard(name, Array.isArray(answer?.data) ? answer.data as TwinCard[] : [])
+  } catch { return null }
+}
+
 export function sameNameQuestion(card: { name?: string | null; sku?: string | null; qty_on_hand?: number | string | null; retail_price?: number | string | null }): string {
   const sku = card.sku && !/^AUTO-/i.test(String(card.sku)) ? `артикул ${card.sku}` : 'без артикула'
   const price = Number(card.retail_price) > 0 ? `, ціна ${(Number(card.retail_price) / 100).toFixed(2)} грн` : ''

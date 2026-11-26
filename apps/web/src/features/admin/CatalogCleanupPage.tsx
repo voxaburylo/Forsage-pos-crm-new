@@ -15,6 +15,7 @@ import {
   type CleanupProduct, type CleanupScan, type CleanupSkuSuggestion,
 } from './catalogCleanupModel'
 import { CatalogTidyPanel } from './CatalogTidyPanel'
+import { CatalogAutoMergePanel } from './CatalogAutoMergePanel'
 
 type AiReview = { group_id: string; verdict: 'same' | 'different' | 'uncertain'; reason: string }
 type SkuInput = ReturnType<typeof cleanupSkuInput>
@@ -193,6 +194,7 @@ function CleanupContent({ scope }: { scope: string }) {
     {aiError && <p role="alert" className="mb-3 text-sm text-red-700">{aiError}</p>}
     {runtimeGuard === 'ready' && bridge && <CatalogTidyPanel api={bridge} disabled={disabled} onChanged={() => { generation.current++; setScan(null); closeSelection(); setManualIds([]); setExcluded({}) }} />}
     {scan && <>
+      <CatalogAutoMergePanel scan={scan} bridge={bridge} canWrite={canWrite} disabled={disabled} onMerged={() => { void load() }} />
       <div data-cleanup-manual><Card className="mb-4">
         <h2 className="font-semibold">Об’єднати вручну</h2>
         <p className="mt-1 text-sm text-gray-600">Якщо знаєте, що дві картки — один товар, знайдіть їх за назвою, артикулом або штрихкодом і додайте сюди.</p>

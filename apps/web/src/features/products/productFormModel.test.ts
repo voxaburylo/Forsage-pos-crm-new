@@ -110,6 +110,17 @@ describe('a new card with a name that already exists', () => {
     const { readFileSync } = await import('node:fs')
     const page = readFileSync(new URL('./ProductFormPage.tsx', import.meta.url), 'utf8')
     expect(page.indexOf('if (twin && !window.confirm(sameNameQuestion(twin))) return')).toBeLessThan(page.indexOf('await productApi.create(payload)'))
-    expect(page).toContain('answer.data as Array<{ id: string; name: string; sku?: string | null; qty_on_hand?: number; retail_price?: number }>, () => [])')
+    expect(page).toContain('const twin = await findSameNameCard(String(payload.name ?? \'\'), query => productApi.search(query, 10, { silent: true }))')
+  })
+  // Перевірка екрана product-photo-ui-smoke впала саме на цьому: пошуку не було, і картка не створювалась.
+  it('the twin lookup is only a hint: no search, a failing search or a strange answer never stop the save', async () => {
+    const { findSameNameCard } = await import('./productFormModel')
+    const cards = [{ id: 'a', name: 'Запобіжники MTA GE-10', sku: '81076' }]
+    expect(await findSameNameCard('запобіжники  mta ge-10', async () => ({ data: cards }))).toMatchObject({ id: 'a' })
+    expect(await findSameNameCard('Інша назва', async () => ({ data: cards }))).toBeNull()
+    expect(await findSameNameCard('Запобіжники MTA GE-10', async () => { throw new Error('offline') })).toBeNull()
+    expect(await findSameNameCard('Запобіжники MTA GE-10', undefined as never)).toBeNull()
+    expect(await findSameNameCard('Запобіжники MTA GE-10', async () => ({ data: 'not a list' }))).toBeNull()
+    expect(await findSameNameCard('   ', async () => ({ data: cards }))).toBeNull()
   })
 })
