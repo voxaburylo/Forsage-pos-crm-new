@@ -184,4 +184,17 @@ describe('owner alerts about cloud limits', () => {
     process.env.CLOUD_DATABASE_LIMIT_MB = '8000'
     expect(planOwnerAlerts(facts({ database_bytes: 410 * MB }), at('12:00'))).toEqual([])
   })
+  // 26.11.2026, власник: «можна попередження в тг» — ПК менеджера на іншій версії, ніж каса.
+  it('warns once per pair of versions when the manager PC runs another program than the till; silent if it has not called for days', () => {
+    const v = (manager: string | null, seen = at('11:00').toISOString()) => facts({ versions: { till_release_id: '20261126T130913-44b10d124f13', manager_release_id: manager, manager_seen_at: seen } })
+    expect(planOwnerAlerts(v('20261126T130913-44b10d124f13'), at('12:00'))).toEqual([])
+    const differ = planOwnerAlerts(v('20261126T083521-7595c2abf8f8'), at('12:00'))
+    expect(keys(differ)).toEqual(['manager_version:20261126T083521-7595c2abf8f8:20261126T130913-44b10d124f13'])
+    expect(differ[0].text).toContain('ПК менеджера працює на іншій версії')
+    expect(differ[0].text).toContain('закриють програму')
+    expect(keys(planOwnerAlerts(v('20261126T083521-7595c2abf8f8'), at('15:00'))).filter(key => key.startsWith('manager_version:'))).toEqual(keys(differ))
+    expect(keys(planOwnerAlerts(v(null), at('12:00')))).toEqual(['manager_version:old:20261126T130913-44b10d124f13'])
+    expect(planOwnerAlerts(v('x', new Date('2026-11-18T10:00:00+02:00').toISOString()), at('12:00'))).toEqual([])
+    expect(planOwnerAlerts(facts({ versions: { till_release_id: 'a', manager_release_id: 'b', manager_seen_at: null } }), at('12:00'))).toEqual([])
+  })
 })

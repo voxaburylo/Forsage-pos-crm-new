@@ -44,7 +44,11 @@ export interface OwnerAlertFacts {
   database_bytes?: number | null
   /** 23.11.2026: черга передачі каси на сервер, як її востаннє повідомила каса; немає — невідомо (тривоги немає). */
   outbox?: { waiting: number; oldest_at: string | null; error: string | null; reported_at: string } | null
+  /** 26.11.2026 (власник: «можна попередження в тг»): версії програми на касі й на ПК менеджера зі звіту каси. */
+  versions?: { till_release_id: string | null; manager_release_id: string | null; manager_seen_at: string | null } | null
 }
+/** Скільки днів тому ПК менеджера мав звертатися, щоб про його версію ще варто було попереджати. */
+export const MANAGER_VERSION_FRESH_DAYS = 3
 /** Скільки документ може чекати передачі, перш ніж попередити власника; і наскільки свіжим має бути звіт каси. */
 export const OUTBOX_STUCK_MINUTES = 30
 export const OUTBOX_REPORT_FRESH_MINUTES = 15
@@ -183,6 +187,17 @@ export function planOwnerAlerts(facts: OwnerAlertFacts, now: Date, settings: Own
     text: `🔄 Каса не може передати на сервер ${outbox.waiting} ${outbox.waiting === 1 ? 'зміну' : 'змін'} — найстаріша чекає з ${kyivTime(outbox.oldest_at)}.`
       + (outbox.error ? `\nПричина: ${outbox.error}` : '') + '\nКаса працює як завжди; не оновлюється лише копія для перегляду у вебі.',
   })
+
+  // 9. ПК менеджера на іншій версії, ніж каса (26.11.2026, власник: «попередження в тг»). Один раз на кожну пару версій:
+  // після оновлення ПК менеджера пара зміниться, і нова розбіжність (наступне оновлення каси) знову прийде одним повідомленням.
+  const versions = facts.versions
+  if (versions?.till_release_id && versions.manager_seen_at && hoursBetween(versions.manager_seen_at, now) <= MANAGER_VERSION_FRESH_DAYS * 24
+    && versions.manager_release_id !== versions.till_release_id) alerts.push({
+    key: `manager_version:${versions.manager_release_id ?? 'old'}:${versions.till_release_id}`,
+    text: `🖥 ПК менеджера працює на іншій версії програми, ніж каса.\nКаса: ${versions.till_release_id}\nПК менеджера: ${versions.manager_release_id ?? 'стара програма (версію не повідомляє)'}`
+      + `\nОстанній зв’язок ПК менеджера: ${kyivTime(versions.manager_seen_at)}.`
+      + '\nНова версія сама встановиться, коли на ПК менеджера закриють програму. Якщо за день не оновилась — оновіть флешкою з архіву «Форсаж — ПК менеджера».',
+  })
   return alerts
 }
 
@@ -281,6 +296,10 @@ async function collectFacts(tenantId: string): Promise<OwnerAlertFacts> {
   // Теж окремо: до міграції 20261123100000 цих колонок немає — тоді просто без цієї тривоги.
   const outbox = await pool.query('SELECT outbox_waiting, outbox_oldest_at, outbox_error, outbox_reported_at FROM till_presence WHERE tenant_id = $1', [tenantId])
     .then(result => result.rows[0], () => undefined)
+  // 26.11.2026: версії програм — зі звіту каси для «Стан системи»; помилка тут не зупиняє решту тривог.
+  const report = await pool.query('SELECT status_report FROM till_presence WHERE tenant_id = $1', [tenantId])
+    .then(result => result.rows[0]?.status_report as Record<string, unknown> | null | undefined, () => undefined)
+  const textOf = (value: unknown) => typeof value === 'string' && value ? value : null
   return {
     till_seen_at: presence.rows[0]?.seen_at ? new Date(presence.rows[0].seen_at).toISOString() : null,
     open_shifts: open.rows.map(row => ({ id: String(row.id), opened_at: new Date(row.opened_at).toISOString(), cashier_name: row.cashier_name ? String(row.cashier_name) : null })),
@@ -292,6 +311,7 @@ async function collectFacts(tenantId: string): Promise<OwnerAlertFacts> {
     database_bytes: databaseBytes,
     outbox: outbox?.outbox_reported_at ? { waiting: Number(outbox.outbox_waiting ?? 0), oldest_at: outbox.outbox_oldest_at ? new Date(outbox.outbox_oldest_at).toISOString() : null,
       error: outbox.outbox_error ? String(outbox.outbox_error) : null, reported_at: new Date(outbox.outbox_reported_at).toISOString() } : null,
+    versions: report ? { till_release_id: textOf(report.release_id), manager_release_id: textOf(report.manager_release_id), manager_seen_at: textOf(report.manager_seen_at) } : null,
   }
 }
 
