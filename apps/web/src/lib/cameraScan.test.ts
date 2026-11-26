@@ -72,6 +72,15 @@ describe('wiring of the live camera scanner', () => {
     expect(scanner).toContain('if (isDesktopRuntime() || !signedIn || !(touch || enabled)) return null')
     expect(scanner).not.toContain('inset-0 z-[100]')
   })
+
+  // 26.11.2026, слово власника: «вузька смужка камери вгорі некрасива; не хочу бачити, що знімаю — лише швидко зчитати».
+  it('shows no camera picture: the video plays invisibly (not display:none, which stops it on phones)', () => {
+    const scanner = read('../components/LiveCameraScanner.tsx')
+    expect(scanner).toContain('h-[2px] w-[2px] overflow-hidden opacity-[0.01]')
+    expect(scanner).not.toContain('h-24 rounded-b-xl')
+    expect(scanner).not.toContain('Згорнути приціл')
+    expect(scanner).not.toMatch(/<video[^>]*className="[^"]*hidden/)
+  })
 })
 
 // 25.11.2026, слово власника: «я пробував, але все одно довго працює і відкривається камера; мені не треба відкривати
