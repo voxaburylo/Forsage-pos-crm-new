@@ -48,3 +48,27 @@ describe('AI request history independent from the local action journal', () => {
     expect(apiValidationError('/api/v1/ai/chat', 'Original', 'OTHER', null)).toBe('Original')
   })
 })
+
+// 26.11.2026: помічник тричі поспіль пропонував ті самі пари, у яких каса відмовила, бо не знав підсумку.
+describe('the assistant is told how its earlier proposals ended', () => {
+  it('adds what the till wrote and refused to the model turn only in the request; the screen text stays', async () => {
+    const { aiRequestHistoryWithOutcomes } = await import('./aiRequestHistory')
+    const entries = [
+      { role: 'user' as const, text: 'найди дубли' },
+      { role: 'model' as const, text: 'Підготував 3 пари.', actions: [{ id: 'a1', title: "Об'єднати дублі: 3 пар" }] },
+      { role: 'user' as const, text: 'ще' },
+      { role: 'model' as const, text: 'Ще одна.', actions: [{ id: 'a2', title: 'Назви: 5' }, { id: 'a3', title: 'Кроси' }] },
+    ]
+    const request = aiRequestHistoryWithOutcomes(entries, {
+      applied: { a1: 'ok', a2: 'rejected' }, applyMsg: { a1: 'Об’єднано пар: 2, пропущено 1.' },
+      applyErrors: { a1: [{ item: 'Ремінь BOSCH s', error: 'Є відкрита ревізія' }] },
+    })
+    expect(request[1].text).toContain('Підготував 3 пари.')
+    expect(request[1].text).toContain('Об’єднано пар: 2, пропущено 1.')
+    expect(request[1].text).toContain('Ремінь BOSCH s — Є відкрита ревізія')
+    expect(request[3].text).toContain('«Назви: 5» власник відхилив')
+    expect(request[3].text).toContain('«Кроси» власник ще не підтвердив')
+    expect(entries[1].text).toBe('Підготував 3 пари.')
+    expect(request[0]).toEqual({ role: 'user', text: 'найди дубли' })
+  })
+})

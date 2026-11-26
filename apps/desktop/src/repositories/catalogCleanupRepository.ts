@@ -55,6 +55,13 @@ function selection(input: CleanupSelection): CleanupSelection {
     || !['pending', 'checked'].includes(input.stock_review)) throw new Error('Оберіть головну картку та від 1 до 20 різних дублів')
   return { tenant_id: input.tenant_id, target_id: input.target_id, source_ids: [...input.source_ids].sort(), stock_review: input.stock_review }
 }
+/** Причина людською мовою: службовий ключ («lan-order-workspace:…») власнику нічого не каже. */
+export function savedStateBlocker(key: string): string {
+  if (key.startsWith('lan-order-workspace:')) return 'Товар є в недописаному бланку замовлення на ПК менеджера. Збережіть або закрийте цей бланк і повторіть.'
+  if (/(cart|open[_-]?receipts?)/i.test(key)) return 'Товар лежить у відкритому чеку на касі. Проведіть або очистіть чек і повторіть.'
+  if (/draft/i.test(key)) return 'Товар є в незбереженій чернетці. Збережіть або закрийте її і повторіть.'
+  return 'Товар використовується в незавершеній роботі каси (' + key.split(':')[0] + '). Завершіть її і повторіть.'
+}
 function containsProduct(value: unknown, ids: Set<string>, depth = 0): boolean {
   if (depth > 35) throw new Error('Надто складний збережений кошик — перевірте відкриті чеки')
   if (Array.isArray(value)) return value.some(item => containsProduct(item, ids, depth + 1))
@@ -164,15 +171,19 @@ export class CatalogCleanupRepository {
     for (const row of this.db.prepare('SELECT key,value_json FROM app_meta ORDER BY key').all() as Row[]) {
       // Completed mutation receipts are immutable history, not live carts. Unknown
       // metadata keys with explicit product references fail closed as well.
-      if (/^(mutation:|manual-product-merge:|catalog-cleanup:)/.test(row.key)) continue
+      // 26.11.2026: «inventory-scan:» — квитанція вже збереженого сканування ревізії (захист від повтору), а не кошик.
+      // Через неї картку, яку хоч раз сканували в ревізії, не можна було обʼєднати ніколи (332 квитанції, 7 відмов за день).
+      // Відкриту ревізію окремо перевіряє запит «Є відкрита ревізія» вище.
+      // Так само «inventory-create:» (квитанція створеної в ревізії картки), звіт разового ремонту й ручне підтвердження ревізії.
+      if (/^(mutation:|manual-product-merge:|catalog-cleanup:|inventory-scan:|inventory-create:|manual-inventory-confirmation:|invalid-filter-links)/.test(row.key)) continue
       if (!ids.some(id => row.value_json.includes(id)) && !/(cart|open[_-]?receipts?|draft|lan-order-workspace)/i.test(row.key)) continue
       try {
         let value = JSON.parse(row.value_json)
         if (row.key.startsWith('lan-order-workspace:')) value = Array.isArray(value?.drafts)
           ? value.drafts.filter((draft: any) => !Array.isArray(draft.jobs) || draft.jobs.length > 0) : value
-        if (containsProduct(value, idsSet)) { blockers.push('Товар є у збереженому кошику або черзі замовлень: ' + row.key); cartState.push(row) }
+        if (containsProduct(value, idsSet)) { blockers.push(savedStateBlocker(row.key)); cartState.push(row) }
       }
-      catch { blockers.push('Не вдалося перевірити збережений кошик: ' + row.key); cartState.push(row) }
+      catch { blockers.push('Не вдалося перевірити збережені дані каси (' + row.key.split(':')[0] + '). Спробуйте ще раз.'); cartState.push(row) }
     }
     state.carts = cartState
     const rows = state.product_barcodes as Row[]

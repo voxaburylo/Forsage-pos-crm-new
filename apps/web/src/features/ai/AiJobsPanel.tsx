@@ -66,14 +66,19 @@ export function AiJobsPanel() {
       <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 [&::-webkit-details-marker]:hidden">
         <span className="min-w-0 flex-1 truncate text-sm font-semibold text-gray-800">Фонові задачі {open.length > 0 && <span className="font-normal text-gray-500">· {open.length}</span>}
           {open.some(job => job.status === 'ready') && <span className="ml-1.5 rounded bg-amber-100 px-1.5 py-0.5 text-[11px] font-medium text-amber-800" data-ai-jobs-waiting>чекає запуску</span>}
-          {open.some(job => job.status === 'review') && <span className="ml-1.5 rounded bg-emerald-100 px-1.5 py-0.5 text-[11px] font-medium text-emerald-800">готово — перегляньте</span>}
+          {/* 26.11.2026: готовий результат відкривається одразу з рядка — без розкривання панелі й пошуку кнопки. */}
+          {open.some(job => job.status === 'review') && <button type="button" data-ai-jobs-review
+            onClick={event => { event.preventDefault(); setReview(open.find(job => job.status === 'review') ?? null) }}
+            className="ml-1.5 rounded bg-emerald-600 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-emerald-700">готово — переглянути й застосувати</button>}
         </span>
         {open.find(job => job.status === 'running') && <LoadRing progress={open.find(job => job.status === 'running')!.progress} label="Фонова задача" />}
         <ChevronDown size={16} className="text-gray-400 transition-transform group-open:rotate-180" aria-hidden="true" />
       </summary>
       <div className="space-y-3 border-t border-gray-100 px-3 py-3">
-        <p className="text-xs text-gray-500">Сервер наводить порядок у назвах чи перекладає їх сам, пачками, навіть коли телефон чи ПК вимкнено. Картки не змінюються, доки ви не переглянете й не натиснете «Застосувати». Можна й просто написати в чаті: «наведи порядок у назвах усіх товарів».</p>
-        <div className="flex flex-wrap items-end gap-2">
+        <details className="rounded-lg border border-gray-100 px-2.5 py-2" data-ai-jobs-new>
+          <summary className="cursor-pointer text-xs font-medium text-gray-600">Нова задача вручну (можна й просто написати в чаті: «наведи порядок у назвах»)</summary>
+          <p className="mt-2 text-xs text-gray-500">Сервер наводить порядок у назвах чи перекладає їх сам, пачками, навіть коли телефон чи ПК вимкнено. Картки не змінюються, доки ви не переглянете й не натиснете «Застосувати».</p>
+        <div className="mt-2 flex flex-wrap items-end gap-2">
           <select aria-label="Які товари" value={target} onChange={event => setTarget(event.target.value)} className={select}>
             <option value="products">Наші товари</option>
             {suppliers.map(supplier => <option key={supplier.id} value={supplier.id}>Товари {supplier.name}</option>)}
@@ -90,6 +95,7 @@ export function AiJobsPanel() {
           </select>
           <Button size="sm" loading={busy === 'create'} onClick={() => void prepare()}>Підготувати</Button>
         </div>
+        </details>
         {error && <p role="alert" className="text-sm text-amber-800">{error}</p>}
         {jobs === null && !error && <p role="status" className="text-sm text-gray-500">Завантажуємо…</p>}
         {[...open, ...finished].map(job => (
@@ -111,7 +117,7 @@ export function AiJobsPanel() {
             <div className="mt-2 flex flex-wrap gap-1.5">
               {['ready', 'paused'].includes(job.status) && job.total > 0 && <Button size="sm" icon={<Play size={14} />} loading={busy === 'start' + job.id} onClick={() => void act('start' + job.id, () => aiJobsApi.action(job.id, 'start'), 'Запущено. Можна закрити екран — сервер працює сам.')}>Запустити</Button>}
               {job.status === 'running' && <Button size="sm" variant="secondary" icon={<Pause size={14} />} loading={busy === 'pause' + job.id} onClick={() => void act('pause' + job.id, () => aiJobsApi.action(job.id, 'pause'))}>Пауза</Button>}
-              {job.processed > 0 && <Button size="sm" variant="secondary" icon={<Search size={14} />} onClick={() => setReview(job)}>Переглянути</Button>}
+              {job.processed > 0 && <Button size="sm" variant={job.status === 'review' ? 'primary' : 'secondary'} icon={<Search size={14} />} onClick={() => setReview(job)}>{job.status === 'review' ? 'Переглянути й застосувати' : 'Переглянути'}</Button>}
               {!['done', 'cancelled'].includes(job.status) && <Button size="sm" variant="ghost" icon={<X size={14} />} loading={busy === 'cancel' + job.id}
                 onClick={() => window.confirm('Скасувати задачу? Уже застосовані назви лишаться.') && void act('cancel' + job.id, () => aiJobsApi.action(job.id, 'cancel'))}>Скасувати</Button>}
             </div>

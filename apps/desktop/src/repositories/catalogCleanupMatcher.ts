@@ -181,7 +181,11 @@ function positions(name: string): string[] {
   return unique(POSITIONS.filter(([pattern]) => pattern.test(clean)).map(([, label]) => label))
 }
 function compare(a: Features, b: Features): Evidence | null {
-  const sameBarcode = overlap(a.barcodes, b.barcodes), sameCode = overlap(a.codes, b.codes), sameName = a.nameKey === b.nameKey && a.core.length > 0
+  // 26.11.2026: назви, однакові буква в букву, — та сама назва, хоч би що стояло в полі артикулу. Раніше власний артикул
+  // картки вирізався з її назви («… EL 300360» з артикулом 300360 і з артикулом 89565 давали різний «технічний підпис»),
+  // і каса відмовляла власнику: «Немає достатніх ознак тотожності» — 20 відмов за день, помічник пропонував ті самі пари знову.
+  const identical = text(a.product.name) === text(b.product.name) && a.core.length + a.technical.length + a.dimensions.length > 0
+  const sameBarcode = overlap(a.barcodes, b.barcodes), sameCode = overlap(a.codes, b.codes), sameName = identical || (a.nameKey === b.nameKey && a.core.length > 0)
   const common = a.core.filter(token => b.core.includes(token)).length
   const similarity = common / Math.max(a.core.length, b.core.length, 1)
   const nearName = common > 0 && similarity >= 0.75 && (!a.kind || !b.kind || a.kind === b.kind)
@@ -203,6 +207,7 @@ function compare(a: Features, b: Features): Evidence | null {
   else if (!a.unit || !b.unit) uncertainty.push('Не визначено облікову одиницю')
   if (a.kind && b.kind && a.kind !== b.kind) conflicts.push('Різний вид товару попри збіг коду')
   for (const [field, label] of [['dimensions', 'розміри, фасування або кількісні характеристики'], ['shapes', 'форма'], ['colors', 'колір або покриття'], ['polarity', 'полярність'], ['technical', 'модель або технічні числа']] as const) {
+    if (identical) continue
     if (a[field].length && b[field].length && !equal(a[field], b[field])) conflicts.push('Різні ' + label)
     // Рік, обʼєм двигуна чи модель авто в одній із назв — опис, а не інший товар.
     else if (Boolean(a[field].length) !== Boolean(b[field].length)) (field === 'technical' ? minor : uncertainty).push('Не в обох назвах указані: ' + label)
@@ -261,6 +266,8 @@ export function analyzeCatalogCleanup(products: readonly CleanupProduct[]): Cata
     for (const barcode of item.barcodes) add('b:' + barcode, index)
     for (const article of item.codes) add('s:' + article, index)
     if (item.core.length) add('n:' + item.nameKey, index)
+    // Назви буква в букву: окремий блок, бо «технічний підпис» таких карток може різнитись через поле артикулу.
+    add('n!' + text(item.product.name), index)
     const words = [...item.core].sort((a, b) => (frequency.get(a)! - frequency.get(b)!) || a.localeCompare(b)).slice(0, 4)
     // Weak text candidates must agree on the available technical signature.
     // Generic words such as "фільтр паливний" alone are not duplicate evidence.
@@ -272,7 +279,7 @@ export function analyzeCatalogCleanup(products: readonly CleanupProduct[]): Cata
   const warnings: string[] = [], pairs = new Set<string>(), evidence = new Map<string, Evidence>(), neighbours = new Map<number, Set<number>>()
   let skipped = 0, capped = false
   const keyFor = (a: number, b: number) => a < b ? a + ':' + b : b + ':' + a
-  const priority = (key: string) => key.startsWith('b:') ? 0 : key.startsWith('s:') ? 1 : key.startsWith('n:') ? 2 : 3
+  const priority = (key: string) => key.startsWith('b:') ? 0 : key.startsWith('s:') ? 1 : key.startsWith('n:') || key.startsWith('n!') ? 2 : 3
   scan: for (const [, block] of [...blocks.entries()].sort(([a], [b]) => priority(a) - priority(b) || a.localeCompare(b))) {
     if (block.length > MAX_BLOCK) { skipped++; continue }
     for (let i = 0; i < block.length; i++) for (let j = i + 1; j < block.length; j++) {

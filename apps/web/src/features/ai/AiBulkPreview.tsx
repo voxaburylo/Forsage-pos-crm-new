@@ -53,7 +53,7 @@ export function BulkPreviewTable({ action, maxRows }: { action: AiPendingAction;
       </div>
       {maxRows && all.length > maxRows && (
         <div className="text-[11px] text-gray-400 px-2 py-1 bg-gray-50 text-center">
-          …та ще {all.length - maxRows}. Натисніть «Переглянути та підтвердити», щоб побачити всі.
+          …та ще {all.length - maxRows} — «усі рядки» під таблицею.
         </div>
       )}
     </div>

@@ -69,6 +69,13 @@ describe('reviewed catalog cleanup (isolated SQLite only)', () => {
     expect(row(source).deleted_at).toBeNull()
   })
 
+  // 26.11.2026: квитанція збереженого сканування ревізії — не кошик; через неї картку не можна було обʼєднати ніколи.
+  it('a saved revision-scan receipt (and other finished-operation receipts) does not block the merge', () => {
+    for (const key of ['inventory-scan:t:00000000-0000-4000-8000-000000000001', 'inventory-create:t:00000000-0000-4000-8000-000000000002', 'manual-inventory-confirmation:x'])
+      db.prepare('INSERT INTO app_meta(key,value_json,updated_at) VALUES(?,?,?)').run(key, JSON.stringify({ fingerprint: 'f', productId: source, product_id: source }), '2026-11-26')
+    expect(repo.preview(selection()).blockers).toEqual([])
+  })
+
   it('blocks open invoices, cart references and unknown future product references', () => {
     const input = request()
     db.prepare('INSERT INTO app_meta(key,value_json,updated_at) VALUES(?,?,?)').run('pos-open-cart:other-user', JSON.stringify({ items: [{ productId: source }] }), '2026-10-13')
