@@ -118,6 +118,9 @@ try {
       await page.locator('[data-site-section="goods"]').click()
       await page.locator('[data-site-tab="all"]').click()
       if (size.name === 'phone') await page.locator('[data-site-category-toggle]').click()
+      // «Усі» і «Без відбору» — в одному ряду (власник: «навіщо одне під одним, коли праворуч купа місця»).
+      const filterTops = await page.locator('[data-site-filters] select').evaluateAll(nodes => nodes.map(node => Math.round(node.getBoundingClientRect().top)))
+      assert.equal(new Set(filterTops).size, 1, `${label}: фільтри одне під одним`)
       const list = page.locator('[data-site-category-list]').locator('visible=true')
       await list.locator('[data-site-category=""]').waitFor()
       // Усього 5+20+3+10+2+7 = 47; «Оливи» разом із вкладеними 38; порожніх «Фільтрів» не видно.

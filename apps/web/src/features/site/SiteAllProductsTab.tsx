@@ -140,13 +140,16 @@ export function SiteAllProductsTab() {
           <Search size={15} className="text-gray-400" aria-hidden="true" />
           <input value={q} onChange={event => setQ(event.target.value)} placeholder="Назва, артикул чи штрихкод" aria-label="Пошук товару" className="w-full bg-transparent text-sm outline-none" />
         </label>
-        <select aria-label="Чиї товари" value={source} onChange={event => { setSource(event.target.value); setPage(1) }} className="rounded-lg border border-gray-200 bg-white px-2 py-2 text-sm">
+        {/* 26.11.2026, власник: «навіщо “Усі” і “Без відбору” одне під одним, коли праворуч купа місця» — завжди в один ряд. */}
+        <div className="flex w-full gap-2 sm:w-auto" data-site-filters>
+        <select aria-label="Чиї товари" value={source} onChange={event => { setSource(event.target.value); setPage(1) }} className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-2 py-2 text-sm sm:flex-none">
           <option value="all">Усі</option><option value="ours">Наші</option><option value="supplier">Від постачальників</option>
         </select>
-        <select aria-label="Відбір" value={flag} onChange={event => { setFlag(event.target.value); setPage(1) }} className="rounded-lg border border-gray-200 bg-white px-2 py-2 text-sm">
+        <select aria-label="Відбір" value={flag} onChange={event => { setFlag(event.target.value); setPage(1) }} className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-2 py-2 text-sm sm:flex-none">
           <option value="">Без відбору</option><option value="no_barcode">Без штрихкоду</option><option value="no_photo">Без фото</option>
           <option value="no_stock">Немає в наявності</option><option value="hidden">Прибрані з сайту</option>
         </select>
+        </div>
       </div>
 
       {picked.size > 0 && (
