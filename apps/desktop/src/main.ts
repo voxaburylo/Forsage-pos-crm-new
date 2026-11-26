@@ -102,7 +102,7 @@ import { customerWritePayload } from './security/customerWritePolicy'
 import { BACKGROUND_TASK, clearHandoff, decideStart, handoffRequested, isBackgroundLaunch, releaseOwner, writeOwner } from './background/tillOwner'
 import { spawn } from 'node:child_process'
 import { rehearsalRootFrom, runStartupRehearsal } from './diagnostics/startupRehearsal'
-import { allStaffRights, effectiveStaffRights, setStaffRight } from './security/staffRights'
+import { allStaffRights, effectiveStaffRights, setStaffRight, WRITEOFF_CREATE_CHANNELS } from './security/staffRights'
 import { compactOutbox, previewOutboxCompaction } from './repositories/outboxCompaction'
 import { quickCheckInWorker } from './db/verifiedBackup'
 
@@ -803,6 +803,11 @@ async function executeDesktopCommand(
       // «Може приймати задаток» відкриває лише свою зміну й оплату замовлення; решта каси лишається закритою.
       const depositOnly = managerCanTakeDeposit(requireLocalDatabase(), session.id)
       if (!(depositOnly && isManagerDepositChannel(channel))) throw new Error(depositOnly ? MANAGER_DEPOSIT_ONLY : MANAGER_SALE_DENIED)
+    }
+    // 26.11.2026: списання менеджер робить лише з перемикачем «Списує товар» у своїй картці (вмикає власник).
+    if (session.role === 'manager' && WRITEOFF_CREATE_CHANNELS.has(channel) && localNetwork?.getStatus().mode !== 'client'
+      && !effectiveStaffRights(requireLocalDatabase(), session.id, session.role).writeoffs) {
+      throw new Error('Списання менеджеру вмикає власник: «Працівники» → картка → «Права» → «Списує товар»')
     }
     for (const argument of args) validateTenantArguments(argument, session.tenant_id)
     for (const position of desktopTenantArgumentPositions(channel)) {

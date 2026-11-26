@@ -9,23 +9,26 @@ import { useAuthStore } from '@/stores/authStore'
  * тут — що екран знає про права того, хто увійшов. Поки головний ПК не відповів (або його немає на звʼязку) —
  * діє те, що дає роль: зайвого екран не покаже.
  */
-export type StaffRight = 'orders' | 'purchase_prices' | 'reports'
+export type StaffRight = 'orders' | 'purchase_prices' | 'reports' | 'writeoffs'
 export type StaffRights = Record<StaffRight, boolean>
 
 const BY_ROLE: Record<StaffRight, readonly string[]> = {
   orders: ['owner', 'admin', 'manager'],
   purchase_prices: ['owner', 'admin', 'storekeeper'],
   reports: ['owner', 'admin', 'manager'],
+  writeoffs: ['owner', 'admin', 'storekeeper'],
 }
 /** Кому власник може ввімкнути право перемикачем (решта має його за роллю або не має взагалі). */
 export const SWITCHABLE_RIGHTS: Record<StaffRight, readonly string[]> = {
   orders: ['cashier', 'storekeeper'],
   purchase_prices: ['cashier', 'manager'],
   reports: ['cashier'],
+  // 26.11.2026: «Склад → Списання» менеджеру — перемикачем у картці.
+  writeoffs: ['manager'],
 }
 
 export function defaultStaffRights(role: string): StaffRights {
-  return { orders: BY_ROLE.orders.includes(role), purchase_prices: BY_ROLE.purchase_prices.includes(role), reports: BY_ROLE.reports.includes(role) }
+  return { orders: BY_ROLE.orders.includes(role), purchase_prices: BY_ROLE.purchase_prices.includes(role), reports: BY_ROLE.reports.includes(role), writeoffs: BY_ROLE.writeoffs.includes(role) }
 }
 
 /** Відповідь головного ПК → права; усе незрозуміле лишається «за роллю». */
@@ -37,6 +40,7 @@ export function mergeStaffRights(role: string, answer: unknown): StaffRights {
     orders: base.orders || (record.orders === true && SWITCHABLE_RIGHTS.orders.includes(role)),
     purchase_prices: base.purchase_prices || (record.purchase_prices === true && SWITCHABLE_RIGHTS.purchase_prices.includes(role)),
     reports: base.reports || (record.reports === true && SWITCHABLE_RIGHTS.reports.includes(role)),
+    writeoffs: base.writeoffs || (record.writeoffs === true && SWITCHABLE_RIGHTS.writeoffs.includes(role)),
   }
 }
 

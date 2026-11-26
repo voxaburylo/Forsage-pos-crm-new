@@ -11,7 +11,7 @@ const RIGHTS: Record<string, RoleRights> = {
   admin: { can: ['Усе: каса, товари, замовлення, звіти, працівники, налаштування'], cannot: [] },
   manager: {
     can: ['Товари, прихід, ревізія, постачальники, автозакупівля', 'Клієнти й замовлення, збірка замовлень', 'Аналітика', 'Робота через веб (з телефона чи з дому)'],
-    cannot: ['Продаж із каси й зміна — лише з перемикачем нижче', 'Закупівельна ціна в картці товару — лише з перемикачем нижче', 'Працівники й налаштування'],
+    cannot: ['Продаж із каси й зміна — лише з перемикачем нижче', 'Закупівельна ціна в картці товару — лише з перемикачем нижче', 'Списання товару — лише з перемикачем нижче', 'Працівники й налаштування'],
   },
   cashier: {
     can: ['Каса: продаж, повернення, зміна, видача готових замовлень', 'Товари, прихід товару, ревізія', 'Клієнти', 'Видача зарплати за день', 'Аналітика'],
@@ -30,20 +30,22 @@ export function roleRights(role: string): RoleRights {
 }
 
 /** Які перемикачі показує блок «Права» для цієї ролі. */
-export type RoleSwitch = 'web' | 'sale' | 'deposit' | 'orders' | 'purchase_prices' | 'reports'
+export type RoleSwitch = 'web' | 'sale' | 'deposit' | 'orders' | 'purchase_prices' | 'reports' | 'writeoffs'
 export function roleSwitches(role: string): RoleSwitch[] {
   if (role === 'cashier') return ['orders', 'purchase_prices', 'reports', 'web']
-  if (role === 'manager') return ['sale', 'deposit', 'purchase_prices']
+  if (role === 'manager') return ['sale', 'deposit', 'purchase_prices', 'writeoffs']
   if (role === 'storekeeper') return ['orders']
   return []
 }
 
 /** Підписи перемикачів прав, які зберігає головний ПК (security/staffRights.ts на касі). */
-export const RIGHT_SWITCH_TEXT: Record<'orders' | 'purchase_prices' | 'reports', { title: string; hint: string; on: string; off: string }> = {
+export const RIGHT_SWITCH_TEXT: Record<'orders' | 'purchase_prices' | 'reports' | 'writeoffs', { title: string; hint: string; on: string; off: string }> = {
   orders: { title: 'Оформлює замовлення', hint: 'Розділ «Замовлення»: нові замовлення клієнтів, зміни, статуси, прорахунки. Оплату приймає каса.',
     on: 'Працівнику відкрито розділ «Замовлення»', off: 'Розділ «Замовлення» для працівника закрито' },
   purchase_prices: { title: 'Бачить закупівельні ціни', hint: 'Закупівельна ціна в картці товару: бачить і може змінити. У приході товару закупку видно всім, хто його вносить.',
     on: 'Працівник бачить закупівельні ціни в картці товару', off: 'Закупівельні ціни в картці товару приховано' },
   reports: { title: 'Бачить звіти', hint: '«Аналітика → Статистика»: обороти, залишки, борги за період. Прибуток бачить лише власник.',
     on: 'Працівнику відкрито «Статистику»', off: '«Статистику» для працівника закрито' },
+  writeoffs: { title: 'Списує товар', hint: '«Склад → Списання»: акт списання браку, бою, пересорту. Залишок зменшується одразу.',
+    on: 'Працівнику відкрито «Списання»', off: '«Списання» для працівника закрито' },
 }

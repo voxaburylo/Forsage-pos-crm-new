@@ -4,6 +4,7 @@ import { Button, Input } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { api } from '@/lib/api'
 import { LoadRing, type LoadProgress } from './LoadRing'
+import { SupplierStats } from './SupplierStats'
 
 /**
  * Налаштування → «API-ключі» (слово власника 24.11.2026): постачальники, які дають товари за ключем API.
@@ -12,7 +13,7 @@ import { LoadRing, type LoadProgress } from './LoadRing'
  */
 interface Warehouse { id: string; code: string; name: string; city: string | null; days_to_ship: number | null; is_active: boolean }
 interface Connection { id: string; provider: 'omega' | 'gpl'; name: string; key_hint: string; meta?: { price_names?: string[]; purchase_price_name?: string | null }; enabled: boolean; syncing: boolean; sync_page: number
-  last_full_sync_at: string | null; last_error: string | null; total_offers: number; offers: number; linked: number; crosses_done?: number; crosses_total?: number; details_done?: number; warehouses: Warehouse[]
+  last_full_sync_at: string | null; last_error: string | null; total_offers: number; offers: number; linked: number; crosses_done?: number; crosses_total?: number; details_done?: number; photos_have?: number; descriptions?: number; warehouses: Warehouse[]
   progress?: { overall?: LoadProgress; price: LoadProgress; crosses?: LoadProgress; details?: LoadProgress; photos?: LoadProgress } }
 
 const BASE = '/api/v1/supplier-api'
@@ -93,15 +94,7 @@ export function SupplierApiCard() {
         </div>
         {omega && (
           <>
-            <p className="mt-3 text-sm text-gray-700" data-supplier-status>
-              Товарів під замовлення: <b>{omega.offers.toLocaleString('uk-UA')}</b>{omega.total_offers ? ` з ${omega.total_offers.toLocaleString('uk-UA')}` : ''}
-              {' · '}збігаються з вашими картками: <b>{omega.linked.toLocaleString('uk-UA')}</b>
-              {/* 25.11.2026: кроси Омеги завантажуються фоном, у межах ліміту запитів. */}
-              {omega.crosses_done != null && <>{' · '}кроси отримано для <b>{omega.crosses_done.toLocaleString('uk-UA')}</b> з {omega.offers.toLocaleString('uk-UA')} товарів (номерів-аналогів: {(omega.crosses_total ?? 0).toLocaleString('uk-UA')})</>}
-              {omega.details_done != null && <>{' · '}опис (OE-номери, застосовність, характеристики): <b>{omega.details_done.toLocaleString('uk-UA')}</b></>}
-              {' · '}{omega.syncing ? `оновлюється (сторінка ${omega.sync_page})` : omega.last_full_sync_at ? 'оновлено ' + new Date(omega.last_full_sync_at).toLocaleString('uk-UA') : 'ще не завантажувалось'}
-            </p>
-            <ProgressList conn={omega} />
+            <SupplierStats conn={omega} />
             {omega.last_error && <p role="alert" className="mt-1 text-sm text-red-700">Остання помилка: {omega.last_error}</p>}
             <div className="mt-3 flex flex-wrap gap-2">
               <Button size="sm" variant="secondary" icon={<RefreshCw size={14} />} loading={busy === 'sync' + omega.id} disabled={omega.syncing} onClick={() => void syncOf(omega)}>Оновити зараз</Button>
@@ -128,15 +121,10 @@ export function SupplierApiCard() {
         </div>
         {gpl && (
           <>
-            <p className="mt-3 text-sm text-gray-700" data-supplier-status>
-              Товарів під замовлення: <b>{gpl.offers.toLocaleString('uk-UA')}</b>{gpl.total_offers ? ` з ${gpl.total_offers.toLocaleString('uk-UA')}` : ''}
-              {' · '}збігаються з вашими картками: <b>{gpl.linked.toLocaleString('uk-UA')}</b>
-              {' · '}{gpl.syncing ? `оновлюється (сторінка ${gpl.sync_page})` : gpl.last_full_sync_at ? 'оновлено ' + new Date(gpl.last_full_sync_at).toLocaleString('uk-UA') : 'ще не завантажувалось'}
-            </p>
+            <SupplierStats conn={gpl} />
             {gpl.meta?.price_names && gpl.meta.price_names.length > 0 && (
               <p className="mt-1 text-xs text-gray-500">Ціни в прайсі GPL: {gpl.meta.price_names.join(', ')}. Закупкою взято: <b>{gpl.meta.purchase_price_name ?? '—'}</b> (найменша не роздрібна).</p>
             )}
-            <ProgressList conn={gpl} />
             {gpl.last_error && <p role="alert" className="mt-1 text-sm text-red-700">Остання помилка: {gpl.last_error}</p>}
             <div className="mt-3 flex flex-wrap gap-2">
               <Button size="sm" variant="secondary" icon={<RefreshCw size={14} />} loading={busy === 'sync' + gpl.id} disabled={gpl.syncing} onClick={() => void syncOf(gpl)}>Оновити зараз</Button>
@@ -151,7 +139,7 @@ export function SupplierApiCard() {
 
   /**
    * 26.11.2026 (фото власника: «чому склади окремо, Омега окремо?»): склади — усередині блоку свого постачальника,
-   * під докладним ходом завантажень. Кружечок біля складу — завантаження прайсу (склади приходять у ньому).
+   * під плитками з числами. 26.11.2026 (власник): кружечок біля складу прибрано — не потрібен.
    */
   function warehousesOf(conn: Connection) {
     if (!conn.warehouses.length) return null
@@ -166,7 +154,6 @@ export function SupplierApiCard() {
                   <input type="checkbox" className="h-4 w-4 shrink-0 rounded border-gray-300 text-accent" checked={w.is_active} onChange={event => saveDays(w, event.target.checked)} />
                   <span className="break-words">{w.name}</span>
                 </label>
-                <LoadRing progress={w.is_active ? conn.progress?.price : null} label={`Склад ${w.name}`} showText={Boolean(conn.progress?.price.loading)} textClassName="hidden sm:inline" />
                 <input inputMode="numeric" aria-label={'Днів до відправки: ' + w.name} value={days[w.id] ?? ''} placeholder="днів"
                   onChange={event => setDays(current => ({ ...current, [w.id]: event.target.value }))}
                   onKeyDown={event => { if (event.key === 'Enter') saveDays(w) }}
@@ -179,24 +166,6 @@ export function SupplierApiCard() {
       </div>
     )
   }
-}
-
-/** Докладно в розкритому блоці: кожне завантаження окремо — свій кружечок, відсоток і час. */
-function ProgressList({ conn }: { conn: Connection }) {
-  const progress = conn.progress
-  if (!progress) return null
-  const rows: Array<[string, LoadProgress | undefined]> = [
-    ['Прайс і склади', progress.price], ['Кроси (аналоги)', progress.crosses], ['Опис (OE, застосовність)', progress.details], ['Фото', progress.photos],
-  ]
-  return (
-    <ul className="mt-2 space-y-1 rounded-lg bg-gray-50 px-3 py-2" data-supplier-progress>
-      {rows.filter(([, part]) => part).map(([label, part]) => (
-        <li key={label} className="flex items-center justify-between gap-2 text-xs text-gray-600">
-          <span>{label}</span><LoadRing progress={part} label={`${label}: ${conn.name}`} />
-        </li>
-      ))}
-    </ul>
-  )
 }
 
 /** Підсумок у згорнутому заголовку: ЗАГАЛЬНИЙ стан усіх завантажень постачальника (прайс, кроси, опис, фото). */
