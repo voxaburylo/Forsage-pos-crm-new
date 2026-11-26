@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { sortLineText, type SortState } from './SiteCategorySortPanel'
+import { newCategoriesText, sortLineText, type SortState } from './SiteCategorySortPanel'
 
 // 26.11.2026, власник: «товари, що прийшли по API й ще прийдуть, не розсортовані».
 const state = (over: Partial<SortState>): SortState => ({ enabled: false, waiting: 62937, sorted: 0, unsure: 0, with_category: 48948, total: 111885, cost_usd: 0, last_error: null, ...over })
@@ -17,5 +17,15 @@ describe('category sort for supplier products: one line that says what is going 
   it('when done it says that new arrivals will be sorted by themselves', () => {
     expect(sortLineText(state({ enabled: true, waiting: 0, sorted: 58000, unsure: 4937 }))).toMatch(/^Усе розкладено: помічник розклав 58.000.*Нові товари, що прийдуть по API, розкладатимуться самі\.$/)
     expect(sortLineText(state({ waiting: 0, sorted: 5 }))).toMatch(/мають категорію або розглянуті: помічник розклав 5\.$/)
+  })
+})
+
+// 27.11.2026, власник: «якщо в нас такої категорії немає, то він її створює».
+describe('new categories are created by the main PC and said in plain words', () => {
+  it('names what is being created and how many products wait; says when the main PC has not answered', () => {
+    const text = newCategoriesText(state({ enabled: true, waiting: 0, waiting_new: 1840, waiting_names: ['Кузовні деталі', 'Системи кондиціонування'] }))
+    expect(text).toMatch(/створюю нові: «Кузовні деталі», «Системи кондиціонування»\. Їх створює головний ПК; щойно він у мережі, 1.840 товарів ляжуть у них самі\.$/)
+    expect(newCategoriesText(state({ waiting_names: ['Кузовні деталі'], waiting_new: 5, till_error: 'Невідома команда. Оновіть програму на касі.' }))).toMatch(/Головний ПК поки відповів: Невідома команда/)
+    expect(newCategoriesText(state({}))).toBe('')
   })
 })

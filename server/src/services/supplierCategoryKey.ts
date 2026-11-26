@@ -37,15 +37,16 @@ export function sortPrompt(options: readonly CategoryOption[]): string {
   return `Ти розкладаєш товари постачальників автозапчастин по категоріях магазину «Форсаж». Нижче — категорії магазину з номерами. Для кожного ВИДУ товару (категорія постачальника або початок назви, з прикладами повних назв) вибери ОДНУ категорію магазину, куди такий товар поклав би досвідчений продавець запчастин.
 
 Правила:
-- Вибирай лише з цього списку, за номером. Нових категорій не вигадуй.
-- Якщо підхожої категорії немає, вид незрозумілий або приклади належать до різних категорій — став 0. Краще 0, ніж не та категорія: товар у чужій категорії на сайті гірший за товар без категорії.
+- Спершу шукай у цьому списку й відповідай номером.
+- Якщо вид зрозумілий, але підхожої категорії в списку справді НЕМАЄ (рішення власника 27.11.2026: «якщо такої категорії немає — він її створює») — став -1 і в полі "new" запропонуй назву нової категорії: українською, 1–3 слова, загальна (вид товарів, не бренд, не модель авто, не розмір), у множині: «Кузовні деталі», «Системи кондиціонування». Не пропонуй нову, якщо товар можна розумно покласти в наявну.
+- Якщо вид незрозумілий або приклади належать до різних категорій — став 0. Краще 0, ніж не та категорія: товар у чужій категорії на сайті гірший за товар без категорії.
 - Дивись на приклади назв, а не лише на ключ: «ремінь» може бути поліклиновий, ГРМ або безпеки.
 - Марка авто в назві — це застосовність, а не категорія.
 
 КАТЕГОРІЇ МАГАЗИНУ:
 ${options.map((option, index) => `${index + 1}. ${option.path}`).join('\n')}
 
-Відповідь — ЛИШЕ JSON: {"items":[{"n":<номер виду>,"c":<номер категорії або 0>}]}`
+Відповідь — ЛИШЕ JSON: {"items":[{"n":<номер виду>,"c":<номер категорії, 0 або -1>,"new":"<назва нової категорії, лише коли c = -1>"}]}`
 }
 
 export function sortLine(n: number, key: string, samples: readonly string[]): string {
@@ -53,9 +54,17 @@ export function sortLine(n: number, key: string, samples: readonly string[]): st
   return `№${n} | ${label} | приклади: ${samples.slice(0, 4).map(sample => sample.replace(/\s+/g, ' ').trim().slice(0, 110)).join(' ;; ')}`
 }
 
-/** Відповідь моделі → номер виду → номер категорії (0 — не певен). Чужі номери й сміття відкидаються. */
-export function parseSortReply(reply: string, kinds: number, categories: number): Map<number, number> {
-  const out = new Map<number, number>()
+export interface SortVote { c: number; name: string }
+/** Назва нової категорії: коротка, українською, з великої літери; латиниця й цифри — ознака бренду чи моделі, таку не беремо. */
+export function newCategoryName(raw: unknown): string {
+  const name = String(raw ?? '').replace(/\s+/g, ' ').replace(/[«»"'.]+/g, '').trim()
+  if (name.length < 3 || name.length > 60 || /[A-Za-z0-9]/.test(name) || !/^[А-ЯІЇЄҐа-яіїєґʼ’ ,-]+$/u.test(name)) return ''
+  return name[0].toLocaleUpperCase('uk-UA') + name.slice(1)
+}
+
+/** Відповідь моделі → номер виду → рішення: номер категорії, 0 — не певен, -1 — потрібна нова категорія (з назвою). */
+export function parseSortReply(reply: string, kinds: number, categories: number): Map<number, SortVote> {
+  const out = new Map<number, SortVote>()
   const start = reply.indexOf('{'), end = reply.lastIndexOf('}')
   if (start < 0 || end <= start) return out
   let parsed: unknown
@@ -64,15 +73,61 @@ export function parseSortReply(reply: string, kinds: number, categories: number)
   if (!Array.isArray(items)) return out
   for (const item of items) {
     const n = Number((item as { n?: unknown })?.n), c = Number((item as { c?: unknown })?.c)
-    if (Number.isInteger(n) && n >= 1 && n <= kinds && Number.isInteger(c) && c >= 0 && c <= categories && !out.has(n)) out.set(n, c)
+    if (!Number.isInteger(n) || n < 1 || n > kinds || !Number.isInteger(c) || c < -1 || c > categories || out.has(n)) continue
+    const name = c === -1 ? newCategoryName((item as { new?: unknown })?.new) : ''
+    // «Нова» без придатної назви — це «не певен».
+    out.set(n, c === -1 && !name ? { c: 0, name: '' } : { c, name })
   }
   return out
 }
 
 /**
- * Два незалежні рішення помічника про той самий вид. Категорія ставиться лише коли обидва збіглися; розбіжність або
- * відсутня відповідь — «не певен» (0). Так випадкова помилка однієї відповіді не розкладе сотні товарів не туди.
+ * Два незалежні рішення помічника про той самий вид. Категорія ставиться лише коли обидва збіглися; так само нова
+ * категорія пропонується лише коли обидва сказали «потрібна нова» (назву потім зводить окремий крок). Розбіжність або
+ * відсутня відповідь — «не певен». Так випадкова помилка однієї відповіді не розкладе сотні товарів не туди.
  */
-export function agreedCategory(first: number | undefined, second: number | undefined): number {
-  return first !== undefined && first === second ? first : 0
+export function agreedCategory(first: SortVote | undefined, second: SortVote | undefined): SortVote {
+  if (!first || !second || first.c !== second.c) return { c: 0, name: '' }
+  return first.c === -1 ? { c: -1, name: first.name } : { c: first.c, name: '' }
+}
+
+/** Скільки товарів має чекати на нову категорію, щоб її варто було створювати: одна категорія на пʼять товарів — це сміття в меню. */
+export const NEW_CATEGORY_MIN_PRODUCTS = 15
+export const NEW_CATEGORY_MAX_PER_RUN = 30
+
+export function mergePrompt(options: readonly CategoryOption[]): string {
+  return `Магазин автозапчастин «Форсаж». Для частини товарів постачальників у магазині немає підхожої категорії, і є пропозиції нових категорій (з кількістю товарів і прикладами). Зведи їх у МІНІМАЛЬНИЙ набір нових категорій.
+
+Правила:
+- Схожі пропозиції обʼєднуй в одну категорію («Кузовні деталі», «Кузовні запчастини», «Деталі кузова» → одна).
+- Якщо пропозиція насправді підходить до вже наявної категорії магазину — вкажи її номер, нову не створюй.
+- Назва нової категорії: українською, 1–3 слова, загальна (вид товарів, а не бренд, не модель авто, не розмір), у множині, як у наявних категоріях магазину.
+- Пропозицію, яка надто вузька, незрозуміла чи стосується кількох різних видів, не включай нікуди — ці товари лишаться без категорії.
+
+НАЯВНІ КАТЕГОРІЇ МАГАЗИНУ:
+${options.map((option, index) => `${index + 1}. ${option.path}`).join('\n')}
+
+Відповідь — ЛИШЕ JSON: {"groups":[{"name":"<назва нової категорії>","existing":0,"from":[<номери пропозицій>]},{"existing":<номер наявної категорії>,"from":[...]}]}`
+}
+
+export interface MergeGroup { name: string; existing: number; from: number[] }
+/** Відповідь зведення. Кожна пропозиція — щонайбільше в одній групі; чужі номери, порожні й некоректні назви відкидаються. */
+export function parseMergeReply(reply: string, proposals: number, categories: number): MergeGroup[] {
+  const start = reply.indexOf('{'), end = reply.lastIndexOf('}')
+  if (start < 0 || end <= start) return []
+  let parsed: unknown
+  try { parsed = JSON.parse(reply.slice(start, end + 1)) } catch { return [] }
+  const groups = (parsed as { groups?: unknown })?.groups
+  if (!Array.isArray(groups)) return []
+  const used = new Set<number>(), out: MergeGroup[] = []
+  for (const group of groups) {
+    const existing = Number((group as { existing?: unknown })?.existing) || 0
+    const name = existing > 0 ? '' : newCategoryName((group as { name?: unknown })?.name)
+    const from = (Array.isArray((group as { from?: unknown })?.from) ? (group as { from: unknown[] }).from : []).map(Number)
+      .filter(n => Number.isInteger(n) && n >= 1 && n <= proposals && !used.has(n))
+    if (!from.length || existing < 0 || existing > categories || !Number.isInteger(existing) || (!existing && !name)) continue
+    from.forEach(n => used.add(n))
+    out.push({ name, existing, from })
+  }
+  return out
 }

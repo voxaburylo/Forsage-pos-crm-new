@@ -15,17 +15,19 @@ import { agreedCategory, categoryKey, categoryOptions, parseSortReply, sortLine,
 export const SORT_PAGE = 3000, SORT_KINDS = 60, SORT_CHUNKS = 4, SORT_RUN_MS = 50_000
 export type SortModel = { complete: (budget: AiExecutionBudget, input: { system: string; text: string; maxTokens?: number; effort?: 'low' | 'medium' | 'high' }) => Promise<ClaudeUsage & { text: string; truncated: boolean }> }
 type Offer = { connection_id: string; external_id: string; name: string; category_name: string | null }
+type Rule = { category_id: string | null; wait: boolean }
 
 export async function sortStatus(tenantId: string) {
   const [state, counts] = await Promise.all([
     pool.query('SELECT enabled, cost_usd, last_error, updated_at FROM supplier_category_sort WHERE tenant_id = $1', [tenantId]),
     pool.query(`SELECT count(*) FILTER (WHERE category_id IS NULL AND category_source IS NULL)::int AS waiting,
-                       count(*) FILTER (WHERE category_source = 'ai')::int AS sorted, count(*) FILTER (WHERE category_source = 'ai_none')::int AS unsure,
+                       count(*) FILTER (WHERE category_source = 'ai')::int AS sorted, count(*) FILTER (WHERE category_source = 'ai_none')::int AS unsure, count(*) FILTER (WHERE category_source = 'ai_wait')::int AS waiting_new,
                        count(*) FILTER (WHERE category_id IS NOT NULL)::int AS with_category, count(*)::int AS total
                   FROM supplier_offers WHERE tenant_id = $1`, [tenantId]),
   ])
   const row = state.rows[0]
-  return { enabled: Boolean(row?.enabled), cost_usd: Number(row?.cost_usd ?? 0), last_error: (row?.last_error as string | null) ?? null, ...(counts.rows[0] as { waiting: number; sorted: number; unsure: number; with_category: number; total: number }) }
+  const fresh = await (await import('./supplierCategoryNew.js')).newCategoryStatus(tenantId)
+  return { ...fresh, enabled: Boolean(row?.enabled), cost_usd: Number(row?.cost_usd ?? 0), last_error: (row?.last_error as string | null) ?? null, ...(counts.rows[0] as { waiting: number; sorted: number; unsure: number; waiting_new: number; with_category: number; total: number }) }
 }
 
 export async function setSortEnabled(tenantId: string, userId: string, enabled: boolean) {
@@ -38,7 +40,7 @@ export async function setSortEnabled(tenantId: string, userId: string, enabled: 
 export async function undoSort(tenantId: string, userId: string) {
   await pool.query(`INSERT INTO supplier_category_sort (tenant_id, enabled, started_by) VALUES ($1, false, $2)
     ON CONFLICT (tenant_id) DO UPDATE SET enabled = false, last_error = NULL, updated_at = now()`, [tenantId, userId])
-  await pool.query("UPDATE supplier_offers SET category_id = NULL, category_source = NULL, updated_at = now() WHERE tenant_id = $1 AND category_source IN ('ai', 'ai_none')", [tenantId])
+  await pool.query("UPDATE supplier_offers SET category_id = NULL, category_source = NULL, updated_at = now() WHERE tenant_id = $1 AND category_source IN ('ai', 'ai_none', 'ai_wait')", [tenantId])
   await pool.query('DELETE FROM supplier_category_rules WHERE tenant_id = $1', [tenantId])
   return sortStatus(tenantId)
 }
@@ -50,8 +52,8 @@ export async function sortPage(tenantId: string, options: readonly CategoryOptio
   if (!offers.length) return { offers: 0, placed: 0, usage: [], asked: 0 }
   const keyed = offers.map(offer => ({ offer, key: categoryKey(offer) }))
   const keys = [...new Set(keyed.map(entry => entry.key).filter((key): key is string => Boolean(key)))]
-  const rules = new Map<string, string | null>((await pool.query('SELECT key, category_id::text AS category_id FROM supplier_category_rules WHERE tenant_id = $1 AND key = ANY($2)', [tenantId, keys])).rows
-    .map((row: { key: string; category_id: string | null }) => [row.key, row.category_id]))
+  const rules = new Map<string, Rule>((await pool.query('SELECT key, category_id::text AS category_id, new_name FROM supplier_category_rules WHERE tenant_id = $1 AND key = ANY($2)', [tenantId, keys])).rows
+    .map((row: { key: string; category_id: string | null; new_name: string | null }) => [row.key, { category_id: row.category_id, wait: Boolean(row.new_name) }]))
   // Невідомі види: найчастіші першими — так за одну хвилину розкладається найбільше товарів.
   const unknown = new Map<string, string[]>()
   for (const { offer, key } of keyed) if (key && !rules.has(key)) { const samples = unknown.get(key) ?? []; samples.push(offer.name); unknown.set(key, samples) }
@@ -69,17 +71,20 @@ export async function sortPage(tenantId: string, options: readonly CategoryOptio
     }))
     const found = chunk.map(([key, samples], index) => {
       const pick = agreedCategory(votes[0].get(index + 1), votes[1].get(index + 1))
-      const id = pick > 0 ? options[pick - 1].id : null
-      return { key, category_id: id && valid.has(id) ? id : null, sample: samples[0].slice(0, 300) }
+      const id = pick.c > 0 ? options[pick.c - 1].id : null
+      // Нова категорія вже є з такою самою назвою (регістр і пробіли не рахуємо) — це наявна, а не нова.
+      const same = pick.c === -1 ? options.find(option => option.path.split(' › ').at(-1)!.toLocaleLowerCase('uk-UA') === pick.name.toLocaleLowerCase('uk-UA')) : undefined
+      return { key, category_id: same?.id ?? (id && valid.has(id) ? id : null), new_name: pick.c === -1 && !same ? pick.name : null, sample: samples[0].slice(0, 300) }
     })
-    await pool.query(`INSERT INTO supplier_category_rules (tenant_id, key, category_id, sample)
-       SELECT $1, x.key, x.category_id, x.sample FROM jsonb_to_recordset($2::jsonb) AS x(key text, category_id uuid, sample text) ON CONFLICT (tenant_id, key) DO NOTHING`, [tenantId, JSON.stringify(found)])
-    for (const row of found) rules.set(row.key, row.category_id)
+    await pool.query(`INSERT INTO supplier_category_rules (tenant_id, key, category_id, new_name, sample)
+       SELECT $1, x.key, x.category_id, x.new_name, x.sample FROM jsonb_to_recordset($2::jsonb) AS x(key text, category_id uuid, new_name text, sample text) ON CONFLICT (tenant_id, key) DO NOTHING`, [tenantId, JSON.stringify(found)])
+    for (const row of found) rules.set(row.key, { category_id: row.category_id, wait: Boolean(row.new_name) })
   }))
   // Товар без виду (назва з бренду чи коду) — «не певен». Товар із видом, до якого ще не дійшла черга, чекає наступної хвилини.
   const changes = keyed.filter(entry => !entry.key || rules.has(entry.key)).map(({ offer, key }) => {
-    const category = key ? rules.get(key) ?? null : null
-    return { connection_id: offer.connection_id, external_id: offer.external_id, category_id: category, source: category ? 'ai' : 'ai_none' }
+    const rule = key ? rules.get(key) : undefined
+    // 'ai_wait' — для виду потрібна нова категорія: товар чекає, поки каса її створить.
+    return { connection_id: offer.connection_id, external_id: offer.external_id, category_id: rule?.category_id ?? null, source: rule?.category_id ? 'ai' : rule?.wait ? 'ai_wait' : 'ai_none' }
   })
   for (let index = 0; index < changes.length; index += 1000) {
     await pool.query(`UPDATE supplier_offers o SET category_id = x.category_id, category_source = x.source, updated_at = now()
@@ -106,6 +111,10 @@ export async function runCategorySortStep(deps: { model?: (apiKey: string, model
     const options = categoryOptions(await categoryRows(shop.tenant_id))
     if (!options.length) continue
     const model = deps.model ? deps.model(config.apiKey, config.model) : new ClaudeClient(config.apiKey, isClaudeModel(config.model) ? config.model : 'claude-sonnet-5-5')
+    const fresh = await import('./supplierCategoryNew.js')
+    // Категорії, які каса вже створила, — у справу; ще не створені — нагадати касі.
+    await fresh.resolveNewCategories(shop.tenant_id, shop.started_by, options).catch(error => logger.warn({ code: (error as AppError)?.code }, '[category-sort] resolve failed'))
+    let merged = false
     while (now() < deadline - 25_000) {
       const budget = new AiExecutionBudget(Math.max(5_000, deadline - now()))
       try {
@@ -118,6 +127,16 @@ export async function runCategorySortStep(deps: { model?: (apiKey: string, model
         }
         await pool.query('UPDATE supplier_category_sort SET cost_usd = cost_usd + $2, last_error = NULL, updated_at = now() WHERE tenant_id = $1', [shop.tenant_id, cost])
         // Сторінка без жодного нового питання й без товарів — усе розкладено; чекаємо нових надходжень.
+        if (!page.offers && !merged) {
+          // Усе розкладено по наявних категоріях. Якщо для частини видів потрібні нові — зводимо пропозиції й замовляємо касі.
+          merged = true
+          const made = await fresh.mergeNewCategories(shop.tenant_id, shop.started_by, options, model, budget)
+          if (made) {
+            await recordAiUsage(shop.tenant_id, shop.started_by, config.model, made.usage.promptTokens, made.usage.completionTokens, undefined, made.usage.costAdjustUsd ?? 0).catch(() => undefined)
+            await pool.query('UPDATE supplier_category_sort SET cost_usd = cost_usd + $2, updated_at = now() WHERE tenant_id = $1', [shop.tenant_id, usageCostUsd(made.usage)])
+            continue
+          }
+        }
         if (!page.offers || (!page.asked && page.offers < SORT_PAGE)) break
       } catch (error) {
         errors += 1

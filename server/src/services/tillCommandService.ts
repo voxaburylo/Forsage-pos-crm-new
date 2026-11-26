@@ -36,7 +36,7 @@ const isQueued = (command: string) => QUEUED_COMMANDS.includes(command)
  * Це той самий бланк order.save, тож каса вміє його без оновлення.
  */
 export const SITE_ORDER_AUTHOR = 'Сайт'
-export const PENDING_COMMAND_TTL_SQL = `make_interval(secs => CASE WHEN command = 'staff.secret' THEN 604800 WHEN command = '${QUEUED_COMMAND}' AND payload->>'author' = '${SITE_ORDER_AUTHOR}' THEN 604800 WHEN command IN ('${QUEUED_COMMAND}', '${INVOICE_DRAFT_COMMAND}') THEN ${QUEUE_TTL_SECONDS} ELSE ${COMMAND_TTL_SECONDS} END)`
+export const PENDING_COMMAND_TTL_SQL = `make_interval(secs => CASE WHEN command IN ('staff.secret', 'category.create') THEN 604800 WHEN command = '${QUEUED_COMMAND}' AND payload->>'author' = '${SITE_ORDER_AUTHOR}' THEN 604800 WHEN command IN ('${QUEUED_COMMAND}', '${INVOICE_DRAFT_COMMAND}') THEN ${QUEUE_TTL_SECONDS} ELSE ${COMMAND_TTL_SECONDS} END)`
 export const WEB_COMMAND_ROLES = ['owner', 'admin', 'manager'] as const
 export const TILL_ROLES = ['owner', 'admin', 'manager', 'cashier'] as const
 
