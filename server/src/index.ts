@@ -89,6 +89,8 @@ const allowedOrigins = new Set<string>([
   'https://crm-forsage.vercel.app',
   'https://forsage-pos-crm-new.vercel.app',
   'https://forsage-pos-crm-new-web.vercel.app',
+  // 27.11.2026: застосунок на телефоні (apps/mobile) — екрани відкриваються з цих адрес усередині застосунку.
+  'https://localhost', 'capacitor://localhost',
   ...corsEnv,
 ])
 

@@ -4,6 +4,7 @@ import {
   deliverCameraScan, pickBackCamera, type ScanPhase, type ScanStop,
 } from '@/lib/cameraScan'
 import { cameraFrameReader } from '@/lib/cameraReader'
+import { isNativeApp, nativeScanOnce, ScannerNotReady } from '@/lib/nativeScan'
 import { toast } from '@/components/ui/Toast'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
@@ -151,6 +152,30 @@ function runScanSession(video: HTMLVideoElement, onEnd: () => void): { stop: (wh
  * сканера біля поля пошуку (LiveCameraButton): натиснув — камера й ліхтарик увімкнулись, код зчитано — усе вимкнулось.
  * Поза натисканням камера вимкнена й дозволу не тримає.
  */
+/**
+ * Застосунок на телефоні (27.11.2026): замість камери через браузер — рідний сканер телефона. Той самий «курок»,
+ * той самий звук і той самий шлях коду; сканер відкривається на весь екран і закривається сам після зчитування.
+ */
+function runNativeScan(onEnd: () => void): { stop: (why: ScanStop) => void } {
+  let ended = false
+  const end = (why: ScanStop) => { if (ended) return; ended = true; publish('idle', why); onEnd() }
+  publish('scanning')
+  void nativeScanOnce().then(code => {
+    if (ended) return
+    if (!code) { end('cancel'); return }
+    beep()
+    const outcome = deliverCameraScan(code)
+    window.dispatchEvent(new CustomEvent(SCAN_TRIGGER_READ_EVENT, { detail: { code, outcome } }))
+    end('read')
+  }).catch(error => {
+    if (error instanceof ScannerNotReady) toast.warning(error.message)
+    else toast.error('Сканер телефона не запустився. Перевірте дозвіл на камеру в налаштуваннях застосунку й спробуйте ще раз.')
+    end('error')
+  })
+  // Сканер телефона закривається сам; «відпустив курок» його не обриває — інакше коротке натискання нічого б не зчитало.
+  return { stop: why => { if (why === 'cancel' || why === 'error') end(why) } }
+}
+
 export function LiveCameraScanner() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const session = useRef<{ stop: (why: ScanStop) => void } | null>(null)
@@ -162,6 +187,7 @@ export function LiveCameraScanner() {
     const start = () => {
       const video = videoRef.current
       if (session.current || !video) return
+      if (isNativeApp()) { wakeAudio(); session.current = runNativeScan(() => { session.current = null }); return }
       wakeAudio()
       session.current = runScanSession(video, () => { session.current = null })
     }

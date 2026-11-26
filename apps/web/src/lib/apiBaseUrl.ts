@@ -17,4 +17,5 @@ function isRetiredApiUrl(value: string): boolean {
 }
 
 const activeConfiguredUrl = isRetiredApiUrl(configuredApiUrl) ? '' : configuredApiUrl
-export const API_BASE_URL = activeConfiguredUrl || (import.meta.env.BASE_URL === './' ? DESKTOP_API_URL : '')
+// 27.11.2026: застосунок на телефоні відкривається з власної адреси (https://localhost), тож теж потребує повної адреси сервера.
+export const API_BASE_URL = activeConfiguredUrl || (import.meta.env.BASE_URL === './' || import.meta.env.VITE_MOBILE_BUILD === '1' ? DESKTOP_API_URL : '')

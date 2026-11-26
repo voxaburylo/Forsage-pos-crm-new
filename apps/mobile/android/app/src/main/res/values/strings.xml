@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Форсаж</string>
+    <string name="title_activity_main">Форсаж</string>
+    <string name="package_name">ua.forsage.crm</string>
+    <string name="custom_url_scheme">ua.forsage.crm</string>
+</resources>
