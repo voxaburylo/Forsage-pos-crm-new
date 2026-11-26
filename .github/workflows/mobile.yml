@@ -93,8 +93,12 @@ jobs:
       - name: Create the iOS project
         working-directory: apps/mobile
         run: |
-          npx cap add ios --packagemanager CocoaPods
+          # Сканер (ML Kit) вимагає iOS 15.5+, а новий проєкт створюється з нижчою версією — тому перше встановлення
+          # залежностей падає; версію піднімаємо й ставимо залежності ще раз (cap sync нижче).
+          npx cap add ios --packagemanager CocoaPods || true
+          test -f ios/App/Podfile
           sed -i '' "s/platform :ios, '[0-9.]*'/platform :ios, '15.5'/" ios/App/Podfile
+          sed -i '' "s/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = 15.5;/g" ios/App/App.xcodeproj/project.pbxproj
           /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string 'Камера потрібна, щоб зчитувати штрихкоди товарів.'" ios/App/App/Info.plist
           npx cap sync ios
       - name: Build for the simulator (no signing)
