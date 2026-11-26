@@ -31,6 +31,7 @@ export interface SeoDeps {
   listCategories: () => Promise<Array<{ id: string; parent_id: string | null; name: string }>>
   productNames: (ids: string[]) => Promise<Map<string, { name: string; sku: string | null }>>
   fetchPage: (path: string) => Promise<string>
+  startTextJob: (input: { scope: 'in_stock' | 'all'; overwrite: boolean; style_note?: string }) => Promise<{ total: number }>
 }
 
 const newId = () => 'seo_' + Math.random().toString(36).slice(2, 10)
@@ -104,6 +105,12 @@ export async function handleSeoTool(name: string, args: Record<string, any>, dep
       actions.push({ id: newId(), kind: 'site_seo', title: 'Головна сторінка для пошуковика', seo_title: title, seo_description: description })
       return { status: 'pending_user_confirmation' }
     }
+    case 'start_product_texts_job': {
+      try {
+        const started = await deps.startTextJob({ scope: args.scope === 'all' ? 'all' : 'in_stock', overwrite: args.overwrite === true, style_note: str(args.style_note, 2000) || undefined })
+        return { status: 'samples_in_progress', total: started.total, note: 'Зразки зʼявляться вгорі вкладки за 1–2 хвилини; на сайт нічого не записано. Після «годиться» власника решта піде сама.' }
+      } catch (error) { return { error: error instanceof AppError ? error.message : 'Не вдалося почати масову роботу' } }
+    }
     case 'draft_forum_post': {
       const body = str(args.body, 12_000)
       if (body.length < 80) return { error: 'Текст надто короткий' }
@@ -132,6 +139,7 @@ export function realSeoDeps(user: SeoUser): SeoDeps {
       const { rows } = await pool.query('SELECT id::text AS id, name, sku FROM products WHERE tenant_id = $1 AND deleted_at IS NULL AND id = ANY($2::uuid[])', [user.tenant_id, valid])
       return new Map(rows.map((row: any) => [String(row.id), { name: String(row.name), sku: row.sku && !/^AUTO-/i.test(row.sku) ? String(row.sku) : null }]))
     },
+    startTextJob: async input => (await import('./siteTextJobService.js')).createTextJob(user.tenant_id, user.id, input),
     fetchPage: async path => {
       const response = await fetch(SITE_ORIGIN + path, { redirect: 'follow', signal: AbortSignal.timeout(15_000), headers: { 'User-Agent': 'ForsageSeoAssistant/1.0', Accept: 'text/html,application/xml' } })
       if (!response.ok || !new URL(response.url).origin.startsWith(SITE_ORIGIN)) throw new Error('HTTP ' + response.status)

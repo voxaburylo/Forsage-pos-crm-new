@@ -6,6 +6,7 @@ import { api } from '@/lib/api'
 import { ReplyText } from '@/features/ai/ReplyText'
 import { errorText, siteCall, SITE_URL } from './siteGateway'
 import { SITE_SETTING_FIELDS } from './SiteSimpleTabs'
+import { SiteTextJobPanel } from './SiteTextJobPanel'
 import { applyArticle, applyProductTexts, applySiteSeo, SEO_QUICK, seoHistory, type SeoAction, type SeoEntry } from './siteSeo'
 
 /**
@@ -42,7 +43,7 @@ export function SiteSeoAssistantTab() {
       const answer = await api.post<{ data: { reply: string; actions: SeoAction[] } }>('/api/v1/site-admin/seo-chat', { message, history }, undefined, { silent: true, timeoutMs: 13 * 60_000 })
       setEntries(current => [...current, { role: 'model', text: answer.data.reply, actions: answer.data.actions }])
     } catch (reason) {
-      setEntries(current => [...current, { role: 'model', text: '⚠️ ' + errorText(reason, 'Помічник не відповів. Повторіть запит.') }])
+      setEntries(current => [...current, { role: 'model', text: errorText(reason, 'Зараз не вийшло відповісти. Спробуйте ще раз за хвилину.') }])
     } finally { setSending(false) }
   }
 
@@ -72,6 +73,7 @@ export function SiteSeoAssistantTab() {
   const busy = sending || Boolean(applying)
   return (
     <div className="flex min-h-[60vh] flex-col gap-3" data-site-seo>
+      <SiteTextJobPanel refresh={entries.length} />
       {entries.length === 0 && (
         <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-700">
           <p className="font-semibold text-gray-900">Помічник із просування сайту</p>
@@ -80,7 +82,7 @@ export function SiteSeoAssistantTab() {
       )}
       <div className="flex flex-wrap gap-1.5" data-site-seo-quick>
         {SEO_QUICK.map(item => <button key={item.label} type="button" disabled={busy} onClick={() => void send(item.text)}
-          className="rounded-full border border-gray-200 bg-white px-3 py-1 text-xs text-gray-700 hover:border-yellow-400 hover:bg-yellow-50 disabled:opacity-50">{item.label}</button>)}
+          className="rounded-full border border-gray-200 bg-white px-3 py-1 text-xs text-gray-700 hover:border-gray-400 hover:bg-gray-50 disabled:opacity-50">{item.label}</button>)}
         {entries.length > 0 && <button type="button" disabled={busy} onClick={() => { if (window.confirm('Очистити розмову? Уже записане на сайт лишиться.')) { setEntries([]); setOutcome({}) } }}
           className="ml-auto inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs text-gray-400 hover:text-gray-700"><Trash2 size={12} /> очистити</button>}
       </div>
@@ -112,7 +114,7 @@ export function SeoActionCard({ action, done, busy, loading, progress, onConfirm
   action: SeoAction; done?: string; busy: boolean; loading: boolean; progress: string; onConfirm: () => void; onCopy: () => void; onReject: () => void
 }) {
   return (
-    <div className="rounded-xl border border-amber-200 bg-amber-50/40 p-3 text-sm" data-site-seo-action={action.kind}>
+    <div className="rounded-xl border border-gray-200 bg-white p-3 text-sm" data-site-seo-action={action.kind}>
       <p className="font-semibold text-gray-900">{action.title}</p>
       {action.kind === 'product_texts' && (
         <ul className="mt-2 max-h-80 space-y-2 overflow-y-auto">
@@ -122,7 +124,7 @@ export function SeoActionCard({ action, done, busy, loading, progress, onConfirm
               {item.seo_title && <p className="mt-1 text-blue-800">{item.seo_title}</p>}
               {item.seo_description && <p className="text-gray-600">{item.seo_description}</p>}
               {item.description && <p className="mt-1 whitespace-pre-line text-gray-800">{item.description}</p>}
-              {item.notes.map(note => <p key={note} className="mt-0.5 text-amber-700">⚠ {note}</p>)}
+              {item.notes.map(note => <p key={note} className="mt-0.5 text-gray-500">Зверніть увагу: {note}</p>)}
             </li>
           ))}
           {action.refused.length > 0 && <li className="text-xs text-gray-500">Не взято {action.refused.length}: {action.refused.slice(0, 3).map(row => row.reason).join('; ')}</li>}

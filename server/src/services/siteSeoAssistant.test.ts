@@ -16,6 +16,7 @@ function deps(over: Partial<SeoDeps> = {}): SeoDeps {
     listCategories: vi.fn(async () => [{ id: 'c1', parent_id: null, name: 'Оливи' }]),
     productNames: vi.fn(async (ids: string[]) => new Map(ids.filter(key => names.has(key)).map(key => [key, names.get(key)!]))),
     fetchPage: vi.fn(async () => FORUM_HTML),
+    startTextJob: vi.fn(async () => ({ total: 6485 })),
     ...over,
   }
 }
