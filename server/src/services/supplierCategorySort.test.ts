@@ -90,6 +90,23 @@ describe('one page of the category sort', () => {
     expect(page).toMatchObject({ offers: 5, placed: 3, asked: 2 })
   })
 
+  // 26.11.2026: пара моделей — основна (Sonnet) і помічниця (Haiku) голосують окремо; категорія лише там, де зійшлись.
+  it('two different models vote: each is asked once, with its own effort; a disagreement leaves the kind without a category', async () => {
+    sql.offers = [offer('2', 'Диск гальмівний s REMSA'), offer('4', 'Свічка запалювання NGK')]
+    sql.rules = []
+    const main = model([JSON.stringify({ items: [{ n: 1, c: number('c-brakes') }, { n: 2, c: number('c-spark') }] })])
+    const helper = model([JSON.stringify({ items: [{ n: 1, c: number('c-brakes') }, { n: 2, c: number('c-filters') }] })])
+    const budget = new AiExecutionBudget(10_000)
+    let page
+    try { page = await sortPage('shop', options, main, budget, helper) } finally { budget.dispose() }
+    expect(main.complete).toHaveBeenCalledTimes(1)
+    expect(helper.complete).toHaveBeenCalledTimes(1)
+    expect((main.complete as any).mock.calls[0][1].effort).toBe('low')
+    expect((helper.complete as any).mock.calls[0][1].effort).toBe('medium')
+    expect(page).toMatchObject({ offers: 2, placed: 1, asked: 2 })
+    expect(page!.usage).toHaveLength(2)
+  })
+
   it('no fitting category: products wait for a new one (not «unsure»); a proposed name equal to an existing category is that category', async () => {
     sql.offers = [offer('1', 'Крило пер. лів. SK OCTAVIA'), offer('2', 'Крило пер. прав. VW GOLF'), offer('3', 'Свічка запалювання NGK')]
     const answer = JSON.stringify({ items: [{ n: 1, c: -1, new: 'Кузовні деталі' }, { n: 2, c: -1, new: 'свічки' }] })

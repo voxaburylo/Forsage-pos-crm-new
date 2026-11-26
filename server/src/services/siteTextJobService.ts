@@ -2,7 +2,8 @@ import { z } from 'zod'
 import { pool } from '../db/pg.js'
 import { logger } from '../lib/logger.js'
 import { AppError } from '../middleware/errorHandler.js'
-import { ClaudeClient, isClaudeModel, type ClaudeUsage } from './aiClaude.js'
+import { ClaudeClient, HELPER_MODEL, isClaudeModel, type ClaudeUsage } from './aiClaude.js'
+import { checkLine, checkPrompt, parseCheckReply } from './siteTextCheck.js'
 import { AiExecutionBudget } from './aiExecutionBudget.js'
 import { usageCostUsd } from './aiJobService.js'
 import { guardProductText, parseTextReply, productLine, textJobPrompt, type ProductFacts, type TextFields } from './siteTextGuard.js'
@@ -188,7 +189,7 @@ async function writeToSite(user: { id: string; tenant_id: string }, gateway: Tex
 
 /** Одна пачка: що стоїть на сайті → кому текст потрібен → модель → автоперевірка → запис (або «на перевірку»). */
 export async function processTextChunk(row: Pick<JobRow, 'id' | 'tenant_id' | 'created_by' | 'overwrite' | 'style_note'>, items: Item[], sample: boolean,
-  model: TextModel, gateway: TextGateway, budget: AiExecutionBudget): Promise<ClaudeUsage | null> {
+  model: TextModel, gateway: TextGateway, budget: AiExecutionBudget, checker?: TextModel): Promise<ClaudeUsage | null> {
   const user = { id: row.created_by, tenant_id: row.tenant_id }
   const facts = await loadFacts(row.tenant_id, items.map(item => item.product_id))
   const work: Array<{ item: Item; facts: ProductFacts; current: ReturnType<typeof siteFields> }> = []
@@ -212,11 +213,25 @@ export async function processTextChunk(row: Pick<JobRow, 'id' | 'tenant_id' | 'c
     throw error
   }
   const replies = parseTextReply(answer.text, new Set(work.map(entry => entry.item.seq)))
+  // Друга модель (Haiku) читає готові тексти поруч із даними товару й шукає те, чого автоперевірка за правилами не бачить:
+  // вигадану сумісність, властивості, переплутаний вид товару, російські слова. Не відповіла — тексти не блокуємо.
+  const total: ClaudeUsage = { promptTokens: answer.promptTokens, completionTokens: answer.completionTokens, costAdjustUsd: answer.costAdjustUsd ?? 0 }
+  let doubts = new Map<number, string>()
+  const clean = work.filter(entry => { const fields = replies.get(entry.item.seq); return fields && !guardProductText(entry.facts, fields).length })
+  if (checker && clean.length) {
+    try {
+      const verdict = await checker.complete(budget, { system: checkPrompt(), text: clean.map(entry => checkLine(entry.item.seq, entry.facts, replies.get(entry.item.seq)!)).join('\n\n'), maxTokens: 3000, effort: 'medium' })
+      total.promptTokens += verdict.promptTokens; total.completionTokens += verdict.completionTokens; total.costAdjustUsd = (total.costAdjustUsd ?? 0) + (verdict.costAdjustUsd ?? 0)
+      doubts = parseCheckReply(verdict.text, new Set(clean.map(entry => entry.item.seq)))
+    } catch (error) { logger.warn({ job: row.id, code: (error as AppError)?.code }, '[site-texts] second check skipped') }
+  }
   await Promise.all(work.map(async ({ item, facts: data, current }) => {
     const fields = replies.get(item.seq)
     if (!fields) { await retryOrFail(row.id, item, 'помічник не дав тексту'); return }
     const problems = guardProductText(data, fields)
     if (problems.length) { await finish(row.id, item.product_id, 'review', problems.join('; '), { old: current, next: fields }); return }
+    const doubt = doubts.get(item.seq)
+    if (doubt) { await finish(row.id, item.product_id, 'review', 'друга перевірка: ' + doubt, { old: current, next: fields }); return }
     if (sample) { await finish(row.id, item.product_id, 'sample', null, { old: current, next: fields }); return }
     try { await writeToSite(user, gateway, item.product_id, fields, current.write_description); await finish(row.id, item.product_id, 'written', null, { old: current, next: fields }) }
     catch (error) {
@@ -224,7 +239,7 @@ export async function processTextChunk(row: Pick<JobRow, 'id' | 'tenant_id' | 'c
       else await finish(row.id, item.product_id, 'towrite', 'сайт не прийняв — повторимо', { old: current, next: fields })
     }
   }))
-  return answer
+  return total
 }
 async function retryOrFail(jobId: string, item: Item & { attempts?: number }, note: string) {
   const { rows } = await pool.query('SELECT attempts FROM site_text_items WHERE job_id = $1 AND product_id = $2', [jobId, item.product_id])
@@ -265,6 +280,7 @@ export async function runSiteTextStep(deps: { model?: (apiKey: string, model: st
       continue
     }
     const model = deps.model ? deps.model(config.apiKey, config.model) : new ClaudeClient(config.apiKey, isClaudeModel(config.model) ? config.model : 'claude-sonnet-5-5')
+    const checker: TextModel = deps.model ? deps.model(config.apiKey, HELPER_MODEL) : new ClaudeClient(config.apiKey, HELPER_MODEL)
     const sample = row.status === 'sample'
     while (now() < deadline - 25_000 && await alive()) {
       // Спершу — уже погоджені тексти (зразки після «годиться», відмічені «на перевірку»): їм модель не потрібна.
@@ -287,7 +303,7 @@ export async function runSiteTextStep(deps: { model?: (apiKey: string, model: st
         break
       }
       const budget = new AiExecutionBudget(Math.max(5_000, deadline - now()))
-      const results = await Promise.allSettled(batch.map(items => processTextChunk(row, items, sample, model, gateway, budget)))
+      const results = await Promise.allSettled(batch.map(items => processTextChunk(row, items, sample, model, gateway, budget, checker)))
       budget.dispose()
       let cost = 0, prompt = 0, completion = 0, adjust = 0, lastError: string | null = null
       for (const result of results) {
