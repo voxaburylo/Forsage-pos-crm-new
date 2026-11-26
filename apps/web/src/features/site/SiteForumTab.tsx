@@ -96,7 +96,7 @@ function TopicModal({ id, onClose }: { id: string | number; onClose: () => void 
   const [replyTo, setReplyTo] = useState<ForumPost | null>(null)
   const [files, setFiles] = useState<File[]>([])
   const load = async () => { try { setTopic(await siteCall<ForumTopic>('forum.topic.get', { id })); setError('') } catch (reason) { setError(errorText(reason, 'Не вдалося відкрити тему')) } }
-  useEffect(() => { void load() }, [id]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { void load() }, [id])
   async function act(key: string, run: () => Promise<unknown>, done?: string, close = false) {
     setBusy(key)
     try { await run(); if (done) toast.success(done); if (close) onClose(); else await load() } catch (reason) { toast.error(errorText(reason)) } finally { setBusy('') }
