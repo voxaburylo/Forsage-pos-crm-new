@@ -423,7 +423,14 @@ export class AiInvoiceMatcher {
       // Збіг лише за артикулом (не штрихкодом і не підтверджений людиною), а назва зовсім інша — на перевірку.
       const viaBarcode = (this.barcodes.get(code(raw.barcode ?? raw.ean)) ?? new Set<string>()).has(product.id)
       if (!viaBarcode && !reason.startsWith('Цей артикул ви вже') && unrelatedNames(source + ' ' + brand, product.name + ' ' + (product.brand ?? ''))) {
-        return { ...result, status: 'review', reason: 'Артикул збігається, але назва зовсім інша — це може бути інший товар. Перевірте рядок', candidates: [product] }
+        // 26.11.2026 (накладна Автокомфорт 0000000028): код постачальника «80127» (антифриз Вамп 1л) стоїть артикулом у картці
+        // «Масло Промывочное GNL Flush 4L» — у списку вибору була лише вона, і рядок шість накладних поспіль ішов у неї.
+        // Тепер першими стоять картки, схожі ЗА НАЗВОЮ; картка з чужою назвою — остання.
+        const similar = this.similarByName(source, brand, new Set<string>()).filter(item => item.id !== product.id)
+        return { ...result, status: 'review', candidates: [...similar, product],
+          reason: similar.length
+            ? `Артикул стоїть у картці «${product.name}», але назва зовсім інша. Схожі за назвою картки — першими: виберіть правильну`
+            : `Артикул стоїть у картці «${product.name}», але назва зовсім інша — це може бути інший товар. Виберіть картку або створіть новий товар` }
       }
       if (!incompatible(source, brand, product)) return { ...result, status: 'matched', product_id: product.id, name: product.name, brand: product.brand ?? '', reason, candidates: [product] }
       return { ...result, status: 'review', reason: 'Код збігається, але бренд, фасування, в’язкість або сторона відрізняються — перевірте рядок', candidates: [product] }
@@ -434,27 +441,8 @@ export class AiInvoiceMatcher {
       ? [...new Set([...(this.crosses.get(sku) ?? []), ...(this.crosses.get(code(supplierPrefixedSku(rawSku))) ?? [])])].map(id => this.products.get(id)!).filter(Boolean).slice(0, 4)
       : []
     if (!candidates.length) {
-      const scores = new Map<string, number>()
-      const terms = new Set(words(`${source} ${brand} ${raw.sku ?? raw.article ?? ''}`))
-      for (const digits of text(raw.sku ?? raw.article).match(/\d{4,}/g) ?? []) terms.add(digits)
-      for (const token of terms) {
-        const entries = this.tokens.get(token)
-        if (!entries || entries.size > 1000 || token.length < 3) continue
-        // Код із 5+ цифр — сильна ознака. 4 цифри часто збігаються з розміром («4040» = серветка 40×40),
-        // тож самі по собі не роблять товар «схожим», лише підсилюють збіг слів (20.11.2026).
-        const weight = /^\d{5,}$/.test(token) ? 4 : /^\d{4}$/.test(token) ? 2 : 1
-        for (const id of entries) scores.set(id, (scores.get(id) ?? 0) + weight)
-      }
-      // 24.11.2026 (слово власника: «майже всі нові позиції червоні, а у списку — сміття, зовсім не схоже на товар»).
-      // Раніше «схожим» ставав будь-який товар із чотирма спільними словами («фильтр салона … Könner» — і фільтри всіх
-      // машин поспіль), тож новий товар не створювався сам. Тепер схожість рахується за РІДКІСНИМИ словами (модель,
-      // код, бренд), а загальні слова майже не важать; або в картці має бути код із артикула рядка.
-      const skuCodes = new Set((text(raw.sku ?? raw.article).match(/\d{4,}/g) ?? []))
-      candidates = [...scores].filter(([id, score]) => score >= 4 && !incompatible(source, brand, this.products.get(id)!))
-        .map(([id, score]) => ({ id, score, ...this.likeness(source, sku && !weakCode(rawSku) ? skuCodes : new Set<string>(), this.products.get(id)!) }))
-        .filter(item => item.code || (item.forward >= (sku && !weakCode(rawSku) ? 0.75 : 0.6) && item.backward >= 0.5))
-        .sort((a, b) => Number(b.code) - Number(a.code) || b.forward - a.forward || b.score - a.score || a.id.localeCompare(b.id))
-        .slice(0, 5).map(item => this.products.get(item.id)!)
+      const strictSku = Boolean(sku && !weakCode(rawSku))
+      candidates = this.similarByName(source, brand, strictSku ? new Set(text(raw.sku ?? raw.article).match(/\d{4,}/g) ?? []) : new Set<string>(), text(raw.sku ?? raw.article), strictSku)
       if (crossHits.length) {
         candidates = [...crossHits, ...candidates.filter(item => !crossHits.some(hit => hit.id === item.id))].slice(0, 8)
         return { ...result, status: 'review', reason: 'Артикул є серед крос-номерів картки (аналог) — виберіть її або створіть новий товар', candidates }
@@ -462,6 +450,31 @@ export class AiInvoiceMatcher {
     }
     if (candidates.length) return { ...result, status: 'review', reason: ids.size > 1 ? 'Коди або повна назва належать кільком карткам — виберіть товар' : 'Є схожі товари — перевірте, щоб не створити дубль', candidates }
     return result
+  }
+  /**
+   * Картки, схожі на рядок накладної за назвою (і за кодом з артикула, якщо його передано).
+   * 24.11.2026 (слово власника: «майже всі нові позиції червоні, а у списку — сміття, зовсім не схоже на товар»).
+   * Раніше «схожим» ставав будь-який товар із чотирма спільними словами («фильтр салона … Könner» — і фільтри всіх
+   * машин поспіль), тож новий товар не створювався сам. Схожість рахується за РІДКІСНИМИ словами (модель, код, бренд),
+   * а загальні слова майже не важать; або в картці має бути код із артикула рядка.
+   */
+  private similarByName(source: string, brand: string, skuCodes: Set<string>, rawArticle = '', strictSku = false): AiInvoiceCandidate[] {
+    const scores = new Map<string, number>()
+    const terms = new Set(words(`${source} ${brand} ${rawArticle}`))
+    for (const digits of rawArticle.match(/\d{4,}/g) ?? []) terms.add(digits)
+    for (const token of terms) {
+      const entries = this.tokens.get(token)
+      if (!entries || entries.size > 1000 || token.length < 3) continue
+      // Код із 5+ цифр — сильна ознака. 4 цифри часто збігаються з розміром («4040» = серветка 40×40),
+      // тож самі по собі не роблять товар «схожим», лише підсилюють збіг слів (20.11.2026).
+      const weight = /^\d{5,}$/.test(token) ? 4 : /^\d{4}$/.test(token) ? 2 : 1
+      for (const id of entries) scores.set(id, (scores.get(id) ?? 0) + weight)
+    }
+    return [...scores].filter(([id, score]) => score >= 4 && !incompatible(source, brand, this.products.get(id)!))
+      .map(([id, score]) => ({ id, score, ...this.likeness(source, skuCodes, this.products.get(id)!) }))
+      .filter(item => item.code || (item.forward >= (strictSku ? 0.75 : 0.6) && item.backward >= 0.5))
+      .sort((a, b) => Number(b.code) - Number(a.code) || b.forward - a.forward || b.score - a.score || a.id.localeCompare(b.id))
+      .slice(0, 5).map(item => this.products.get(item.id)!)
   }
   /**
    * Наскільки картка схожа на рядок накладної. forward — яку частку «ваги» слів рядка має картка; backward — навпаки.
