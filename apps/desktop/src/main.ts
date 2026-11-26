@@ -58,7 +58,7 @@ import { LocalOrderRepository } from './repositories/orderRepository'
 import { LocalPosRepository } from './repositories/posRepository'
 import { LocalSupplyRepository } from './repositories/supplyRepository'
 import { requireDocumentRevision } from './repositories/documentRevision'
-import { LocalStaffRepository } from './repositories/staffRepository'
+import { LocalStaffRepository, businessDate } from './repositories/staffRepository'
 import { LocalWarehouseRepository } from './repositories/warehouseRepository'
 import { LocalPurchaseRepository } from './repositories/localPurchaseRepository'
 import { LocalSyncRepository } from './repositories/syncRepository'
@@ -421,6 +421,20 @@ function requireLocalPos(): LocalPosRepository {
 function requireLocalSupply(): LocalSupplyRepository {
   if (!localSupply) throw new Error('LOCAL_SUPPLY_NOT_READY')
   return localSupply
+}
+
+/** Хто з менеджерів уже має нараховану ставку за сьогодні — щоб не питати базу на кожну дію. */
+const managerWorkDays = new Set<string>()
+function noteManagerWorkDay(userId: string, tenantId: string): void {
+  const key = `${businessDate()}:${userId}`
+  if (managerWorkDays.has(key) || !localStaff) return
+  try {
+    localStaff.accrueManagerWorkDay(userId, tenantId)
+    managerWorkDays.add(key)
+  } catch (error) {
+    // Нарахування ставки не повинно ламати роботу менеджера: спробуємо на наступній дії.
+    console.warn('[salary] денну ставку менеджера не нараховано', error instanceof Error ? error.message : error)
+  }
 }
 
 function requireLocalStaff(): LocalStaffRepository {
@@ -804,6 +818,8 @@ async function executeDesktopCommand(
       const depositOnly = managerCanTakeDeposit(requireLocalDatabase(), session.id)
       if (!(depositOnly && isManagerDepositChannel(channel))) throw new Error(depositOnly ? MANAGER_DEPOSIT_ONLY : MANAGER_SALE_DENIED)
     }
+    // 26.11.2026 (рішення власника): денна ставка менеджера — за день, коли він увійшов. Рахує лише головний ПК (не ПК менеджера).
+    if (session.role === 'manager' && localNetwork?.getStatus().mode !== 'client') noteManagerWorkDay(session.id, session.tenant_id)
     // 26.11.2026: списання менеджер робить лише з перемикачем «Списує товар» у своїй картці (вмикає власник).
     if (session.role === 'manager' && WRITEOFF_CREATE_CHANNELS.has(channel) && localNetwork?.getStatus().mode !== 'client'
       && !effectiveStaffRights(requireLocalDatabase(), session.id, session.role).writeoffs) {
