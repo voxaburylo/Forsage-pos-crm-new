@@ -1,0 +1,94 @@
+name: Mobile app
+
+# Застосунок «Форсаж» для телефона (apps/mobile). Запускається лише вручну: Actions → Mobile app → Run workflow.
+# Android: на виході файл APK, який ставиться на телефон напряму. iOS: перевірка, що проєкт збирається (без підпису —
+# для встановлення на iPhone потрібен обліковий запис Apple Developer; див. apps/mobile/README.md).
+#
+# Екрани застосунку збираються з тими самими публічними налаштуваннями, що й веб: адреса Supabase і публічний ключ.
+# Вони мають лежати у змінних репозиторію (Settings → Secrets and variables → Actions → Variables):
+#   VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Що збирати'
+        type: choice
+        default: android
+        options: [android, ios, both]
+
+permissions:
+  contents: read
+
+env:
+  VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+  VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
+  VITE_API_URL: https://forsage-pos-crm-new-web.vercel.app
+
+jobs:
+  android:
+    if: inputs.platform == 'android' || inputs.platform == 'both'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Settings are present
+        run: |
+          if [ -z "$VITE_SUPABASE_URL" ] || [ -z "$VITE_SUPABASE_ANON_KEY" ]; then
+            echo "::error::Немає змінних VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY (Settings → Secrets and variables → Actions → Variables)"; exit 1
+          fi
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.0.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: pnpm install --frozen-lockfile
+      - name: Screens for the app
+        run: pnpm --filter mobile run build:web
+      - name: Copy screens into the Android project
+        working-directory: apps/mobile
+        run: npx cap sync android
+      - name: Build the APK
+        working-directory: apps/mobile/android
+        run: chmod +x gradlew && ./gradlew assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: forsage-android
+          path: apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+  ios:
+    if: inputs.platform == 'ios' || inputs.platform == 'both'
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.0.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Screens for the app
+        run: pnpm --filter mobile run build:web
+      # Проєкт iOS не лежить у репозиторії: його створює ця збірка (сканер підтримує лише CocoaPods).
+      - name: Create the iOS project
+        working-directory: apps/mobile
+        run: |
+          npx cap add ios --packagemanager CocoaPods
+          sed -i '' "s/platform :ios, '[0-9.]*'/platform :ios, '15.5'/" ios/App/Podfile
+          /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string 'Камера потрібна, щоб зчитувати штрихкоди товарів.'" ios/App/App/Info.plist
+          npx cap sync ios
+      - name: Build for the simulator (no signing)
+        working-directory: apps/mobile/ios/App
+        run: |
+          xcodebuild -workspace App.xcworkspace -scheme App -configuration Debug -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' IPHONEOS_DEPLOYMENT_TARGET=15.5 CODE_SIGNING_ALLOWED=NO build | tail -40
