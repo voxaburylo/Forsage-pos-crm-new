@@ -81,6 +81,8 @@ import { loadPrintHtml } from './print/loadPrintHtml'
 import { getPrintSession, isPrintSession } from './print/printSession'
 import { assertPrintRuntimeFiles } from './print/printRuntime'
 import { isLanProxyChannel, LocalNetworkCoordinator, type LanSession } from './lan/localNetwork'
+import { rememberedManagerClient } from './lan/lanClientMemory'
+import { isWebMergeChannel, runWebCatalogMerge } from './repositories/webCatalogMerge'
 import { productPhotoThumbnails } from './lib/photoThumbnails'
 import { RealtimeWake } from './link/realtimeWake'
 import { OutboxPusher } from './link/outboxPush'
@@ -862,6 +864,15 @@ async function executeWebRequest(userId: unknown, channel: unknown, args: unknow
   // 23.11.2026 (план B3): касир працює через веб лише з дозволом власника в картці працівника; права — його ж, як на касі.
   const viaWeb = canWorkViaWeb(requireLocalDatabase(), session.id, session.role)
   if (channel === WEB_ACCESS_PROBE) return viaWeb
+  // 26.11.2026: обʼєднання дублів із помічника у вебі — окремим шляхом (лише власник/адмін, звірка чеків у вікні, копія бази).
+  if (isWebMergeChannel(channel)) {
+    try {
+      return await runWebCatalogMerge({
+        db: requireLocalDatabase(), readOpenReceipts: () => readOpenReceiptsForAutoMerge(), backup: () => requireLocalDatabase().backupNow(),
+        busy: () => databaseMaintenance || cleanupMutationInProgress, lock: on => { cleanupMutationInProgress = on },
+      }, session, channel, Array.isArray(args) ? args[0] : undefined)
+    } finally { getOutboxPusher().soon() }
+  }
   if (typeof channel !== 'string' || !webRpcChannelAllowed(channel)) throw new Error('Ця дія доступна лише на самій касі')
   if (!viaWeb) throw new Error(session.role === 'cashier' ? WEB_WORK_DENIED : 'Через веб із головним ПК працюють власник, адміністратор, менеджер і касир із дозволом')
   // Дія вебу могла змінити базу — передаємо зміни на сервер одразу, не чекаючи таймера.
@@ -930,7 +941,8 @@ function getTillDeviceLink(): TillDeviceLink {
         schemaVersion: attempt(() => db.info().schemaVersion),
         startedAt: Date.now() - Math.round(process.uptime() * 1000),
         check: attempt(() => readNightlySummary(db)),
-        managerClient: localNetwork?.lastClientSeen() ?? null,
+        // 26.11.2026 (T7): остання побачена версія ПК менеджера переживає перезапуск каси.
+        managerClient: attempt(() => rememberedManagerClient(db, localNetwork?.lastClientSeen() ?? null)) ?? localNetwork?.lastClientSeen() ?? null,
       })
     },
     canRun: () => isMainTill() && !databaseMaintenance,

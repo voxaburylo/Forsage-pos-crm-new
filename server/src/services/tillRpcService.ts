@@ -44,7 +44,13 @@ export const WEB_MONEY_CHANNELS: readonly string[] = [
   'desktop:orders:add-payment', 'desktop:orders:complete',
   'desktop:staff:create-salary', 'desktop:staff:delete-salary', 'desktop:staff:daily-payout', 'desktop:staff:tire-cash-handover',
 ]
+/**
+ * 26.11.2026: обʼєднання дублів, яке запропонував помічник у вебі. Головний ПК виконує його окремим шляхом
+ * (webCatalogMerge.ts: лише власник/адміністратор, звірка відкритих чеків у вікні каси, копія бази). Решта «очищення» — лише на касі.
+ */
+export const WEB_MERGE_CHANNELS: readonly string[] = ['desktop:catalog:cleanup-preview', 'desktop:catalog:cleanup-apply']
 export function webRpcChannelAllowed(channel: string): boolean {
+  if (WEB_MERGE_CHANNELS.includes(channel)) return true
   return /^desktop:[a-z0-9:-]{1,120}$/.test(channel) && !WEB_DENIED_PREFIXES.some(prefix => channel.startsWith(prefix))
     && !WEB_MONEY_CHANNELS.includes(channel)
 }

@@ -27,6 +27,7 @@ import { recognitionPriceHint } from './aiPriceHint'
 import { batchOf, forgetBatchOrders, readBatchOrders, rememberBatchOrder } from './aiOrderBatch'
 import type { AiChatResponse, AiStatus, AiPendingAction, AiChatMessage, AiActionChange, AiChatImage } from './aiApi'
 import { OrderConfirmModal } from './OrderConfirmModal'
+import { BulkPreviewTable } from './AiBulkPreview'
 import { openAiInvoiceDraft } from './openAiInvoiceDraft'
 import { useAuthStore } from '@/stores/authStore'
 import { api } from '@/lib/api'
@@ -64,43 +65,7 @@ function ChangesTable({ changes }: { changes: AiActionChange[] }) {
   )
 }
 
-// ── Таблиця-прев'ю масової дії (з обмеженням рядків для компактного вигляду) ──
-function BulkPreviewTable({ action, maxRows }: { action: AiPendingAction; maxRows?: number }) {
-  const all = action.items ?? []
-  const cols = action.columns ?? []
-  const rows = maxRows ? all.slice(0, maxRows) : all
-  return (
-    <div className="rounded-lg border border-gray-100 overflow-hidden bg-white">
-      <div className={maxRows ? 'overflow-x-auto' : 'max-h-[60vh] overflow-auto'}>
-        <table className="w-full text-xs">
-          <thead className="sticky top-0 bg-gray-50 text-gray-400">
-            <tr>
-              <th className="px-2 py-1.5 text-left font-semibold w-8">#</th>
-              {cols.map((col) => (
-                <th key={col} className="px-2 py-1.5 text-left font-semibold whitespace-nowrap">{col}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-50">
-            {rows.map((row, ri) => (
-              <tr key={ri}>
-                <td className="px-2 py-1.5 text-gray-300">{ri + 1}</td>
-                {cols.map((col) => (
-                  <td key={col} className="px-2 py-1.5 text-gray-800 align-top whitespace-nowrap">{row[col] ?? '—'}</td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {maxRows && all.length > maxRows && (
-        <div className="text-[11px] text-gray-400 px-2 py-1 bg-gray-50 text-center">
-          …та ще {all.length - maxRows}. Натисніть «Переглянути та підтвердити», щоб побачити всі.
-        </div>
-      )}
-    </div>
-  )
-}
+// Таблиця-прев'ю масової дії — у AiBulkPreview.tsx (26.11.2026: на телефоні картками).
 
 interface ChatEntry {
   role: 'user' | 'model'
