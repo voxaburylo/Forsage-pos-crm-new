@@ -17,6 +17,32 @@ export interface ChatCatalogBridge {
 
 const normalize = (value: string) => value.trim().toLocaleLowerCase('uk').replace(/\s+/g, ' ')
 
+/** Каса записала назву, але не поставила артикул (він зайнятий) — це не відмова, а примітка. */
+export const NAME_SAVED_NOTE = 'Назву змінено, артикул не поставлено'
+export const isArticleClash = (error: unknown) => /артикул|sku|unique/i.test(error instanceof Error ? error.message : String(error ?? ''))
+
+/**
+ * Одна пачка на касу. 27.11.2026 (фото власника: «Підтвердити (86)» → «Товар з таким артикулом вже існує», і жодна
+ * назва не записалась): якщо каса відхилила ВСЮ пачку через зайнятий артикул, шлемо її ще раз без артикулів — назви
+ * записуються, а про артикули кажемо окремо. Нова збірка каси робить це сама й точніше (по одній картці); цей повтор —
+ * щоб працювало вже зараз, зі старою збіркою.
+ */
+export async function applyAgentItems(bridge: ChatCatalogBridge, items: AgentItem[], operationId: (attempt: number) => Promise<string>) {
+  try {
+    return await bridge.agentApply({ operation_id: await operationId(0), items, skip_invalid: true })
+  } catch (error) {
+    const withSku = items.filter(item => item.changes.sku !== undefined)
+    if (!isArticleClash(error) || !withSku.length) throw error
+    const light = items.map(item => { const changes = { ...item.changes }; delete changes.sku; return { ...item, changes } }).filter(item => Object.keys(item.changes).length)
+    const result = light.length ? await bridge.agentApply({ operation_id: await operationId(1), items: light, skip_invalid: true }) : { updated: 0, skipped: [] }
+    const saved = new Set(light.map(item => item.product_id))
+    const notes = withSku.map(item => ({ product_id: item.product_id, name: String(item.changes.name ?? item.changes.sku),
+      error: (saved.has(item.product_id) ? NAME_SAVED_NOTE : 'Артикул не поставлено') + ': серед артикулів пачки є зайнятий іншою (можливо, видаленою) карткою' }))
+    const refused = new Set((result.skipped ?? []).map(row => row.product_id))
+    return { ...result, skipped: [...(result.skipped ?? []), ...notes.filter(note => !refused.has(note.product_id))] }
+  }
+}
+
 export function planChatCatalogUpdates(
   updates: readonly ChatCatalogUpdate[],
   fingerprints: readonly Fingerprint[],
@@ -127,7 +153,7 @@ export async function applyChatCatalogUpdates(
   const skipped = [...ensured.failed, ...plan.skipped]
   // Одна пачка до 500 карток = одна резервна копія бази перед записом.
   for (let start = 0, chunk = 0; start < plan.items.length; start += 500, chunk += 1) {
-    const result = await bridge.agentApply({ operation_id: await operationId(chunk), items: plan.items.slice(start, start + 500), skip_invalid: true })
+    const result = await applyAgentItems(bridge, plan.items.slice(start, start + 500), attempt => operationId(chunk + attempt * 10_000))
     updated += Number(result.updated) || 0
     backupPath = result.backupPath ?? backupPath
     for (const row of result.skipped ?? []) skipped.push({ item: row.name, error: row.error })
