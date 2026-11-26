@@ -11,7 +11,7 @@ describe('AI invoice confirmation lifecycle', () => {
   it('opens the full invoice review directly and suppresses the duplicate short table', () => {
     expect(page).toContain('if (invoiceAction) await openInvoice(invoiceAction,')
     expect(page).not.toContain('<AiInvoiceReview')
-    expect(page).toContain(') : isInvoice ? null : isBulk')
+    expect(page).toContain(') : isInvoice || isMerge ? null : isBulk')
   })
   it('does not use confirming an action to unlock a different recognition operation', () => {
     const apply = page.slice(page.indexOf('async function applyAction('), page.indexOf('function onKeyDown('))
