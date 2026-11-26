@@ -80,6 +80,17 @@ siteAdminRouter.post('/gateway', requireSiteSection, async (req, res, next) => {
     res.json({ data: await siteGatewayAction(actor, req.body?.action, req.body?.params) })
   } catch (err) { next(err) }
 })
+// 26.11.2026: ШІ-помічник розділу «Сайт» (SEO, описи, статті, теми форуму). Лише читає й готує пропозиції; на сайт записує
+// людина кнопкою — через той самий /gateway з журналом.
+siteAdminRouter.post('/seo-chat', requireSiteSection, async (req, res, next) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store')
+    const { runSeoChat, seoChatSchema } = await import('../services/siteSeoAssistant.js')
+    const parsed = seoChatSchema.safeParse(req.body)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
+    res.json({ data: await runSeoChat(req.user!, parsed.data) })
+  } catch (err) { next(err) }
+})
 siteAdminRouter.get('/categories', requireSiteSection, async (req, res, next) => {
   try { res.json({ data: await listSiteAdminCategories(req.user!.tenant_id) }) } catch (err) { next(err) }
 })
