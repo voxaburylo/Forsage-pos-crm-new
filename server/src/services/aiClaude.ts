@@ -27,6 +27,7 @@ export const isClaudeModel = (model: string | null | undefined): model is Claude
  * в чому сильний»). Основна (Sonnet 5.5) пише тексти, веде розмову, розбирає накладні. Помічниця (Haiku 5.5) — швидка й
  * у 20 разів дешевша: другий незалежний голос у розкладці по категоріях і перевірка написаного «чи немає вигадок».
  * Дві РІЗНІ моделі, що зійшлись у відповіді, надійніші за одну модель, спитану двічі. Ключ Anthropic той самий.
+ * РІШЕННЯ ВЛАСНИКА того ж вечора: «лишаємо Sonnet» — помічницю НЕ ввімкнено ніде; підтримка в клієнті лишилась на майбутнє.
  */
 export const HELPER_MODEL = 'claude-haiku-5-5' as const
 export type AnyClaudeModel = ClaudeModel | typeof HELPER_MODEL

@@ -1,7 +1,7 @@
 import { pool } from '../db/pg.js'
 import { logger } from '../lib/logger.js'
 import { AppError } from '../middleware/errorHandler.js'
-import { ClaudeClient, HELPER_MODEL, helperWithFallback, isClaudeModel, type ClaudeUsage } from './aiClaude.js'
+import { ClaudeClient, isClaudeModel, type ClaudeUsage } from './aiClaude.js'
 import { AiExecutionBudget } from './aiExecutionBudget.js'
 import { usageCostUsd } from './aiJobService.js'
 import { categoryIndex, ruleCategoryId } from './categoryByName.js'
@@ -81,7 +81,7 @@ export async function sortPage(tenantId: string, options: readonly CategoryOptio
   for (let index = 0; index < ask.length; index += SORT_KINDS) chunks.push(ask.slice(index, index + SORT_KINDS))
   await Promise.all(chunks.map(async chunk => {
     const text = chunk.map(([key, samples], index) => sortLine(index + 1, key, samples)).join('\n')
-    // 26.11.2026: перший голос — основна модель (її назва нової категорії й береться), другий — помічниця (Haiku).
+    // Два голоси. Рішення власника 26.11.2026: обидва дає основна модель (Sonnet); окрему помічницю можна передати параметром helper.
     // Категорія ставиться лише там, де дві РІЗНІ моделі зійшлись; розійшлись — «не певен», як і раніше.
     const votes = await Promise.all([model, helper].map(async voter => {
       const answer = await voter.complete(budget, { system: sortPrompt(options), text, maxTokens: 4000, effort: voter === model ? 'low' : 'medium' })
@@ -130,7 +130,6 @@ export async function runCategorySortStep(deps: { model?: (apiKey: string, model
     const options = categoryOptions(await categoryRows(shop.tenant_id))
     if (!options.length) continue
     const model = deps.model ? deps.model(config.apiKey, config.model) : new ClaudeClient(config.apiKey, isClaudeModel(config.model) ? config.model : 'claude-sonnet-5-5')
-    const helper = helperWithFallback(deps.model ? deps.model(config.apiKey, HELPER_MODEL) : new ClaudeClient(config.apiKey, HELPER_MODEL), model)
     const fresh = await import('./supplierCategoryNew.js')
     // Категорії, які каса вже створила, — у справу; ще не створені — нагадати касі.
     await fresh.resolveNewCategories(shop.tenant_id, shop.started_by, options).catch(error => logger.warn({ code: (error as AppError)?.code }, '[category-sort] resolve failed'))
@@ -138,7 +137,7 @@ export async function runCategorySortStep(deps: { model?: (apiKey: string, model
     while (now() < deadline - 25_000) {
       const budget = new AiExecutionBudget(Math.max(5_000, deadline - now()))
       try {
-        const page = await sortPage(shop.tenant_id, options, model, budget, helper)
+        const page = await sortPage(shop.tenant_id, options, model, budget)
         placed += page.placed
         const cost = page.usage.reduce((sum, item) => sum + usageCostUsd(item), 0)
         if (page.usage.length) {

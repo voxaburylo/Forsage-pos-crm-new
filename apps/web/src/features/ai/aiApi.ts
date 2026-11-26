@@ -8,7 +8,7 @@ export const AI_MODELS = ['claude-sonnet-5-5'] as const
 export type AiModel = (typeof AI_MODELS)[number]
 
 export const AI_MODEL_LABELS: Record<AiModel, string> = {
-  'claude-sonnet-5-5': 'Claude Sonnet 5.5 у парі з Haiku 5.5 (Sonnet пише й міркує, Haiku — другий голос і перевірка)',
+  'claude-sonnet-5-5': 'Claude Sonnet 5.5',
 }
 
 export interface AiUsage {

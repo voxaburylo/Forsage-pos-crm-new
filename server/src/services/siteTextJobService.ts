@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { pool } from '../db/pg.js'
 import { logger } from '../lib/logger.js'
 import { AppError } from '../middleware/errorHandler.js'
-import { ClaudeClient, HELPER_MODEL, isClaudeModel, type ClaudeUsage } from './aiClaude.js'
+import { ClaudeClient, isClaudeModel, type ClaudeUsage } from './aiClaude.js'
 import { checkLine, checkPrompt, parseCheckReply } from './siteTextCheck.js'
 import { AiExecutionBudget } from './aiExecutionBudget.js'
 import { usageCostUsd } from './aiJobService.js'
@@ -213,7 +213,7 @@ export async function processTextChunk(row: Pick<JobRow, 'id' | 'tenant_id' | 'c
     throw error
   }
   const replies = parseTextReply(answer.text, new Set(work.map(entry => entry.item.seq)))
-  // Друга модель (Haiku) читає готові тексти поруч із даними товару й шукає те, чого автоперевірка за правилами не бачить:
+  // Друга перевірка окремим запитом: модель читає готові тексти поруч із даними товару й шукає те, чого автоперевірка за правилами не бачить:
   // вигадану сумісність, властивості, переплутаний вид товару, російські слова. Не відповіла — тексти не блокуємо.
   const total: ClaudeUsage = { promptTokens: answer.promptTokens, completionTokens: answer.completionTokens, costAdjustUsd: answer.costAdjustUsd ?? 0 }
   let doubts = new Map<number, string>()
@@ -280,7 +280,8 @@ export async function runSiteTextStep(deps: { model?: (apiKey: string, model: st
       continue
     }
     const model = deps.model ? deps.model(config.apiKey, config.model) : new ClaudeClient(config.apiKey, isClaudeModel(config.model) ? config.model : 'claude-sonnet-5-5')
-    const checker: TextModel = deps.model ? deps.model(config.apiKey, HELPER_MODEL) : new ClaudeClient(config.apiKey, HELPER_MODEL)
+    // Рішення власника 26.11.2026: «лишаємо Sonnet» — другу перевірку робить та сама основна модель окремим запитом.
+    const checker: TextModel = model
     const sample = row.status === 'sample'
     while (now() < deadline - 25_000 && await alive()) {
       // Спершу — уже погоджені тексти (зразки після «годиться», відмічені «на перевірку»): їм модель не потрібна.
