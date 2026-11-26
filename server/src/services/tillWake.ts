@@ -17,6 +17,7 @@ export const wakeTill: TillWake = async tenantId => {
     method: 'POST',
     headers: { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ messages: [{ topic: tillWakeTopic(tenantId), event: 'wake', payload: {} }] }),
-    signal: AbortSignal.timeout(3000),
+    // 27.11.2026: сигнал — лише прискорювач; під навантаженням він висів 3 с і стільки ж чекав кожен екран вебу.
+    signal: AbortSignal.timeout(1000),
   }).catch(() => undefined)
 }

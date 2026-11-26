@@ -32,8 +32,20 @@ type State = 'checking' | 'online' | 'offline'
  * Зв'язок екрана вебу з головним ПК: стан (опитування сервера) і місток, який живе, доки відкритий екран.
  * Спільний для TillOnly (екран лише через ПК) і MainPcWhenOnline (перегляд, а з ПК — повна робота).
  */
+/**
+ * 27.11.2026 (проба застосунку на телефоні: «швидкість низька»): кожен екран починав із запиту «чи на звʼязку головний ПК»
+ * і до відповіді показував лише «Перевіряємо звʼязок…» — а сервер під навантаженням відповідав 3–10 с. Тепер остання
+ * відповідь памʼятається: наступний екран відкривається одразу з нею, а перевірка йде у фоні й виправить стан, якщо він змінився.
+ */
+const LINK_MEMORY_MS = 3 * 60_000
+let lastLink: { state: Exclude<State, 'checking'>; at: number } | null = null
+export function rememberedLink(now = Date.now()): State {
+  return lastLink && now - lastLink.at < LINK_MEMORY_MS ? lastLink.state : 'checking'
+}
+export function rememberLink(state: Exclude<State, 'checking'>, now = Date.now()): void { lastLink = { state, at: now } }
+
 function useMainPcLink(allowed: boolean): { state: State; ready: boolean } {
-  const [state, setState] = useState<State>('checking')
+  const [state, setState] = useState<State>(() => rememberedLink())
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
@@ -43,6 +55,7 @@ function useMainPcLink(allowed: boolean): { state: State; ready: boolean } {
       // watch=0 — вкладка схована або людина давно нічого не натискала: тоді сервер не просить касу опитувати його часто.
       const online = await api.get<{ data: { online: boolean } }>('/api/v1/till-commands/status' + (isUserWatching() ? '' : '?watch=0'), { silent: true, timeoutMs: 10_000 })
         .then(result => Boolean(result.data?.online), () => false)
+      rememberLink(online ? 'online' : 'offline')
       if (!stopped) setState(online ? 'online' : 'offline')
     }
     void check()

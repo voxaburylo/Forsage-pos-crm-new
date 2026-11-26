@@ -464,3 +464,17 @@ html.lite-mode .animate-spin { animation-duration: 1s !important; animation-iter
     .app-sticky-bar { top: -1.5rem; margin-top: -1.5rem; padding-top: 1.5rem; }
   }
 }
+
+/* 27.11.2026: сканер у застосунку на телефоні (lib/nativeCamera.ts). Камера показується ЗА екраном програми, тому на час
+   сканування ховаємо все, крім рамки з кнопкою, і робимо тло прозорим. У браузері цей клас ніколи не ставиться. */
+html.forsage-native-scan, html.forsage-native-scan body { background: transparent !important; }
+html.forsage-native-scan body > *:not([data-native-scan-overlay]) { visibility: hidden !important; }
+[data-native-scan-overlay] {
+  position: fixed; inset: 0; z-index: 2147483000; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px;
+  background: transparent; visibility: visible; padding: 24px;
+}
+[data-native-scan-overlay] p { margin: 0; padding: 6px 14px; border-radius: 999px; background: rgba(0, 0, 0, 0.6); color: #fff; font-size: 15px; font-weight: 600; }
+[data-native-scan-frame] { width: min(82vw, 420px); height: min(34vh, 220px); border: 3px solid #ffd000; border-radius: 16px; box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.35); }
+[data-native-scan-overlay] button {
+  position: relative; padding: 14px 34px; border: 0; border-radius: 14px; background: #ffd000; color: #0d0d0d; font-size: 17px; font-weight: 700;
+}

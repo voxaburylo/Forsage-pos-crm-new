@@ -13,7 +13,10 @@ import { agreedCategory, categoryKey, categoryOptions, parseSortReply, sortLine,
  * новий вид помічник вирішує двома незалежними відповідями (категорія ставиться лише коли обидві збіглись).
  * Категорію, поставлену людиною ('manual'), і розкладене програмою за нашими картками ('auto') не чіпаємо.
  */
-export const SORT_PAGE = 3000, SORT_KINDS = 60, SORT_CHUNKS = 4, SORT_RUN_MS = 50_000
+// 27.11.2026: сторінка 3000 і цикл «скільки встигну за хвилину» перевантажили базу (кожен товар — це оновлення 11 індексів,
+// серед них пошуковий): веб і застосунок чекали по 3–10 с, сама розкладка падала з «повтор за хвилину». Тепер — не більше
+// SORT_PAGES_PER_RUN сторінок по SORT_PAGE товарів за хвилину: повільніше, зате програмою можна користуватись.
+export const SORT_PAGE = 800, SORT_PAGES_PER_RUN = 2, SORT_KINDS = 60, SORT_CHUNKS = 4, SORT_RUN_MS = 50_000
 export type SortModel = { complete: (budget: AiExecutionBudget, input: { system: string; text: string; maxTokens?: number; effort?: 'low' | 'medium' | 'high' }) => Promise<ClaudeUsage & { text: string; truncated: boolean }> }
 type Offer = { connection_id: string; external_id: string; name: string; category_name: string | null }
 type Rule = { category_id: string | null; wait: boolean }
@@ -133,8 +136,8 @@ export async function runCategorySortStep(deps: { model?: (apiKey: string, model
     const fresh = await import('./supplierCategoryNew.js')
     // Категорії, які каса вже створила, — у справу; ще не створені — нагадати касі.
     await fresh.resolveNewCategories(shop.tenant_id, shop.started_by, options).catch(error => logger.warn({ code: (error as AppError)?.code }, '[category-sort] resolve failed'))
-    let merged = false
-    while (now() < deadline - 25_000) {
+    let merged = false, pages = 0
+    while (now() < deadline - 25_000 && pages++ < SORT_PAGES_PER_RUN) {
       const budget = new AiExecutionBudget(Math.max(5_000, deadline - now()))
       try {
         const page = await sortPage(shop.tenant_id, options, model, budget)
