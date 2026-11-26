@@ -23,6 +23,7 @@ import { RememberedAccess, type RememberedUser } from './security/rememberedAcce
 import { DesktopSessionLifecycleError, serverSessionCacheResultForError } from './security/desktopSessionLifecycle'
 import { verifyAndRememberServerSession } from './security/serverSession'
 import { CatalogCleanupRepository } from './repositories/catalogCleanupRepository'
+import { catalogAutoMergeTick } from './repositories/catalogAutoMerge'
 import { CatalogTidyRepository } from './repositories/catalogTidyRepository'
 import { scanCatalogCleanup } from './repositories/catalogCleanupWorker'
 import { checkCleanupCapability, cleanupCartBlockers } from './security/catalogCleanupSafety'
@@ -471,6 +472,26 @@ async function cleanupRepository(session: ReturnType<typeof cleanupSession>) {
   assertCleanupSession(session)
   return new CatalogCleanupRepository(requireLocalDatabase(), { canMirrorMerge: () => capability.available,
     externalBlockers: ids => cleanupCartBlockers(entries, ids) })
+}
+
+/**
+ * Збережені відкриті чеки вікна програми — для фонового обʼєднання точних дублів (catalogAutoMerge.ts).
+ * null — вікна немає або воно не відповіло: звірити чеки нічим, обʼєднання цього разу не виконується.
+ */
+async function readOpenReceiptsForAutoMerge(): Promise<unknown | null> {
+  const window = mainWindow
+  if (!window || window.isDestroyed() || window.webContents.isLoading()) return null
+  try {
+    const entries: unknown = await window.webContents.executeJavaScript(`(() => {
+      const values = [];
+      for (let i=0; i<localStorage.length; i++) {
+        const key=localStorage.key(i);
+        if (key && (key.startsWith('forsage_pos_open_receipts_v2:') || key==='forsage_pos_cart')) values.push([key,localStorage.getItem(key)]);
+      }
+      return values;
+    })()`)
+    return Array.isArray(entries) ? entries : null
+  } catch { return null }
 }
 
 function requireLocalSync(): LocalSyncRepository {
@@ -1419,6 +1440,22 @@ app.whenReady().then(async () => {
       if (result) blackBox?.record('nightly-check', { duration_ms: result.duration_ms, findings: result.findings.map(item => item.code + ':' + item.count) })
     } catch (error) { writeDesktopDiagnostic('nightly-check-failed', error) }
   }, 30 * 60_000).unref()
+  // 26.11.2026 (слово власника: «дублі зі стовідсотковою схожістю — в автоматі, у фоні, без кнопок»): головний ПК раз
+  // на добу сам обʼєднує точні дублі карток. Правило, умови й запис — у repositories/catalogAutoMerge.ts.
+  const autoMergeDuplicates = () => {
+    const db = localDatabase
+    if (!db || !isMainTill() || databaseMaintenance || cleanupMutationInProgress) return
+    void catalogAutoMergeTick({
+      db, tenantId: DEFAULT_TENANT_ID,
+      readOpenReceipts: () => readOpenReceiptsForAutoMerge(),
+      backup: () => db.backupNow(),
+      busy: () => databaseMaintenance || cleanupMutationInProgress || localDatabase !== db,
+      lock: on => { cleanupMutationInProgress = on },
+    }).then(outcome => { if (outcome.status === 'ran' || outcome.status === 'server-unproven' || outcome.status === 'no-owner') blackBox?.record('catalog-auto-merge', outcome) },
+      error => { cleanupMutationInProgress = false; writeDesktopDiagnostic('catalog-auto-merge-failed', error) })
+  }
+  setTimeout(autoMergeDuplicates, 10 * 60_000).unref()
+  setInterval(autoMergeDuplicates, 30 * 60_000).unref()
   // 20.11.2026: однакове написання одиниць у картках (шт/компл/…), один раз після оновлення; спершу копія бази.
   const unitTidyDb = localDatabase
   setTimeout(() => {

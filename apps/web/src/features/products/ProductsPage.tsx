@@ -8,6 +8,7 @@ import {
   Trash2, GitMerge, Copy, FileText,
 } from 'lucide-react'
 import { LiveCameraButton } from '@/components/LiveCameraButton'
+import { ClearFieldButton } from '@/components/ClearFieldButton'
 import { PriceLinkModal } from '@/features/priceLinks/PriceLinkModal'
 import { ProductPhotoSearchModal } from '@/features/ai/ProductPhotoSearchModal'
 import { MergeModal } from './MergeModal'
@@ -645,10 +646,12 @@ export default function ProductsPage() {
             <div className="relative flex-1 min-w-0">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
-                value={search} onChange={(e) => handleSearchChange(e.target.value)}
+                value={search} onChange={(e) => handleSearchChange(e.target.value)} data-scan-field
                 placeholder="Пошук за артикулом, назвою, штрихкодом, аналогом... (oem: для OEM)"
-                className="w-full pl-9 pr-12 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent bg-white"
+                className="w-full pl-9 pr-20 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent bg-white"
               />
+              <ClearFieldButton visible={search !== ''} onClear={() => handleSearchChange('')} size={16}
+                className="absolute right-11 top-1/2 h-8 w-8 -translate-y-1/2 text-gray-500 hover:bg-gray-100 hover:text-gray-800" />
               <LiveCameraButton size={18} label="Сканувати штрихкод камерою"
                 className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-800" />
             </div>

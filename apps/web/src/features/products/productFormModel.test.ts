@@ -93,3 +93,34 @@ describe('product reference draft validation', () => {
     expect(productEditorPayload({ ...form(), brand_id: '' }, true, { brand: { draft: null, options: brands } }).brand_id).toBe('')
   })
 })
+
+// 26.11.2026 (аудит): 72 групи карток з однаковою назвою — накладна через них не проводиться (55 відмов).
+describe('a new card with a name that already exists', () => {
+  it('finds the existing card whatever the letter case and spaces, and asks before creating a twin', async () => {
+    const { sameNameCard, sameNameQuestion } = await import('./productFormModel')
+    const cards = [{ id: 'a', name: 'Запобіжники (плоскі євро 10А) MTA GE-10', sku: '81076', qty_on_hand: 5, retail_price: 300 }, { id: 'b', name: 'Запобіжники (плоскі євро 15А) MTA GE-15' }]
+    expect(sameNameCard('  запобіжники (плоскі  євро 10А) mta ge-10 ', cards)?.id).toBe('a')
+    expect(sameNameCard('Запобіжники (плоскі євро 20А) MTA GE-20', cards)).toBeNull()
+    expect(sameNameCard('', cards)).toBeNull()
+    const question = sameNameQuestion(cards[0])
+    expect(question).toContain('артикул 81076'); expect(question).toContain('залишок 5'); expect(question).toContain('3.00 грн')
+    expect(sameNameQuestion({ name: 'X', sku: 'AUTO-1' })).toContain('без артикула')
+  })
+  it('the form asks before productApi.create and never blocks saving when the lookup fails', async () => {
+    const { readFileSync } = await import('node:fs')
+    const page = readFileSync(new URL('./ProductFormPage.tsx', import.meta.url), 'utf8')
+    expect(page.indexOf('if (twin && !window.confirm(sameNameQuestion(twin))) return')).toBeLessThan(page.indexOf('await productApi.create(payload)'))
+    expect(page).toContain('const twin = await findSameNameCard(String(payload.name ?? \'\'), query => productApi.search(query, 10, { silent: true }))')
+  })
+  // Перевірка екрана product-photo-ui-smoke впала саме на цьому: пошуку не було, і картка не створювалась.
+  it('the twin lookup is only a hint: no search, a failing search or a strange answer never stop the save', async () => {
+    const { findSameNameCard } = await import('./productFormModel')
+    const cards = [{ id: 'a', name: 'Запобіжники MTA GE-10', sku: '81076' }]
+    expect(await findSameNameCard('запобіжники  mta ge-10', async () => ({ data: cards }))).toMatchObject({ id: 'a' })
+    expect(await findSameNameCard('Інша назва', async () => ({ data: cards }))).toBeNull()
+    expect(await findSameNameCard('Запобіжники MTA GE-10', async () => { throw new Error('offline') })).toBeNull()
+    expect(await findSameNameCard('Запобіжники MTA GE-10', undefined as never)).toBeNull()
+    expect(await findSameNameCard('Запобіжники MTA GE-10', async () => ({ data: 'not a list' }))).toBeNull()
+    expect(await findSameNameCard('   ', async () => ({ data: cards }))).toBeNull()
+  })
+})

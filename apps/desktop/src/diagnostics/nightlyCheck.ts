@@ -10,7 +10,11 @@ export type NightlyFinding = { code: string; severity: 'error' | 'warning'; titl
 export type NightlyResult = { checked_at: string; duration_ms: number; findings: NightlyFinding[] }
 
 /** Коди всіх перевірок: те, що цього разу не знайдено, закривається в журналі проблем. */
-export const NIGHTLY_CODES = ['nightly-db-file', 'nightly-db-references', 'nightly-stock-ledger', 'nightly-sale-totals', 'nightly-stale-shift', 'nightly-fiscal-stuck'] as const
+export const NIGHTLY_CODES = ['nightly-db-file', 'nightly-db-references', 'nightly-stock-ledger', 'nightly-sale-totals', 'nightly-stale-shift', 'nightly-fiscal-stuck',
+  'nightly-price-below-cost', 'nightly-same-name-cards', 'nightly-supply-never-sold'] as const
+/** «Приходить, але не продається»: стільки приходів за стільки днів без жодного продажу. */
+export const NEVER_SOLD_SUPPLIES = 3
+export const NEVER_SOLD_DAYS = 21
 /** Зміна, відкрита довше за це, — забута. */
 export const STALE_SHIFT_HOURS = 36
 /** Фіскальний чек, що чекає довше за це, — застряг. */
@@ -87,6 +91,54 @@ export function runNightlyCheck(db: LocalDatabase, options: { tenantId?: string;
   if (fiscal.length) {
     findings.push({ code: 'nightly-fiscal-stuck', severity: 'error', title: 'Фіскальний чек не відправлено', count: fiscal.length,
       detail: `Чеків, що чекають відправки в податкову довше ${FISCAL_STUCK_HOURS} год: ${fiscal.length} (найстаріший — ${names(fiscal, 'created_at')}).` })
+  }
+
+  // 26.11.2026 (аудит): три види помилок у картках, які власник знаходив сам, уже на полиці чи в накладній.
+  const ACTIVE = `p.tenant_id = ? AND p.deleted_at IS NULL AND p.is_active = 1 AND COALESCE(p.is_service, 0) = 0`
+
+  // 7. Ціна продажу нижча за закупку, а товар є на полиці: каса такий товар не продасть (правило власника).
+  const BELOW = ` FROM products p WHERE ${ACTIVE} AND p.qty_on_hand > 0 AND p.retail_price > 0 AND p.retail_price < p.purchase_price`
+  const belowCount = Number(all('SELECT COUNT(*) AS total' + BELOW, tenant)[0]?.total) || 0
+  if (belowCount) {
+    const rows = all('SELECT p.sku AS sku, p.name AS name, p.purchase_price AS buy, p.retail_price AS sell' + BELOW + ' ORDER BY (p.purchase_price - p.retail_price) * p.qty_on_hand DESC LIMIT ' + EXAMPLES, tenant)
+    findings.push({ code: 'nightly-price-below-cost', severity: 'warning', title: 'Ціна продажу нижча за закупку', count: belowCount,
+      detail: `Товарів на полиці: ${belowCount}. Приклади: ` + rows.map(row => `${row.name}: закупка ${(Number(row.buy) / 100).toFixed(2)}, продаж ${(Number(row.sell) / 100).toFixed(2)}`).join('; ')
+        + '. Часто це ціна за упаковку проти ціни за штуку. Програма цін сама не змінює — виправте в картці.' })
+  }
+
+  // 8. Кілька діючих карток із точно однаковою назвою: накладна на такий товар не проводиться, залишок і ціна розходяться.
+  // Групуємо тут, а не в запиті: SQLite не вміє переводити кирилицю в малі літери («Запобіжники» ≠ «запобіжники»).
+  const groups = new Map<string, { name: string; cards: number; qty: number }>()
+  for (const row of all(`SELECT p.name AS name, p.qty_on_hand AS qty FROM products p WHERE ${ACTIVE}`, tenant)) {
+    const key = String(row.name ?? '').toLocaleLowerCase().replace(/\s+/g, ' ').trim()
+    if (!key) continue
+    const group = groups.get(key) ?? { name: String(row.name), cards: 0, qty: 0 }
+    group.cards += 1; group.qty += Number(row.qty) || 0
+    groups.set(key, group)
+  }
+  const twins = [...groups.values()].filter(group => group.cards > 1).sort((x, y) => y.qty - x.qty)
+  if (twins.length) {
+    findings.push({ code: 'nightly-same-name-cards', severity: 'warning', title: 'Кілька карток з однаковою назвою', count: twins.length,
+      detail: `Назв, що повторюються: ${twins.length}. Приклади: ` + twins.slice(0, EXAMPLES).map(row => `${row.name} (${row.cards} картки)`).join('; ')
+        + '. Точні дублі (ціни близькі, заводські штрихкоди не суперечать) програма обʼєднує сама раз на добу; тут — ті, що лишились:'
+        + ' різні ціни, різні заводські коди чи товар у відкритому чеку. Перегляньте їх в «Очищенні номенклатури»:'
+        + ' накладна на такий товар не проводиться, доки картку не вибрано вручну.' })
+  }
+
+  // 9. Товар кілька разів приходив накладними, але з цієї картки не продано жодної штуки: імовірно, у картці чужий
+  // артикул постачальника (26.11.2026: антифриз шість накладних поспіль ішов у «Масло Промывочное», 44 зайві штуки).
+  const ghosts = all(`SELECT p.sku AS sku, p.name AS name, p.qty_on_hand AS qty, COUNT(*) AS supplies
+    FROM supply_invoice_items i
+    JOIN supply_invoices v ON v.id = i.invoice_id AND v.tenant_id = i.tenant_id AND v.deleted_at IS NULL
+    JOIN products p ON p.id = i.product_id AND p.tenant_id = i.tenant_id
+    WHERE ${ACTIVE} AND i.deleted_at IS NULL AND p.qty_on_hand > 0
+      AND NOT EXISTS (SELECT 1 FROM sale_items s WHERE s.product_id = p.id AND s.tenant_id = p.tenant_id AND s.deleted_at IS NULL)
+    GROUP BY p.id HAVING COUNT(*) >= ${NEVER_SOLD_SUPPLIES} AND julianday(MAX(v.created_at)) - julianday(MIN(v.created_at)) >= ${NEVER_SOLD_DAYS}
+    ORDER BY COUNT(*) DESC, p.qty_on_hand DESC`, tenant)
+  if (ghosts.length) {
+    findings.push({ code: 'nightly-supply-never-sold', severity: 'warning', title: 'Товар приходить, але з картки не продається', count: ghosts.length,
+      detail: `Карток: ${ghosts.length}. Приклади: ` + ghosts.slice(0, EXAMPLES).map(row => `${row.name}: приходів ${row.supplies}, залишок ${row.qty}`).join('; ')
+        + '. Перевірте, чи це не чужий артикул постачальника в картці: тоді товар оприбутковується не туди, а продається з іншої картки.' })
   }
 
   return { checked_at: startedAt.toISOString(), duration_ms: Date.now() - started, findings }

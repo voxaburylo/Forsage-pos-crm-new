@@ -42,10 +42,14 @@ describe('a document the server refused is written to the error log', () => {
   it('an unexpected server error is recorded by the error handler, but a database outage is not (the log lives in that database)', () => {
     const handler = readFileSync(new URL('../../middleware/errorHandler.ts', import.meta.url), 'utf8')
     expect(handler).toContain("rememberError(req, 500, 'INTERNAL_ERROR', err)")
-    expect(handler.match(/rememberError\(req, /g)).toHaveLength(1)
+    expect(handler.match(/rememberError\(req, /g)).toHaveLength(2)
     expect(handler).toContain('service.safeRoute(req.method, req.originalUrl ?? req.url)')
-    // Очікувані відмови (AppError: немає прав, не знайдено) у журнал помилок не йдуть.
-    expect(handler.indexOf('if (err instanceof AppError)')).toBeLessThan(handler.indexOf("rememberError(req, 500"))
+    // Очікувані відмови 4xx (AppError: немає прав, не знайдено) у журнал помилок не йдуть; 5xx — ідуть (26.11.2026).
+    expect(handler).toContain('if (err.status >= 500) rememberError(req, err.status, err.code, err)')
+    // 26.11.2026 (аудит): запис «навздогін» відповіді на Vercel губився (у server_errors за три дні — 0 рядків).
+    expect(handler).toContain("keepAlive(import('../services/systemStatusService.js')")
+    expect(handler).not.toContain("void import('../services/systemStatusService.js')")
+    expect(readFileSync(new URL('../tillDevicePush.ts', import.meta.url), 'utf8')).toContain('await report({ tenantId: device.tenant_id')
   })
 
   it('the status screen is read by the owner and the administrator only', () => {

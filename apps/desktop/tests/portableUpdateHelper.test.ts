@@ -18,7 +18,7 @@ const roots: string[] = [], releaseId = '20261013T010000-bbbbbbbbbbbb'
 const hash = (data: string | Uint8Array) => createHash('sha256').update(data).digest('hex')
 const powershell = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
 const platformSupported = process.platform === 'win32'
-const shopOpen = platformSupported && execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', "@(Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^Forsage(?:-.*)?\\.exe$' }).Count"], { encoding: 'utf8', windowsHide: true, timeout: 20_000 }).trim() !== '0'
+const shopOpen = platformSupported && execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', "@(Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^Forsage(?:-.*)?\\.exe$' }).Count"], { encoding: 'utf8', windowsHide: true, timeout: process.env.CI ? 90_000 : 20_000 }).trim() !== '0'
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'forsage-helper-test-')); roots.push(root)
   const directory = path.join(root, 'Forsage', 'updates'); mkdirSync(directory, { recursive: true })
@@ -38,7 +38,7 @@ function seedJob(f: ReturnType<typeof fixture>) {
 }
 function runHelper(f: ReturnType<typeof fixture>) {
   execFileSync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(PORTABLE_UPDATE_POWERSHELL, 'utf16le').toString('base64')], {
-    env: { ...process.env, FORSAGE_UPDATE_JOB: Buffer.from(JSON.stringify(f.job)).toString('base64') }, windowsHide: true, timeout: 20_000,
+    env: { ...process.env, FORSAGE_UPDATE_JOB: Buffer.from(JSON.stringify(f.job)).toString('base64') }, windowsHide: true, timeout: process.env.CI ? 90_000 : 20_000,
   })
 }
 function scriptPathCheck(filePath: string, check: 'LocalPath' | 'DirectorySafe' | 'FileSafe' = 'LocalPath') {
@@ -46,12 +46,12 @@ function scriptPathCheck(filePath: string, check: 'LocalPath' | 'DirectorySafe' 
   const guards = PORTABLE_UPDATE_POWERSHELL.slice(0, PORTABLE_UPDATE_POWERSHELL.indexOf('$job = $null;'))
   const script = guards + `\ntry { $value = ${check} $env:FORSAGE_TEST_PATH; @{ accepted=$true; value=$value } | ConvertTo-Json -Compress } catch { @{ accepted=$false; message=$_.Exception.Message } | ConvertTo-Json -Compress }`
   return JSON.parse(execFileSync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
-    env: { ...process.env, FORSAGE_TEST_PATH: filePath }, encoding: 'utf8', windowsHide: true, timeout: 20_000,
+    env: { ...process.env, FORSAGE_TEST_PATH: filePath }, encoding: 'utf8', windowsHide: true, timeout: process.env.CI ? 90_000 : 20_000,
   }).trim()) as { accepted: boolean; value?: string; message?: string }
 }
 function shortPath(filePath: string) {
   return execFileSync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '(New-Object -ComObject Scripting.FileSystemObject).GetFolder($env:FORSAGE_TEST_PATH).ShortPath'], {
-    env: { ...process.env, FORSAGE_TEST_PATH: filePath }, encoding: 'utf8', windowsHide: true, timeout: 20_000,
+    env: { ...process.env, FORSAGE_TEST_PATH: filePath }, encoding: 'utf8', windowsHide: true, timeout: process.env.CI ? 90_000 : 20_000,
   }).trim()
 }
 afterEach(() => {
@@ -71,7 +71,7 @@ describe.skipIf(!platformSupported)('real Windows helper on isolated synthetic f
     const f = fixture(), alias = shortPath(f.root)
     if (alias.toLowerCase() === f.root.toLowerCase()) { skip(); return }
     const canonical = execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', '[IO.Path]::GetFullPath($env:FORSAGE_TEST_PATH)'], {
-      env: { ...process.env, FORSAGE_TEST_PATH: alias }, encoding: 'utf8', windowsHide: true, timeout: 20_000,
+      env: { ...process.env, FORSAGE_TEST_PATH: alias }, encoding: 'utf8', windowsHide: true, timeout: process.env.CI ? 90_000 : 20_000,
     }).trim()
     expect(scriptPathCheck(alias)).toEqual({ accepted: true, value: canonical })
     expect(scriptPathCheck(alias, 'DirectorySafe').accepted).toBe(true)

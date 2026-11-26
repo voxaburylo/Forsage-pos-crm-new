@@ -1,22 +1,12 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { CAMERA_REPEAT_MS, LIVE_CAMERA_STORAGE_KEY, LIVE_CAMERA_TOGGLE_EVENT, createScanGate, deliverCameraScan, liveCameraStoredOn, scanTargetField, toggleLiveCamera } from './cameraScan'
+import { SCAN_HOLD_MS, SCAN_SESSION_MS, deliverCameraScan, pickBackCamera, scanTargetField, triggerOnPress, triggerOnRelease } from './cameraScan'
+import { frameRegion } from './cameraReader'
+
+const read = (file: string) => readFileSync(new URL(file, import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 
 // 23.11.2026 (план B1), слово власника: «швидке зчитування штрихкодів у вебі з телефона через камеру; не треба
 // відкривати картинку, увага лишається в полі вводу, моментальне зчитування».
-describe('camera scan gate', () => {
-  it('passes a code once while the camera keeps seeing it, and again after a pause or for another code', () => {
-    let now = 1000
-    const gate = createScanGate(() => now)
-    expect(gate(' 4820000123456 ')).toBe('4820000123456')
-    now += 300; expect(gate('4820000123456')).toBeNull()
-    now += 300; expect(gate('4006381333931')).toBe('4006381333931')
-    now += CAMERA_REPEAT_MS; expect(gate('4006381333931')).toBe('4006381333931')
-    expect(gate('')).toBeNull()
-    expect(gate('x'.repeat(201))).toBeNull()
-  })
-})
-
 describe('where a camera code goes', () => {
   // Без браузера: вікно й поле — прості об'єкти з тією самою поведінкою.
   function page(active: Record<string, unknown> | null, onScan?: (event: Event) => void) {
@@ -52,118 +42,144 @@ describe('where a camera code goes', () => {
     expect(deliverCameraScan('4820000123456', page(field({ tagName: 'BUTTON' }).value))).toBe('nowhere')
     expect(deliverCameraScan('4820000123456', page(null))).toBe('nowhere')
   })
+
+  it('with the cursor outside any field the code goes to the search field of the screen', () => {
+    const typed: string[] = []
+    const search = { tagName: 'INPUT', type: 'text', value: '', dispatchEvent: (event: Event) => { typed.push(event.type); return true } }
+    const doc = { activeElement: { tagName: 'BODY' }, querySelector: (selector: string) => selector === '[data-scan-field]' ? search : null }
+    expect(deliverCameraScan('4820000123456', { document: doc, dispatchEvent: () => true } as never)).toBe('field')
+    expect(search.value).toBe('4820000123456')
+    expect(typed).toEqual(['input', 'keydown', 'keyup'])
+    expect(deliverCameraScan('4820000123456', { document: { activeElement: null, querySelector: () => null }, dispatchEvent: () => true } as never)).toBe('nowhere')
+    for (const file of ['../features/pos/SearchPanel.tsx', '../features/products/ProductsPage.tsx', '../features/inventory/ActiveSession.tsx']) expect(read(file), file).toContain('data-scan-field')
+  })
 })
 
-describe('wiring of the live camera scanner', () => {
-  const read = (file: string) => readFileSync(new URL(file, import.meta.url), 'utf8')
+/**
+ * 26.11.2026, слово власника: «біля рядка вводу штрихкоду — значок сканера, і як на сканері: на ньому ж є кнопка, камера
+ * не чекає постійно й дозвіл не висить постійно. Натиснув — буквально за секунду камера зчитала штрихкод, зі спалахом
+ * одночасно. Щойно штрихкод виявлено й зчитано — автоматично вимикається. Максимально яскраво й зрозуміло».
+ */
+describe('the scanner works like the trigger of a hand scanner', () => {
+  const scanner = read('../components/LiveCameraScanner.tsx'), button = read('../components/LiveCameraButton.tsx')
 
-  it('one scanner for the whole web app; the till scanner hook listens to it', () => {
+  it('press starts a scan, press during a scan cancels it; a held trigger stops on release, a short tap keeps waiting for the code', () => {
+    expect(triggerOnPress('idle')).toBe('start')
+    expect([triggerOnPress('starting'), triggerOnPress('scanning')]).toEqual(['cancel', 'cancel'])
+    expect(triggerOnRelease(true, SCAN_HOLD_MS)).toBe('stop')
+    expect(triggerOnRelease(true, 3000)).toBe('stop')
+    expect(triggerOnRelease(true, SCAN_HOLD_MS - 1)).toBe('keep')
+    // Натискання, що скасувало попереднє сканування, на відпусканні вже нічого не зупиняє.
+    expect(triggerOnRelease(false, 3000)).toBe('keep')
+    expect(SCAN_SESSION_MS).toBeGreaterThanOrEqual(5000)
+    expect(button).toContain("if (triggerOnPress(phaseRef.current) === 'cancel')")
+    expect(button).toContain("triggerOnRelease(current.started, Date.now() - current.at) === 'stop'")
+  })
+
+  it('the camera never stays on: every way out of a scan stops the camera tracks', () => {
+    // Єдине місце, де сканування закінчується, — stop(): зчитано, відпустили, скасували, час вийшов, помилка, екран закрили.
+    expect(scanner).toContain("stream?.getTracks().forEach(track => track.stop()); stream = null")
+    expect(scanner).toContain("stop('read')")
+    expect(scanner).toContain("deadline = window.setTimeout(() => stop('timeout'), SCAN_SESSION_MS)")
+    expect(scanner).toContain("stop('error')")
+    expect(scanner).toContain("const hidden = () => { if (document.hidden) session.current?.stop('cancel') }")
+    expect(scanner).toContain("session.current?.stop('cancel')\n    }\n  }, [off])")
+    // Камеру, яку телефон дав уже після зупинки (натиснув і одразу відпустив), теж відпускаємо.
+    expect(scanner.match(/if \(stopped\) \{ release\(\); return \}/g)?.length).toBeGreaterThanOrEqual(3)
+    // Нічого «постійного»: ні памʼяті «увімкнено», ні автозапуску при відкритті сторінки.
+    expect(scanner).not.toContain('sessionStorage')
+    expect(scanner).not.toContain('setEnabled')
+    expect(read('./cameraScan.ts')).not.toContain('liveCameraStoredOn')
+  })
+
+  it('the torch comes on together with the camera and one code ends the scan', () => {
+    expect(scanner).toContain('if (abilities.torch) settings.torch = true')
+    expect(scanner).toContain("if (abilities.focusMode?.includes('continuous')) settings.focusMode = 'continuous'")
+    expect(scanner).toContain('if (!multi && abilities.zoom && abilities.zoom.max >= 2) settings.zoom = Math.max(abilities.zoom.min, 2)')
+    expect(scanner).toContain('width: { ideal: 1920 }, height: { ideal: 1080 }')
+    const readAt = scanner.indexOf('beep()\n          const outcome = deliverCameraScan(code)')
+    expect(readAt).toBeGreaterThan(0)
+    expect(scanner.indexOf("stop('read')", readAt)).toBeGreaterThan(readAt)
+    // Звук працює на iPhone: звуковий пристрій «будиться» в мить натискання.
+    expect(scanner).toContain('wakeAudio()\n      session.current = runScanSession(video')
+  })
+
+  it('bright and clear: scanner icon, yellow and pulsing while it looks, green with a tick when read', () => {
+    expect(button).toContain("import { Check, ScanBarcode } from 'lucide-react'")
+    expect(button).toContain("read ? '!bg-emerald-500 !text-white !border-emerald-500' : busy ? '!bg-yellow-400 !text-black !border-yellow-400 animate-pulse' : ''")
+    expect(button).toContain('{read ? <Check size={size} strokeWidth={3} /> : <ScanBarcode size={size} />}')
+    expect(scanner).toContain("toast.warning('Штрихкод не зчитано. Піднесіть телефон ближче до коду й натисніть сканер ще раз.')")
+  })
+
+  it('does not take the cursor away, does not scroll or select text under a held finger; hidden in the PC program', () => {
+    expect(button).toContain('onPointerDown={event => { event.preventDefault();')
+    expect(button).toContain("style={{ touchAction: 'none', WebkitTouchCallout: 'none', userSelect: 'none', WebkitUserSelect: 'none' }}")
+    expect(button).toContain('onContextMenu={event => event.preventDefault()}')
+    expect(button).toContain('if (desktop) return null')
+    expect(scanner).toContain('const off = isDesktopRuntime() || !signedIn')
+  })
+
+  it('no floating switch and no camera picture: only an invisible video (not display:none, which stops it on phones)', () => {
+    expect(scanner).not.toContain('<button')
+    expect(scanner).not.toContain('fixed bottom-3 left-3')
+    expect(scanner).toContain('h-[2px] w-[2px] overflow-hidden opacity-[0.01]')
+    expect(scanner).not.toMatch(/<video[^>]*className="[^"]*hidden/)
+  })
+
+  it('one scanner for the whole web app; the three search screens have the trigger and take the code like a USB scan', () => {
     expect(read('../App.tsx')).toContain('<LiveCameraScanner />')
     const hook = read('../features/pos/usePOSBarcodeScanner.ts')
     expect(hook).toContain('window.addEventListener(CAMERA_SCAN_EVENT, handleCameraScan)')
-    expect(hook).toContain('if (ownsScan(document.activeElement)) return')
-  })
-
-  it('is not a window over the screen and does not take the cursor away', () => {
-    const scanner = read('../components/LiveCameraScanner.tsx')
-    expect(scanner).toContain('BarcodeDetector')
-    expect(scanner).toContain("await import('html5-qrcode')")
-    expect(scanner).toContain('event.preventDefault(); action()')
-    expect(scanner).toContain('if (isDesktopRuntime() || !signedIn || !(touch || enabled)) return null')
-    expect(scanner).not.toContain('inset-0 z-[100]')
-  })
-
-  // 26.11.2026, слово власника: «вузька смужка камери вгорі некрасива; не хочу бачити, що знімаю — лише швидко зчитати».
-  it('shows no camera picture: the video plays invisibly (not display:none, which stops it on phones)', () => {
-    const scanner = read('../components/LiveCameraScanner.tsx')
-    expect(scanner).toContain('h-[2px] w-[2px] overflow-hidden opacity-[0.01]')
-    expect(scanner).not.toContain('h-24 rounded-b-xl')
-    expect(scanner).not.toContain('Згорнути приціл')
-    expect(scanner).not.toMatch(/<video[^>]*className="[^"]*hidden/)
+    for (const screen of ['../features/pos/SearchPanel.tsx', '../features/products/ProductsPage.tsx', '../features/inventory/ActiveSession.tsx']) {
+      expect(read(screen), screen).toContain('<LiveCameraButton')
+      expect(read(screen), screen).not.toContain('CameraScanner')
+    }
+    for (const screen of ['../features/pos/POSPage.tsx', '../features/products/ProductsPage.tsx', '../features/inventory/ActiveSession.tsx']) expect(read(screen), screen).toContain('usePOSBarcodeScanner(')
   })
 })
 
-// 25.11.2026, слово власника: «я пробував, але все одно довго працює і відкривається камера; мені не треба відкривати
-// картинку, увага лишається в полі вводу, моментальне зчитування».
-describe('camera icon next to the search fields turns on the live scanner, not a picture window', () => {
-  const read = (file: string) => readFileSync(new URL(file, import.meta.url), 'utf8')
-
-  it('toggle is a plain event; the scanner remembers being on for the session', () => {
-    const sent: string[] = []
-    toggleLiveCamera({ dispatchEvent: (event: Event) => { sent.push(event.type); return true } })
-    expect(sent).toEqual([LIVE_CAMERA_TOGGLE_EVENT])
-    expect(liveCameraStoredOn({ getItem: key => (key === LIVE_CAMERA_STORAGE_KEY ? 'on' : null) })).toBe(true)
-    expect(liveCameraStoredOn({ getItem: () => 'off' })).toBe(false)
-    expect(liveCameraStoredOn({ getItem: () => { throw new Error('private mode') } })).toBe(false)
-    expect(liveCameraStoredOn(null)).toBe(false)
-  })
-
-  it('till, products and stocktaking use the toggle button; the old picture window is gone', () => {
-    for (const screen of ['../features/pos/SearchPanel.tsx', '../features/products/ProductsPage.tsx', '../features/inventory/ActiveSession.tsx']) {
-      const source = read(screen)
-      expect(source, screen).toContain('<LiveCameraButton')
-      expect(source, screen).not.toContain('CameraScanner')
-    }
-    // Код із камери ці екрани приймають тим самим хуком, що й код USB-сканера.
-    for (const screen of ['../features/pos/POSPage.tsx', '../features/products/ProductsPage.tsx', '../features/inventory/ActiveSession.tsx']) expect(read(screen), screen).toContain('usePOSBarcodeScanner(')
-    const button = read('../components/LiveCameraButton.tsx')
-    expect(button).toContain('onPointerDown={event => { event.preventDefault(); toggleLiveCamera() }}')
-    expect(button).toContain('if (isDesktopRuntime()) return null')
-    expect(read('../components/LiveCameraScanner.tsx')).toContain('window.addEventListener(LIVE_CAMERA_TOGGLE_EVENT, toggle)')
-  })
-
-  it('phones without a built-in reader (iPhone) use zxing WebAssembly served by our own site (not a CDN)', () => {
-    const scanner = read('../components/LiveCameraScanner.tsx')
-    expect(scanner).toContain("import('@/lib/zxingDetector')")
-    expect(scanner.indexOf('startNative(Detector)')).toBeLessThan(scanner.indexOf('await startZxing()'))
-    expect(scanner.indexOf('await startZxing()')).toBeLessThan(scanner.indexOf('await startLibrary()'))
+describe('fast and sharp reading', () => {
+  it('the reader is prepared before the first press and reused; iPhone uses zxing WebAssembly from our own site', () => {
+    const reader = read('./cameraReader.ts')
+    expect(read('../components/LiveCameraButton.tsx')).toContain('useEffect(() => { if (!desktop) warmCameraReader() }, [desktop])')
+    expect(reader).toContain('reader ??= (async () => (await nativeReader().catch(() => null)) ?? await zxingReader())()')
+    expect(reader).toContain('reader.catch(() => { reader = null })')
+    expect(read('../components/LiveCameraScanner.tsx')).toContain('const [read] = await Promise.all([cameraFrameReader(), openCamera()])')
     const zxing = read('./zxingDetector.ts')
     expect(zxing).toContain("from 'zxing-wasm/reader/zxing_reader.wasm?url'")
     expect(zxing).toContain('fireImmediately: true')
     expect(zxing).not.toMatch(/jsdelivr|unpkg/)
   })
-})
 
-// 26.11.2026, слово власника: «зчитує через раз, погано розпізнає; на сканері загоряється ліхтарик — додати; швидкість як
-// у сканера; на айфоні три камери — може, вона міняє фокус, вибрати одну, яка більше підходить».
-describe('camera reads like a hand scanner', () => {
-  const read = (file: string) => readFileSync(new URL(file, import.meta.url), 'utf8')
-
-  it('a code that stays in view is read once, however long; again only after the camera lost it', async () => {
-    const { createScanGate, CAMERA_REPEAT_MS } = await import('./cameraScan')
-    let now = 0
-    const gate = createScanGate(() => now)
-    expect(gate('4820000123456')).toBe('4820000123456')
-    for (let i = 0; i < 40; i += 1) { now += 300; expect(gate('4820000123456')).toBeNull() }
-    now += CAMERA_REPEAT_MS; expect(gate('4820000123456')).toBe('4820000123456')
+  // Проба 26.11.2026 (camera-decode-smoke): стара смуга, зменшена до 960 точок, читала 1 код із 6; без зменшення — 6 з 6.
+  it('frames are never downscaled: the centre of the frame and the whole frame take turns', () => {
+    expect(frameRegion(1920, 1080, 1)).toEqual({ sx: 192, sy: 270, sw: 1536, sh: 540, width: 1536, height: 540 })
+    expect(frameRegion(1920, 1080, 2)).toEqual({ sx: 0, sy: 0, sw: 1920, sh: 1080, width: 1920, height: 1080 })
+    expect(frameRegion(1280, 720, 4)).toEqual({ sx: 0, sy: 0, sw: 1280, sh: 720, width: 1280, height: 720 })
+    // Лише кадр, більший за 1920 точок (4K), зменшується — до 1920.
+    expect(frameRegion(3840, 2160, 2)).toMatchObject({ width: 1920, height: 1080 })
   })
 
-  it('picks the iPhone back camera that focuses up close (triple, then dual wide), in any system language', async () => {
-    const { pickBackCamera } = await import('./cameraScan')
+  it('picks the iPhone back camera that focuses up close (triple, then dual wide), in any system language', () => {
     const cam = (deviceId: string, label: string, kind = 'videoinput') => ({ deviceId, label, kind })
     expect(pickBackCamera([cam('f', 'Front Camera'), cam('w', 'Back Camera'), cam('u', 'Back Ultra Wide Camera'), cam('t', 'Back Telephoto Camera'), cam('d', 'Back Dual Wide Camera'), cam('3', 'Back Triple Camera')])).toBe('3')
     expect(pickBackCamera([cam('w', 'Back Camera'), cam('d', 'Back Dual Wide Camera'), cam('u', 'Back Ultra Wide Camera')])).toBe('d')
     expect(pickBackCamera([cam('w', 'Задняя камера'), cam('3', 'Задняя тройная камера')])).toBe('3')
     expect(pickBackCamera([cam('w', 'Задня камера'), cam('d', 'Задня подвійна ширококутна камера')])).toBe('d')
+    // «Подвійна ширококутна» вище за просто «подвійну» (ширококутна + теле) — будь-якою мовою.
+    expect(pickBackCamera([cam('t', 'Задняя двойная камера'), cam('d', 'Задняя двойная широкоугольная камера')])).toBe('d')
+    expect(pickBackCamera([cam('t', 'Задня подвійна камера'), cam('d', 'Задня подвійна ширококутна камера')])).toBe('d')
     // Одна камера (чи назв ще немає) — лишаємось на камері за замовчуванням.
     expect(pickBackCamera([cam('w', 'Back Camera'), cam('f', 'Front Camera')])).toBeNull()
     expect(pickBackCamera([cam('x', ''), cam('m', 'Back Triple Camera', 'audioinput')])).toBeNull()
   })
 
-  it('full sharpness, steady focus, torch button, green flash and a sound that works on iPhone', () => {
+  // «камера щоразу питає дозвіл»: програма просила камеру двічі поспіль (звичайну, потім «потрійну»).
+  it('asks the phone for the camera once: the camera chosen last time is requested straight away', () => {
     const scanner = read('../components/LiveCameraScanner.tsx')
-    expect(scanner).toContain('width: { ideal: 1920 }, height: { ideal: 1080 }')
-    expect(scanner).toContain("advanced.push({ focusMode: 'continuous' })")
-    expect(scanner).toContain('if (!multi && abilities.zoom && abilities.zoom.max >= 2)')
-    expect(scanner).toContain('pickBackCamera(await navigator.mediaDevices.enumerateDevices())')
-    // Середина кадру — без зменшення; старе зменшення до 960 точок прибрано.
-    expect(scanner).not.toContain('960 / width')
-    expect(scanner).toContain('context.drawImage(source, Math.round((width - cropWidth) / 2), Math.round((height - cropHeight) / 2), cropWidth, cropHeight, 0, 0, cropWidth, cropHeight)')
-    expect(scanner).toContain('data-live-camera-torch')
-    expect(scanner).toContain("advanced: [{ torch } as MediaTrackConstraintSet]")
-    expect(scanner).toContain("flash ? 'bg-emerald-600'")
-    // Звук: один пристрій, який «будиться» під час натискання кнопки камери.
-    expect(scanner).toContain('onPointerDown={keepFocus(() => { wakeAudio(); setEnabled(value => !value) })}')
-    expect(scanner).toContain('const toggle = () => { wakeAudio(); setEnabled(value => !value) }')
+    expect(scanner).toContain('getUserMedia({ video: { deviceId: { exact: remembered.id }, ...size }, audio: false }); multi = remembered.multi')
+    expect(scanner).toContain('rememberCamera(chosen ? { id: chosen, multi } : null)')
+    // Відмова в дозволі — не привід просити ще раз іншим шляхом.
+    expect(scanner).toContain('catch (error) { if (denied(error)) throw error; rememberCamera(null); stream = null }')
   })
 })

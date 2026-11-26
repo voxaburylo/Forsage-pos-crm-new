@@ -51,7 +51,8 @@ export async function pushFromMainPc(
   const types = new Map(body.operations.map(operation => [operation.operation_id, operation.operation_type]))
   for (const result of answer.results ?? []) {
     if (result.status !== 'failed') continue
-    void report({ tenantId: device.tenant_id, source: 'sync', route: types.get(result.operation_id) ?? null, message: String(result.error ?? 'sync failed') })
+    // 26.11.2026 (аудит): чекаємо на запис — після відповіді Vercel функцію зупиняє, і запис «навздогін» губився.
+    await report({ tenantId: device.tenant_id, source: 'sync', route: types.get(result.operation_id) ?? null, message: String(result.error ?? 'sync failed') })
   }
   return answer
 }

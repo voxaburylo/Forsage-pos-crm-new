@@ -72,3 +72,35 @@ export function productEditorPayload(form: ProductFormData, canSeeMargin: boolea
   payload.reorder_point = String(Number(reorder))
   return payload
 }
+
+/**
+ * 26.11.2026 (аудит): у базі 72 групи діючих карток із точно однаковою назвою (145 карток). Такі дублі зупиняють
+ * проведення накладної («Є кілька товарів із точною назвою» — 55 відмов) і розводять залишок та ціну по різних картках.
+ * Перед створенням нової картки шукаємо діючу з такою самою назвою (без огляду на регістр і зайві пробіли).
+ */
+export function sameNameCard<T extends { id?: string; name?: string | null }>(name: string, found: readonly T[]): T | null {
+  const key = (value: unknown) => String(value ?? '').toLocaleLowerCase().replace(/\s+/g, ' ').trim()
+  const wanted = key(name)
+  if (!wanted) return null
+  return found.find(item => key(item.name) === wanted) ?? null
+}
+
+type TwinCard = { id?: string; name?: string | null; sku?: string | null; qty_on_hand?: number | string | null; retail_price?: number | string | null }
+/**
+ * Пошук картки-двійника перед створенням. Це лише підказка: якщо пошук недоступний чи впав — повертаємо «не знайдено»,
+ * і картка створюється як завжди (підказка ніколи не має заважати зберегти товар).
+ */
+export async function findSameNameCard(name: string, search: (query: string) => Promise<{ data?: unknown }>): Promise<TwinCard | null> {
+  if (!name.trim()) return null
+  try {
+    const answer = await search(name.trim())
+    return sameNameCard(name, Array.isArray(answer?.data) ? answer.data as TwinCard[] : [])
+  } catch { return null }
+}
+
+export function sameNameQuestion(card: { name?: string | null; sku?: string | null; qty_on_hand?: number | string | null; retail_price?: number | string | null }): string {
+  const sku = card.sku && !/^AUTO-/i.test(String(card.sku)) ? `артикул ${card.sku}` : 'без артикула'
+  const price = Number(card.retail_price) > 0 ? `, ціна ${(Number(card.retail_price) / 100).toFixed(2)} грн` : ''
+  return `Картка з такою назвою вже є: «${card.name}» (${sku}, залишок ${Number(card.qty_on_hand) || 0}${price}).\n\n`
+    + 'Дві картки одного товару розводять залишок і ціну, а накладна потім не проводиться.\n\nСтворити ще одну картку?'
+}

@@ -14,6 +14,7 @@ import { Badge, Button, Card, Input, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { playErrorTone, playSuccessBeep, initAudio } from '@/lib/audioService'
 import { LiveCameraButton } from '@/components/LiveCameraButton'
+import { ClearFieldButton } from '@/components/ClearFieldButton'
 import { usePOSBarcodeScanner } from '@/features/pos/usePOSBarcodeScanner'
 import { useAuthStore } from '@/stores/authStore'
 import { formatMoney } from '@/lib/utils'
@@ -1304,6 +1305,7 @@ export default function ActiveSession() {
                 <input
                   ref={inputRef}
                   value={query}
+                  data-scan-field
                   onChange={(event) => { setQuery(event.target.value); setSelected(null); setQuickCreateOpen(false) }}
                   onKeyDown={event => {
                     if (event.nativeEvent.isComposing) return
@@ -1313,8 +1315,10 @@ export default function ActiveSession() {
                   }}
                   placeholder="Назва, VIN/артикул або штрихкод"
                   autoFocus
-                  className="w-full rounded-xl border-2 border-yellow-400 bg-white py-3.5 pl-10 pr-3 text-base outline-none focus:border-yellow-500"
+                  className="w-full rounded-xl border-2 border-yellow-400 bg-white py-3.5 pl-10 pr-12 text-base outline-none focus:border-yellow-500"
                 />
+                <ClearFieldButton visible={query !== ''} onClear={() => { setQuery(''); setSelected(null); setQuickCreateOpen(false); inputRef.current?.focus() }}
+                  className="absolute right-1.5 top-1/2 h-10 w-10 -translate-y-1/2 text-gray-500 hover:bg-gray-100 hover:text-gray-800" />
                 {searchResults.length > 0 && (
                   <div ref={searchResultsRef} className="absolute z-50 mt-1 max-h-72 w-full overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-xl">
                     {searchResults.map((product) => (

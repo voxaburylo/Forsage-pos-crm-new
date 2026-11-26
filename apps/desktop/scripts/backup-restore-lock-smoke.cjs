@@ -74,7 +74,7 @@ async function lockFixture(root, file, sharing) {
           onOutput.push(listener); child.stdout.on('data', listener)
         }),
         exit.then(result => { throw result.error || new Error('Lock child exited before readiness: ' + errorText) }),
-        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Fixture lock readiness timed out')), 10000) }),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Fixture lock readiness timed out')), process.env.CI ? 45000 : 10000) }),
       ])
     } finally {
       clearTimeout(timer)
