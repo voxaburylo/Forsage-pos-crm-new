@@ -13,7 +13,7 @@ import { LoadRing, type LoadProgress } from './LoadRing'
 interface Warehouse { id: string; code: string; name: string; city: string | null; days_to_ship: number | null; is_active: boolean }
 interface Connection { id: string; provider: 'omega' | 'gpl'; name: string; key_hint: string; meta?: { price_names?: string[]; purchase_price_name?: string | null }; enabled: boolean; syncing: boolean; sync_page: number
   last_full_sync_at: string | null; last_error: string | null; total_offers: number; offers: number; linked: number; crosses_done?: number; crosses_total?: number; details_done?: number; warehouses: Warehouse[]
-  progress?: { price: LoadProgress; crosses?: LoadProgress; details?: LoadProgress } }
+  progress?: { overall?: LoadProgress; price: LoadProgress; crosses?: LoadProgress; details?: LoadProgress; photos?: LoadProgress } }
 
 const BASE = '/api/v1/supplier-api'
 const message = (reason: unknown, fallback: string) => reason instanceof Error && reason.message ? reason.message : fallback
@@ -39,7 +39,7 @@ export function SupplierApiCard() {
   useEffect(() => { void load() }, [load])
   // 25.11.2026: поки щось завантажується, кружечки оновлюються самі (раз на 2 хв, лише коли вкладку видно).
   // Числа «днів», які людина саме вводить, при цьому не перезаписуються.
-  const loading = Boolean(rows?.some(row => row.progress?.price.loading || row.progress?.crosses?.loading || row.progress?.details?.loading))
+  const loading = Boolean(rows?.some(row => row.progress?.overall?.loading || row.progress?.price.loading))
   useEffect(() => {
     if (!loading) return
     const timer = window.setInterval(() => {
@@ -101,19 +101,14 @@ export function SupplierApiCard() {
               {omega.details_done != null && <>{' · '}опис (OE-номери, застосовність, характеристики): <b>{omega.details_done.toLocaleString('uk-UA')}</b></>}
               {' · '}{omega.syncing ? `оновлюється (сторінка ${omega.sync_page})` : omega.last_full_sync_at ? 'оновлено ' + new Date(omega.last_full_sync_at).toLocaleString('uk-UA') : 'ще не завантажувалось'}
             </p>
-            {omega.progress && (
-              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1" data-supplier-progress>
-                <span className="inline-flex items-center gap-1 text-xs text-gray-500">Прайс і склади <LoadRing progress={omega.progress.price} label="Прайс і склади Омеги" /></span>
-                {omega.progress.crosses && <span className="inline-flex items-center gap-1 text-xs text-gray-500">Кроси <LoadRing progress={omega.progress.crosses} label="Кроси Омеги" /></span>}
-                {omega.progress.details && <span className="inline-flex items-center gap-1 text-xs text-gray-500">Опис <LoadRing progress={omega.progress.details} label="Опис товарів Омеги" /></span>}
-              </div>
-            )}
+            <ProgressList conn={omega} />
             {omega.last_error && <p role="alert" className="mt-1 text-sm text-red-700">Остання помилка: {omega.last_error}</p>}
             <div className="mt-3 flex flex-wrap gap-2">
               <Button size="sm" variant="secondary" icon={<RefreshCw size={14} />} loading={busy === 'sync' + omega.id} disabled={omega.syncing} onClick={() => void syncOf(omega)}>Оновити зараз</Button>
               <Button size="sm" variant="secondary" icon={<RefreshCw size={14} />} onClick={() => void load()}>Перечитати</Button>
               <Button size="sm" variant="danger-outline" icon={<Trash2 size={14} />} loading={busy === 'remove' + omega.id} onClick={() => void removeOf(omega)}>Видалити підключення</Button>
             </div>
+            {warehousesOf(omega)}
           </>
         )}
       </Fold>
@@ -141,21 +136,29 @@ export function SupplierApiCard() {
             {gpl.meta?.price_names && gpl.meta.price_names.length > 0 && (
               <p className="mt-1 text-xs text-gray-500">Ціни в прайсі GPL: {gpl.meta.price_names.join(', ')}. Закупкою взято: <b>{gpl.meta.purchase_price_name ?? '—'}</b> (найменша не роздрібна).</p>
             )}
+            <ProgressList conn={gpl} />
             {gpl.last_error && <p role="alert" className="mt-1 text-sm text-red-700">Остання помилка: {gpl.last_error}</p>}
             <div className="mt-3 flex flex-wrap gap-2">
               <Button size="sm" variant="secondary" icon={<RefreshCw size={14} />} loading={busy === 'sync' + gpl.id} disabled={gpl.syncing} onClick={() => void syncOf(gpl)}>Оновити зараз</Button>
               <Button size="sm" variant="danger-outline" icon={<Trash2 size={14} />} loading={busy === 'remove' + gpl.id} onClick={() => void removeOf(gpl)}>Видалити підключення</Button>
             </div>
+            {warehousesOf(gpl)}
           </>
         )}
       </Fold>
-      {/* 25.11.2026 (слово власника): склади — у списку, що розгортається, щоб не займали пів екрана; рядок компактний.
-          Кружечок біля складу — завантаження прайсу постачальника (склади приходять разом у ньому). */}
-      {rows.filter(conn => conn.warehouses.length > 0).map(conn => (
-        <Fold key={conn.id} open={false} title={`Склади: ${conn.name}`}
-          hint={`складів: ${conn.warehouses.length} · увімкнено: ${conn.warehouses.filter(w => w.is_active).length}`}
-          aside={<LoadRing progress={conn.progress?.price} label={`Завантаження складів ${conn.name}`} />}>
-          <p className="mb-2 text-xs text-gray-500">«Днів до відправки клієнту» бачать менеджер у бланку замовлення й сайт. Вимкнений склад не показується ніде.</p>
+    </div>
+  )
+
+  /**
+   * 26.11.2026 (фото власника: «чому склади окремо, Омега окремо?»): склади — усередині блоку свого постачальника,
+   * під докладним ходом завантажень. Кружечок біля складу — завантаження прайсу (склади приходять у ньому).
+   */
+  function warehousesOf(conn: Connection) {
+    if (!conn.warehouses.length) return null
+    return (
+      <div className="mt-4 border-t border-gray-100 pt-3" data-supplier-warehouses-block>
+        <p className="text-sm font-semibold text-gray-900">Склади <span className="font-normal text-gray-500">· {conn.warehouses.length}, увімкнено {conn.warehouses.filter(w => w.is_active).length}</span></p>
+        <p className="mb-1 text-xs text-gray-500">«Днів до відправки клієнту» бачать менеджер у бланку замовлення й сайт. Вимкнений склад не показується ніде.</p>
           <ul className="divide-y divide-gray-100" data-supplier-warehouses>
             {conn.warehouses.map(w => (
               <li key={w.id} className="flex items-center gap-2 py-1.5 text-sm">
@@ -173,17 +176,34 @@ export function SupplierApiCard() {
               </li>
             ))}
           </ul>
-        </Fold>
+      </div>
+    )
+  }
+}
+
+/** Докладно в розкритому блоці: кожне завантаження окремо — свій кружечок, відсоток і час. */
+function ProgressList({ conn }: { conn: Connection }) {
+  const progress = conn.progress
+  if (!progress) return null
+  const rows: Array<[string, LoadProgress | undefined]> = [
+    ['Прайс і склади', progress.price], ['Кроси (аналоги)', progress.crosses], ['Опис (OE, застосовність)', progress.details], ['Фото', progress.photos],
+  ]
+  return (
+    <ul className="mt-2 space-y-1 rounded-lg bg-gray-50 px-3 py-2" data-supplier-progress>
+      {rows.filter(([, part]) => part).map(([label, part]) => (
+        <li key={label} className="flex items-center justify-between gap-2 text-xs text-gray-600">
+          <span>{label}</span><LoadRing progress={part} label={`${label}: ${conn.name}`} />
+        </li>
       ))}
-    </div>
+    </ul>
   )
 }
 
-/** Підсумок у згорнутому заголовку підключення: кружечок завантаження або «вимкнено». */
+/** Підсумок у згорнутому заголовку: ЗАГАЛЬНИЙ стан усіх завантажень постачальника (прайс, кроси, опис, фото). */
 function ConnectionAside({ conn }: { conn: Connection }) {
   if (!conn.enabled) return <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-500">вимкнено</span>
   if (conn.last_error) return <span className="rounded bg-red-50 px-1.5 py-0.5 text-[11px] text-red-700">помилка</span>
-  return <LoadRing progress={conn.progress?.price} label={`Завантаження ${conn.name}`} />
+  return <LoadRing progress={conn.progress?.overall ?? conn.progress?.price} label={`Усі завантаження ${conn.name}`} />
 }
 
 /**
