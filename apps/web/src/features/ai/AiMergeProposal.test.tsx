@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { chosenMerges, MergeProposal, mergeRows } from './AiMergeProposal'
+import { chosenMerges, declinedPairs, MergeProposal, mergeRows } from './AiMergeProposal'
 import type { AiPendingAction } from './aiApi'
 
 // 26.11.2026, власник: «у чому не впевнений — таблицею; у чому впевнений на 100% — таблиця не потрібна, тільки підтвердити».
@@ -30,6 +30,15 @@ describe('duplicate merge proposal: sure pairs by one button, doubtful ones in a
     const rows = mergeRows(action)
     expect(chosenMerges(rows, new Set()).map(pair => pair.duplicate_product_id)).toEqual(['d1'])
     expect(chosenMerges(rows, new Set([2])).map(pair => pair.duplicate_product_id)).toEqual(['d1', 'd3'])
+  })
+
+  // 26.11.2026, власник: «пошук знаходить повторно дублі, які ми вже виправили».
+  it('unticked doubtful pairs are remembered as «not duplicates»; ticked and sure ones are not', () => {
+    const rows = mergeRows(action)
+    expect(declinedPairs(rows, new Set())).toEqual([{ a: 'p1', b: 'd2' }, { a: 'p3', b: 'd3' }])
+    expect(declinedPairs(rows, new Set([2]))).toEqual([{ a: 'p1', b: 'd2' }])
+    const html = renderToStaticMarkup(<MergeProposal action={action} busy={false} onConfirm={() => undefined} onReject={() => undefined} />)
+    expect(html).toContain('Невідмічені програма запамʼятає як «не дублі»')
   })
 
   it('sure pairs are one line (no table); doubtful ones show both cards and the reason, unticked (letter «s» check: «шт»)', () => {

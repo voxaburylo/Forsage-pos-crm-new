@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+// 26.11.2026: рішення «не дублі» читаються з бази сервера — тут без неї (порожньо), окремі перевірки — нижче.
+const decisions = vi.hoisted(() => ({ rows: [] as Array<{ a: string; b: string }> }))
+vi.mock('../db/pg.js', () => ({ pool: { query: async () => ({ rows: decisions.rows }) } }))
 import { readAiDuplicates, readAiLookup, boundedAiReadResult, AI_CATALOG_LIMITS } from './aiCatalogReads.js'
 import { AiExecutionBudget } from './aiExecutionBudget.js'
 import { createClient } from '@supabase/supabase-js'
@@ -112,6 +115,19 @@ describe('bounded tenant-scoped AI catalogue reads',()=>{
   const check=expect(readAiLookup(fixture.db,'shop','brands',budget)).rejects.toMatchObject({code:'AI_TIMEOUT'})
   await vi.advanceTimersByTimeAsync(100);await check
   expect(fixture.calls[0].signal.aborted).toBe(true)
+ })
+ // 26.11.2026, власник: «пошук знаходить повторно дублі, які ми вже виправили».
+ it('does not offer again the pairs the owner marked «not duplicates»; a group keeps only undecided cards (letter «s» check: «Свічки»)',async()=>{
+  const rows=[row(1,{name:'Свічки NGK'}),row(2,{name:'свічки ngk'}),row(3,{name:'Свічки  NGK'}),row(4,{name:'Олива'}),row(5,{name:'олива'})]
+  decisions.rows=[{a:id(1),b:id(2)},{a:id(4),b:id(5)}]
+  try {
+   const result=await readAiDuplicates(fakeDb(rows).db,'shop','name',20,budget)
+   expect(result.total_groups).toBe(1)
+   // 1 і 2 — «не дублі», але кожна ще не вирішена з 3 → група лишається з усіма трьома; олива зникла.
+   expect(result.groups[0].products.map(p=>p.product_id)).toEqual([id(1),id(2),id(3)])
+   decisions.rows=[{a:id(1),b:id(2)},{a:id(1),b:id(3)},{a:id(2),b:id(3)}]
+   expect((await readAiDuplicates(fakeDb(rows).db,'shop','name',20,budget)).total_groups).toBe(1)
+  } finally { decisions.rows=[] }
  })
  it('bounds UTF-8 response bytes, not just the count of duplicate groups',()=>{
   expect(boundedAiReadResult({products:[]})).toEqual({products:[]})

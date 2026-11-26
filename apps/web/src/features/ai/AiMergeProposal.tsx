@@ -26,12 +26,17 @@ export function mergeRows(action: AiPendingAction): { sure: MergeRow[]; doubt: M
   return { sure: rows.filter(row => row.pair.sure === true), doubt: rows.filter(row => row.pair.sure !== true) }
 }
 
+/** Пари, які власник вирішив не обʼєднувати: невідмічені сумнівні (при підтвердженні). */
+export function declinedPairs(rows: { doubt: MergeRow[] }, picked: ReadonlySet<number>): Array<{ a: string; b: string }> {
+  return rows.doubt.filter(row => !picked.has(row.index)).map(row => ({ a: row.pair.primary_product_id, b: row.pair.duplicate_product_id }))
+}
+
 export function chosenMerges(rows: { sure: MergeRow[]; doubt: MergeRow[] }, picked: ReadonlySet<number>): MergePair[] {
   return [...rows.sure, ...rows.doubt.filter(row => picked.has(row.index))].sort((a, b) => a.index - b.index).map(row => row.pair)
 }
 
 export function MergeProposal({ action, busy, onConfirm, onReject }: {
-  action: AiPendingAction; busy: boolean; onConfirm: (merges: MergePair[]) => void; onReject: () => void
+  action: AiPendingAction; busy: boolean; onConfirm: (merges: MergePair[], declined: Array<{ a: string; b: string }>) => void; onReject: () => void
 }) {
   const rows = useMemo(() => mergeRows(action), [action])
   const [picked, setPicked] = useState<Set<number>>(new Set())
@@ -55,6 +60,7 @@ export function MergeProposal({ action, busy, onConfirm, onReject }: {
           <p className="flex items-center gap-1 border-b border-amber-100 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-800">
             <AlertTriangle size={12} /> Сумнівні: {rows.doubt.length} — відмітьте ті, що обʼєднати
           </p>
+          <p className="px-3 pt-1.5 text-[11px] text-gray-500">Невідмічені програма запамʼятає як «не дублі» й більше не пропонуватиме.</p>
           <ul className="divide-y divide-gray-100">
             {rows.doubt.map(row => (
               <li key={row.index}>
@@ -73,8 +79,9 @@ export function MergeProposal({ action, busy, onConfirm, onReject }: {
         </div>
       )}
       <div className="flex gap-2">
-        <Button type="button" disabled={busy || chosen.length === 0} loading={busy} onClick={() => onConfirm(chosen)} className="text-xs" data-ai-merge-confirm>
-          <Check size={14} className="mr-1" /> Підтвердити ({chosen.length})
+        {/* Нічого не відмічено — кнопка лише запамʼятовує «не дублі» (без обʼєднання). */}
+        <Button type="button" disabled={busy || (chosen.length === 0 && rows.doubt.length === 0)} loading={busy} onClick={() => onConfirm(chosen, declinedPairs(rows, picked))} className="text-xs" data-ai-merge-confirm>
+          <Check size={14} className="mr-1" /> {chosen.length ? `Підтвердити (${chosen.length})` : 'Не обʼєднувати — запамʼятати'}
         </Button>
         <Button type="button" variant="secondary" disabled={busy} onClick={onReject} className="text-xs">Відхилити</Button>
       </div>

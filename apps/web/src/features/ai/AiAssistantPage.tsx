@@ -774,6 +774,14 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
     } finally { draftBusy.current = false; if (isCurrentContext()) setApplyingId(null) }
   }
   const applyBusy = useRef(false)
+  // 26.11.2026 (власник: «пошук знаходить повторно дублі, які ми вже виправили»): «не дублі» запамʼятовує сервер.
+  function rememberNotDuplicates(pairs: Array<{ a: string; b: string }>) {
+    if (!pairs.length) return
+    aiApi.markNotDuplicates(pairs).then(
+      answer => { if (answer.data.saved) toast.success(`Запамʼятано «не дублі»: ${answer.data.saved}. Пошук більше їх не пропонуватиме.`) },
+      reason => toast.warning(reason instanceof Error && reason.message ? reason.message : 'Рішення «не дублі» не збережено'))
+  }
+
   async function applyAction(action: AiPendingAction, payloadOverride?: Record<string, any>) {
     if (!isCurrentContext() || applyBusy.current || sendBusy.current || applied[action.id] || completedActions.current.has(action.id)) return false
     applyBusy.current = true
@@ -1199,8 +1207,8 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
                         </p>
                       ) : isMerge ? (
                         <MergeProposal action={action} busy={applyingId === action.id || sending}
-                          onConfirm={merges => void applyAction(action, { ...action.payload, merges })}
-                          onReject={() => setApplied((p) => ({ ...p, [action.id]: 'rejected' }))} />
+                          onConfirm={(merges, declined) => { rememberNotDuplicates(declined); if (merges.length) void applyAction(action, { ...action.payload, merges }); else setApplied((p) => ({ ...p, [action.id]: 'rejected' })) }}
+                          onReject={() => { rememberNotDuplicates((Array.isArray(action.payload?.merges) ? action.payload.merges : []).map((m: any) => ({ a: String(m.primary_product_id), b: String(m.duplicate_product_id) }))); setApplied((p) => ({ ...p, [action.id]: 'rejected' })) }} />
                       ) : !supported ? (
                         <p className="text-xs text-amber-700">{action.tool === 'create_products_bulk'
                           ? 'Це пропозиція каталогу, не прихідна накладна. Її не збережено. Додайте фото повторно — тепер воно автоматично відкриє перевірку приходу; старі продажні ціни не переноситимуться в закупку.'

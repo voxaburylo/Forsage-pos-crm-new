@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { AppError } from '../middleware/errorHandler.js'
 import { normalizeArticle } from '../validators/productValidator.js'
 import { AI_TIME_LIMITS, AiExecutionBudget, withAiExecutionBudget } from './aiExecutionBudget.js'
+import { readDistinctPairs, withoutDistinct } from './aiDuplicateDecisions.js'
 
 type ReadDb = Pick<SupabaseClient, 'from'>
 type Row = { id: string; [key: string]: any }
@@ -68,7 +69,9 @@ export async function readAiDuplicates(
       group.push(row)
       groups.set(key, group)
     }
-    const duplicates = [...groups.values()].filter(group => group.length >= 2).sort((a, b) => b.length - a.length)
+    // 26.11.2026 (власник: «знаходить повторно дублі, які ми вже виправили»): пари, про які власник вирішив «не дублі», не повертаються.
+    const distinct = await readDistinctPairs(tenantId)
+    const duplicates = [...groups.values()].map(group => withoutDistinct(group, distinct)).filter(group => group.length >= 2).sort((a, b) => b.length - a.length)
     const result = boundedAiReadResult({
       total_groups: duplicates.length,
       showing: Math.min(limit, duplicates.length),
