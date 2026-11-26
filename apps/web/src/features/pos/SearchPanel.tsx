@@ -11,6 +11,7 @@ import { toast } from '@/components/ui/Toast'
 import { posSaleBlockReason } from './posMoney'
 import { playSuccessBeep, playWarning, initAudio, playErrorTone } from '@/lib/audioService'
 import { LiveCameraButton } from '@/components/LiveCameraButton'
+import { ClearFieldButton } from '@/components/ClearFieldButton'
 import { findProductByScanOffline, searchCustomersOffline, searchProductsOffline } from '@/lib/offlineDB'
 import { useServerStatus } from '@/hooks/useServerStatus'
 import { useAuthStore } from '@/stores/authStore'
@@ -578,10 +579,12 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Натисніть тут для пошуку товару"
-            className={`w-full bg-[#2C2C2C] text-white placeholder-gray-500 pl-10 pr-4 rounded-xl text-sm md:text-base font-medium border-2 focus:outline-none focus:ring-2 focus:ring-yellow-400/20 md:min-h-[50px] min-h-[44px] ${
+            className={`w-full bg-[#2C2C2C] text-white placeholder-gray-500 pl-10 pr-12 rounded-xl text-sm md:text-base font-medium border-2 focus:outline-none focus:ring-2 focus:ring-yellow-400/20 md:min-h-[50px] min-h-[44px] ${
               effectiveOnline ? 'border-gray-700 focus:border-yellow-400' : 'border-red-700/50 focus:border-red-400'
             }`}
           />
+          <ClearFieldButton visible={query !== ''} onClear={() => { setQuery(''); inputRef.current?.focus() }}
+            className="absolute right-1.5 top-1/2 h-9 w-9 -translate-y-1/2 text-gray-300 hover:bg-gray-700 active:bg-gray-600" />
         </div>
         {mobileWeb && (
           <LiveCameraButton

@@ -145,6 +145,9 @@ describe('camera reads like a hand scanner', () => {
     expect(pickBackCamera([cam('w', 'Back Camera'), cam('d', 'Back Dual Wide Camera'), cam('u', 'Back Ultra Wide Camera')])).toBe('d')
     expect(pickBackCamera([cam('w', 'Задняя камера'), cam('3', 'Задняя тройная камера')])).toBe('3')
     expect(pickBackCamera([cam('w', 'Задня камера'), cam('d', 'Задня подвійна ширококутна камера')])).toBe('d')
+    // 26.11.2026 (аудит): «подвійна ширококутна» має бути вище за просто «подвійну» (ширококутна + теле) — будь-якою мовою.
+    expect(pickBackCamera([cam('t', 'Задняя двойная камера'), cam('d', 'Задняя двойная широкоугольная камера')])).toBe('d')
+    expect(pickBackCamera([cam('t', 'Задня подвійна камера'), cam('d', 'Задня подвійна ширококутна камера')])).toBe('d')
     // Одна камера (чи назв ще немає) — лишаємось на камері за замовчуванням.
     expect(pickBackCamera([cam('w', 'Back Camera'), cam('f', 'Front Camera')])).toBeNull()
     expect(pickBackCamera([cam('x', ''), cam('m', 'Back Triple Camera', 'audioinput')])).toBeNull()

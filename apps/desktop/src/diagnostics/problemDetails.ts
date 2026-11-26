@@ -55,6 +55,8 @@ export function safeProblemDetail(value: unknown, problemCode: string): string |
   const text = value.slice(0, 8192)
   const prior = /^(.*) \[([a-z-]+)\]\. Відбиток: ([a-f0-9]{20})\.$/.exec(text)
   if (prior && prior[1] === explanations[prior[2]]) return text
+  // Уже збережений запис із технічною формою помилки (26.11.2026) — лишаємо, якщо форма досі з дозволеного переліку.
+  if (prior && prior[2] === 'unknown' && prior[1].startsWith(explanations.unknown + ': ') && technicalShape(prior[1].slice(explanations.unknown.length + 2)) === prior[1].slice(explanations.unknown.length + 2)) return text
   const storedReceiving = /^(.*) \[(receiving-[a-z-]+)(?::([a-z-]+))?\]\.(?: Відбиток: [a-f0-9]{20}\.)?$/.exec(text)
   if (storedReceiving && isStoredReceivingDetail(storedReceiving[1], storedReceiving[2])
     && (!storedReceiving[3] || Object.hasOwn(explanations, storedReceiving[3]))) return text
@@ -73,7 +75,24 @@ export function safeProblemDetail(value: unknown, problemCode: string): string |
   if (own && !diagnostic.error_code) return own + ' [message]. Відбиток: ' + diagnostic.fingerprint + '.'
   const candidate = text.includes('products_brand_id_fkey') ? 'foreign-brand-key' : String(diagnostic.error_code ?? 'unknown')
   const code = Object.hasOwn(explanations, candidate) ? candidate : 'unknown'
-  return explanations[code] + ' [' + code + ']. Відбиток: ' + diagnostic.fingerprint + '.'
+  const shape = code === 'unknown' ? technicalShape(text) : null
+  return explanations[code] + (shape ? ': ' + shape : '') + ' [' + code + ']. Відбиток: ' + diagnostic.fingerprint + '.'
+}
+
+/**
+ * 26.11.2026 (аудит): «Технічна помилка [unknown]» — 101 раз на сканері ревізії й 13 разів на її завершенні; причину
+ * за самим відбитком уже не відновити. Форму помилки, у якій НЕМАЄ даних магазину, тепер видно в журналі:
+ * обмеження бази (назви таблиці й колонки — це схема програми) і типові помилки коду (назва поля в коді).
+ * Усе інше, як і раніше, лишається лише відбитком.
+ */
+export function technicalShape(text: string): string | null {
+  const line = text.split('\n')[0].replace(/^(?:Error invoking remote method '[\w:.-]+': )?(?:\w*Error: )*/, '').trim()
+  const constraint = /^(NOT NULL|UNIQUE|CHECK|FOREIGN KEY) constraint failed(?:: ([a-z_]+(?:\.[a-z_]+)?(?:, [a-z_]+\.[a-z_]+){0,5}))?$/.exec(line)
+  if (constraint) return constraint[1] + ' constraint failed' + (constraint[2] ? ': ' + constraint[2] : '')
+  const sqlite = /^(no such (?:table|column): [a-zA-Z_.]{1,60}|database is locked|database disk image is malformed|too many SQL variables|cannot (?:start|commit|rollback) (?:a )?transaction[a-z -]{0,60})$/.exec(line)
+  if (sqlite) return sqlite[1]
+  const code = /^(Cannot read properties of (?:undefined|null) \(reading '[A-Za-z_$][\w$]{0,40}'\)|[A-Za-z_$][\w$.]{0,60} is not (?:a function|iterable|defined)|Maximum call stack size exceeded|Unexpected end of JSON input|The database connection is not open)$/.exec(line)
+  return code ? code[1] : null
 }
 
 export function safeProblemContext(value: unknown): Record<string, unknown> | null {

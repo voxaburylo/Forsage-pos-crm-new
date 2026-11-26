@@ -84,7 +84,7 @@ export function liveCameraStoredOn(storage: Pick<Storage, 'getItem'> | null = ty
  */
 export function pickBackCamera(devices: ReadonlyArray<{ kind: string; deviceId: string; label: string }>): string | null {
   const back = devices.filter(device => device.kind === 'videoinput' && device.deviceId && /back|rear|задн|основн|тилов/i.test(device.label))
-  const rank = (label: string) => /triple|тройн|потрійн/i.test(label) ? 3 : /dual wide|двойнS* широк|подвійнS* ширик|подвійнS* широк/i.test(label) ? 2 : /dual|двойн|подвійн/i.test(label) ? 1 : 0
+  const rank = (label: string) => /triple|тройн|потрійн/i.test(label) ? 3 : /dual wide|двойн\S* широк|подвійн\S* ширик|подвійн\S* широк/i.test(label) ? 2 : /dual|двойн|подвійн/i.test(label) ? 1 : 0
   const best = back.map(device => ({ device, rank: rank(device.label) })).filter(item => item.rank > 0).sort((a, b) => b.rank - a.rank)[0]
   return best ? best.device.deviceId : null
 }

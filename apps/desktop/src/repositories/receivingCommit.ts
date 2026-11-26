@@ -197,7 +197,13 @@ export function commitReceiving(db: LocalDatabase, input: ReceivingCommitInput):
         if (!product && identifiers.size) product = byId.get([...identifiers][0])
         if (!product) {
           const names = byName.get(nameKey(line.product_name))
-          if (names && names.size > 1) lineFailure(i, 'Є кілька товарів із точною назвою. Виберіть картку вручну.')
+          // 26.11.2026 (аудит): ця відмова трапилась 55 разів — касир бачив лише «виберіть вручну» й не знав, з чого вибирати.
+          // Тепер названо самі картки: артикул, залишок, ціна.
+          if (names && names.size > 1) lineFailure(i, 'Є кілька товарів із точною назвою: ' + [...names].slice(0, 4).map(id => {
+            const card = byId.get(id)
+            const sku = clean(card?.sku) && !/^AUTO-/i.test(clean(card?.sku)) ? 'арт. ' + clean(card?.sku) : 'без артикула'
+            return `${sku} (залишок ${Number(card?.qty_on_hand) || 0}, ${((Number(card?.retail_price) || 0) / 100).toFixed(2)} грн)`
+          }).join('; ') + (names.size > 4 ? ` і ще ${names.size - 4}` : '') + '. Виберіть потрібну картку пошуком у рядку (за артикулом), а дублі обʼєднайте в «Очищенні номенклатури».')
           if (names?.size === 1) product = byId.get([...names][0])
         }
         if (!product && clean(line.sku) && archivedSkus.has(skuKey(line.sku))) {
