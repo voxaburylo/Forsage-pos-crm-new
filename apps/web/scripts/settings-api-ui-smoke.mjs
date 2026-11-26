@@ -19,7 +19,7 @@ const warehouses = Array.from({ length: 14 }, (_, i) => ({ id: 'w' + i, code: 'W
 const connections = [
   { id: 'c1', provider: 'omega', name: 'Омега', key_hint: '…ab12', enabled: true, syncing: true, sync_page: 21, last_full_sync_at: null, last_error: null, total_offers: 80000, offers: 79075, linked: 370,
     crosses_done: 1200, crosses_total: 30000, details_done: 900, warehouses,
-    progress: { overall: { fraction: 0.09, eta_ms: 16 * 86400000, loading: true, next_at: null }, photos: { fraction: 0.05, eta_ms: null, loading: true, next_at: null, note: 'на паузі, поки вантажаться кроси' }, price: { fraction: 0.25, eta_ms: 3 * 3600000 + 20 * 60000, loading: true, next_at: null },
+    progress: { overall: { fraction: 0.09, eta_ms: 16 * 86400000, loading: true, next_at: null }, photos: { fraction: 0.05, eta_ms: null, loading: true, next_at: null, note: 'разом із кросами, повільніше' }, price: { fraction: 0.25, eta_ms: 3 * 3600000 + 20 * 60000, loading: true, next_at: null },
       crosses: { fraction: 0.015, eta_ms: 16 * 86400000, loading: true, next_at: null }, details: { fraction: 0.011, eta_ms: 13 * 86400000, loading: true, next_at: null } } },
 ]
 const modules = {
@@ -88,7 +88,7 @@ try {
         assert.match(await page.locator('details[data-supplier-fold="Омега"] summary').innerText(), /9 %.*лишилось ≈ 16 дн/s, label)
         await page.locator('details[data-supplier-fold="Омега"] summary').click()
         const details = await page.locator('details[data-supplier-fold="Омега"] [data-supplier-progress]').innerText()
-        for (const text of ['Прайс і склади', 'Кроси', 'Опис', 'Фото', 'на паузі, поки вантажаться кроси']) assert.ok(details.includes(text), `${label}: у розкритому блоці немає «${text}»`)
+        for (const text of ['Прайс і склади', 'Кроси', 'Опис', 'Фото', 'разом із кросами, повільніше']) assert.ok(details.includes(text), `${label}: у розкритому блоці немає «${text}»`)
         assert.ok(await page.locator('details[data-supplier-fold="Омега"] [data-supplier-warehouses]').isVisible(), label + ': склади — усередині блоку Омеги')
         assert.equal(await page.locator('[data-supplier-warehouses] li [data-load-ring]').count(), 13, label + ': кружечок біля кожного ввімкненого складу')
         // Прокручуємо: панель вкладок прилягає до верху робочої області, над нею сторінку не видно.

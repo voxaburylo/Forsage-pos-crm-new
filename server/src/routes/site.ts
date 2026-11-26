@@ -6,7 +6,7 @@ import * as adminService from '../services/adminService.js'
 import { siteGatewayAction } from '../services/siteGatewayService.js'
 import {
   createSiteOrder, issueSiteKey, readSiteAccessIds, saveSiteAccessIds, siteAccessSchema, siteSectionAllowed, listSiteAdminCategories, listSiteOrders, readSiteAdmin, revokeSiteKey, saveSiteAdmin, siteAccess, siteAdminUpdateSchema,
-  siteCategories, siteInfo, siteOrderStatus, siteProductById, siteProducts, type SiteAccess,
+  siteCategories, siteInfo, siteOrderStatus, siteProductById, siteProducts, siteSupplierOffers, type SiteAccess,
 } from '../services/siteService.js'
 import { bulkSupplierOffers, catalogQuerySchema, getSupplierOffer, listSiteCatalog, offerBulkSchema, offerPatchSchema, patchSupplierOffer } from '../services/siteCatalogService.js'
 
@@ -149,6 +149,10 @@ siteRouter.get('/products', async (req: SiteRequest, res, next) => {
 })
 siteRouter.get('/products/:id', async (req: SiteRequest, res, next) => {
   try { res.json({ data: await siteProductById(req.site!, String(req.params.id)) }) } catch (err) { next(err) }
+})
+// 26.11.2026: товари під замовлення від постачальників (Омега, GPL) — з фото, без закупки й назви постачальника.
+siteRouter.get('/supplier-offers', async (req: SiteRequest, res, next) => {
+  try { res.json({ data: await siteSupplierOffers(req.site!, req.query) }) } catch (err) { next(err) }
 })
 siteRouter.post('/orders', async (req: SiteRequest, res, next) => {
   try { res.status(201).json({ data: await createSiteOrder(req.site!, req.body) }) } catch (err) { next(err) }

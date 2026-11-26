@@ -36,7 +36,7 @@ const modules = {
   '@/stores/authStore': `import{create}from'zustand';export const useAuthStore=create(()=>({loading:false,offlineMode:false,session:{user:{id:'u',app_metadata:{role:'owner',tenant_id:'t'}}}}));`,
   '@/lib/auth': `export async function signOut(){}`,
   '@/lib/api': `const G=${JSON.stringify(gateway)};
-    export const api={get:async(p)=>({data:p.includes('/categories')?[{id:'p1',parent_id:null,name:'Фільтри'},{id:'p2',parent_id:null,name:'Оливи-ATF'}]:p.includes('/access')?{user_ids:[],users:[]}:p.includes('/orders')?[]:{enabled:false,settings:{show_prices:true,stock_mode:'flag',only_in_stock:false,hidden_category_ids:[],price_change_pct:0,accept_orders:true,min_order_kopecks:0,title:'',phone:'',address:'',working_hours:'',banner_text:'',about:'',delivery_text:'',payment_text:''},key_hint:null,key_created_at:null,updated_at:null}}),
+    export const api={get:async(p)=>({data:p.includes('/site-admin/catalog')?{rows:[],total:0,ours_total:0,page:1,pages:1}:p.includes('/categories')?[{id:'p1',parent_id:null,name:'Фільтри'},{id:'p2',parent_id:null,name:'Оливи-ATF'}]:p.includes('/access')?{user_ids:[],users:[]}:p.includes('/orders')?[]:{enabled:false,settings:{show_prices:true,stock_mode:'flag',only_in_stock:false,hidden_category_ids:[],price_change_pct:0,accept_orders:true,min_order_kopecks:0,title:'',phone:'',address:'',working_hours:'',banner_text:'',about:'',delivery_text:'',payment_text:''},key_hint:null,key_created_at:null,updated_at:null}}),
       post:async(_p,b)=>{if(b&&b.action==='boom')throw new Error('x');return {data:G[b.action]??null}},put:async()=>({data:{}}),delete:async()=>({data:{}})};
     export const isWebReadOnlyRequest=()=>false;`,
   '@/lib/apiBaseUrl': `export const API_BASE_URL='https://example.test'`,
@@ -46,6 +46,7 @@ const modules = {
   '@/components/DataFreshness': `export function DataFreshness(){return null}`,
   '@/components/BuildBadge': `export function BuildBadge(){return null}`,
   '@/features/products/productApi': `export const productApi={search:async()=>({data:[]})}`,
+  '@/features/products/BulkEditModal': `export function BulkEditModal(){return null}`,
 }
 const entry = `
 import React from 'react';import{createRoot}from'react-dom/client';import{MemoryRouter}from'react-router-dom';
@@ -101,7 +102,15 @@ try {
         assert.ok(top.bodyWidth >= Math.min(top.mainWidth - 80, 1200), `${label}: розділ вузький (${top.bodyWidth} з ${top.mainWidth})`)
       }
       // Кожна вкладка каже, для чого вона; порожня — що на ній зробити.
-      for (const tab of ['customers', 'products', 'categories', 'banners', 'promos', 'home', 'pages', 'reviews', 'settings', 'catalog', 'access']) {
+      // 26.11.2026: чотири розділи (Товари, Замовлення, Вітрина, Налаштування); вкладка видна лише у своєму розділі.
+      assert.deepEqual(await page.locator('[data-site-section]').allInnerTexts(), ['Товари', 'Замовлення1', 'Вітрина', 'Налаштування'], `${label}: розділи`)
+      assert.deepEqual(await page.locator('[data-site-tab]').evaluateAll(nodes => nodes.map(node => node.dataset.siteTab)), ['orders', 'customers', 'reviews'], `${label}: вкладки розділу «Замовлення»`)
+      // Назви розділів не обрізаються (на телефоні — 2×2).
+      assert.ok(await page.locator('[data-site-section]').evaluateAll(nodes => nodes.every(node => node.scrollWidth <= node.clientWidth)), `${label}: назва розділу обрізана`)
+      const SECTION = { customers: 'sales', reviews: 'sales', photos: 'goods', categories: 'goods', promos: 'goods', home: 'showcase', banners: 'showcase', pages: 'showcase', settings: 'setup', catalog: 'setup', access: 'setup' }
+      assert.equal(await page.locator('[data-site-tab="products"]').count(), 0, `${label}: окремої вкладки «Товари на сайті» немає`)
+      for (const tab of ['customers', 'photos', 'categories', 'banners', 'promos', 'home', 'pages', 'reviews', 'settings', 'catalog', 'access']) {
+        await page.locator(`[data-site-section="${SECTION[tab]}"]`).click()
         await page.locator(`[data-site-tab="${tab}"]`).click()
         const intro = page.locator('[data-site-intro]')
         await intro.waitFor()

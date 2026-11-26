@@ -291,6 +291,77 @@ export async function siteProducts(access: SiteAccess, rawQuery: unknown) {
   }
 }
 
+// ── Товари постачальників для сайту (26.11.2026) ────────────────────────────────────────────────────
+
+/**
+ * 26.11.2026, власник: «так, робіть усі рекомендації» — сайт показує й товари під замовлення від постачальників (Омега, GPL)
+ * з фото. Той самий стиль, що /products: сторінками за часом оновлення, updated_since, removed: true.
+ * Не віддається: закупка, назва постачальника, склади поіменно. Ціна — за тим самим правилом, що й наші товари
+ * (sitePrice: зміна ціни сайту в %, ніколи не нижче закупки); «прибрані з сайту» й без залишку — removed.
+ */
+const OFFER_KEY = /^[0-9a-f-]{36}:[^|]{1,120}$/
+const OFFER_VISIBLE_SQL = `(c.enabled AND o.total_qty > 0 AND NOT o.hidden AND COALESCE(o.custom_price, o.retail_price) > 0)`
+const OFFER_COLUMNS = `o.connection_id::text || ':' || o.external_id AS key, o.number, o.brand, COALESCE(o.custom_name, o.name) AS name,
+  COALESCE(o.custom_barcode, o.barcode) AS barcode, o.image_url, o.description, o.category_id, o.product_id,
+  COALESCE(o.custom_price, o.retail_price) AS retail_price, o.purchase_price, o.total_qty, o.updated_at, ${OFFER_VISIBLE_SQL} AS visible,
+  (SELECT min(w.days_to_ship) FROM jsonb_array_elements(o.stock) s JOIN supplier_warehouses w ON w.connection_id = o.connection_id AND w.code = s->>'w' AND w.is_active
+    WHERE (s->>'q')::int > 0) AS days_to_ship`
+
+function siteOffer(row: any, settings: SiteSettings) {
+  const id = 'S-' + String(row.key)
+  if (!row.visible) return { id, removed: true as const, updated_at: new Date(row.updated_at).toISOString() }
+  const price = sitePrice(Number(row.retail_price) || 0, Number(row.purchase_price) || 0, settings.price_change_pct)
+  const qty = Number(row.total_qty) || 0
+  return {
+    id, number: String(row.number ?? ''), brand: row.brand ? String(row.brand) : null, name: String(row.name ?? ''),
+    barcode: row.barcode ? String(row.barcode) : null, category_id: (row.category_id ?? null) as string | null,
+    /** Якщо це той самий товар, що й наша картка, — id картки з /products (сайт не показує його двічі). */
+    same_as_product_id: (row.product_id ?? null) as string | null,
+    photo_url: typeof row.image_url === 'string' && /^https:\/\//.test(row.image_url) ? row.image_url : null,
+    description: row.description ? String(row.description).slice(0, 4000) : null,
+    days_to_ship: row.days_to_ship == null ? null : Number(row.days_to_ship),
+    ...(settings.show_prices ? { price: price > 0 ? price : null } : {}),
+    ...(settings.stock_mode === 'flag' ? { in_stock: qty > 0 } : settings.stock_mode === 'qty' ? { in_stock: qty > 0, qty: Math.max(qty, 0) } : {}),
+    updated_at: new Date(row.updated_at).toISOString(),
+  }
+}
+
+function readOfferCursor(cursor: string | undefined): { at: string; key: string } | null {
+  if (!cursor) return null
+  try {
+    const [at, key] = Buffer.from(cursor, 'base64url').toString('utf8').split('|')
+    if (!at || Number.isNaN(Date.parse(at)) || !key || !OFFER_KEY.test(key)) throw new Error('bad')
+    return { at, key }
+  } catch { throw new AppError('VALIDATION_ERROR', 'Некоректний cursor', 422) }
+}
+
+export async function siteSupplierOffers(access: SiteAccess, rawQuery: unknown) {
+  const parsed = siteProductsQuery.safeParse(rawQuery)
+  if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Перевірте параметри: limit 1–500, updated_since у форматі ISO, cursor з попередньої відповіді', 422)
+  const query = parsed.data, s = access.settings
+  const after = readOfferCursor(query.cursor)
+  const delta = Boolean(query.updated_since)
+  const { rows } = await pool.query(
+    `${HIDDEN_CATEGORIES_SQL}
+     SELECT ${OFFER_COLUMNS}, to_char(o.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_at
+       FROM supplier_offers o JOIN supplier_api_connections c ON c.id = o.connection_id
+      WHERE o.tenant_id = $1
+        AND (o.category_id IS NULL OR o.category_id NOT IN (SELECT id FROM hidden))
+        AND ($3::timestamptz IS NULL OR o.updated_at > $3::timestamptz)
+        AND ($4::timestamptz IS NULL OR (o.updated_at, o.connection_id::text || ':' || o.external_id) > ($4::timestamptz, $5::text))
+        AND ($6::uuid IS NULL OR o.category_id = $6::uuid)
+        AND ($7::boolean OR ${OFFER_VISIBLE_SQL})
+      ORDER BY o.updated_at, o.connection_id::text || ':' || o.external_id LIMIT $8`,
+    [access.tenant_id, s.hidden_category_ids, query.updated_since ?? null, after?.at ?? null, after?.key ?? null, query.category_id ?? null, delta, query.limit + 1],
+  )
+  const page = rows.slice(0, query.limit)
+  const last = page[page.length - 1]
+  return {
+    items: page.map((row: any) => siteOffer(row, s)),
+    next_cursor: rows.length > query.limit && last ? Buffer.from(`${last.cursor_at}|${last.key}`).toString('base64url') : null,
+  }
+}
+
 export async function siteProductById(access: SiteAccess, id: string) {
   if (!z.string().uuid().safeParse(id).success) throw new AppError('NOT_FOUND', 'Товар не знайдено', 404)
   const s = access.settings

@@ -58,10 +58,11 @@ describe('one overall circle for all loads of a supplier', () => {
     expect(overallProgress([done, done]).next_at).toBe('2026-11-26T06:00:00.000Z')
   })
 
-  it('photos wait while crosses load (the request limit goes to crosses) and say so; switched-off photos say so too', () => {
+  // 26.11.2026 (власник: «робіть усі рекомендації»): фото більше не чекають кроси — ліміт ділиться.
+  it('photos load together with crosses (shared limit) and say so; switched-off photos say so too', () => {
     const crossesLoading = { fraction: 0.1, eta_ms: HOUR, loading: true, next_at: null }
-    expect(photoProgress({ photos_enabled: true, photos_total: 78_000, photos_done: 4_000, photos_hour: 0 }, crossesLoading))
-      .toMatchObject({ loading: true, eta_ms: null, note: 'на паузі, поки вантажаться кроси' })
+    expect(photoProgress({ photos_enabled: true, photos_total: 78_000, photos_done: 4_000, photos_hour: 96 }, crossesLoading))
+      .toMatchObject({ loading: true, eta_ms: 74_000 * HOUR / 96, note: 'разом із кросами, повільніше' })
     expect(photoProgress({ photos_enabled: false, photos_total: 10, photos_done: 1 }, crossesLoading)).toMatchObject({ loading: false, note: 'вимкнено' })
   })
 

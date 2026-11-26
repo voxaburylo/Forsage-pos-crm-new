@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Barcode, EyeOff, Eye, ImageOff, Pencil, Percent, Search, Trash2 } from 'lucide-react'
+import { Barcode, EyeOff, Eye, ExternalLink, ImageOff, Pencil, Percent, Search, Trash2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { Button, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
@@ -9,6 +9,7 @@ import { useAuthStore } from '@/stores/authStore'
 import { productApi } from '@/features/products/productApi'
 import { BulkEditModal } from '@/features/products/BulkEditModal'
 import { canDeleteCatalog } from '@/features/products/catalogDeletePermissions'
+import { ProductEditor } from './SiteProductsTab'
 
 /**
  * 26.11.2026, слово власника: «у вкладці “Сайт” — ще всі товари, і наші, і від постачальників, у купі: перегляд,
@@ -57,6 +58,8 @@ export function SiteAllProductsTab() {
   const [picked, setPicked] = useState<Map<string, CatalogRow>>(new Map())
   const [busy, setBusy] = useState('')
   const [offer, setOffer] = useState<string | null>(null)
+  // 26.11.2026: наш товар відкривається тут же — фото, опис і «сховати» для сайту; повна картка програми — кнопкою.
+  const [own, setOwn] = useState<CatalogRow | null>(null)
   const [bulkPrices, setBulkPrices] = useState(false)
 
   // Пошук — через пів секунди після останньої літери, щоб не смикати сервер на кожну.
@@ -158,7 +161,7 @@ export function SiteAllProductsTab() {
                   <input type="checkbox" aria-label={'Вибрати ' + row.name} checked={picked.has(row.id)} onChange={event => toggle(row, event.target.checked)} />
                   {row.photo ? <img src={row.photo} alt="" loading="lazy" className="h-9 w-9 shrink-0 rounded object-cover" />
                     : <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded bg-gray-100 text-gray-300"><ImageOff size={14} aria-hidden="true" /></span>}
-                  <button type="button" className="min-w-0 flex-1 text-left" onClick={() => row.kind === 'ours' ? navigate('/products/' + row.id) : setOffer(row.id)}>
+                  <button type="button" className="min-w-0 flex-1 text-left" onClick={() => row.kind === 'ours' ? setOwn(row) : setOffer(row.id)}>
                     <span className="line-clamp-2 font-medium leading-snug text-gray-900 sm:line-clamp-1">{row.name}</span>
                     <span className="block truncate text-xs text-gray-500">
                       <span className={`mr-1 rounded px-1 ${row.kind === 'ours' ? 'bg-emerald-50 text-emerald-700' : 'bg-blue-50 text-blue-700'}`}>{row.kind === 'ours' ? 'наш' : row.supplier}</span>
@@ -170,7 +173,7 @@ export function SiteAllProductsTab() {
                   <span className="w-[4.6rem] shrink-0 text-right text-[13px] tabular-nums sm:w-24 sm:text-sm">{formatMoney(row.price)}</span>
                   <span className={`w-8 shrink-0 text-right tabular-nums sm:w-12 ${row.qty > 0 ? "text-gray-700" : "text-gray-300"}`}>{qtyText(row.qty)}</span>
                   <button type="button" aria-label={"Відкрити " + row.name} className="hidden rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 sm:block"
-                    onClick={() => row.kind === 'ours' ? navigate('/products/' + row.id) : setOffer(row.id)}><Pencil size={14} /></button>
+                    onClick={() => row.kind === 'ours' ? setOwn(row) : setOffer(row.id)}><Pencil size={14} /></button>
                 </li>
               ))}
               {!pageRows.length && <li className="px-3 py-8 text-center text-sm text-gray-400">Нічого не знайдено</li>}
@@ -186,8 +189,24 @@ export function SiteAllProductsTab() {
         </>
       )}
       {bulkPrices && <BulkEditModal open productIds={ours.map(row => row.id)} onClose={() => setBulkPrices(false)} onUpdated={() => { setBulkPrices(false); setPicked(new Map()); void load() }} />}
+      {own && <OwnProductModal row={own} onClose={() => setOwn(null)} onOpenCard={() => navigate('/products/' + own.id)} />}
       {offer && <OfferCardModal offerKey={offer} onClose={() => setOffer(null)} onSaved={() => void load()} />}
     </div>
+  )
+}
+
+/** Наш товар у розділі «Сайт»: те, що бачить лише сайт (фото, опис, характеристики, «сховати»). Назва, ціна, залишок, штрихкод — у картці програми. */
+function OwnProductModal({ row, onClose, onOpenCard }: { row: CatalogRow; onClose: () => void; onOpenCard: () => void }) {
+  return (
+    <Modal open onClose={onClose} title={row.name} size="lg">
+      <div className="space-y-4" data-site-own-card={row.id}>
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-gray-50 px-3 py-2 text-sm text-gray-700">
+          <span>{[row.sku ? 'Артикул ' + row.sku : '', row.barcode ? 'Штрихкод ' + row.barcode : '', formatMoney(row.price), 'залишок ' + qtyText(row.qty)].filter(Boolean).join(' · ')}</span>
+          <Button size="sm" variant="secondary" icon={<ExternalLink size={14} />} onClick={onOpenCard} data-site-open-card>Назва, ціна, штрихкод — у картці програми</Button>
+        </div>
+        <ProductEditor product={{ id: row.id, name: row.name, sku: row.sku, barcode: row.barcode }} />
+      </div>
+    </Modal>
   )
 }
 
