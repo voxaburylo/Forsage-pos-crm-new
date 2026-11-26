@@ -22,14 +22,16 @@ type TabId = 'all' | 'photos' | 'categories' | 'promos' | 'orders' | 'customers'
 type SectionId = 'goods' | 'sales' | 'showcase' | 'setup'
 interface SiteTab { id: TabId; label: string; ownerOnly?: boolean }
 export const SITE_SECTIONS: ReadonlyArray<{ id: SectionId; label: string; tabs: readonly SiteTab[] }> = [
+  // 26.11.2026, слово власника: «товари → категорії → товари в категорії, як на великих сайтах». Категорії — ліворуч у
+  // «Товарах»; окрема вкладка «Категорії сайту» (розділи меню сайту) переїхала у «Вітрину» як «Меню каталогу».
   { id: 'goods', label: 'Товари', tabs: [
-    { id: 'all', label: 'Усі товари' }, { id: 'photos', label: 'Фото' }, { id: 'categories', label: 'Категорії сайту' }, { id: 'promos', label: 'Акції' },
+    { id: 'all', label: 'Товари за категоріями' }, { id: 'photos', label: 'Фото' }, { id: 'promos', label: 'Акції' },
   ] },
   { id: 'sales', label: 'Замовлення', tabs: [
     { id: 'orders', label: 'Замовлення' }, { id: 'customers', label: 'Покупці' }, { id: 'reviews', label: 'Відгуки' },
   ] },
   { id: 'showcase', label: 'Вітрина', tabs: [
-    { id: 'home', label: 'Головна сторінка' }, { id: 'banners', label: 'Банери' }, { id: 'pages', label: 'Сторінки і статті' },
+    { id: 'home', label: 'Головна сторінка' }, { id: 'categories', label: 'Меню каталогу' }, { id: 'banners', label: 'Банери' }, { id: 'pages', label: 'Сторінки і статті' },
   ] },
   { id: 'setup', label: 'Налаштування', tabs: [
     { id: 'settings', label: 'Налаштування сайту' }, { id: 'catalog', label: 'Каталог для сайту', ownerOnly: true }, { id: 'access', label: 'Доступ', ownerOnly: true },
@@ -40,9 +42,9 @@ const sectionOf = (tab: TabId) => SITE_SECTIONS.find(section => section.tabs.som
 
 /** Для чого кожна вкладка і що на ній робити — одним-двома реченнями (24.11.2026: власник: «не зрозуміло, що для чого»). */
 export const SITE_TAB_INTRO: Record<TabId, string> = {
-  all: 'Усі товари разом — наші й від постачальників (Омега, GPL): міні-фото, назва, артикул, штрихкод, ціна й кількість в одному рядку. Натисніть наш товар — відкриється його сторінка для сайту: фото, опис, характеристики, «сховати»; назва, ціна й штрихкод — кнопкою «картка програми». Позначте кілька — масові дії: ціни, штрихкоди, видалення наших; ціна ±% і «прибрати з сайту» для товарів постачальників. Ціна ніколи не нижча за закупку.',
+  all: 'Категорії — ліворуч (на телефоні — кнопка «Категорія»), як на великих сайтах: виберіть категорію — праворуч її товари разом із вкладеними; «Усі товари» — усе підряд. Наші й від постачальників (Омега, GPL) — в одному списку. Натисніть наш товар — відкриється його сторінка для сайту: фото, опис, характеристики, «сховати»; назва, ціна й штрихкод — кнопкою «картка програми». Позначте кілька — масові дії: ціни, штрихкоди, видалення наших; ціна ±% і «прибрати з сайту» для товарів постачальників. Ціна ніколи не нижча за закупку.',
   photos: 'Фото багатьох товарів одразу: папка з файлами, названими артикулом чи штрихкодом, і фото, які сайт знайшов сам. Фото одного товару — у його картці у «Усіх товарах».',
-  categories: 'Розділи каталогу на сайті. У кожному відмічаєте, які категорії програми в ньому показувати (кілька можна обʼєднати). Самі категорії товарів — у «Товарах» програми. Розділи шин веде сам сайт.',
+  categories: 'Пункти меню каталогу на сайті (що бачить покупець угорі сайту). У кожному відмічаєте, які категорії програми в ньому показувати (кілька можна обʼєднати). Самі категорії товарів — у «Товарах» програми. Розділи шин веде сам сайт.',
   promos: 'Знижки на сайті: на все, на категорію, бренд чи окремі товари. Сайт сам покаже стару й нову ціну та «−N%». Ціну в програмі акція не змінює.',
   orders: 'Замовлення, які покупці оформили на сайті. Відкрийте замовлення, щоб змінити статус, вписати ТТН чи коментар — покупець побачить це у своєму кабінеті. «Створити замовлення в програмі» кладе його у звичайні «Замовлення», щоб зібрати й видати товар. Оплату приймає лише каса.',
   customers: 'Покупці, які зареєструвались на сайті. Це лише перегляд: з клієнтами програми вони не зливаються.',
@@ -83,6 +85,7 @@ export default function SitePage() {
   const setTab = (next: TabId) => { setTabState(next); try { localStorage.setItem(TAB_KEY, next) } catch { /* без памʼяті */ } }
   const unseen = useSiteUnseenCount(true)
   const [checking, setChecking] = useState(false)
+  const [introOpen, setIntroOpen] = useState(false)
   const [link, setLink] = useState<SiteLink>({ state: 'checking', text: 'Перевіряємо звʼязок із сайтом…' })
   // Перевірка звʼязку із сайтом: сайт називає себе, свій час і стан обміну каталогом.
   async function ping() {
@@ -108,29 +111,32 @@ export default function SitePage() {
   return (
     <Layout title="Сайт" actions={<><Button size="sm" variant="secondary" icon={<PlugZap size={14} />} loading={checking} onClick={() => void ping()} data-site-ping className="max-sm:hidden">Перевірити звʼязок</Button>
       <Button size="sm" variant="secondary" icon={<ExternalLink size={14} />} onClick={() => window.open(SITE_URL, '_blank', 'noopener,noreferrer')} data-site-open>Відкрити сайт</Button></>}>
-      <div className="w-full space-y-4" data-site-body>
-        <p role="status" data-site-link={link.state} className={`rounded-lg border px-4 py-2.5 text-sm ${link.state === 'ok' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : link.state === 'checking' ? 'border-gray-200 bg-white text-gray-600' : 'border-amber-200 bg-amber-50 text-amber-900'}`}>{link.text}</p>
-        {/* Верхній рядок — розділ (що робимо), нижній — вкладки цього розділу. На телефоні обидва гортаються пальцем. */}
-        <div className="space-y-2">
-          <div role="tablist" aria-label="Розділи сайту" className="grid grid-cols-2 gap-1 rounded-xl bg-gray-100 p-1 sm:grid-cols-4" data-site-sections>
+      <div className="w-full space-y-3" data-site-body>
+        <p role="status" data-site-link={link.state} className={`rounded-lg border px-3 py-1.5 text-xs ${link.state === 'ok' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : link.state === 'checking' ? 'border-gray-200 bg-white text-gray-600' : 'border-amber-200 bg-amber-50 text-amber-900'}`}>{link.text}</p>
+        {/* 26.11.2026, слово власника: «чотири колонки на всю ширину — некрасиво, багато порожнього місця». Розділи — компактний
+            перемикач за шириною слів, вкладки розділу — поруч в одному рядку; на телефоні рядок гортається пальцем. */}
+        <div className="flex flex-col gap-2 border-b border-gray-200 pb-2 lg:flex-row lg:items-center lg:gap-4">
+          <div role="tablist" aria-label="Розділи сайту" className="inline-flex w-max max-w-full shrink-0 gap-0.5 overflow-x-auto rounded-lg bg-gray-100 p-0.5" data-site-sections>
             {SITE_SECTIONS.map(item => (
               <button key={item.id} type="button" role="tab" aria-selected={section === item.id} data-site-section={item.id}
                 onClick={() => { if (section !== item.id) setTab(item.tabs.find(allowed)!.id) }}
-                className={`truncate rounded-lg px-2 py-2 text-sm ${section === item.id ? 'bg-white font-semibold text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}>
+                className={`shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 text-sm ${section === item.id ? 'bg-white font-semibold text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}>
                 {item.label}{badge(item.id === 'sales')}
               </button>
             ))}
           </div>
-          <div role="tablist" aria-label="Вкладки розділу" className="flex gap-1 border-b border-gray-200 pb-px max-md:overflow-x-auto md:flex-wrap" data-site-subtabs>
+          <div role="tablist" aria-label="Вкладки розділу" className="flex gap-1 max-lg:overflow-x-auto lg:flex-wrap" data-site-subtabs>
             {sectionTabs.map(item => (
               <button key={item.id} type="button" role="tab" aria-selected={current === item.id} data-site-tab={item.id} onClick={() => setTab(item.id)}
-                className={`shrink-0 whitespace-nowrap border-b-2 px-3 py-2 text-sm ${current === item.id ? 'border-accent font-semibold text-gray-900' : 'border-transparent text-gray-600 hover:text-gray-900'}`}>
+                className={`shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 text-sm ${current === item.id ? 'bg-yellow-100 font-semibold text-gray-900' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'}`}>
                 {item.label}{badge(item.id === 'orders')}
               </button>
             ))}
           </div>
         </div>
-        <p data-site-intro className="rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm leading-relaxed text-gray-700">{SITE_TAB_INTRO[current]}</p>
+        {/* Пояснення — дрібним рядком без рамки; повністю — натиснути. */}
+        <button type="button" data-site-intro onClick={() => setIntroOpen(value => !value)} title={introOpen ? 'Згорнути' : 'Показати повністю'}
+          className={`w-full text-left text-xs leading-relaxed text-gray-500 hover:text-gray-700 ${introOpen ? '' : 'line-clamp-1'}`}>{SITE_TAB_INTRO[current]}</button>
         {current === 'all' && <SiteAllProductsTab />}
         {current === 'photos' && <SitePhotosTab />}
         {current === 'categories' && <SiteCrudTab config={CATEGORIES} />}

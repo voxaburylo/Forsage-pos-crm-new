@@ -8,6 +8,7 @@ import {
   createSiteOrder, issueSiteKey, readSiteAccessIds, saveSiteAccessIds, siteAccessSchema, siteSectionAllowed, listSiteAdminCategories, listSiteOrders, readSiteAdmin, revokeSiteKey, saveSiteAdmin, siteAccess, siteAdminUpdateSchema,
   siteCategories, siteInfo, siteOrderStatus, siteProductById, siteProducts, siteSupplierOffers, type SiteAccess,
 } from '../services/siteService.js'
+import { listCatalogCategories } from '../services/siteCatalogCategories.js'
 import { bulkSupplierOffers, catalogQuerySchema, getSupplierOffer, listSiteCatalog, offerBulkSchema, offerPatchSchema, patchSupplierOffer } from '../services/siteCatalogService.js'
 
 /**
@@ -91,6 +92,10 @@ siteAdminRouter.get('/catalog', requireSiteSection, async (req, res, next) => {
     res.setHeader('Cache-Control', 'no-store')
     res.json({ data: await listSiteCatalog(req.user!.tenant_id, req.user!.role, parsed.data) })
   } catch (err) { next(err) }
+})
+// 26.11.2026: дерево категорій із кількістю товарів — ліва колонка «Сайт → Товари».
+siteAdminRouter.get('/catalog/categories', requireSiteSection, async (req, res, next) => {
+  try { res.setHeader('Cache-Control', 'no-store'); res.json({ data: await listCatalogCategories(req.user!.tenant_id) }) } catch (err) { next(err) }
 })
 siteAdminRouter.get('/catalog/offers/:key', requireSiteSection, async (req, res, next) => {
   try { res.setHeader('Cache-Control', 'no-store'); res.json({ data: await getSupplierOffer(req.user!.tenant_id, req.user!.role, String(req.params.key)) }) } catch (err) { next(err) }

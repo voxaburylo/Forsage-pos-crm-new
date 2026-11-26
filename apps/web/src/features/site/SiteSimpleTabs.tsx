@@ -146,6 +146,14 @@ export function SiteHomeTab() {
 
 // ── Налаштування сайту ──────────────────────────────────────────────────────────────────────────
 
+/** 26.11.2026: поля — групами по два в ряд, а не одна довга колонка на всю ширину (власник: «багато порожнього місця»). */
+export const SITE_SETTING_GROUPS: ReadonlyArray<{ title: string; keys: readonly string[] }> = [
+  { title: 'Контакти', keys: ['contact_phone1', 'contact_phone2', 'contact_address', 'contact_viber', 'contact_telegram'] },
+  { title: 'Для пошуковиків', keys: ['seo_title', 'seo_description'] },
+  { title: 'Продавець', keys: ['legal_seller_name', 'legal_seller_code', 'legal_seller_address', 'legal_seller_email'] },
+  { title: 'Лічильники відвідувань', keys: ['ga_measurement_id', 'fb_pixel_id'] },
+]
+
 export const SITE_SETTING_FIELDS: Array<{ key: string; label: string; hint?: string }> = [
   { key: 'contact_phone1', label: 'Телефон 1' }, { key: 'contact_phone2', label: 'Телефон 2' },
   { key: 'contact_address', label: 'Адреса' }, { key: 'contact_viber', label: 'Viber' }, { key: 'contact_telegram', label: 'Telegram' },
@@ -173,10 +181,17 @@ export function SiteSettingsTab() {
       <Problem text={error} />
       {loading && !values && <p role="status" className="py-6 text-center text-sm text-gray-500">Завантажуємо…</p>}
       {values && (
-        <div className="space-y-3">
-          {SITE_SETTING_FIELDS.map(field => (
-            <Input key={field.key} label={field.label} hint={field.hint} value={values[field.key] ?? ''} maxLength={500}
-              onChange={event => setValues(current => current ? { ...current, [field.key]: event.target.value } : current)} />
+        <div className="space-y-5" data-site-settings>
+          {SITE_SETTING_GROUPS.map(group => (
+            <fieldset key={group.title} className="space-y-2">
+              <legend className="mb-1 text-sm font-semibold text-gray-900">{group.title}</legend>
+              <div className="grid gap-x-4 gap-y-3 md:grid-cols-2">
+                {SITE_SETTING_FIELDS.filter(field => group.keys.includes(field.key)).map(field => (
+                  <Input key={field.key} label={field.label} hint={field.hint} value={values[field.key] ?? ''} maxLength={500}
+                    onChange={event => setValues(current => current ? { ...current, [field.key]: event.target.value } : current)} />
+                ))}
+              </div>
+            </fieldset>
           ))}
           <Button icon={<Save size={14} />} loading={busy} onClick={() => void save()}>Зберегти</Button>
         </div>
