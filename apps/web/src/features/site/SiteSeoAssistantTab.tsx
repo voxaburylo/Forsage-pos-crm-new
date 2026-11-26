@@ -94,7 +94,7 @@ export function SiteSeoAssistantTab() {
       <div className="flex-1 space-y-3">
         {entries.map((entry, index) => (
           <div key={index} className={entry.role === 'user' ? 'ml-auto max-w-[85%] whitespace-pre-wrap rounded-2xl bg-yellow-100 px-3 py-2 text-sm text-gray-900' : 'max-w-[95%] space-y-2'}>
-            {entry.role === 'user' ? entry.text : <div className="rounded-2xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800"><ReplyText text={entry.text} /></div>}
+            {entry.role === 'user' ? entry.text : <div className="whitespace-pre-wrap rounded-2xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800" data-site-seo-reply><ReplyText text={entry.text} /></div>}
             {entry.actions?.map(action => (
               <SeoActionCard key={action.id} action={action} done={outcome[action.id]} busy={busy} loading={applying === action.id} progress={applying === action.id ? progress : ''}
                 onConfirm={() => void confirm(action)}

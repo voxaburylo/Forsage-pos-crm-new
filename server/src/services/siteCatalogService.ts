@@ -18,7 +18,7 @@ export const catalogQuerySchema = z.object({
   q: z.string().trim().max(120).optional().default(''),
   source: z.enum(['all', 'ours', 'supplier']).default('all'),
   // 26.11.2026 (власник): ще «з фото» і «в наявності».
-  flag: z.enum(['', 'no_barcode', 'no_photo', 'with_photo', 'in_stock', 'hidden', 'no_stock']).default(''),
+  flag: z.enum(['', 'no_barcode', 'no_photo', 'with_photo', 'in_stock', 'in_stock_photo', 'hidden', 'no_stock']).default(''),
   // 26.11.2026 (власник: «і за постачальниками»): товари одного підключення (Омега, GPL); з ним «наших» не показуємо.
   connection: z.union([z.literal(''), z.string().uuid()]).optional().default(''),
   // 26.11.2026: категорія програми (разом із вкладеними) або 'none' — «Без категорії»; порожньо — усі товари.
@@ -62,6 +62,7 @@ function sourceFilters(kind: 'ours' | 'supplier', terms: string[], flag: Catalog
   const column = (ours: string, offer: string) => kind === 'ours' ? ours : offer
   if (flag === 'no_barcode') where.push(`COALESCE(${column('p.barcode', 'COALESCE(o.custom_barcode, o.barcode)')}, '') = ''`)
   if (flag === 'no_photo') where.push(`COALESCE(${column('p.photo_url', 'o.image_url')}, '') = ''`)
+  if (flag === 'in_stock_photo') where.push(`COALESCE(${column('p.photo_url', 'o.image_url')}, '') <> ''`, `${column('p.qty_on_hand', 'o.total_qty')} > 0`)
   if (flag === 'with_photo') where.push(`COALESCE(${column('p.photo_url', 'o.image_url')}, '') <> ''`)
   if (flag === 'in_stock') where.push(`${column('p.qty_on_hand', 'o.total_qty')} > 0`)
   if (flag === 'hidden') where.push(kind === 'ours' ? 'false' : 'o.hidden')

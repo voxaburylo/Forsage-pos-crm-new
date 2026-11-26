@@ -1,5 +1,6 @@
 import { pool, runTransaction } from '../db/pg.js'
 import { code, omegaCall, takeCall, type OmegaDeps } from './supplierApiService.js'
+import { namesConflict, pickCrossRows } from './partKind.js'
 
 /**
  * Крос-номери (аналоги) товарів постачальника. Слово власника 25.11.2026: «хочу використовувати крос-номери Омеги
@@ -100,23 +101,28 @@ export async function searchCrosses(tenantId: string, query: string, withPurchas
     } catch { pending = true }
   }
   const { rows: crossList } = await pool.query(
-    `SELECT DISTINCT x.code, x.code_key, x.brand, x.replacement_type
+    `SELECT DISTINCT x.code, x.code_key, x.brand, x.replacement_type, o.name AS src_name, NULL AS own_name
        FROM supplier_offer_crosses x JOIN supplier_offers o ON o.connection_id = x.connection_id AND o.external_id = x.external_id
       WHERE x.tenant_id = $1 AND o.number_code = $2
      UNION
-     SELECT DISTINCT o.number AS code, o.number_code AS code_key, COALESCE(o.brand, '') AS brand, NULL AS replacement_type
+     SELECT DISTINCT o.number AS code, o.number_code AS code_key, COALESCE(o.brand, '') AS brand, NULL AS replacement_type, NULL AS src_name, o.name AS own_name
        FROM supplier_offer_crosses x JOIN supplier_offers o ON o.connection_id = x.connection_id AND o.external_id = x.external_id
       WHERE x.tenant_id = $1 AND x.code_key = $2 AND o.number_code <> $2
      UNION
-     SELECT DISTINCT e.code, e.code_key, '' AS brand, 'OE' AS replacement_type
+     SELECT DISTINCT e.code, e.code_key, '' AS brand, 'OE' AS replacement_type, o.name AS src_name, NULL AS own_name
        FROM supplier_offer_oe e JOIN supplier_offers o ON o.connection_id = e.connection_id AND o.external_id = e.external_id
       WHERE e.tenant_id = $1 AND o.number_code = $2
      UNION
-     SELECT DISTINCT o.number AS code, o.number_code AS code_key, COALESCE(o.brand, '') AS brand, 'за OE-номером' AS replacement_type
+     SELECT DISTINCT o.number AS code, o.number_code AS code_key, COALESCE(o.brand, '') AS brand, 'за OE-номером' AS replacement_type, NULL AS src_name, o.name AS own_name
        FROM supplier_offer_oe e JOIN supplier_offers o ON o.connection_id = e.connection_id AND o.external_id = e.external_id
       WHERE e.tenant_id = $1 AND e.code_key = $2 AND o.number_code <> $2
-     LIMIT 300`, [tenantId, needle])
-  const rows = crossList.filter((row: any) => String(row.code_key) !== needle)
+     LIMIT 900`, [tenantId, needle])
+  // Вид деталі (26.11.2026): номер «needle» у різних брендів буває в різних деталей. Орієнтир — НАША картка з цим
+  // артикулом; немає її — товари постачальника з цим номером. Крос, що напевно веде до іншого виду деталі, відкидаємо.
+  const reference = (await pool.query(
+    `SELECT name FROM products WHERE tenant_id = $1 AND deleted_at IS NULL
+        AND regexp_replace(upper(COALESCE(sku, '')), '[^A-ZА-ЯІЇЄҐ0-9]', '', 'g') = $2 LIMIT 5`, [tenantId, needle])).rows.map((row: any) => String(row.name ?? ''))
+  const rows = pickCrossRows(crossList.filter((row: any) => String(row.code_key) !== needle), reference).slice(0, 300)
   const keys = [...new Set(rows.map((row: any) => String(row.code_key)))]
   if (!keys.length) return { query: needle, crosses: [], pending }
   const ours = (await pool.query(
@@ -129,9 +135,10 @@ export async function searchCrosses(tenantId: string, query: string, withPurchas
       WHERE o.tenant_id = $1 AND o.number_code = ANY($2::text[]) AND o.total_qty > 0 ORDER BY o.retail_price LIMIT 400`, [tenantId, keys])).rows
   const crosses = rows.map((row: any) => ({
     code: String(row.code), brand: String(row.brand ?? ''), replacement_type: row.replacement_type ?? null,
-    ours: ours.filter((p: any) => p.sku_key === row.code_key)
+    ours: ours.filter((p: any) => p.sku_key === row.code_key && !row.base.some((name: string) => namesConflict(p.name, name)))
       .map((p: any) => ({ id: String(p.id), name: String(p.name), sku: p.sku, qty_on_hand: Number(p.qty_on_hand), retail_price: Number(p.retail_price) })),
-    supplier: supplier.filter((o: any) => o.number_code === row.code_key && (!row.brand || !o.brand || upper(o.brand) === upper(row.brand)))
+    supplier: supplier.filter((o: any) => o.number_code === row.code_key && (!row.brand || !o.brand || upper(o.brand) === upper(row.brand))
+        && !row.base.some((name: string) => namesConflict(o.name, name)))
       .map((o: any) => ({ external_id: String(o.external_id), number: o.number, brand: o.brand, name: o.name, image_url: o.image_url,
         retail_price: Number(o.retail_price), ...(withPurchase ? { purchase_price: Number(o.purchase_price) } : {}), total_qty: Number(o.total_qty) })),
   }))
@@ -158,13 +165,13 @@ export const CARD_CROSSES_MAX = 150
 export async function linkedOfferCrossNumbers(tenantId: string, since: string | null) {
   const { rows } = await pool.query(
     `WITH ready AS (
-       SELECT o.connection_id, o.external_id, o.product_id,
+       SELECT o.connection_id, o.external_id, o.product_id, o.name AS offer_name,
               GREATEST(COALESCE(o.crosses_checked_at, 'epoch'::timestamptz), COALESCE(o.details_checked_at, 'epoch'::timestamptz)) AS found_at
          FROM supplier_offers o
         WHERE o.tenant_id = $1 AND o.product_id IS NOT NULL AND (o.crosses_checked_at IS NOT NULL OR o.details_checked_at IS NOT NULL)
           AND GREATEST(COALESCE(o.crosses_checked_at, 'epoch'::timestamptz), COALESCE(o.details_checked_at, 'epoch'::timestamptz)) > COALESCE($2::timestamptz, 'epoch'::timestamptz)
         ORDER BY found_at LIMIT 100)
-     SELECT r.product_id, r.found_at,
+     SELECT r.product_id, r.found_at, r.offer_name, (SELECT p.name FROM products p WHERE p.id = r.product_id) AS card_name,
             COALESCE((SELECT json_agg(json_build_object('code', x.code, 'brand', NULLIF(x.brand, ''))) FROM supplier_offer_crosses x
                        WHERE x.connection_id = r.connection_id AND x.external_id = r.external_id), '[]'::json) AS crosses,
             COALESCE((SELECT json_agg(DISTINCT e.code) FROM supplier_offer_oe e
@@ -174,7 +181,9 @@ export async function linkedOfferCrossNumbers(tenantId: string, since: string | 
     const crosses = (Array.isArray(row.crosses) ? row.crosses : []).map((item: any) => ({ number: String(item.code), brand: item.brand ? String(item.brand) : null }))
     const oe = (Array.isArray(row.oe) ? row.oe : []).map((value: unknown) => ({ number: String(value), brand: null }))
     const seen = new Set<string>()
-    const numbers = [...crosses, ...oe].filter(item => {
+    // Привʼязка за артикулом могла звести фільтр із колодками (той самий номер у різних брендів) — тоді кроси не переносимо.
+    const wrongKind = namesConflict(row.offer_name, row.card_name)
+    const numbers = wrongKind ? [] : [...crosses, ...oe].filter(item => {
       const key = code(item.number)
       if (key.length < 3 || seen.has(key)) return false
       seen.add(key); return true

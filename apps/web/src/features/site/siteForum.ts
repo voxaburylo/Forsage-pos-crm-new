@@ -40,6 +40,13 @@ export function forumTextProblem(kind: 'topic' | 'reply', title: string, body: s
   return ''
 }
 
+/** Назва розділу за кодом із теми: сайт віддає slug («viyskovi-l200»), людині потрібна назва. Невідомий код лишаємо як є. */
+export function sectionName(sections: readonly ForumSection[] | null | undefined, value?: string | null): string {
+  const key = String(value ?? '').trim()
+  if (!key) return ''
+  return (sections ?? []).find(item => item.slug === key || String(item.id) === key || item.name === key)?.name ?? key
+}
+
 /** Теми покупців без жодної відповіді (не сховані й не закриті): на них магазин має відповісти першим. */
 export function waitingTopics<T extends ForumTopicRow>(topics: readonly T[]): T[] {
   return topics.filter(topic => !topic.is_shop && !topic.is_hidden && !topic.is_locked && (topic.replies_count ?? 0) === 0)

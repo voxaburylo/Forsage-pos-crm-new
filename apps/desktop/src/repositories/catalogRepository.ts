@@ -1,4 +1,5 @@
 import { normalizeCatalogSearchQuery, articleSearchTerms } from '../lib/catalogSearchQuery'
+import { dropOtherKinds } from './partKind'
 import { randomUUID } from 'node:crypto'
 import { catalogLanguageTokenGroups } from '../lib/catalogLanguageSearch'
 import type { LocalDatabase } from '../db/localDatabase'
@@ -740,7 +741,7 @@ export class LocalCatalogRepository {
         AND p.id IN (${ids.map(() => '?').join(',')})
     `).all(tenantId, productId, ...ids) as unknown as LocalProduct[]
 
-    return this.attachAvailability(products, tenantId)
+    return this.attachAvailability(dropOtherKinds(source.name, products), tenantId)
       .sort((left, right) =>
         Number(Number(right.qty_available ?? right.qty_on_hand) > 0 || right.is_service === 1)
         - Number(Number(left.qty_available ?? left.qty_on_hand) > 0 || left.is_service === 1)

@@ -3,7 +3,7 @@ import { ExternalLink, EyeOff, ImagePlus, Lock, Pin, Plus, Search } from 'lucide
 import { Button, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { errorText, SITE_URL, siteCall, useSiteData } from './siteGateway'
-import { forumStatsLine, forumTextProblem, FORUM_LIMITS, uploadForumPhotos, waitingTopics, when, type ForumPost, type ForumSection, type ForumTopic, type ForumTopicRow } from './siteForum'
+import { forumStatsLine, forumTextProblem, FORUM_LIMITS, uploadForumPhotos, sectionName, waitingTopics, when, type ForumPost, type ForumSection, type ForumTopic, type ForumTopicRow } from './siteForum'
 
 /**
  * Вкладка «Форум» розділу «Сайт» (27.11.2026): теми, перегляд, нова тема й відповідь від магазину, сховати, закріпити,
@@ -58,13 +58,13 @@ export function SiteForumTab() {
             <button type="button" onClick={() => setOpenId(topic.id)} className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-left hover:bg-gray-50">
               <span className="min-w-0 flex-1 text-sm font-medium text-gray-900">{topic.title}</span>
               <TopicBadges topic={topic} />
-              <span className="text-xs text-gray-500">{[topic.section, topic.author_name, `${topic.replies_count ?? 0} відп.`, `${topic.views ?? 0} перегл.`, when(topic.last_reply_at)].filter(Boolean).join(' · ')}</span>
+              <span className="text-xs text-gray-500">{[sectionName(list, topic.section), topic.author_name, `${topic.replies_count ?? 0} відп.`, `${topic.views ?? 0} перегл.`, when(topic.last_reply_at)].filter(Boolean).join(' · ')}</span>
             </button>
           </li>
         ))}
         {topics.data && !shown.length && <li className="px-3 py-8 text-center text-sm text-gray-400">{only === 'unanswered' ? 'Усі теми покупців мають відповідь' : 'Тем не знайдено'}</li>}
       </ul>
-      {openId !== null && <TopicModal id={openId} onClose={() => { setOpenId(null); void topics.reload() }} />}
+      {openId !== null && <TopicModal id={openId} sections={list} onClose={() => { setOpenId(null); void topics.reload() }} />}
       {creating && <NewTopicModal sections={list} initial={section} onClose={created => { setCreating(false); if (created) void topics.reload() }} />}
       {managing && <SectionsModal sections={list} onClose={() => { setManaging(false); void sections.reload() }} />}
     </div>
@@ -95,7 +95,7 @@ function Images({ urls }: { urls?: string[] | null }) {
   return <div className="mt-2 flex flex-wrap gap-2">{urls.map(url => <a key={url} href={url} target="_blank" rel="noopener noreferrer"><img src={url} alt="" loading="lazy" className="h-20 w-20 rounded-lg object-cover" /></a>)}</div>
 }
 
-function TopicModal({ id, onClose }: { id: string | number; onClose: () => void }) {
+function TopicModal({ id, sections, onClose }: { id: string | number; sections: ForumSection[]; onClose: () => void }) {
   const [topic, setTopic] = useState<ForumTopic | null>(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState('')
@@ -125,7 +125,7 @@ function TopicModal({ id, onClose }: { id: string | number; onClose: () => void 
         {!topic && !error && <p role="status" className="text-sm text-gray-500">Завантажуємо…</p>}
         {topic && <>
           <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
-            <span>{[topic.section, topic.author_name, when(topic.created_at)].filter(Boolean).join(' · ')}</span><TopicBadges topic={topic} />
+            <span>{[sectionName(sections, topic.section), topic.author_name, when(topic.created_at)].filter(Boolean).join(' · ')}</span><TopicBadges topic={topic} />
             {topic.url && <a href={topic.url.startsWith('http') ? topic.url : SITE_URL + topic.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-blue-700 underline"><ExternalLink size={12} /> на сайті</a>}
           </div>
           <div className="flex flex-wrap gap-1.5">
