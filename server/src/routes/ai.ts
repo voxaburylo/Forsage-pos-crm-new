@@ -117,6 +117,8 @@ const chatSchema = z.object({
 const supplyInvoicePhotoSchema = z.object({
   message: z.string().max(20000).optional(),
   images: chatSchema.shape.images.unwrap().min(1),
+  // 26.11.2026: валюта, яку власник вибрав на екрані («$ долари», курс) — ціни на фото в ній, курс застосує програма.
+  source_currency: z.enum(['USD', 'EUR']).optional(),
 })
 
 router.post('/supply-invoice-photo', requireRole('owner', 'admin', 'manager', 'cashier'), async (req, res, next) => {
@@ -146,6 +148,7 @@ router.post('/supply-invoice-photo', requireRole('owner', 'admin', 'manager', 'c
     const out = await recognizeSupplyInvoicePhoto(req.user!.tenant_id, req.user!.id, {
       message: parsed.data.message,
       images,
+      source_currency: parsed.data.source_currency,
     })
     res.json({ data: out })
   } catch (err) { next(err) }

@@ -28,6 +28,7 @@ import { batchOf, forgetBatchOrders, readBatchOrders, rememberBatchOrder } from 
 import type { AiChatResponse, AiStatus, AiPendingAction, AiChatMessage, AiActionChange, AiChatImage } from './aiApi'
 import { OrderConfirmModal } from './OrderConfirmModal'
 import { BulkPreviewTable } from './AiBulkPreview'
+import { MergeProposal } from './AiMergeProposal'
 import { openAiInvoiceDraft } from './openAiInvoiceDraft'
 import { useAuthStore } from '@/stores/authStore'
 import { api } from '@/lib/api'
@@ -570,7 +571,8 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
           : taskPrompt
         try {
           const response = requestInvoice && index === 0 && images?.length && !partsToSend[index]
-            ? await aiApi.recognizeSupplyInvoice({ message: partPrompt + categoryInstruction, images })
+            ? await aiApi.recognizeSupplyInvoice({ message: partPrompt + categoryInstruction, images,
+              ...(sourceCurrency === 'USD' || sourceCurrency === 'EUR' ? { source_currency: sourceCurrency } : {}) })
             : await aiApi.chat({
               message: partPrompt + categoryInstruction,
               history: index === 0 && !requestInvoice ? history : undefined,
@@ -1149,6 +1151,8 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
                   const isInvoice = action.tool === 'create_supply_invoice_bulk'
                   const supported = canApplyAiWrite(action.tool, role, toMainPc)
                   const isBulk = !isOrder && !!(action.items && action.columns)
+                  // 26.11.2026 (власник): дублі — точні одним підтвердженням, сумнівні таблицею з галочками.
+                  const isMerge = action.tool === 'merge_products_bulk' && supported && !state
                   return (
                     <Card key={action.id} className="w-full border-blue-100 bg-blue-50/40 space-y-2">
                       <div className="flex items-center justify-between gap-2">
@@ -1166,7 +1170,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
                             </p>
                           )}
                         </>
-                      ) : isInvoice ? null : isBulk
+                      ) : isInvoice || isMerge ? null : isBulk
                         ? <BulkPreviewTable action={action} maxRows={4} />
                         : <ChangesTable changes={action.changes} />}
 
@@ -1193,6 +1197,10 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
                         <p className="text-xs font-medium text-gray-400 flex items-center gap-1">
                           <X size={14} /> Відхилено
                         </p>
+                      ) : isMerge ? (
+                        <MergeProposal action={action} busy={applyingId === action.id || sending}
+                          onConfirm={merges => void applyAction(action, { ...action.payload, merges })}
+                          onReject={() => setApplied((p) => ({ ...p, [action.id]: 'rejected' }))} />
                       ) : !supported ? (
                         <p className="text-xs text-amber-700">{action.tool === 'create_products_bulk'
                           ? 'Це пропозиція каталогу, не прихідна накладна. Її не збережено. Додайте фото повторно — тепер воно автоматично відкриє перевірку приходу; старі продажні ціни не переноситимуться в закупку.'

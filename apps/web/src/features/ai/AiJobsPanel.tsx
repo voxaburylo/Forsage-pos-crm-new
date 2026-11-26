@@ -60,9 +60,14 @@ export function AiJobsPanel() {
   const open = jobs?.filter(job => !['done', 'cancelled'].includes(job.status)) ?? []
   const finished = jobs?.filter(job => ['done', 'cancelled'].includes(job.status)).slice(0, 5) ?? []
   return (
-    <details className="group mb-3 rounded-xl border border-gray-200 bg-white" open={open.length > 0 || undefined} data-ai-jobs>
+    // 26.11.2026, власник (скрин): «незрозуміле вікно знизу, за вікном текст неможливо прочитати» — розкрита панель забирала
+    // висоту чату. Тепер вона згорнута в один рядок (розкривається натиском), а в рядку видно стан: іде, чекає запуску, на перегляд.
+    <details className="group mb-3 shrink-0 rounded-xl border border-gray-200 bg-white [&[open]>div]:max-h-[45vh] [&[open]>div]:overflow-y-auto" data-ai-jobs>
       <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 [&::-webkit-details-marker]:hidden">
-        <span className="flex-1 text-sm font-semibold text-gray-800">Фонові задачі {open.length > 0 && <span className="font-normal text-gray-500">· {open.length}</span>}</span>
+        <span className="min-w-0 flex-1 truncate text-sm font-semibold text-gray-800">Фонові задачі {open.length > 0 && <span className="font-normal text-gray-500">· {open.length}</span>}
+          {open.some(job => job.status === 'ready') && <span className="ml-1.5 rounded bg-amber-100 px-1.5 py-0.5 text-[11px] font-medium text-amber-800" data-ai-jobs-waiting>чекає запуску</span>}
+          {open.some(job => job.status === 'review') && <span className="ml-1.5 rounded bg-emerald-100 px-1.5 py-0.5 text-[11px] font-medium text-emerald-800">готово — перегляньте</span>}
+        </span>
         {open.find(job => job.status === 'running') && <LoadRing progress={open.find(job => job.status === 'running')!.progress} label="Фонова задача" />}
         <ChevronDown size={16} className="text-gray-400 transition-transform group-open:rotate-180" aria-hidden="true" />
       </summary>

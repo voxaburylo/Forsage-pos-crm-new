@@ -94,7 +94,10 @@ describe('background name job: one batch', () => {
     const chat = readFileSync(new URL('../aiService.ts', import.meta.url), 'utf8')
     expect(chat).toContain("name: 'prepare_bulk_job'")
     expect(chat).toContain("if (!['owner', 'admin'].includes(String(params.role ?? ''))) return")
-    expect(chat).not.toMatch(/changeJobStatus/)
+    // 26.11.2026 (власник: «дав завдання — 5 хв 0%»): задачу, яку власник попросив у чаті, чат запускає сам;
+    // застосувати назви до карток — і далі лише кнопкою власника (чат цього не робить).
+    expect(chat).toContain("changeJobStatus(tenantId, job.id, 'start')")
+    expect(chat).not.toMatch(/applyOfferItems|markProductItems/)
   })
 })
 
