@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { getNbuRate } from '../services/nbuRateService.js'
 import { catalogReviewSchema, reviewCatalog } from '../services/catalogAgentService.js'
 import { duplicateReviewSchema, reviewCatalogDuplicates } from '../services/catalogDuplicateReviewService.js'
+import { duplicateDecisionsSchema, saveDistinctPairs } from '../services/aiDuplicateDecisions.js'
 import { z } from 'zod'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
@@ -70,6 +71,16 @@ router.post('/test', requireRole('owner', 'admin'), async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+// 26.11.2026 (власник: «пошук знаходить повторно дублі, які ми вже виправили»): запамʼятати «це не дублі».
+router.post('/duplicate-decisions', requireRole('owner', 'admin'), async (req, res, next) => {
+  try {
+    const parsed = duplicateDecisionsSchema.safeParse(req.body)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Некоректні пари карток', 422)
+    const saved = await saveDistinctPairs(req.user!.tenant_id, req.user!.id, parsed.data.pairs)
+      .catch(() => { throw new AppError('SERVICE_UNAVAILABLE', 'Рішення «не дублі» ще не можна зберегти: на сервері не створено таблицю (потрібна міграція).', 503) })
+    res.json({ data: { saved } })
+  } catch (err) { next(err) }
+})
 router.post('/catalog-duplicates-review', requireRole('owner', 'admin'), async (req, res, next) => {
   try {
     const input = duplicateReviewSchema.safeParse(req.body)

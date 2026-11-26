@@ -107,6 +107,9 @@ export const aiApi = {
     }),
 
   // 26.11.2026: source_currency — валюта, яку власник вибрав на екрані; сервер приймає ціни в ній, курс застосовує екран.
+  // 26.11.2026: «це не дублі» — пошук дублів більше не пропонуватиме ці пари.
+  markNotDuplicates: (pairs: Array<{ a: string; b: string }>) =>
+    api.post<{ data: { saved: number } }>('/api/v1/ai/duplicate-decisions', { pairs }, undefined, { silent: true, timeoutMs: 20_000 }),
   recognizeSupplyInvoice: (body: { message?: string; images: AiChatImage[]; source_currency?: 'USD' | 'EUR' }) =>
     api.post<{ data: AiChatResponse }>('/api/v1/ai/supply-invoice-photo', body, undefined, { timeoutMs: 660_000, silent: true }),
 
