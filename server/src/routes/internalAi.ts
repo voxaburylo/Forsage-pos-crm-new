@@ -87,4 +87,18 @@ router.get('/supplier-sync', async (req, res, next) => {
   }
 })
 
+// 26.11.2026: фонові задачі помічника (порядок у назвах, переклад). Планувальник бази стукає щохвилини;
+// одне пробудження працює до ~50 с, кілька пачок одночасно. Немає задач — відповідь одразу.
+router.get('/ai-jobs', async (req, res, next) => {
+  try {
+    const allowed = hasValidCronSecret(req.get('authorization')) || await hasValidJobKey(req.get('x-forsage-job-key'), 'ai-jobs')
+    if (!allowed) throw new AppError('UNAUTHORIZED', 'Невірний ключ фонового завдання', 401)
+    res.setHeader('Cache-Control', 'no-store')
+    const { runAiJobsStep } = await import('../services/aiJobService.js')
+    res.json({ data: await runAiJobsStep() })
+  } catch (error) {
+    next(error)
+  }
+})
+
 export default router

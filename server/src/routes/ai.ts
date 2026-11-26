@@ -13,6 +13,8 @@ import { downloadProcessingUpload, removeProcessingUploads } from '../services/p
 import { findProductPhotos, productPhotoRequestSchema } from '../services/aiProductPhotoService.js'
 import { isAiRequestId, readAiReply, saveAiReply } from '../services/aiReplyStore.js'
 import { addAiRule, deleteAiRule, listAiRules, parseMemoryCommand, runMemoryCommand, AI_RULE_MAX_CHARS } from '../services/aiMemoryService.js'
+import { appendReplyToChat, readChat, writeChat } from '../services/aiChatStore.js'
+import { applyOfferItems, changeJobStatus, createJob, createJobSchema, getJob, listJobItems, listJobs, markProductItems, setItemsState } from '../services/aiJobService.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -109,6 +111,8 @@ const chatSchema = z.object({
       data_base64: z.string().min(1).max(5_500_000),
     }),
   ])).max(4).optional(),
+  // 26.11.2026: у який спільний чат дописати відповідь, якщо екран закрили до її приходу (лише звичайне питання, без файлів).
+  chat_kind: z.enum(['assistant', 'invoice']).optional(),
 })
 const supplyInvoicePhotoSchema = z.object({
   message: z.string().max(20000).optional(),
@@ -237,9 +241,14 @@ router.post('/chat', requireRole('owner', 'admin', 'manager', 'cashier'), async 
         fileText: parsed.data.file_text,
         images: images.length > 0 ? images : undefined,
         onProgress: progress ? event => { if (!res.writableEnded && !res.destroyed) res.write(JSON.stringify({ progress: event }) + '\n') } : undefined,
+        role: req.user!.role,
       })
       // Спершу зберегти, потім віддати: екран, що втратив зʼєднання (згорнутий браузер, інша вкладка), забере її сам.
       if (requestId) await saveAiReply(req.user!.tenant_id, req.user!.id, requestId, { data: out })
+      if (requestId && parsed.data.chat_kind && !parsed.data.file_text && !(parsed.data.images ?? []).length) {
+        await appendReplyToChat(req.user!.tenant_id, req.user!.id, parsed.data.chat_kind, requestId, parsed.data.message,
+          { text: out.reply, actions: out.actions, cost: out.usage?.cost_usd ?? 0 }).catch(() => undefined)
+      }
       if (progress) res.end(JSON.stringify({ data: out }) + '\n')
       else res.json({ data: out })
     } catch (error) {
@@ -367,6 +376,74 @@ router.post('/apply-action', requireRole('owner', 'admin'), async (req, res, nex
     if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
     const out = await applyAction(parsed.data, req.user!.id, req.user!.tenant_id)
     res.json({ data: out })
+  } catch (err) { next(err) }
+})
+
+// ─── 26.11.2026: спільний чат помічника (той самий на телефоні й ПК) ─────────────────────────────────
+const chatKind = (value: unknown) => value === 'invoice' ? 'invoice' as const : 'assistant' as const
+router.get('/chat-state', requireRole('owner', 'admin', 'manager', 'cashier'), async (req, res, next) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store')
+    res.json({ data: await readChat(req.user!.tenant_id, req.user!.id, chatKind(req.query.kind)) })
+  } catch (err) { next(err) }
+})
+router.put('/chat-state', requireRole('owner', 'admin', 'manager', 'cashier'), async (req, res, next) => {
+  try {
+    res.json({ data: await writeChat(req.user!.tenant_id, req.user!.id, chatKind(req.query.kind), req.body?.state) })
+  } catch (err) { next(err) }
+})
+
+// 26.11.2026: підтверджена пачка змін товарів постачальників із чату (наша назва, категорія, «прибрати»).
+router.post('/supplier-offers/apply', requireRole('owner', 'admin'), async (req, res, next) => {
+  try {
+    const updates = z.object({ updates: z.array(z.record(z.unknown())).min(1).max(500) }).parse(req.body?.payload ?? {}).updates
+    const { applySupplierOfferUpdates } = await import('../services/aiSupplierTools.js')
+    res.json({ data: { result: await applySupplierOfferUpdates(req.user!.tenant_id, updates) } })
+  } catch (err) { next(err) }
+})
+
+// ─── 26.11.2026: фонові задачі помічника (порядок у назвах, переклад) — власник і адміністратор ──────
+const jobKeys = z.object({ keys: z.array(z.string().min(1).max(160)).min(1).max(5000) })
+router.get('/jobs', requireRole('owner', 'admin'), async (req, res, next) => {
+  try { res.setHeader('Cache-Control', 'no-store'); res.json({ data: await listJobs(req.user!.tenant_id) }) } catch (err) { next(err) }
+})
+router.post('/jobs', requireRole('owner', 'admin'), async (req, res, next) => {
+  try {
+    const parsed = createJobSchema.safeParse(req.body)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані задачі', 422, parsed.error.flatten())
+    res.json({ data: await createJob(req.user!.tenant_id, req.user!.id, parsed.data) })
+  } catch (err) { next(err) }
+})
+router.get('/jobs/:id', requireRole('owner', 'admin'), async (req, res, next) => {
+  try { res.setHeader('Cache-Control', 'no-store'); res.json({ data: await getJob(req.user!.tenant_id, z.string().uuid().parse(req.params.id)) }) } catch (err) { next(err) }
+})
+router.post('/jobs/:id/:action(start|pause|cancel)', requireRole('owner', 'admin'), async (req, res, next) => {
+  try {
+    res.json({ data: await changeJobStatus(req.user!.tenant_id, z.string().uuid().parse(req.params.id), req.params.action as 'start' | 'pause' | 'cancel') })
+  } catch (err) { next(err) }
+})
+router.get('/jobs/:id/items', requireRole('owner', 'admin'), async (req, res, next) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store')
+    res.json({ data: await listJobItems(req.user!.tenant_id, z.string().uuid().parse(req.params.id), String(req.query.state ?? 'proposed'), Number(req.query.page) || 1, Number(req.query.per_page) || 100) })
+  } catch (err) { next(err) }
+})
+router.post('/jobs/:id/items/:to(approve|reject)', requireRole('owner', 'admin'), async (req, res, next) => {
+  try {
+    const { keys } = jobKeys.parse(req.body)
+    res.json({ data: { changed: await setItemsState(req.user!.tenant_id, z.string().uuid().parse(req.params.id), keys, req.params.to === 'approve' ? 'proposed' : 'rejected') } })
+  } catch (err) { next(err) }
+})
+// Товари постачальника — записуються в хмарі сервером.
+router.post('/jobs/:id/apply-offers', requireRole('owner', 'admin'), async (req, res, next) => {
+  try { res.json({ data: { applied: await applyOfferItems(req.user!.tenant_id, z.string().uuid().parse(req.params.id)) } }) } catch (err) { next(err) }
+})
+// Наші товари — записує головний ПК; екран повідомляє серверу результат пачки.
+router.post('/jobs/:id/applied', requireRole('owner', 'admin'), async (req, res, next) => {
+  try {
+    const body = z.object({ applied: z.array(z.string().min(1).max(160)).max(5000), failed: z.array(z.object({ key: z.string().min(1).max(160), error: z.string().max(500) })).max(5000) }).parse(req.body)
+    await markProductItems(req.user!.tenant_id, z.string().uuid().parse(req.params.id), body.applied, body.failed)
+    res.json({ data: await getJob(req.user!.tenant_id, z.string().uuid().parse(req.params.id)) })
   } catch (err) { next(err) }
 })
 

@@ -35,6 +35,17 @@ describe('assistant requests go with the main PC key', () => {
       expect(isAssistantRequest(method, path), method + ' ' + path).toBe(false)
   })
 
+  // 26.11.2026: «Сайт → Усі товари» і спільний чат помічника — з головного ПК теж його ключем.
+  it('the site catalog list, a supplier offer card and the shared chat pass; nothing beyond them', () => {
+    for (const [method, path] of [['GET', '/site-admin/catalog?q=%D1%84%D1%96%D0%BB%D1%8C%D1%82%D1%80&source=all&flag=&page=2&per_page=50'],
+      ['GET', '/site-admin/catalog/offers/0b6f4c1e-1111-4222-8333-944455556666%3AABC-12'], ['PATCH', '/site-admin/catalog/offers/0b6f4c1e-1111-4222-8333-944455556666%3AABC-12'],
+      ['POST', '/site-admin/catalog/offers/bulk'], ['PUT', '/ai/chat-state?kind=assistant'], ['GET', '/ai/chat-state?kind=invoice'], ['POST', '/ai/jobs/0b6f4c1e-1111-4222-8333-944455556666/start']])
+      expect(isAssistantRequest(method, path), method + ' ' + path).toBe(true)
+    for (const [method, path] of [['DELETE', '/site-admin/catalog/offers/bulk'], ['PATCH', '/site-admin/catalog/../../sync/push'], ['PUT', '/ai/chat-state?kind=other'],
+      ['PUT', '/ai/memory'], ['PATCH', '/site-admin/catalogx']])
+      expect(isAssistantRequest(method, path), method + ' ' + path).toBe(false)
+  })
+
   it('sends the PC key and the employee role, and returns the answer as it is', async () => {
     const { instance, request } = link()
     const answer = await instance.assistant({ method: 'POST', path: '/ai/chat', body: '{"messages":[]}', role: 'cashier' })

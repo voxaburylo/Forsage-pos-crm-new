@@ -246,6 +246,10 @@ export class TillDeviceLink {
 export function isAssistantRequest(method: string, path: string): boolean {
   // 24.11.2026: розділ «Сайт» власника — теж ключем ПК (сервер пускає туди лише власника).
   if (['GET', 'POST', 'PUT', 'DELETE'].includes(method) && /^\/site-admin(?:\/[a-z][a-z-]{0,40})?$/.test(path)) return true
+  // 26.11.2026: «Сайт → Усі товари» — список із пошуком, картка товару постачальника, правка й масові дії.
+  if (['GET', 'POST', 'PATCH'].includes(method) && /^\/site-admin\/catalog(?:\/offers\/(?:bulk|[A-Za-z0-9%._~-]{3,240}))?(?:\?[A-Za-z0-9=&%._~+-]{0,400})?$/.test(path)) return true
+  // 26.11.2026: спільний чат помічника (той самий на телефоні й ПК) — запис стану чату.
+  if (method === 'PUT' && /^\/ai\/chat-state\?kind=(?:assistant|invoice)$/.test(path)) return true
   // 24.11.2026: товари постачальників під замовлення (пошук) і налаштування ключів постачальників.
   // 25.11.2026: і аналоги з крос-номерів постачальника (Омега).
   if (method === 'GET' && /^\/supplier-offers\/(?:search|crosses|details)\?q=[A-Za-z0-9%._~-]{1,240}$/.test(path)) return true
