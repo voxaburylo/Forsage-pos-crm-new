@@ -6,7 +6,7 @@ import { productApi } from '@/features/products/productApi'
 import { canImportSitePhotos, runSitePhotoImport, sitePhotoImportText } from './sitePhotoImport'
 import { errorText, exactProductMatch, groupPhotoFiles, siteCall, uploadProductPhotos, type SitePhoto } from './siteGateway'
 
-interface Found { id: string; name: string; sku?: string | null; barcode?: string | null }
+export interface Found { id: string; name: string; sku?: string | null; barcode?: string | null }
 interface SiteFields { description?: string | null; specs?: Record<string, unknown> | null; hidden?: boolean; seo_title?: string | null; seo_description?: string | null; photos?: SitePhoto[] }
 
 /** «Вʼязкість: 5W-40» по рядках → { ключ: значення }; рядки без двокрапки пропускаємо. */
@@ -26,7 +26,8 @@ export function specsToText(specs: unknown): string {
 
 const area = 'w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-accent'
 
-function ProductEditor({ product }: { product: Found }) {
+/** Те, що бачить лише сайт: фото, опис, характеристики, «сховати». 26.11.2026 — відкривається з картки товару у «Товари → Усі товари». */
+export function ProductEditor({ product }: { product: Found }) {
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState('')
   const [description, setDescription] = useState('')
@@ -225,34 +226,10 @@ function AutoPhotoImport() {
   )
 }
 
-export function SiteProductsTab() {
-  const [search, setSearch] = useState('')
-  const [found, setFound] = useState<Found[]>([])
-  const [picked, setPicked] = useState<Found | null>(null)
-
-  useEffect(() => {
-    const query = search.trim()
-    if (query.length < 2) { setFound([]); return }
-    let alive = true
-    const timer = window.setTimeout(() => { productApi.search(query, 12).then(answer => { if (alive) setFound(answer.data as Found[]) }, () => { if (alive) setFound([]) }) }, 300)
-    return () => { alive = false; window.clearTimeout(timer) }
-  }, [search])
-
+/** «Товари → Фото» (26.11.2026, власник: чітка ієрархія): усе масове про фото — в одному місці. Фото одного товару — у його картці. */
+export function SitePhotosTab() {
   return (
-    <div className="space-y-4">
-      <Card>
-        <Input label="Товар програми" placeholder="Назва, артикул або штрихкод" value={search} onChange={event => { setSearch(event.target.value); setPicked(null) }} data-site-product-search
-          hint="Товари, ціни й залишки сайт бере сам. Тут — лише те, чого в програмі немає: опис, характеристики, фото." />
-        {!picked && found.length > 0 && (
-          <ul className="mt-2 divide-y divide-gray-100 rounded-lg border border-gray-100">
-            {found.map(product => (
-              <li key={product.id}><button type="button" onClick={() => setPicked(product)} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50">
-                <span className="font-medium text-gray-900">{product.name}</span>{product.sku && <span className="text-gray-500"> · {product.sku}</span>}</button></li>
-            ))}
-          </ul>
-        )}
-        {picked && <div className="mt-4 border-t border-gray-100 pt-4"><ProductEditor key={picked.id} product={picked} /></div>}
-      </Card>
+    <div className="space-y-4" data-site-photos-tab>
       <BulkPhotos />
       <AutoPhotoImport />
     </div>

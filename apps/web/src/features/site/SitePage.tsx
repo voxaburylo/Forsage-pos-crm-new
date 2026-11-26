@@ -7,31 +7,49 @@ import { SITE_URL, errorText, siteCall, useSiteUnseenCount } from './siteGateway
 import { SiteOrdersTab } from './SiteOrdersTab'
 import { SiteCustomersTab, SiteHomeTab, SiteReviewsTab, SiteSettingsTab } from './SiteSimpleTabs'
 import { BANNERS, CATEGORIES, PAGES, PROMOS, SiteCrudTab } from './SiteCrudTab'
-import { SiteProductsTab } from './SiteProductsTab'
+import { SitePhotosTab } from './SiteProductsTab'
 import { SiteAllProductsTab } from './SiteAllProductsTab'
 import { SiteCatalogAccess } from './SiteCatalogAccess'
 import { SiteAccessTab, useSiteSection } from './siteAccess'
 
-export const SITE_TABS = [
-  { id: 'all', label: 'Усі товари' }, { id: 'orders', label: 'Замовлення' }, { id: 'customers', label: 'Клієнти' }, { id: 'products', label: 'Товари на сайті' },
-  { id: 'categories', label: 'Категорії' }, { id: 'banners', label: 'Банери' }, { id: 'promos', label: 'Акції' },
-  { id: 'home', label: 'Головна сторінка' }, { id: 'pages', label: 'Сторінки і статті' }, { id: 'reviews', label: 'Відгуки' },
-  { id: 'settings', label: 'Налаштування' }, { id: 'catalog', label: 'Каталог для сайту', ownerOnly: true }, { id: 'access', label: 'Доступ', ownerOnly: true },
-] as const
-type TabId = typeof SITE_TABS[number]['id']
+/**
+ * 26.11.2026, слово власника: «навести порядок у вкладках сайту — там товар, тут товар, там категорія; чітка зрозуміла
+ * ієрархія: товари — усі категорії, уся робота з товарами; замовлення — уся робота із замовленнями».
+ * Чотири розділи; у кожному — свої вкладки. Окремої «Товари на сайті» більше немає: фото й опис нашого товару —
+ * у його картці («Товари → Усі товари», натиснути рядок).
+ */
+type TabId = 'all' | 'photos' | 'categories' | 'promos' | 'orders' | 'customers' | 'reviews' | 'home' | 'banners' | 'pages' | 'settings' | 'catalog' | 'access'
+type SectionId = 'goods' | 'sales' | 'showcase' | 'setup'
+interface SiteTab { id: TabId; label: string; ownerOnly?: boolean }
+export const SITE_SECTIONS: ReadonlyArray<{ id: SectionId; label: string; tabs: readonly SiteTab[] }> = [
+  { id: 'goods', label: 'Товари', tabs: [
+    { id: 'all', label: 'Усі товари' }, { id: 'photos', label: 'Фото' }, { id: 'categories', label: 'Категорії сайту' }, { id: 'promos', label: 'Акції' },
+  ] },
+  { id: 'sales', label: 'Замовлення', tabs: [
+    { id: 'orders', label: 'Замовлення' }, { id: 'customers', label: 'Покупці' }, { id: 'reviews', label: 'Відгуки' },
+  ] },
+  { id: 'showcase', label: 'Вітрина', tabs: [
+    { id: 'home', label: 'Головна сторінка' }, { id: 'banners', label: 'Банери' }, { id: 'pages', label: 'Сторінки і статті' },
+  ] },
+  { id: 'setup', label: 'Налаштування', tabs: [
+    { id: 'settings', label: 'Налаштування сайту' }, { id: 'catalog', label: 'Каталог для сайту', ownerOnly: true }, { id: 'access', label: 'Доступ', ownerOnly: true },
+  ] },
+]
+export const SITE_TABS: readonly SiteTab[] = SITE_SECTIONS.flatMap(section => section.tabs)
+const sectionOf = (tab: TabId) => SITE_SECTIONS.find(section => section.tabs.some(item => item.id === tab))!.id
 
 /** Для чого кожна вкладка і що на ній робити — одним-двома реченнями (24.11.2026: власник: «не зрозуміло, що для чого»). */
 export const SITE_TAB_INTRO: Record<TabId, string> = {
-  all: 'Усі товари разом — наші й від постачальників (Омега, GPL): міні-фото, назва, артикул, штрихкод, ціна й кількість в одному рядку. Натисніть рядок — відкриється картка. Позначте кілька — масові дії: ціни, категорія, штрихкоди, видалення наших; ціна ±% і «прибрати з сайту» для товарів постачальників. Наші товари змінюються через головний ПК, як у «Товарах»; ціна ніколи не нижча за закупку.',
+  all: 'Усі товари разом — наші й від постачальників (Омега, GPL): міні-фото, назва, артикул, штрихкод, ціна й кількість в одному рядку. Натисніть наш товар — відкриється його сторінка для сайту: фото, опис, характеристики, «сховати»; назва, ціна й штрихкод — кнопкою «картка програми». Позначте кілька — масові дії: ціни, штрихкоди, видалення наших; ціна ±% і «прибрати з сайту» для товарів постачальників. Ціна ніколи не нижча за закупку.',
+  photos: 'Фото багатьох товарів одразу: папка з файлами, названими артикулом чи штрихкодом, і фото, які сайт знайшов сам. Фото одного товару — у його картці у «Усіх товарах».',
+  categories: 'Розділи каталогу на сайті. У кожному відмічаєте, які категорії програми в ньому показувати (кілька можна обʼєднати). Самі категорії товарів — у «Товарах» програми. Розділи шин веде сам сайт.',
+  promos: 'Знижки на сайті: на все, на категорію, бренд чи окремі товари. Сайт сам покаже стару й нову ціну та «−N%». Ціну в програмі акція не змінює.',
   orders: 'Замовлення, які покупці оформили на сайті. Відкрийте замовлення, щоб змінити статус, вписати ТТН чи коментар — покупець побачить це у своєму кабінеті. «Створити замовлення в програмі» кладе його у звичайні «Замовлення», щоб зібрати й видати товар. Оплату приймає лише каса.',
   customers: 'Покупці, які зареєструвались на сайті. Це лише перегляд: з клієнтами програми вони не зливаються.',
-  products: 'Те, чого немає в програмі, але видно на сайті: опис, характеристики, фото, «сховати на сайті». Назву, ціну й залишок сайт бере з програми сам. Знайдіть товар за назвою чи артикулом і заповніть.',
-  categories: 'Розділи каталогу на сайті. У кожному відмічаєте, які категорії програми в ньому показувати (кілька можна обʼєднати). Розділи шин веде сам сайт.',
-  banners: 'Великі картинки-слайди вгорі головної сторінки сайту: акція, сезон, новинка. Додайте банер, виберіть картинку й дати показу — програма сама обріже й стисне картинку.',
-  promos: 'Знижки на сайті: на все, на категорію, бренд чи окремі товари. Сайт сам покаже стару й нову ціну та «−N%». Ціну в програмі акція не змінює.',
-  home: 'З яких блоків складається головна сторінка сайту і в якому порядку. Галочка — показувати блок, стрілки — пересунути.',
-  pages: 'Тексти сайту: «Доставка», «Гарантія», «Про нас», «Контакти», «Питання» — їх можна лише редагувати; і статті — їх можна додавати й видаляти.',
   reviews: 'Відгуки покупців. Новий відгук не видно на сайті, доки ви не натиснете «Показати на сайті».',
+  home: 'З яких блоків складається головна сторінка сайту і в якому порядку. Галочка — показувати блок, стрілки — пересунути.',
+  banners: 'Великі картинки-слайди вгорі головної сторінки сайту: акція, сезон, новинка. Додайте банер, виберіть картинку й дати показу — програма сама обріже й стисне картинку.',
+  pages: 'Тексти сайту: «Доставка», «Гарантія», «Про нас», «Контакти», «Питання» — їх можна лише редагувати; і статті — їх можна додавати й видаляти.',
   settings: 'Контакти, реквізити продавця й службові коди сайту (заголовок для пошуковиків, лічильники). Порожнє поле — сайт нічого не показує.',
   catalog: 'Запасний, безпечний спосіб для сайту читати каталог через сервер програми — без закупівельних цін. Потрібен лише якщо сайт не читає базу напряму.',
   access: 'Кому з працівників, крім вас, відкрито розділ «Сайт».',
@@ -49,13 +67,20 @@ export function siteLinkText(answer: { site?: unknown; catalog_sync?: unknown } 
   return { state: 'ok', text: `Сайт ${site} на звʼязку. Товари, ціни й залишки з програми забрав ${when}.` }
 }
 
+const TAB_KEY = 'forsage.site.tab'
+function storedTab(): TabId {
+  try { const saved = localStorage.getItem(TAB_KEY); if (saved && SITE_TABS.some(item => item.id === saved)) return saved as TabId } catch { /* без памʼяті */ }
+  return 'orders'
+}
+
 /**
  * «Сайт» (рішення власника 24.11.2026) — у власника (і в програмі, і у вебі з дому) та в тих, кому він дав доступ у вкладці «Доступ». Звідси керується сайт forsage-tires.com:
  * замовлення сайту, його клієнти, описи й фото товарів, категорії, банери, акції, головна, сторінки, відгуки, налаштування.
  * Сайт живе у своїй базі; кожна дія йде на сервер програми, а він — на шлюз сайту. Гроші приймає лише каса.
  */
 export default function SitePage() {
-  const [tab, setTab] = useState<TabId>('orders')
+  const [tab, setTabState] = useState<TabId>(storedTab)
+  const setTab = (next: TabId) => { setTabState(next); try { localStorage.setItem(TAB_KEY, next) } catch { /* без памʼяті */ } }
   const unseen = useSiteUnseenCount(true)
   const [checking, setChecking] = useState(false)
   const [link, setLink] = useState<SiteLink>({ state: 'checking', text: 'Перевіряємо звʼязок із сайтом…' })
@@ -75,36 +100,50 @@ export default function SitePage() {
     return () => { alive = false }
   }, [])
   const { owner } = useSiteSection()
-  const tabs = SITE_TABS.filter(item => owner || !('ownerOnly' in item && item.ownerOnly))
+  const allowed = (item: SiteTab) => owner || !item.ownerOnly
+  const current = owner || allowed(SITE_TABS.find(item => item.id === tab)!) ? tab : 'orders'
+  const section: SectionId = sectionOf(current)
+  const sectionTabs = SITE_SECTIONS.find(item => item.id === section)!.tabs.filter(allowed)
+  const badge = (show: boolean) => show && unseen > 0 ? <span className="ml-1.5 rounded-full bg-red-600 px-1.5 py-0.5 text-xs font-semibold text-white" data-site-unseen>{unseen}</span> : null
   return (
     <Layout title="Сайт" actions={<><Button size="sm" variant="secondary" icon={<PlugZap size={14} />} loading={checking} onClick={() => void ping()} data-site-ping className="max-sm:hidden">Перевірити звʼязок</Button>
       <Button size="sm" variant="secondary" icon={<ExternalLink size={14} />} onClick={() => window.open(SITE_URL, '_blank', 'noopener,noreferrer')} data-site-open>Відкрити сайт</Button></>}>
       <div className="w-full space-y-4" data-site-body>
         <p role="status" data-site-link={link.state} className={`rounded-lg border px-4 py-2.5 text-sm ${link.state === 'ok' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : link.state === 'checking' ? 'border-gray-200 bg-white text-gray-600' : 'border-amber-200 bg-amber-50 text-amber-900'}`}>{link.text}</p>
-        {/* На ПК вкладки переносяться в другий рядок, а не ховаються за повзунком; на телефоні — гортаються пальцем. */}
-        <div role="tablist" aria-label="Розділи сайту" className="flex gap-1 border-b border-gray-200 pb-px max-md:overflow-x-auto md:flex-wrap">
-          {tabs.map(item => (
-            <button key={item.id} type="button" role="tab" aria-selected={tab === item.id} data-site-tab={item.id} onClick={() => setTab(item.id)}
-              className={`shrink-0 whitespace-nowrap border-b-2 px-3 py-2 text-sm ${tab === item.id ? 'border-accent font-semibold text-gray-900' : 'border-transparent text-gray-600 hover:text-gray-900'}`}>
-              {item.label}
-              {item.id === 'orders' && unseen > 0 && <span className="ml-1.5 rounded-full bg-red-600 px-1.5 py-0.5 text-xs font-semibold text-white" data-site-unseen>{unseen}</span>}
-            </button>
-          ))}
+        {/* Верхній рядок — розділ (що робимо), нижній — вкладки цього розділу. На телефоні обидва гортаються пальцем. */}
+        <div className="space-y-2">
+          <div role="tablist" aria-label="Розділи сайту" className="grid grid-cols-2 gap-1 rounded-xl bg-gray-100 p-1 sm:grid-cols-4" data-site-sections>
+            {SITE_SECTIONS.map(item => (
+              <button key={item.id} type="button" role="tab" aria-selected={section === item.id} data-site-section={item.id}
+                onClick={() => { if (section !== item.id) setTab(item.tabs.find(allowed)!.id) }}
+                className={`truncate rounded-lg px-2 py-2 text-sm ${section === item.id ? 'bg-white font-semibold text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}>
+                {item.label}{badge(item.id === 'sales')}
+              </button>
+            ))}
+          </div>
+          <div role="tablist" aria-label="Вкладки розділу" className="flex gap-1 border-b border-gray-200 pb-px max-md:overflow-x-auto md:flex-wrap" data-site-subtabs>
+            {sectionTabs.map(item => (
+              <button key={item.id} type="button" role="tab" aria-selected={current === item.id} data-site-tab={item.id} onClick={() => setTab(item.id)}
+                className={`shrink-0 whitespace-nowrap border-b-2 px-3 py-2 text-sm ${current === item.id ? 'border-accent font-semibold text-gray-900' : 'border-transparent text-gray-600 hover:text-gray-900'}`}>
+                {item.label}{badge(item.id === 'orders')}
+              </button>
+            ))}
+          </div>
         </div>
-        <p data-site-intro className="rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm leading-relaxed text-gray-700">{SITE_TAB_INTRO[tab]}</p>
-        {tab === 'all' && <SiteAllProductsTab />}
-        {tab === 'orders' && <SiteOrdersTab />}
-        {tab === 'customers' && <SiteCustomersTab />}
-        {tab === 'products' && <SiteProductsTab />}
-        {tab === 'categories' && <SiteCrudTab config={CATEGORIES} />}
-        {tab === 'banners' && <SiteCrudTab config={BANNERS} />}
-        {tab === 'promos' && <SiteCrudTab config={PROMOS} />}
-        {tab === 'home' && <SiteHomeTab />}
-        {tab === 'pages' && <SiteCrudTab config={PAGES} />}
-        {tab === 'reviews' && <SiteReviewsTab />}
-        {tab === 'settings' && <SiteSettingsTab />}
-        {tab === 'catalog' && owner && <SiteCatalogAccess />}
-        {tab === 'access' && owner && <SiteAccessTab />}
+        <p data-site-intro className="rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm leading-relaxed text-gray-700">{SITE_TAB_INTRO[current]}</p>
+        {current === 'all' && <SiteAllProductsTab />}
+        {current === 'photos' && <SitePhotosTab />}
+        {current === 'categories' && <SiteCrudTab config={CATEGORIES} />}
+        {current === 'promos' && <SiteCrudTab config={PROMOS} />}
+        {current === 'orders' && <SiteOrdersTab />}
+        {current === 'customers' && <SiteCustomersTab />}
+        {current === 'reviews' && <SiteReviewsTab />}
+        {current === 'home' && <SiteHomeTab />}
+        {current === 'banners' && <SiteCrudTab config={BANNERS} />}
+        {current === 'pages' && <SiteCrudTab config={PAGES} />}
+        {current === 'settings' && <SiteSettingsTab />}
+        {current === 'catalog' && owner && <SiteCatalogAccess />}
+        {current === 'access' && owner && <SiteAccessTab />}
       </div>
     </Layout>
   )

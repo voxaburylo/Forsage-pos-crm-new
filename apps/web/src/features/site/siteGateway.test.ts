@@ -4,7 +4,7 @@ import { exactProductMatch, fitSide, groupPhotoFiles, isoToLocalInput, localInpu
 import { BANNERS, CATEGORIES, PAGES, PROMOS, formProblem, formToPayload, rowToForm } from './SiteCrudTab'
 import { SITE_SETTING_FIELDS, completeHomeBlocks } from './SiteSimpleTabs'
 import { specsFromText, specsToText } from './SiteProductsTab'
-import { SITE_TABS } from './SitePage'
+import { SITE_SECTIONS, SITE_TABS } from './SitePage'
 
 const read = (file: string) => readFileSync(new URL(file, import.meta.url), 'utf8')
 const P1 = '7b1f0c1e-2a3b-4c4d-8e5f-0123456789ab'
@@ -80,7 +80,24 @@ describe('site section through the gateway', () => {
     const server = read('../../../../../server/src/services/siteGatewayService.ts')
     for (const field of SITE_SETTING_FIELDS) expect(server, field.key).toContain(`'${field.key}'`)
     expect(SITE_SETTING_FIELDS).toHaveLength(13)
-    expect(SITE_TABS.map(tab => tab.label)).toEqual(['Усі товари', 'Замовлення', 'Клієнти', 'Товари на сайті', 'Категорії', 'Банери', 'Акції', 'Головна сторінка', 'Сторінки і статті', 'Відгуки', 'Налаштування', 'Каталог для сайту', 'Доступ'])
+    // 26.11.2026, слово власника: «чітка ієрархія: товари — уся робота з товарами; замовлення — уся робота із замовленнями».
+    expect(SITE_SECTIONS.map(section => [section.label, section.tabs.map(tab => tab.label)])).toEqual([
+      ['Товари', ['Усі товари', 'Фото', 'Категорії сайту', 'Акції']],
+      ['Замовлення', ['Замовлення', 'Покупці', 'Відгуки']],
+      ['Вітрина', ['Головна сторінка', 'Банери', 'Сторінки і статті']],
+      ['Налаштування', ['Налаштування сайту', 'Каталог для сайту', 'Доступ']],
+    ])
+    expect(new Set(SITE_TABS.map(tab => tab.id)).size).toBe(SITE_TABS.length)
+  })
+
+  it('no second products tab: our product opens its site page (photos, description) from «All products»', () => {
+    const page = read('./SitePage.tsx'), list = read('./SiteAllProductsTab.tsx')
+    expect(page).not.toContain("label: 'Товари на сайті'")
+    expect(page).not.toContain('SiteProductsTab }')
+    expect(list).toContain("row.kind === 'ours' ? setOwn(row) : setOffer(row.id)")
+    expect(list).not.toContain("row.kind === 'ours' ? navigate(")
+    expect(list).toContain('<ProductEditor product=')
+    expect(read('./SiteProductsTab.tsx')).toContain('export function SitePhotosTab()')
   })
 
   it('the site key never reaches the window: it calls only its own server', () => {
