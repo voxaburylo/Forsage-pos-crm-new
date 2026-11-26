@@ -23,6 +23,10 @@ export interface TillOrderPayload {
   comment?: string | null
   /** Хто оформив у вебі — лише для примітки в замовленні. */
   author?: string | null
+  /** 27.11.2026: замовлення із сайту — звичайне замовлення з джерелом «сайт». Інших джерел веб не задає. */
+  source?: 'site' | null
+  /** Замовлення вже скасоване на сайті: каса зберігає його й одразу скасовує — з позначкою «скасовано на сайті». */
+  canceled?: boolean
   items: TillOrderItem[]
 }
 
@@ -82,6 +86,8 @@ export function checkTillOrder(raw: unknown): TillOrderPayload {
     vin: vin || null,
     comment: clean(input.comment, 1000) || null,
     author: clean(input.author, 120) || null,
+    ...(input.source === 'site' ? { source: 'site' as const } : {}),
+    ...(input.canceled === true ? { canceled: true } : {}),
     items: items.map((item, index) => {
       const row = (item ?? {}) as Partial<TillOrderItem>
       const itemName = clean(row.name, 300)
@@ -118,13 +124,13 @@ export function tillOrderToCreate(payload: TillOrderPayload, customerId: string 
       buy_price: Number(card.purchase_price), source_type: 'warehouse' as const }
   })
   const notes = [
-    order.author ? `Оформлено у вебі: ${order.author}` : 'Оформлено у вебі',
+    order.source === 'site' ? '' : order.author ? `Оформлено у вебі: ${order.author}` : 'Оформлено у вебі',
     !customerId && order.customer_name ? `Клієнт: ${order.customer_name}` : '',
     order.comment ?? '',
   ].filter(Boolean)
   return {
     operation_id: operationId,
-    source: 'walk_in',
+    source: order.source === 'site' ? 'site' : 'walk_in',
     customer_id: customerId,
     vehicle_info: { make: order.car_make ?? '', model: order.car_model ?? '', year: order.car_year ?? undefined, vin: order.vin ?? '' },
     comment: notes.join('\n'),

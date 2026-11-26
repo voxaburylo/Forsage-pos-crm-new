@@ -77,6 +77,8 @@ siteAdminRouter.post('/gateway', requireSiteSection, async (req, res, next) => {
     // У журнал аудиту — той, хто справді натиснув (на головному ПК його називає каса).
     const staffId = req.tillDeviceActor ? req.get('x-forsage-staff-id') : null
     const actor = staffId && /^[0-9a-f-]{36}$/i.test(staffId) ? { ...req.user!, id: staffId } : req.user!
+    // 27.11.2026: із цього моменту сервер сам забирає замовлення сайту для цього магазину (siteOrderPull).
+    await import('../services/siteOrderPull.js').then(module => module.rememberSiteTenant(req.user!)).catch(() => undefined)
     res.json({ data: await siteGatewayAction(actor, req.body?.action, req.body?.params) })
   } catch (err) { next(err) }
 })

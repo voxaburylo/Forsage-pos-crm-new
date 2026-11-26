@@ -93,6 +93,7 @@ const SOURCE_CONFIG: Record<string, { label: string; icon: React.ReactNode }> = 
   messenger:    { label: 'Чат',       icon: <MessageSquare size={10} /> },
   telegram_bot: { label: 'Telegram',  icon: <MessageSquare size={10} /> },
   mobile_draft: { label: 'Мобільний', icon: <FilePen size={10} /> },
+  site:         { label: 'Сайт',      icon: <ClipboardList size={10} /> },
 }
 
 const ITEM_STATUS_ACTIONS: Record<string, Array<{ status: string; label: string; icon: string }>> = {

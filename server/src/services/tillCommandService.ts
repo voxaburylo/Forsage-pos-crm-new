@@ -36,7 +36,7 @@ const isQueued = (command: string) => QUEUED_COMMANDS.includes(command)
  * Це той самий бланк order.save, тож каса вміє його без оновлення.
  */
 export const SITE_ORDER_AUTHOR = 'Сайт'
-export const PENDING_COMMAND_TTL_SQL = `make_interval(secs => CASE WHEN command IN ('staff.secret', 'category.create') THEN 604800 WHEN command = '${QUEUED_COMMAND}' AND payload->>'author' = '${SITE_ORDER_AUTHOR}' THEN 604800 WHEN command IN ('${QUEUED_COMMAND}', '${INVOICE_DRAFT_COMMAND}') THEN ${QUEUE_TTL_SECONDS} ELSE ${COMMAND_TTL_SECONDS} END)`
+export const PENDING_COMMAND_TTL_SQL = `make_interval(secs => CASE WHEN command IN ('staff.secret', 'category.create', 'order.site_cancel') THEN 604800 WHEN command = '${QUEUED_COMMAND}' AND payload->>'author' = '${SITE_ORDER_AUTHOR}' THEN 604800 WHEN command IN ('${QUEUED_COMMAND}', '${INVOICE_DRAFT_COMMAND}') THEN ${QUEUE_TTL_SECONDS} ELSE ${COMMAND_TTL_SECONDS} END)`
 export const WEB_COMMAND_ROLES = ['owner', 'admin', 'manager'] as const
 export const TILL_ROLES = ['owner', 'admin', 'manager', 'cashier'] as const
 
@@ -256,7 +256,14 @@ export async function readCommand(tenantId: string, operationId: string) {
 }
 
 /** Каса: «я в мережі» + забрати свіжі команди. Забрати можна лише раз (атомарно), лише свіжу. */
-export async function claimCommands(tenantId: string, deviceId: string) {
+/**
+ * 27.11.2026: команди про замовлення із сайту розуміє лише нова збірка каси (джерело «сайт», «скасовано на сайті»).
+ * Стара збірка створила б звичайне замовлення без позначок, тому такі команди віддаємо тільки касі, яка сама сказала,
+ * що вміє (knowsSiteOrders); до оновлення вони чекають у черзі (7 діб).
+ */
+export const SITE_COMMAND_SQL = `(command = 'order.site_cancel' OR (command = 'order.save' AND payload->>'source' = 'site'))`
+
+export async function claimCommands(tenantId: string, deviceId: string, knowsSiteOrders = false) {
   if (!z.string().uuid().safeParse(deviceId).success) throw new AppError('VALIDATION_ERROR', 'Некоректний ідентифікатор каси', 422)
   await pool.query(
     `INSERT INTO till_presence (tenant_id, device_id, seen_at) VALUES ($1, $2, now())
@@ -267,9 +274,10 @@ export async function claimCommands(tenantId: string, deviceId: string) {
     `UPDATE till_commands SET status = 'claimed', device_id = $2, claimed_at = now()
       WHERE id IN (SELECT id FROM till_commands WHERE tenant_id = $1 AND status = 'pending'
                      AND created_at > now() - ${PENDING_COMMAND_TTL_SQL}
+                     AND ($3::boolean OR NOT ${SITE_COMMAND_SQL})
                    ORDER BY created_at LIMIT 5 FOR UPDATE SKIP LOCKED)
       RETURNING id, operation_id, command, payload, requested_by, created_at`,
-    [tenantId, deviceId],
+    [tenantId, deviceId, knowsSiteOrders],
   )
   return rows.map(row => ({ id: row.id as string, operation_id: row.operation_id as string, command: row.command as string,
     payload: row.payload, requested_by: row.requested_by as string, created_at: new Date(row.created_at).toISOString() }))
