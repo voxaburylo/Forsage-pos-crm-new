@@ -5,6 +5,8 @@ import { VitePWA } from 'vite-plugin-pwa'
 import path from 'path'
 
 const isDesktopBuild = process.env.FORSAGE_DESKTOP_BUILD === '1'
+// 27.11.2026: збірка для застосунку на телефоні (apps/mobile): екрани лежать усередині застосунку, service worker не потрібен.
+const isMobileBuild = process.env.VITE_MOBILE_BUILD === '1'
 
 export default defineConfig({
   base: isDesktopBuild ? './' : '/',
@@ -16,7 +18,7 @@ export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
-    ...(!isDesktopBuild ? [VitePWA({
+    ...(!isDesktopBuild && !isMobileBuild ? [VitePWA({
       // Новий service worker активується одразу, інакше відкрита вкладка каси
       // безкінечно утримує старі модулі (зокрема друк етикеток). Поточну
       // сторінку це не перезавантажує: оновлення з'явиться при наступному reload.

@@ -1,0 +1,24 @@
+{
+  "name": "mobile",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Forsage for Android and iOS: the same web screens in a native shell with the phone's own barcode scanner",
+  "scripts": {
+    "build:web": "cross-env VITE_MOBILE_BUILD=1 pnpm --filter web exec vite build --outDir dist-mobile --emptyOutDir",
+    "sync": "cap sync",
+    "sync:android": "cap sync android",
+    "sync:ios": "cap sync ios"
+  },
+  "dependencies": {
+    "@capacitor-mlkit/barcode-scanning": "8.2.2",
+    "@capacitor/android": "8.6.3",
+    "@capacitor/app": "8.1.2",
+    "@capacitor/core": "8.6.3",
+    "@capacitor/ios": "8.6.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.6.3",
+    "cross-env": "^7.0.3",
+    "typescript": "^5.6.3"
+  }
+}
