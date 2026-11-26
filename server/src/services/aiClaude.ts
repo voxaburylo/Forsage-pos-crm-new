@@ -22,6 +22,21 @@ export type ClaudeModel = (typeof CLAUDE_MODELS)[number]
 export const isClaudeModel = (model: string | null | undefined): model is ClaudeModel =>
   CLAUDE_MODELS.includes(model as ClaudeModel)
 
+/**
+ * Пара моделей (26.11.2026, слово власника: «підключи Haiku 5.5, щоб Sonnet 5.5 працював з ним у парі — кожен робить те,
+ * в чому сильний»). Основна (Sonnet 5.5) пише тексти, веде розмову, розбирає накладні. Помічниця (Haiku 5.5) — швидка й
+ * у 20 разів дешевша: другий незалежний голос у розкладці по категоріях і перевірка написаного «чи немає вигадок».
+ * Дві РІЗНІ моделі, що зійшлись у відповіді, надійніші за одну модель, спитану двічі. Ключ Anthropic той самий.
+ * РІШЕННЯ ВЛАСНИКА того ж вечора: «лишаємо Sonnet» — помічницю НЕ ввімкнено ніде; підтримка в клієнті лишилась на майбутнє.
+ */
+export const HELPER_MODEL = 'claude-haiku-5-5' as const
+export type AnyClaudeModel = ClaudeModel | typeof HELPER_MODEL
+/** $ за 1 млн токенів. Haiku 5.5: $0,10 / $0,50 для запитів до 100 тис. токенів (наші — значно менші). */
+export const MODEL_RATES: Record<AnyClaudeModel, { input: number; output: number; cacheRead: number }> = {
+  'claude-sonnet-5-5': { input: 2.0, output: 10.0, cacheRead: 0.10 },
+  'claude-haiku-5-5': { input: 0.10, output: 0.50, cacheRead: 0.01 },
+}
+
 /** Типи полів схем (колишній SchemaType з Gemini): ті самі назви, щоб схеми не переписувати. */
 export const SchemaType = { STRING: 'string', NUMBER: 'number', INTEGER: 'integer', BOOLEAN: 'boolean', ARRAY: 'array', OBJECT: 'object' } as const
 export interface FunctionDeclaration { name: string; description?: string; parameters?: unknown }
@@ -43,13 +58,24 @@ export interface ClaudeImage { mime_type: string; data_base64: string }
 export interface ClaudeUsage { promptTokens: number; completionTokens: number; costAdjustUsd?: number }
 /** Ціни Claude Sonnet 5.5, $ за 1 млн токенів; веб-пошук — $ за один запит ($10 за 1000). */
 export const CLAUDE_PRICES = { input: 2.0, cacheRead: 0.10, cacheWriteMultiplier: 1.25, webSearch: 0.01 } as const
-export function claudeUsageFrom(u: { input_tokens?: number | null; output_tokens?: number | null; cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null; server_tool_use?: { web_search_requests?: number | null } | null }): ClaudeUsage {
+/**
+ * Облік програми рахує токени за ціною основної моделі. Щоб запити помічниці (Haiku) не завищували «Витрати за місяць»,
+ * різницю в ціні кладемо в поправку: токени лишаються чесними, а сума виходить за справжнім тарифом.
+ */
+export function helperRebateUsd(model: AnyClaudeModel, promptTokens: number, completionTokens: number): number {
+  const rate = MODEL_RATES[model], base = MODEL_RATES['claude-sonnet-5-5']
+  return (promptTokens * (rate.input - base.input) + completionTokens * (rate.output - base.output)) / 1_000_000
+}
+export function claudeUsageFrom(u: { input_tokens?: number | null; output_tokens?: number | null; cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null; server_tool_use?: { web_search_requests?: number | null } | null }, model: AnyClaudeModel = 'claude-sonnet-5-5'): ClaudeUsage {
   const cacheRead = u.cache_read_input_tokens ?? 0, cacheWrite = u.cache_creation_input_tokens ?? 0
   const searches = u.server_tool_use?.web_search_requests ?? 0
   const adjust = -cacheRead * (CLAUDE_PRICES.input - CLAUDE_PRICES.cacheRead) / 1_000_000
     + cacheWrite * CLAUDE_PRICES.input * (CLAUDE_PRICES.cacheWriteMultiplier - 1) / 1_000_000
     + searches * CLAUDE_PRICES.webSearch
-  return { promptTokens: (u.input_tokens ?? 0) + cacheRead + cacheWrite, completionTokens: u.output_tokens ?? 0, costAdjustUsd: adjust }
+  const promptTokens = (u.input_tokens ?? 0) + cacheRead + cacheWrite, completionTokens = u.output_tokens ?? 0
+  // Помічниця кеш не використовує; її поправка — лише різниця тарифів.
+  if (model !== 'claude-sonnet-5-5') return { promptTokens, completionTokens, costAdjustUsd: helperRebateUsd(model, promptTokens, completionTokens) + searches * CLAUDE_PRICES.webSearch }
+  return { promptTokens, completionTokens, costAdjustUsd: adjust }
 }
 
 /** Схема Gemini (SchemaType: 'string' | 'object' …) → JSON Schema для інструментів Claude. */
@@ -108,7 +134,7 @@ export class ClaudeClient {
   private client: Anthropic | null
   private apiKey: string
 
-  constructor(apiKey: string, private model: ClaudeModel, client?: Anthropic) {
+  constructor(apiKey: string, private model: AnyClaudeModel, client?: Anthropic) {
     // Повтори 429/5xx робить SDK; час обмежує наш бюджет виконання.
     this.client = client ?? null
     this.apiKey = apiKey
@@ -117,9 +143,9 @@ export class ClaudeClient {
   private async create(budget: AiExecutionBudget, body: Omit<Anthropic.Beta.MessageCreateParamsNonStreaming, 'model' | 'betas' | 'fallbacks'>) {
     try {
       const client = this.client ??= new (await loadAnthropicSdk()).default({ apiKey: this.apiKey, maxRetries: 2 })
-      return await budget.run(signal => client.beta.messages.stream({
-        ...body, model: this.model, betas: BETAS, fallbacks: 'default',
-      }, { signal }).finalMessage())
+      // Для Haiku 5.5 серверної підміни моделі немає — параметр і бета-прапорець не шлемо.
+      const extra = this.model === HELPER_MODEL ? {} : { betas: BETAS, fallbacks: 'default' as const }
+      return await budget.run(signal => client.beta.messages.stream({ ...body, model: this.model, ...extra }, { signal }).finalMessage())
     } catch (error) {
       if (isAiBudgetError(error)) throw error
       throw claudeAppError(error)
@@ -127,7 +153,7 @@ export class ClaudeClient {
   }
 
   private static usage(message: Anthropic.Beta.BetaMessage): ClaudeUsage {
-    return claudeUsageFrom(message.usage)
+    return claudeUsageFrom(message.usage, String(message.model ?? "").startsWith(HELPER_MODEL) ? HELPER_MODEL : 'claude-sonnet-5-5')
   }
 
   private static text(message: Anthropic.Beta.BetaMessage): string {
@@ -254,5 +280,25 @@ export class ClaudeClient {
       })
     }
     return { reply: '', finished: false }
+  }
+}
+
+type CompleteInput = Parameters<ClaudeClient['complete']>[1]
+type CompleteAnswer = Awaited<ReturnType<ClaudeClient['complete']>>
+export interface CompleteModel { complete: (budget: AiExecutionBudget, input: CompleteInput) => Promise<CompleteAnswer> }
+
+/**
+ * Помічниця з підстраховкою: якщо Haiku недоступна (ключ без доступу до моделі, збій, відмова) — те саме питання
+ * отримує основна модель, і робота не зупиняється. Вичерпаний час чи ліміт рахунку підстраховкою не лікуються.
+ */
+export function helperWithFallback(helper: CompleteModel, main: CompleteModel): CompleteModel {
+  return {
+    complete: async (budget, input) => {
+      try { return await helper.complete(budget, input) }
+      catch (error) {
+        if (isAiBudgetError(error) || (error instanceof AppError && error.code === 'AI_QUOTA_EXCEEDED')) throw error
+        return main.complete(budget, input)
+      }
+    },
   }
 }

@@ -35,7 +35,7 @@ export function sortLineText(state: SortState): string {
 /** Числа плитками — замість одного довгого речення (27.11.2026: «рядок стану читається важко»). */
 export function sortTiles(state: SortState): Array<{ label: string; value: number }> {
   return [
-    { label: 'чекають розкладки', value: state.waiting }, { label: 'розклав помічник', value: state.sorted },
+    { label: 'чекають розкладки', value: state.waiting }, { label: 'розкладено автоматично', value: state.sorted },
     { label: 'помічник не певен', value: state.unsure }, { label: 'чекають нову категорію', value: state.waiting_new ?? 0 },
   ].filter((tile, index) => index === 0 || tile.value > 0)
 }

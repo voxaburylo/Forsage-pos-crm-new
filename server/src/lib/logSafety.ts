@@ -23,7 +23,7 @@ const enums: Record<string, readonly string[]> = {
   status: ['pending', 'processing', 'completed', 'failed', 'cancelled', 'ok', 'error', 'success'],
   nextStatus: ['pending', 'processing', 'completed', 'failed', 'cancelled'],
   newStatus: ['new', 'confirmed', 'ordered', 'arrived', 'ready', 'completed', 'cancelled', 'processing'],
-  model: ['claude-sonnet-5-5', 'other'],
+  model: ['claude-sonnet-5-5', 'claude-haiku-5-5', 'other'],
   finishReason: ['STOP', 'MAX_TOKENS', 'SAFETY', 'RECITATION', 'LANGUAGE', 'OTHER', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII', 'MALFORMED_FUNCTION_CALL', 'UNKNOWN'],
   code: ['AI_PROCESSING_CLEANUP_FAILED'],
 }

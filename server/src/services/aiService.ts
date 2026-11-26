@@ -28,6 +28,8 @@ export const DEFAULT_MODEL: AiModel = 'claude-sonnet-5-5'
 
 const MODEL_PRICING: Record<string, { input: number; output: number }> = {
   'claude-sonnet-5-5': { input: 2.00, output: 10.00 },
+  // Помічниця в парі (26.11.2026). В обліку її запити записані на основну модель із поправкою ціни — див. helperRebateUsd.
+  'claude-haiku-5-5': { input: 0.10, output: 0.50 },
 }
 
 function computeCostUsd(model: string, promptTokens: number, completionTokens: number, adjustUsd = 0): number {

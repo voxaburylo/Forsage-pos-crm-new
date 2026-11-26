@@ -35,7 +35,7 @@ describe('numbers in tiles, one short sentence above them', () => {
   it('shows only the tiles that have something to say; «waiting» is always there', () => {
     expect(sortTiles(state({}))).toEqual([{ label: 'чекають розкладки', value: 62937 }])
     expect(sortTiles(state({ enabled: true, waiting: 20140, sorted: 39850, unsure: 2947, waiting_new: 1840 })).map(tile => tile.value)).toEqual([20140, 39850, 2947, 1840])
-    expect(sortTiles(state({ waiting: 0, sorted: 5 }))).toEqual([{ label: 'чекають розкладки', value: 0 }, { label: 'розклав помічник', value: 5 }])
+    expect(sortTiles(state({ waiting: 0, sorted: 5 }))).toEqual([{ label: 'чекають розкладки', value: 0 }, { label: 'розкладено автоматично', value: 5 }])
   })
   it('the headline says what is going on without numbers', () => {
     expect(sortHeadline(state({ enabled: true }))).toBe('Розкладаю. Екран можна закрити.')

@@ -4,6 +4,7 @@ import { AppError } from '../middleware/errorHandler.js'
 import { ClaudeClient, isClaudeModel, type ClaudeUsage } from './aiClaude.js'
 import { AiExecutionBudget } from './aiExecutionBudget.js'
 import { usageCostUsd } from './aiJobService.js'
+import { categoryIndex, ruleCategoryId } from './categoryByName.js'
 import { agreedCategory, categoryKey, categoryOptions, parseSortReply, sortLine, sortPrompt, type CategoryOption } from './supplierCategoryKey.js'
 
 /**
@@ -46,14 +47,30 @@ export async function undoSort(tenantId: string, userId: string) {
 }
 
 /** Одна сторінка: відомі види — у категорії одразу; для невідомих — запит до помічника (двома голосами), правила зберігаються. */
-export async function sortPage(tenantId: string, options: readonly CategoryOption[], model: SortModel, budget: AiExecutionBudget): Promise<{ offers: number; placed: number; usage: ClaudeUsage[]; asked: number }> {
-  const offers = (await pool.query(`SELECT connection_id::text AS connection_id, external_id, name, category_name FROM supplier_offers
+export async function sortPage(tenantId: string, options: readonly CategoryOption[], model: SortModel, budget: AiExecutionBudget, helper: SortModel = model): Promise<{ offers: number; placed: number; usage: ClaudeUsage[]; asked: number; byRule?: number }> {
+  const loaded = (await pool.query(`SELECT connection_id::text AS connection_id, external_id, name, category_name FROM supplier_offers
      WHERE tenant_id = $1 AND category_id IS NULL AND category_source IS NULL ORDER BY connection_id, external_id LIMIT $2`, [tenantId, SORT_PAGE])).rows as Offer[]
-  if (!offers.length) return { offers: 0, placed: 0, usage: [], asked: 0 }
-  const keyed = offers.map(offer => ({ offer, key: categoryKey(offer) }))
-  const keys = [...new Set(keyed.map(entry => entry.key).filter((key): key is string => Boolean(key)))]
+  if (!loaded.length) return { offers: 0, placed: 0, usage: [], asked: 0 }
+  const all = loaded.map(offer => ({ offer, key: categoryKey(offer) }))
+  const keys = [...new Set(all.map(entry => entry.key).filter((key): key is string => Boolean(key)))]
   const rules = new Map<string, Rule>((await pool.query('SELECT key, category_id::text AS category_id, new_name FROM supplier_category_rules WHERE tenant_id = $1 AND key = ANY($2)', [tenantId, keys])).rows
     .map((row: { key: string; category_id: string | null; new_name: string | null }) => [row.key, { category_id: row.category_id, wait: Boolean(row.new_name) }]))
+  // 26.11.2026 (слово власника): товар зі зрозумілою назвою розкладає алгоритм, без ШІ й без витрат (categoryByName).
+  // Уже вивчене правило для виду (воно точніше: «Повітряні фільтри», а не просто «Фільтри») має перевагу; до ШІ доходить
+  // лише те, чого немає ні там, ні там.
+  const index = categoryIndex(options)
+  const direct: Array<{ connection_id: string; external_id: string; category_id: string; source: string }> = []
+  const keyed: typeof all = []
+  for (const entry of all) {
+    const id = entry.key && rules.has(entry.key) ? null : ruleCategoryId(entry.offer.name, index)
+    if (id) direct.push({ connection_id: entry.offer.connection_id, external_id: entry.offer.external_id, category_id: id, source: 'ai' }); else keyed.push(entry)
+  }
+  for (let at = 0; at < direct.length; at += 1000) {
+    await pool.query(`UPDATE supplier_offers o SET category_id = x.category_id, category_source = x.source, updated_at = now()
+        FROM jsonb_to_recordset($2::jsonb) AS x(connection_id uuid, external_id text, category_id uuid, source text)
+       WHERE o.tenant_id = $1 AND o.connection_id = x.connection_id AND o.external_id = x.external_id AND o.category_id IS NULL AND o.category_source IS NULL`,
+      [tenantId, JSON.stringify(direct.slice(at, at + 1000))])
+  }
   // Невідомі види: найчастіші першими — так за одну хвилину розкладається найбільше товарів.
   const unknown = new Map<string, string[]>()
   for (const { offer, key } of keyed) if (key && !rules.has(key)) { const samples = unknown.get(key) ?? []; samples.push(offer.name); unknown.set(key, samples) }
@@ -64,8 +81,10 @@ export async function sortPage(tenantId: string, options: readonly CategoryOptio
   for (let index = 0; index < ask.length; index += SORT_KINDS) chunks.push(ask.slice(index, index + SORT_KINDS))
   await Promise.all(chunks.map(async chunk => {
     const text = chunk.map(([key, samples], index) => sortLine(index + 1, key, samples)).join('\n')
-    const votes = await Promise.all([0, 1].map(async () => {
-      const answer = await model.complete(budget, { system: sortPrompt(options), text, maxTokens: 4000, effort: 'low' })
+    // Два голоси. Рішення власника 26.11.2026: обидва дає основна модель (Sonnet); окрему помічницю можна передати параметром helper.
+    // Категорія ставиться лише там, де дві РІЗНІ моделі зійшлись; розійшлись — «не певен», як і раніше.
+    const votes = await Promise.all([model, helper].map(async voter => {
+      const answer = await voter.complete(budget, { system: sortPrompt(options), text, maxTokens: 4000, effort: voter === model ? 'low' : 'medium' })
       usage.push(answer)
       return parseSortReply(answer.text, chunk.length, options.length)
     }))
@@ -92,7 +111,7 @@ export async function sortPage(tenantId: string, options: readonly CategoryOptio
        WHERE o.tenant_id = $1 AND o.connection_id = x.connection_id AND o.external_id = x.external_id AND o.category_id IS NULL AND o.category_source IS NULL`,
       [tenantId, JSON.stringify(changes.slice(index, index + 1000))])
   }
-  return { offers: offers.length, placed: changes.filter(change => change.category_id).length, usage, asked: ask.length }
+  return { offers: loaded.length, placed: direct.length + changes.filter(change => change.category_id).length, usage, asked: ask.length, byRule: direct.length }
 }
 
 /** Пробудження від планувальника (те саме, що будить фонові задачі). Нічого не ввімкнено чи нема чого розкладати — повертається одразу. */
