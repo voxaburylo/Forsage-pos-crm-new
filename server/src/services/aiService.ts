@@ -1353,8 +1353,14 @@ async function runChatWithinBudget(
         const input = createJobSchema.parse({ target: args?.target, task: args?.task, filter: args?.filter ?? 'messy_names', connection_id: connectionId })
         const job = await budget.run(() => createJob(tenantId, userId, input))
         preparedJobs += 1
-        return { prepared: true, title: job.title, total: job.total, estimate_cost_usd: job.estimate.cost_usd, estimate_minutes: job.estimate.minutes,
-          hint: 'Задачу підготовлено, але НЕ запущено. Скажи власнику: кількість товарів, орієнтовну вартість і час, і що запуск — кнопка «Запустити» у «Фонових задачах» над чатом; потім він переглядає готові назви й застосовує.' }
+        // 26.11.2026, власник: «дав завдання виправити — чекав 5 хв, 0%»: задача стояла «готова до запуску». Власник сам
+        // попросив у чаті — це і є згода: запускаємо одразу. Картки однаково не змінюються до перегляду й «Застосувати».
+        const started = job.total > 0 ? await budget.run(() => (async () => { const { changeJobStatus } = await import('./aiJobService.js'); return changeJobStatus(tenantId, job.id, 'start') })())
+          .then(() => true, () => false) : false
+        return { prepared: true, started, title: job.title, total: job.total, estimate_cost_usd: job.estimate.cost_usd, estimate_minutes: job.estimate.minutes,
+          hint: started
+            ? 'Задачу запущено на сервері. Скажи власнику коротко: скільки товарів, орієнтовна вартість і час; що хід видно у «Фонових задачах» над чатом; що картки НЕ змінюються, доки він не перегляне готові назви й не натисне «Застосувати». Не перелічуй товари в чаті.'
+            : 'Задачу підготовлено, але не запущено. Скажи власнику: запуск — кнопка «Запустити» у «Фонових задачах» над чатом.' }
       } catch (e: any) {
         if (isAiBudgetError(e)) throw e
         return { error: e instanceof AppError ? e.message : 'Не вдалося підготувати задачу' }
