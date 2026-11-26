@@ -32,16 +32,13 @@ const WEB_DENIED_PREFIXES = [
   'desktop:staff:apply-remote-secret',
 ]
 /**
- * 23.11.2026: гроші в касі — лише на самій касі (план вебу 22.11.2026). Екрани вебу цих дій не показують,
- * а тут другий замок: головний ПК і сервер відхиляють їх, навіть якщо запит склали вручну.
- * Скасування замовлення сюди не входить: воно гроші не видає (оплата лише зараховується на рахунок клієнта).
+ * 23.11.2026 було: «гроші в касі — лише на самій касі». РІШЕННЯ ВЛАСНИКА 27.11.2026: «роби повну версію — фіскалізація
+ * в нас поки не працює»: продаж, повернення, рух коштів, зміни й оплата замовлень відкриті з вебу й застосунку на телефоні —
+ * виконує їх головний ПК, тим самим кодом і з правами того самого працівника (касир — із «Працює через веб», менеджер —
+ * із «Може продавати»). Закритими лишились лише виплати зарплати: їх із вебу не просили.
+ * Список на сервері й на головному ПК — однаковий (стереже тест webRpcChannels).
  */
 export const WEB_MONEY_CHANNELS: readonly string[] = [
-  'desktop:pos:checkout', 'desktop:pos:create-return', 'desktop:pos:refund-core-deposit', 'desktop:pos:create-cash-operation',
-  'desktop:pos:open-shift', 'desktop:pos:close-shift', 'desktop:pos:remote-close-shift', 'desktop:pos:reconcile',
-  'desktop:pos:pay-debt', 'desktop:pos:add-customer-deposit', 'desktop:pos:payout-customer-deposit',
-  'desktop:pos:suspend-sale', 'desktop:pos:resume-sale', 'desktop:pos:confirm-resume-sale', 'desktop:pos:discard-suspended-sale',
-  'desktop:orders:add-payment', 'desktop:orders:complete',
   'desktop:staff:create-salary', 'desktop:staff:delete-salary', 'desktop:staff:daily-payout', 'desktop:staff:tire-cash-handover',
 ]
 /**

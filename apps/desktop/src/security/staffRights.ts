@@ -26,11 +26,20 @@ const SWITCHABLE: Record<StaffRight, readonly string[]> = {
   orders: ['cashier', 'storekeeper'],
   purchase_prices: ['cashier', 'manager'],
   reports: ['cashier'],
-  writeoffs: ['manager'],
+  writeoffs: ['manager', 'cashier'],
 }
 
-/** Дії, що створюють списання: менеджеру — лише з перемикачем «Списує товар». */
+/** Дії, що створюють списання: менеджеру й касиру — лише з перемикачем «Списує товар». */
 export const WRITEOFF_CREATE_CHANNELS = new Set(['desktop:warehouse:create-writeoff'])
+/** Кому списання дає не роль, а перемикач: вони ще й мусять написати, на що списано (27.11.2026). */
+export const WRITEOFF_BY_SWITCH_ROLES: readonly string[] = ['manager', 'cashier']
+/** Причина відмови у списанні для ролі з перемикачем; порожньо — можна. */
+export function writeoffRefusal(role: string, hasRight: boolean, input: unknown): string {
+  if (!WRITEOFF_BY_SWITCH_ROLES.includes(role)) return ''
+  if (!hasRight) return 'Списання вмикає власник: «Працівники» → картка → «Права» → «Списує товар»'
+  const notes = String((input as { notes?: unknown } | null)?.notes ?? '').trim()
+  return notes.length < 3 ? 'Напишіть коментар: на що списано товар' : ''
+}
 
 type Stored = Record<string, Partial<Record<StaffRight, boolean>>>
 

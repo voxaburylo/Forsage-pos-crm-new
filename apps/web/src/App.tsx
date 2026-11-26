@@ -242,11 +242,11 @@ function Workspace() {
           <Route path="/customers/:id"       element={<ProtectedRoute><MainPcWhenOnline><CustomerDetailPage /></MainPcWhenOnline></ProtectedRoute>} />
           <Route path="/customers/:id/edit"  element={<TillOnly what="Редагування клієнта"><ProtectedRoute roles={CUSTOMER_CARD_EDITOR_ROLES}><CanonicalCard kind="customers" /></ProtectedRoute></TillOnly>} />
 
-          <Route path="/pos"      element={<TillOnly what="Каса" remote={false}><ProtectedRoute><POSPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/pos"      element={<TillOnly what="Каса"><ProtectedRoute><POSPage /></ProtectedRoute></TillOnly>} />
           <Route path="/sales"     element={<ProtectedRoute><SalesPage /></ProtectedRoute>} />
-          <Route path="/returns"  element={<TillOnly what="Повернення" remote={false}><ProtectedRoute><ReturnForm /></ProtectedRoute></TillOnly>} />
-          <Route path="/cashflow" element={<TillOnly what="Рух коштів" remote={false}><ProtectedRoute><CashflowPage /></ProtectedRoute></TillOnly>} />
-          <Route path="/shifts" element={<TillOnly what="Зміни" remote={false}><ProtectedRoute roles={['owner', 'admin']}><OpenShiftsPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/returns"  element={<TillOnly what="Повернення"><ProtectedRoute><ReturnForm /></ProtectedRoute></TillOnly>} />
+          <Route path="/cashflow" element={<TillOnly what="Рух коштів"><ProtectedRoute><CashflowPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/shifts" element={<TillOnly what="Зміни"><ProtectedRoute roles={['owner', 'admin']}><OpenShiftsPage /></ProtectedRoute></TillOnly>} />
           <Route path="/reports"  element={<Navigate to="/analytics/sales" replace />} />
           <Route path="/abc"        element={<ProtectedRoute roles={ADMIN_ROLES}><ABCAnalysis /></ProtectedRoute>} />
           <Route path="/waitlist"   element={<TillOnly what="Очікування товару"><ProtectedRoute roles={OFFICE_ROLES}><WaitlistPage /></ProtectedRoute></TillOnly>} />

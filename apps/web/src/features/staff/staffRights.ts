@@ -32,7 +32,7 @@ export function roleRights(role: string): RoleRights {
 /** Які перемикачі показує блок «Права» для цієї ролі. */
 export type RoleSwitch = 'web' | 'sale' | 'deposit' | 'orders' | 'purchase_prices' | 'reports' | 'writeoffs'
 export function roleSwitches(role: string): RoleSwitch[] {
-  if (role === 'cashier') return ['orders', 'purchase_prices', 'reports', 'web']
+  if (role === 'cashier') return ['orders', 'purchase_prices', 'reports', 'writeoffs', 'web']
   if (role === 'manager') return ['sale', 'deposit', 'purchase_prices', 'writeoffs']
   if (role === 'storekeeper') return ['orders']
   return []
@@ -46,6 +46,6 @@ export const RIGHT_SWITCH_TEXT: Record<'orders' | 'purchase_prices' | 'reports' 
     on: 'Працівник бачить закупівельні ціни в картці товару', off: 'Закупівельні ціни в картці товару приховано' },
   reports: { title: 'Бачить звіти', hint: '«Аналітика → Статистика»: обороти, залишки, борги за період. Прибуток бачить лише власник.',
     on: 'Працівнику відкрито «Статистику»', off: '«Статистику» для працівника закрито' },
-  writeoffs: { title: 'Списує товар', hint: '«Склад → Списання»: акт списання браку, бою, пересорту. Залишок зменшується одразу.',
+  writeoffs: { title: 'Списує товар', hint: '«Склад → Списання»: списати товар на потреби магазину, брак, бій, пересорт — обовʼязково з коментарем, на що. Залишок зменшується одразу.',
     on: 'Працівнику відкрито «Списання»', off: '«Списання» для працівника закрито' },
 }

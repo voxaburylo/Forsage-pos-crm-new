@@ -104,7 +104,7 @@ import { customerWritePayload } from './security/customerWritePolicy'
 import { BACKGROUND_TASK, clearHandoff, decideStart, handoffRequested, isBackgroundLaunch, releaseOwner, writeOwner } from './background/tillOwner'
 import { spawn } from 'node:child_process'
 import { rehearsalRootFrom, runStartupRehearsal } from './diagnostics/startupRehearsal'
-import { allStaffRights, effectiveStaffRights, setStaffRight, WRITEOFF_CREATE_CHANNELS } from './security/staffRights'
+import { allStaffRights, effectiveStaffRights, setStaffRight, WRITEOFF_CREATE_CHANNELS, writeoffRefusal } from './security/staffRights'
 import { compactOutbox, previewOutboxCompaction } from './repositories/outboxCompaction'
 import { quickCheckInWorker } from './db/verifiedBackup'
 
@@ -823,9 +823,10 @@ async function executeDesktopCommand(
     // 26.11.2026 (рішення власника): денна ставка менеджера — за день, коли він увійшов. Рахує лише головний ПК (не ПК менеджера).
     if (session.role === 'manager' && localNetwork?.getStatus().mode !== 'client') noteManagerWorkDay(session.id, session.tenant_id)
     // 26.11.2026: списання менеджер робить лише з перемикачем «Списує товар» у своїй картці (вмикає власник).
-    if (session.role === 'manager' && WRITEOFF_CREATE_CHANNELS.has(channel) && localNetwork?.getStatus().mode !== 'client'
-      && !effectiveStaffRights(requireLocalDatabase(), session.id, session.role).writeoffs) {
-      throw new Error('Списання менеджеру вмикає власник: «Працівники» → картка → «Права» → «Списує товар»')
+    // 27.11.2026: те саме касиру («на потреби магазину»), і обовʼязковий коментар — на що списано.
+    if (WRITEOFF_CREATE_CHANNELS.has(channel) && localNetwork?.getStatus().mode !== 'client') {
+      const refusal = writeoffRefusal(session.role, effectiveStaffRights(requireLocalDatabase(), session.id, session.role).writeoffs, args[0])
+      if (refusal) throw new Error(refusal)
     }
     for (const argument of args) validateTenantArguments(argument, session.tenant_id)
     for (const position of desktopTenantArgumentPositions(channel)) {

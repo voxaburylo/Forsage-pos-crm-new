@@ -26,6 +26,8 @@ const REASONS = ['damage', 'expiry', 'loss', 'audit', 'other'] as const
 export default function WriteoffFormPage() {
   const navigate = useNavigate()
   const user = useAuthStore(state => state.session?.user)
+  // Кому списання дає перемикач у картці (касир, менеджер), а не роль, — той пише, на що списано.
+  const commentRequired = ['cashier', 'manager'].includes(String(user?.app_metadata?.role ?? 'cashier'))
   const draftKey = 'forsage:writeoff-draft:' + user?.id
   const [loaded] = useState(() => {
     try {
@@ -102,6 +104,8 @@ export default function WriteoffFormPage() {
     for (const item of items) {
       if (parseWriteoffQuantity(item.qty) === null) return 'Кількість має бути > 0 для "' + item.product_name + '"'
     }
+    // 27.11.2026: касир і менеджер списують лише з поясненням — на що (каса перевіряє це ще раз).
+    if (commentRequired && notes.trim().length < 3) return 'Напишіть коментар: на що списано товар'
     return null
   }
 
