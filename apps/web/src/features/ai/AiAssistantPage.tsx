@@ -571,7 +571,8 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
           : taskPrompt
         try {
           const response = requestInvoice && index === 0 && images?.length && !partsToSend[index]
-            ? await aiApi.recognizeSupplyInvoice({ message: partPrompt + categoryInstruction, images })
+            ? await aiApi.recognizeSupplyInvoice({ message: partPrompt + categoryInstruction, images,
+              ...(sourceCurrency === 'USD' || sourceCurrency === 'EUR' ? { source_currency: sourceCurrency } : {}) })
             : await aiApi.chat({
               message: partPrompt + categoryInstruction,
               history: index === 0 && !requestInvoice ? history : undefined,

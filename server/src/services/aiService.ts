@@ -1180,7 +1180,7 @@ const SUPPLY_INVOICE_PHOTO_SCHEMA = {
 export async function recognizeSupplyInvoicePhoto(
   tenantId: string,
   userId: string | null,
-  params: { message?: string; images: ChatImage[] },
+  params: { message?: string; images: ChatImage[]; source_currency?: 'USD' | 'EUR' },
 ): Promise<{ reply: string; actions: PendingAction[]; usage: { prompt_tokens: number; completion_tokens: number; cost_usd: number } }> {
   return withAiExecutionBudget(AI_TIME_LIMITS.invoice, budget => recognizeSupplyInvoicePhotoWithinBudget(tenantId, userId, params, budget))
 }
@@ -1188,7 +1188,7 @@ export async function recognizeSupplyInvoicePhoto(
 async function recognizeSupplyInvoicePhotoWithinBudget(
   tenantId: string,
   userId: string | null,
-  params: { message?: string; images: ChatImage[] },
+  params: { message?: string; images: ChatImage[]; source_currency?: 'USD' | 'EUR' },
   budget: AiExecutionBudget,
 ): Promise<{ reply: string; actions: PendingAction[]; usage: { prompt_tokens: number; completion_tokens: number; cost_usd: number } }> {
   const cfg = await budget.run(signal => getAiConfig(tenantId, signal))
@@ -1261,7 +1261,7 @@ async function recognizeSupplyInvoicePhotoWithinBudget(
   }
 
   await record()
-  const parsed = mergeAiInvoicePages(parsedPages)
+  const parsed = mergeAiInvoicePages(parsedPages, params.source_currency)
   const products = parsed.products
 
   const action = await budget.run(() => buildPendingAction('create_products_bulk', { products }, tenantId, budget))

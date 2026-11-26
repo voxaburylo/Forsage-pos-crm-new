@@ -106,7 +106,8 @@ export const aiApi = {
       ...(onProgress ? { onProgressLine: (event: unknown) => onProgress(event as AiChatProgress) } : {}),
     }),
 
-  recognizeSupplyInvoice: (body: { message?: string; images: AiChatImage[] }) =>
+  // 26.11.2026: source_currency — валюта, яку власник вибрав на екрані; сервер приймає ціни в ній, курс застосовує екран.
+  recognizeSupplyInvoice: (body: { message?: string; images: AiChatImage[]; source_currency?: 'USD' | 'EUR' }) =>
     api.post<{ data: AiChatResponse }>('/api/v1/ai/supply-invoice-photo', body, undefined, { timeoutMs: 660_000, silent: true }),
 
   applyAction: (body: { tool: string; payload: Record<string, any>; operation_id?: string }): Promise<{ data: AiApplyResult }> =>

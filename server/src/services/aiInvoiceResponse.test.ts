@@ -20,6 +20,16 @@ describe('photo invoice integrity', () => {
     expect(()=>mergeAiInvoicePages([{currency,products:[product]}])).toThrow('валюта')
     expect(()=>mergeAiInvoicePages([{products:[{...product,currency}]}])).toThrow('валюта')
   })
+  // 26.11.2026, власник: «$ долари, курс 46,4 — а програма не змогла розпізнати валюту й дала збій».
+  it('accepts the currency the owner chose on screen (prices stay as printed; the screen applies the rate); another one is still refused', () => {
+    for (const currency of ['USD', '$', 'usd', 'долар', 'доларів', 'дол.', 'у.о.', 'у.о'])
+      expect(mergeAiInvoicePages([{currency,products:[{...product,currency}]}], 'USD').products[0].purchase_price_uah).toBe(1.01)
+    for (const currency of ['EUR', '€', 'євро'])
+      expect(mergeAiInvoicePages([{currency,products:[product]}], 'EUR').products[0].purchase_price_uah).toBe(1.01)
+    expect(()=>mergeAiInvoicePages([{currency:'EUR',products:[product]}], 'USD')).toThrow('валюта')
+    expect(()=>mergeAiInvoicePages([{currency:'PLN',products:[product]}], 'EUR')).toThrow('валюта')
+    expect(mergeAiInvoicePages([{currency:'UAH',products:[product]}], 'USD').products[0].purchase_price_uah).toBe(1.01)
+  })
   it('accepts an explicit UAH photo without inventing a conversion', () => {
     expect(mergeAiInvoicePages([{currency:'UAH',products:[product]}]).products[0].purchase_price_uah).toBe(1.01)
   })

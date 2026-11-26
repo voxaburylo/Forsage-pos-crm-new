@@ -16,8 +16,15 @@ function invoiceNumber(value: unknown, quantity: boolean, location: string): num
   return number
 }
 
-function assertPhotoInvoiceCurrency(value: unknown, location: string): void {
+/** 26.11.2026 (власник: «$ долари, курс 46,4 — а програма не змогла розпізнати валюту»): назви валют, які власник вибирає на екрані. */
+const DECLARED_CURRENCY: Record<string, RegExp> = {
+  USD: /^(?:USD|\$|дол[а-яіїє]*\.?|у\.?\s?о\.?)$/i,
+  EUR: /^(?:EUR|€|євро|евро)$/i,
+}
+function assertPhotoInvoiceCurrency(value: unknown, location: string, declared?: string): void {
   if (value === undefined || value === null || value === '') return
+  // Власник сам вибрав валюту й курс на екрані: ціни приходять у ній, курс застосовує програма після розпізнавання.
+  if (declared && typeof value === 'string' && DECLARED_CURRENCY[declared]?.test(value.trim())) return
   if (typeof value !== 'string' || !/^(?:UAH|грн\.?|₴|гривн[аяіи])$/i.test(value.trim())) {
     return invalidInvoice(location + ': валюта закупівлі не є гривнею або не розпізнана. Використайте таблицю з явно вказаною валютою та курсом; автоматичної конвертації фото немає.')
   }
@@ -119,7 +126,7 @@ function checkPrintedTotals(controls: PageControl[]): { total?: number; notes: s
 }
 
 /** Validate every photo and row before publishing a proposal; no guessed 1/0 or filtered rows. */
-export function mergeAiInvoicePages(pages: readonly unknown[]): InvoicePage {
+export function mergeAiInvoicePages(pages: readonly unknown[], declaredCurrency?: 'USD' | 'EUR'): InvoicePage {
   const merged: InvoicePage = { products: [] }
   const controls: PageControl[] = []
   for (const [pageIndex, page] of pages.entries()) {
@@ -132,7 +139,7 @@ export function mergeAiInvoicePages(pages: readonly unknown[]): InvoicePage {
       sum: 0n, location, rows: page.products.length,
     }
     controls.push(control)
-    assertPhotoInvoiceCurrency(page.currency, location)
+    assertPhotoInvoiceCurrency(page.currency, location, declaredCurrency)
     if (merged.products.length + page.products.length > 2000) return invalidInvoice('У накладній більше 2000 позицій. Розділіть її на частини.')
     for (const key of ['supplier_name', 'invoice_number'] as const) {
       const value = page[key]
@@ -146,7 +153,7 @@ export function mergeAiInvoicePages(pages: readonly unknown[]): InvoicePage {
     for (const [index, raw] of page.products.entries()) {
       const rowLocation = location + ', рядок ' + (index + 1)
       if (!isRecord(raw) || typeof raw.name !== 'string' || !raw.name.trim()) return invalidInvoice(rowLocation + ': відсутня назва товару.')
-      assertPhotoInvoiceCurrency(raw.currency, rowLocation)
+      assertPhotoInvoiceCurrency(raw.currency, rowLocation, declaredCurrency)
       const product: InvoiceRow = {
         name: raw.name.trim(), qty: invoiceNumber(raw.qty, true, rowLocation),
         purchase_price_uah: invoiceNumber(raw.purchase_price_uah, false, rowLocation),
