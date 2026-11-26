@@ -29,6 +29,17 @@ export const SITE_ACTIONS: Readonly<Record<string, boolean>> = {
   'home.get': false, 'home.set': true,
   'pages.list': false, 'pages.upsert': true, 'pages.delete': true,
   'settings.get': false, 'settings.set': true,
+  // 27.11.2026, «Доповнення 5» контракту сайту: форум (програма пише від імені магазину) і просування (SEO).
+  'forum.sections.list': false, 'forum.sections.upsert': true, 'forum.sections.delete': true,
+  'forum.topics.list': false, 'forum.topic.get': false, 'forum.topics.create': true, 'forum.topics.update': true, 'forum.topics.delete': true,
+  'forum.posts.create': true, 'forum.posts.update': true, 'forum.posts.delete': true,
+  'forum.stats': false,
+  // Адреса для завантаження фото — ще не зміна: фото зʼявляється лише в темі чи відповіді.
+  'forum.photos.upload_url': false,
+  'seo.products.missing': false, 'seo.products.set': true,
+  'seo.categories.list': false, 'seo.categories.set': true,
+  'seo.settings.get': false, 'seo.settings.set': true, 'seo.health': false,
+  'seo.redirects.list': false, 'seo.redirects.set': true, 'seo.redirects.delete': true,
 }
 
 export const SITE_SETTING_KEYS: readonly string[] = ['contact_phone1', 'contact_phone2', 'contact_address', 'contact_viber', 'contact_telegram',
@@ -58,6 +69,13 @@ export function checkSiteCall(action: unknown, params: unknown): { action: strin
     const unknown = Object.keys(values).filter(key => !SITE_SETTING_KEYS.includes(key))
     if (unknown.length) throw new AppError('VALIDATION_ERROR', 'Невідоме налаштування сайту: ' + unknown.join(', '), 422)
   }
+  if (action === 'seo.settings.set') {
+    const values = clean.values
+    if (!values || typeof values !== 'object' || Array.isArray(values)) throw new AppError('VALIDATION_ERROR', 'Некоректні налаштування просування', 422)
+    const foreign = Object.keys(values).filter(key => !key.startsWith('seo_'))
+    if (foreign.length) throw new AppError('VALIDATION_ERROR', 'Тут змінюються лише налаштування просування (seo_…): ' + foreign.join(', '), 422)
+  }
+  if (action === 'seo.products.set' && (!Array.isArray(clean.items) || clean.items.length < 1 || clean.items.length > 500)) throw new AppError('VALIDATION_ERROR', 'За раз — від 1 до 500 товарів', 422)
   return { action, params: clean, changes: SITE_ACTIONS[action] }
 }
 

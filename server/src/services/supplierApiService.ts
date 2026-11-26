@@ -356,19 +356,19 @@ export async function linkOffers(tenantId: string, connectionId: string) {
 
 /**
  * Розкласти товари постачальника по наших категоріях (рішення власника 24.11.2026). Модель вчиться на наших картках;
- * невпевнене — без категорії. Категорію, поставлену людиною (category_source = 'manual'), не чіпаємо ніколи.
+ * невпевнене — без категорії. Категорію, поставлену людиною ('manual') чи помічником за правилом виду ('ai', 26.11.2026), не чіпаємо.
  */
 export async function categorizeOffers(tenantId: string, connectionId: string) {
   const products = (await pool.query('SELECT name, category_id FROM products WHERE tenant_id = $1 AND deleted_at IS NULL AND is_active AND category_id IS NOT NULL', [tenantId])).rows
   const model = learnCategories(products)
-  const offers = (await pool.query(`SELECT external_id, name, category_id FROM supplier_offers WHERE connection_id = $1 AND category_source IS DISTINCT FROM 'manual'`, [connectionId])).rows
+  const offers = (await pool.query(`SELECT external_id, name, category_id FROM supplier_offers WHERE connection_id = $1 AND COALESCE(category_source, '') NOT IN ('manual', 'ai')`, [connectionId])).rows
   const changes = offers.map((offer: any) => ({ external_id: offer.external_id as string, category_id: guessCategory(model, offer.name), before: offer.category_id as string | null }))
     .filter(change => change.category_id !== change.before)
   for (let start = 0; start < changes.length; start += 5000) {
     await pool.query(
-      `UPDATE supplier_offers o SET category_id = x.category_id, category_source = CASE WHEN x.category_id IS NULL THEN NULL ELSE 'auto' END, updated_at = now()
+      `UPDATE supplier_offers o SET category_id = x.category_id, category_source = CASE WHEN x.category_id IS NOT NULL THEN 'auto' WHEN o.category_source = 'ai_none' THEN 'ai_none' ELSE NULL END, updated_at = now()
          FROM jsonb_to_recordset($2::jsonb) AS x(external_id text, category_id uuid)
-        WHERE o.connection_id = $1 AND o.external_id = x.external_id AND o.category_source IS DISTINCT FROM 'manual'`,
+        WHERE o.connection_id = $1 AND o.external_id = x.external_id AND COALESCE(o.category_source, '') NOT IN ('manual', 'ai')`,
       [connectionId, JSON.stringify(changes.slice(start, start + 5000).map(({ external_id, category_id }) => ({ external_id, category_id })))])
   }
   return { changed: changes.length, categorized: offers.length - changes.filter(change => !change.category_id).length }

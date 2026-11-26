@@ -62,6 +62,14 @@ export async function claimTillCommands({ bridge, deviceId }: TillLinkContext): 
         await apply(String(command.requested_by ?? ''), command.payload)
         return { status: 'done', result: { applied: true } }
       }
+      // 27.11.2026: нова категорія під товари постачальників (пропонує помічник сайту, ставить сервер). Дубля каса не створить.
+      if (command.command === 'category.create') {
+        const [{ tillCategoryToCreate }, { adminApi }] = await Promise.all([import('@/features/tillCommands/tillCategoryModel'), import('@/features/admin/adminApi')])
+        const plan = tillCategoryToCreate(command.payload, (await adminApi.listCategories()).data)
+        if (plan.existing) return { status: 'done', result: { category_id: plan.existing.id, name: plan.existing.name, created: false } }
+        const saved = (await adminApi.createCategory(plan.name) as { data: { id: string; name: string } }).data
+        return { status: 'done', result: { category_id: saved.id, name: saved.name, created: true } }
+      }
       if (command.command !== 'product.update') throw new Error('Невідома команда. Оновіть програму на касі.')
       const update = command.payload as TillProductUpdate
       const current = await bridge!.catalog.findById!(String(update?.product_id ?? ''))

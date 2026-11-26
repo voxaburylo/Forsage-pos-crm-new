@@ -80,6 +80,57 @@ siteAdminRouter.post('/gateway', requireSiteSection, async (req, res, next) => {
     res.json({ data: await siteGatewayAction(actor, req.body?.action, req.body?.params) })
   } catch (err) { next(err) }
 })
+// 26.11.2026: ШІ-помічник розділу «Сайт» (SEO, описи, статті, теми форуму). Лише читає й готує пропозиції; на сайт записує
+// людина кнопкою — через той самий /gateway з журналом.
+siteAdminRouter.post('/seo-chat', requireSiteSection, async (req, res, next) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store')
+    const { runSeoChat, seoChatSchema } = await import('../services/siteSeoAssistant.js')
+    const parsed = seoChatSchema.safeParse(req.body)
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
+    res.json({ data: await runSeoChat(req.user!, parsed.data) })
+  } catch (err) { next(err) }
+})
+// 26.11.2026: масова робота над текстами товарів для сайту — 10 зразків, одне «годиться», далі сервер сам (siteTextJobService).
+siteAdminRouter.get('/text-jobs', requireSiteSection, async (req, res, next) => {
+  try { res.setHeader('Cache-Control', 'no-store'); res.json({ data: await (await import('../services/siteTextJobService.js')).listTextJobs(req.user!.tenant_id) }) } catch (err) { next(err) }
+})
+siteAdminRouter.post('/text-jobs', requireSiteSection, async (req, res, next) => {
+  try {
+    const { createTextJob, createTextJobSchema } = await import('../services/siteTextJobService.js')
+    const parsed = createTextJobSchema.safeParse(req.body ?? {})
+    if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422, parsed.error.flatten())
+    res.status(201).json({ data: await createTextJob(req.user!.tenant_id, req.user!.id, parsed.data) })
+  } catch (err) { next(err) }
+})
+siteAdminRouter.post('/text-jobs/:id/action', requireSiteSection, async (req, res, next) => {
+  try {
+    const { textJobAction, textJobActionSchema } = await import('../services/siteTextJobService.js')
+    const parsed = textJobActionSchema.safeParse(req.body ?? {})
+    if (!parsed.success || !/^[0-9a-f-]{36}$/i.test(String(req.params.id))) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422)
+    res.json({ data: await textJobAction(req.user!.tenant_id, String(req.params.id), parsed.data) })
+  } catch (err) { next(err) }
+})
+siteAdminRouter.get('/text-jobs/:id/items', requireSiteSection, async (req, res, next) => {
+  try {
+    const state = String(req.query.state ?? 'sample')
+    if (!/^[0-9a-f-]{36}$/i.test(String(req.params.id)) || !['sample', 'review', 'written', 'failed', 'skipped', 'rejected'].includes(state)) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422)
+    res.setHeader('Cache-Control', 'no-store')
+    res.json({ data: await (await import('../services/siteTextJobService.js')).listTextItems(req.user!.tenant_id, String(req.params.id), state, Number(req.query.page) || 1) })
+  } catch (err) { next(err) }
+})
+// 26.11.2026: розкладка товарів постачальників по наших категоріях (supplierCategorySort): стан, увімкнути/зупинити, повернути як було.
+siteAdminRouter.get('/category-sort', requireSiteSection, async (req, res, next) => {
+  try { res.setHeader('Cache-Control', 'no-store'); res.json({ data: await (await import('../services/supplierCategorySort.js')).sortStatus(req.user!.tenant_id) }) } catch (err) { next(err) }
+})
+siteAdminRouter.post('/category-sort', requireSiteSection, async (req, res, next) => {
+  try {
+    const action = String(req.body?.action ?? '')
+    if (!['start', 'stop', 'undo'].includes(action)) throw new AppError('VALIDATION_ERROR', 'Невірні дані', 422)
+    const sort = await import('../services/supplierCategorySort.js')
+    res.json({ data: action === 'undo' ? await sort.undoSort(req.user!.tenant_id, req.user!.id) : await sort.setSortEnabled(req.user!.tenant_id, req.user!.id, action === 'start') })
+  } catch (err) { next(err) }
+})
 siteAdminRouter.get('/categories', requireSiteSection, async (req, res, next) => {
   try { res.json({ data: await listSiteAdminCategories(req.user!.tenant_id) }) } catch (err) { next(err) }
 })

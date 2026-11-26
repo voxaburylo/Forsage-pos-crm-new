@@ -11,6 +11,8 @@ import { SitePhotosTab } from './SiteProductsTab'
 import { SiteAllProductsTab } from './SiteAllProductsTab'
 import { SiteCatalogAccess } from './SiteCatalogAccess'
 import { SiteAccessTab, useSiteSection } from './siteAccess'
+import { SiteSeoAssistantTab } from './SiteSeoAssistantTab'
+import { SiteForumTab } from './SiteForumTab'
 
 /**
  * 26.11.2026, слово власника: «навести порядок у вкладках сайту — там товар, тут товар, там категорія; чітка зрозуміла
@@ -18,8 +20,8 @@ import { SiteAccessTab, useSiteSection } from './siteAccess'
  * Чотири розділи; у кожному — свої вкладки. Окремої «Товари на сайті» більше немає: фото й опис нашого товару —
  * у його картці («Товари → Усі товари», натиснути рядок).
  */
-type TabId = 'all' | 'photos' | 'categories' | 'promos' | 'orders' | 'customers' | 'reviews' | 'home' | 'banners' | 'pages' | 'settings' | 'catalog' | 'access'
-type SectionId = 'goods' | 'sales' | 'showcase' | 'setup'
+type TabId = 'seo' | 'forum' | 'all' | 'photos' | 'categories' | 'promos' | 'orders' | 'customers' | 'reviews' | 'home' | 'banners' | 'pages' | 'settings' | 'catalog' | 'access'
+type SectionId = 'goods' | 'sales' | 'showcase' | 'promo' | 'setup'
 interface SiteTab { id: TabId; label: string; ownerOnly?: boolean }
 export const SITE_SECTIONS: ReadonlyArray<{ id: SectionId; label: string; tabs: readonly SiteTab[] }> = [
   // 26.11.2026, слово власника: «товари → категорії → товари в категорії, як на великих сайтах». Категорії — ліворуч у
@@ -33,6 +35,9 @@ export const SITE_SECTIONS: ReadonlyArray<{ id: SectionId; label: string; tabs: 
   { id: 'showcase', label: 'Вітрина', tabs: [
     { id: 'home', label: 'Головна сторінка' }, { id: 'categories', label: 'Меню каталогу' }, { id: 'banners', label: 'Банери' }, { id: 'pages', label: 'Сторінки і статті' },
   ] },
+  // 26.11.2026, слово власника: той самий ШІ-помічник, але тут він відповідає за SEO, описи товарів і форум.
+  // 27.11.2026: форум сайту — теми, відповіді від магазину, розділи («Доповнення 5» контракту сайту).
+  { id: 'promo', label: 'Просування', tabs: [{ id: 'seo', label: 'ШІ-помічник' }, { id: 'forum', label: 'Форум' }] },
   { id: 'setup', label: 'Налаштування', tabs: [
     { id: 'settings', label: 'Налаштування сайту' }, { id: 'catalog', label: 'Каталог для сайту', ownerOnly: true }, { id: 'access', label: 'Доступ', ownerOnly: true },
   ] },
@@ -42,6 +47,8 @@ const sectionOf = (tab: TabId) => SITE_SECTIONS.find(section => section.tabs.som
 
 /** Для чого кожна вкладка і що на ній робити — одним-двома реченнями (24.11.2026: власник: «не зрозуміло, що для чого»). */
 export const SITE_TAB_INTRO: Record<TabId, string> = {
+  seo: 'Той самий ШІ-помічник, але для сайту: пише заголовки, описи й ключові слова товарів і розділів для Google, статті, теми для форуму, розкладає товари по категоріях, перевіряє сторінки. Великі роботи робить сам після одного вашого «годиться».',
+  forum: 'Форум сайту: теми покупців і магазину. Тут відповідаєте від імені магазину, створюєте теми, ховаєте зайве, закріплюєте важливе. Видалене не повернути — якщо є сумнів, краще сховати.',
   all: 'Категорії — ліворуч (на телефоні — кнопка «Категорія»), як на великих сайтах: виберіть категорію — праворуч її товари разом із вкладеними; «Усі товари» — усе підряд. Наші й від постачальників (Омега, GPL) — в одному списку. Натисніть наш товар — відкриється його сторінка для сайту: фото, опис, характеристики, «сховати»; назва, ціна й штрихкод — кнопкою «картка програми». Позначте кілька — масові дії: ціни, штрихкоди, видалення наших; ціна ±% і «прибрати з сайту» для товарів постачальників. Ціна ніколи не нижча за закупку.',
   photos: 'Фото багатьох товарів одразу: папка з файлами, названими артикулом чи штрихкодом, і фото, які сайт знайшов сам. Фото одного товару — у його картці у «Усіх товарах».',
   categories: 'Пункти меню каталогу на сайті (що бачить покупець угорі сайту). У кожному відмічаєте, які категорії програми в ньому показувати (кілька можна обʼєднати). Самі категорії товарів — у «Товарах» програми. Розділи шин веде сам сайт.',
@@ -119,8 +126,9 @@ export default function SitePage() {
           <div role="tablist" aria-label="Розділи сайту" className="inline-flex w-max max-w-full shrink-0 gap-0.5 overflow-x-auto rounded-lg bg-gray-100 p-0.5" data-site-sections>
             {SITE_SECTIONS.map(item => (
               <button key={item.id} type="button" role="tab" aria-selected={section === item.id} data-site-section={item.id}
+                ref={section === item.id ? node => node?.scrollIntoView?.({ inline: 'center', block: 'nearest' }) : undefined}
                 onClick={() => { if (section !== item.id) setTab(item.tabs.find(allowed)!.id) }}
-                className={`shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 text-sm ${section === item.id ? 'bg-white font-semibold text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}>
+                className={`shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 text-sm max-sm:px-2.5 ${section === item.id ? 'bg-white font-semibold text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}>
                 {item.label}{badge(item.id === 'sales')}
               </button>
             ))}
@@ -137,6 +145,8 @@ export default function SitePage() {
         {/* Пояснення — дрібним рядком без рамки; повністю — натиснути. */}
         <button type="button" data-site-intro onClick={() => setIntroOpen(value => !value)} title={introOpen ? 'Згорнути' : 'Показати повністю'}
           className={`w-full text-left text-xs leading-relaxed text-gray-500 hover:text-gray-700 ${introOpen ? '' : 'line-clamp-1'}`}>{SITE_TAB_INTRO[current]}</button>
+        {current === 'seo' && <SiteSeoAssistantTab />}
+        {current === 'forum' && <SiteForumTab />}
         {current === 'all' && <SiteAllProductsTab />}
         {current === 'photos' && <SitePhotosTab />}
         {current === 'categories' && <SiteCrudTab config={CATEGORIES} />}
