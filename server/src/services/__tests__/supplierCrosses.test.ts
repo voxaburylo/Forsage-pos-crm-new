@@ -51,8 +51,8 @@ describe('supplier cross numbers (Omega /product/getAllCrosses)', () => {
 
   it('the scheduler fetches crosses for our cards between the price list and photos; the till relays the search', () => {
     const service = readFileSync(new URL('../supplierApiService.ts', import.meta.url), 'utf8')
-    expect(service.indexOf('syncCrossesStep(row, deps)')).toBeGreaterThan(service.indexOf('syncConnectionStep({ ...row'))
-    expect(service.indexOf('syncCrossesStep(row, deps)')).toBeLessThan(service.indexOf('syncPhotosStep(row, deps)'))
+    expect(service.indexOf('syncCrossesStep(row, deps,')).toBeGreaterThan(service.indexOf('syncConnectionStep({ ...row'))
+    expect(service.indexOf('syncCrossesStep(row, deps,')).toBeLessThan(service.indexOf('syncPhotosStep(row, deps,'))
     const till = readFileSync(new URL('../../../../apps/desktop/src/link/tillDeviceLink.ts', import.meta.url), 'utf8')
     expect(till).toContain('supplier-offers\\/(?:search|crosses|details)')
   })

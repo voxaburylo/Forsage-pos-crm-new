@@ -3,7 +3,7 @@ import { ArrowLeft, ArrowRight, FolderUp, ImagePlus, Save, Sparkles, Trash2 } fr
 import { Button, Card, Input } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { productApi } from '@/features/products/productApi'
-import { canImportSitePhotos, runSitePhotoImport, sitePhotoImportText } from './sitePhotoImport'
+import { canImportSitePhotos, runSitePhotoImport, runSupplierPhotoImport, sitePhotoImportText } from './sitePhotoImport'
 import { errorText, exactProductMatch, groupPhotoFiles, siteCall, uploadProductPhotos, type SitePhoto } from './siteGateway'
 
 export interface Found { id: string; name: string; sku?: string | null; barcode?: string | null }
@@ -212,13 +212,15 @@ function AutoPhotoImport() {
     setBusy(true)
     try {
       const result = await runSitePhotoImport()
-      setText(result ? sitePhotoImportText(result) : 'Імпорт працює лише на головному ПК каси.')
+      // 26.11.2026: разом — фото постачальників (Омега, GPL) для наших карток, що збіглися з їхніми товарами.
+      const supplier = result ? await runSupplierPhotoImport().catch(() => null) : null
+      setText(result ? sitePhotoImportText(result) + (supplier ? ' Від постачальників: ' + (supplier.received ? `отримано ${supplier.received}, додано в картки ${supplier.added}` : 'нових немає') + '.' : '') : 'Імпорт працює лише на головному ПК каси.')
     } catch (reason) { setText(errorText(reason, 'Не вдалося отримати фото із сайту')) } finally { setBusy(false) }
   }
   return (
     <Card>
-      <h2 className="mb-1 text-base font-semibold text-gray-900">Фото, які знайшов сайт</h2>
-      <p className="mb-3 text-xs text-gray-500">Сайт сам шукає фото товарів і перевіряє їх. Головний ПК забирає їх раз на годину й ставить у картки, де фото ще немає. Своє фото програми не замінюється ніколи.</p>
+      <h2 className="mb-1 text-base font-semibold text-gray-900">Фото, які знайшли сайт і постачальники</h2>
+      <p className="mb-3 text-xs text-gray-500">Сайт сам шукає фото товарів і перевіряє їх. Постачальники (Омега, GPL) дають фото товарів, що збіглися з нашими картками за артикулом і брендом. Головний ПК забирає їх раз на годину й ставить у картки, де фото ще немає. Своє фото програми не замінюється ніколи.</p>
       <Button variant="secondary" icon={<ImagePlus size={14} />} loading={busy} disabled={!able} onClick={() => void run()} data-site-auto-photos>Імпортувати зараз</Button>
       {!able && <p className="mt-2 text-xs text-gray-500">Кнопка працює на головному ПК каси: фото зберігаються в його базі.</p>}
       {text && <p role="status" className="mt-2 text-sm text-gray-700">{text}</p>}

@@ -25,6 +25,11 @@ export const CALLS_PER_HOUR = 250
 export const CALLS_PER_MINUTE = 20
 /** Скільки фото питати за один виклик планувальника (12 викликів на годину → до 180 фото). */
 export const PHOTOS_PER_RUN = 15
+/** 26.11.2026: поки кроси Омеги не докачано — ліміт ділиться між кросами й фото (а не «фото чекають»). */
+export const SHARED_CROSSES_PER_RUN = 10
+export const SHARED_PHOTOS_PER_RUN = 8
+/** Привʼязка товарів GPL до наших карток посеред довгого проходу прайсу — кожні стільки сторінок. */
+export const GPL_LINK_EVERY_PAGES = 400
 /** Скільки фото тримати в сховищі, доки власник не підніме межу: ~14 КБ на фото, 30 000 ≈ 420 МБ. */
 export const PHOTO_STORAGE_CAP = 30_000
 export const PHOTO_BUCKET = 'supplier-photos'
@@ -144,11 +149,11 @@ export function overallProgress(parts: ReadonlyArray<LoadProgress | undefined>):
   }
 }
 
-/** Фото Омеги — для товарів у наявності; поки кроси не докачані, фото на паузі (ліміт запитів іде кросам). */
+/** Фото Омеги — для товарів у наявності. 26.11.2026: поки кроси вантажаться, фото йдуть разом із ними (ліміт ділиться). */
 export function photoProgress(row: { photos_enabled?: boolean; photos_total?: number; photos_done?: number; photos_hour?: number }, crosses: LoadProgress): LoadProgress {
   const base = queueProgress(row.photos_done ?? 0, row.photos_total ?? 0, row.photos_hour ?? 0)
   if (!row.photos_enabled) return { ...base, loading: false, eta_ms: null, note: 'вимкнено' }
-  if (base.loading && crosses.loading) return { ...base, eta_ms: null, note: 'на паузі, поки вантажаться кроси' }
+  if (base.loading && crosses.loading) return { ...base, note: 'разом із кросами, повільніше' }
   return base
 }
 
@@ -286,7 +291,7 @@ async function writeOffers(tenantId: string, connectionId: string, rawOffers: Of
             purchase_price bigint, retail_price bigint, stock jsonb, total_qty int, description text, category_name text)
      ON CONFLICT (connection_id, external_id) DO UPDATE SET
        number = EXCLUDED.number, number_code = EXCLUDED.number_code, brand = EXCLUDED.brand, name = EXCLUDED.name, barcode = EXCLUDED.barcode,
-       image_url = COALESCE(EXCLUDED.image_url, supplier_offers.image_url), purchase_price = EXCLUDED.purchase_price, retail_price = EXCLUDED.retail_price,
+       image_url = CASE WHEN supplier_offers.photo_saved_at IS NOT NULL THEN supplier_offers.image_url ELSE COALESCE(EXCLUDED.image_url, supplier_offers.image_url) END, purchase_price = EXCLUDED.purchase_price, retail_price = EXCLUDED.retail_price,
        stock = EXCLUDED.stock, total_qty = EXCLUDED.total_qty, seen_at = now(),
        description = COALESCE(EXCLUDED.description, supplier_offers.description), category_name = COALESCE(EXCLUDED.category_name, supplier_offers.category_name),
        -- Час змінюємо лише коли змінилось те, що бачить сайт: так сайт забирає справжні зміни, а не весь прайс щогодини.
@@ -434,6 +439,44 @@ export async function syncPhotosStep(connection: { id: string; tenant_id: string
   return { saved, none, stopped: null }
 }
 
+/** 26.11.2026: копій фото GPL за один прохід планувальника (раз на 5 хв) — лише для товарів, що збіглися з нашими картками. */
+export const MIRROR_PHOTOS_PER_RUN = 20
+const MIRROR_MAX_BYTES = 3 * 1024 * 1024
+type MirrorDeps = { fetch?: typeof fetch; upload?: (path: string, bytes: Buffer, type: string) => Promise<string> }
+
+/**
+ * 26.11.2026, власник: «фото постачальників — у наші картки без фото». Фото GPL лежать на його хостингу без дозволу CORS:
+ * головний ПК (вікно програми) їх не завантажить. Тому сервер копіює фото привʼязаних товарів у наше сховище — далі вони
+ * йдуть у картки тим самим шляхом, що й фото Омеги (linkedOfferPhotos → головний ПК, лише картки без свого фото).
+ * Не вдалось — позначаємо й не пробуємо 30 днів. Запитів до API GPL це не робить (лише його файлове сховище).
+ */
+export async function mirrorLinkedPhotosStep(connection: { id: string; tenant_id: string }, deps: MirrorDeps = {}, max = MIRROR_PHOTOS_PER_RUN) {
+  const { rows } = await pool.query(
+    `SELECT external_id, image_url FROM supplier_offers
+      WHERE connection_id = $1 AND product_id IS NOT NULL AND image_url LIKE 'https://%' AND photo_saved_at IS NULL
+        AND (photo_checked_at IS NULL OR photo_checked_at < now() - interval '30 days')
+      ORDER BY total_qty DESC, external_id LIMIT $2`, [connection.id, max])
+  let saved = 0, failed = 0
+  for (const row of rows) {
+    try {
+      const response = await (deps.fetch ?? fetch)(String(row.image_url), { redirect: 'follow', signal: AbortSignal.timeout(20_000) })
+      const type = (response.headers.get('content-type') ?? '').split(';')[0].trim()
+      if (!response.ok || !/^image\/(jpeg|png|webp)$/.test(type)) throw new Error('не фото')
+      const bytes = Buffer.from(await response.arrayBuffer())
+      if (!bytes.length || bytes.length > MIRROR_MAX_BYTES) throw new Error('розмір')
+      const extension = type === 'image/png' ? '.png' : type === 'image/webp' ? '.webp' : '.jpg'
+      const path = connection.tenant_id + '/' + connection.id + '/' + String(row.external_id).replace(/[^0-9A-Za-z_-]/g, '_') + extension
+      const url = await (deps.upload ?? uploadPhoto)(path, bytes, type)
+      await pool.query('UPDATE supplier_offers SET image_url = $3, photo_checked_at = now(), photo_saved_at = now(), updated_at = now() WHERE connection_id = $1 AND external_id = $2', [connection.id, row.external_id, url])
+      saved += 1
+    } catch {
+      failed += 1
+      await pool.query('UPDATE supplier_offers SET photo_checked_at = now() WHERE connection_id = $1 AND external_id = $2', [connection.id, row.external_id])
+    }
+  }
+  return { saved, failed }
+}
+
 /** Фото для НАШИХ карток, що збіглися з товарами постачальника: головний ПК ставить їх у картки без фото. */
 export async function linkedOfferPhotos(tenantId: string, since: string | null) {
   const { rows } = await pool.query(
@@ -514,11 +557,26 @@ export async function runSupplierSync(deps: OmegaDeps = {}) {
       last_full_sync_at: row.last_full_sync_at ? new Date(row.last_full_sync_at).toISOString() : null }, deps)) }) }
     catch (error) { results.push({ id: row.id, error: error instanceof Error ? error.message : 'error' }) }
     // Кроси, опис і фото — методи API Омеги; у GPL їх немає (аналоги для GPL беруться з кросів Омеги за артикулом).
+    if (row.provider === 'gpl') {
+      // 26.11.2026: прохід прайсу GPL триває кілька діб — привʼязуємо до наших карток і по дорозі (кожні ~400 сторінок),
+      // а не лише в кінці; далі сервер копіює фото привʼязаних товарів у наше сховище (для карток без фото).
+      const after = Number((results.at(-1) as { page?: number } | undefined)?.page) || 0
+      if (after && Math.floor(after / GPL_LINK_EVERY_PAGES) > Math.floor((Number(row.sync_page) || 0) / GPL_LINK_EVERY_PAGES)) {
+        try { results.push({ id: row.id, linked: await linkOffers(row.tenant_id, row.id) }) } catch (error) { results.push({ id: row.id, link_error: error instanceof Error ? error.message : 'error' }) }
+      }
+      try { results.push({ id: row.id, mirrored: await mirrorLinkedPhotosStep(row, deps as MirrorDeps) }) }
+      catch (error) { results.push({ id: row.id, mirror_error: error instanceof Error ? error.message : 'error' }) }
+      continue
+    }
     if (row.provider !== 'omega') continue
+    // 26.11.2026 (власник: «так, робіть усі рекомендації»): поки кроси не докачано, ліміт ділиться — кросам 10 запитів
+    // за прохід, фото 8 (разом з описом 19 за хвилину, ≈230 за годину — у межах 20/хв і 250/год). Раніше фото чекали кроси ~2 тижні.
+    const crossesLeft = await pool.query('SELECT 1 FROM supplier_offers WHERE connection_id = $1 AND crosses_checked_at IS NULL LIMIT 1', [row.id])
+      .then(result => result.rows.length > 0, () => false)
     // 25.11.2026: кроси для наших карток — після прайсу, перед фото (кілька запитів за прохід, той самий лічильник).
     try {
       const { syncCrossesStep } = await import('./supplierCrosses.js')
-      results.push({ id: row.id, crosses: await syncCrossesStep(row, deps) })
+      results.push({ id: row.id, crosses: await syncCrossesStep(row, deps, ...(crossesLeft && row.photos_enabled ? [SHARED_CROSSES_PER_RUN] : [])) })
     } catch (error) { results.push({ id: row.id, crosses_error: error instanceof Error ? error.message : 'error' }) }
     // 25.11.2026: опис (OE-номери, застосовність, характеристики) — пачкою, один запит за прохід.
     try {
@@ -526,11 +584,8 @@ export async function runSupplierSync(deps: OmegaDeps = {}) {
       results.push({ id: row.id, details: await syncDetailsStep(row, deps) })
     } catch (error) { results.push({ id: row.id, details_error: error instanceof Error ? error.message : 'error' }) }
     // Фото — після прайсу й лише в межах того самого лічильника запитів.
-    // 25.11.2026: поки кроси не докачано, фото на паузі — весь ліміт іде кросам (рішення власника).
-    const crossesLeft = await pool.query('SELECT 1 FROM supplier_offers WHERE connection_id = $1 AND crosses_checked_at IS NULL LIMIT 1', [row.id])
-      .then(result => result.rows.length > 0, () => false)
-    if (row.photos_enabled && !crossesLeft) {
-      try { results.push({ id: row.id, photos: await syncPhotosStep(row, deps) }) }
+    if (row.photos_enabled) {
+      try { results.push({ id: row.id, photos: await syncPhotosStep(row, deps, crossesLeft ? SHARED_PHOTOS_PER_RUN : PHOTOS_PER_RUN) }) }
       catch (error) { results.push({ id: row.id, photos_error: error instanceof Error ? error.message : 'error' }) }
     }
   }
