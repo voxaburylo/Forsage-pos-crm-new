@@ -31,7 +31,7 @@ describe('mass product texts for the site: one calm status line, one decision fr
   it('before the start there is one button; no red or amber anywhere in the panel', () => {
     const html = renderToStaticMarkup(<SiteTextJobPanel />)
     expect(html).toContain('Почати — спершу 10 зразків')
-    expect(html).toContain('Товари в наявності')
+    expect(html).toContain('Товари сайту без заголовка чи опису для Google')
     expect(html).not.toMatch(/red-|amber-|rose-/)
   })
 })

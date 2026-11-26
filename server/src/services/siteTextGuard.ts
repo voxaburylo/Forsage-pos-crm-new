@@ -10,7 +10,7 @@ export interface ProductFacts {
   name: string; sku?: string | null; brand?: string | null; category?: string | null; unit?: string | null
   oem?: string | null; specs?: unknown; crosses?: readonly string[]
 }
-export interface TextFields { description: string; seo_title: string; seo_description: string }
+export interface TextFields { description: string; seo_title: string; seo_description: string; seo_keywords?: string }
 export const TEXT_LIMITS = { descriptionMin: 150, descriptionMax: 1500, titleMin: 20, titleMax: 70, metaMin: 70, metaMax: 170 } as const
 
 /** Загальновживані позначення, які не є фактом про конкретний товар. */
@@ -56,7 +56,7 @@ export function latinWordsIn(text: string): string[] {
 /** Порожній масив — текст чистий, можна писати на сайт без людини. Інакше — причини простими словами. */
 export function guardProductText(facts: ProductFacts, fields: TextFields): string[] {
   const problems: string[] = []
-  const all = [fields.description, fields.seo_title, fields.seo_description].join(' \n ')
+  const all = [fields.description, fields.seo_title, fields.seo_description, fields.seo_keywords ?? ''].join(' \n ')
   const source = factsText(facts), sourceLower = source.toLowerCase()
   const length = (label: string, value: string, min: number, max: number) => {
     if (value.length < min) problems.push(`${label} закороткий (${value.length} знаків)`)
@@ -100,7 +100,8 @@ export function parseTextReply(reply: string, allowed: ReadonlySet<number>): Map
     const n = Number((item as { n?: unknown })?.n)
     if (!Number.isInteger(n) || !allowed.has(n) || out.has(n)) continue
     const row = item as Record<string, unknown>
-    out.set(n, { description: clean(row.description, false), seo_title: clean(row.seo_title, true), seo_description: clean(row.seo_description, true) })
+    const keywords = clean(row.seo_keywords, true).split(',').map(part => part.trim()).filter(part => part.length >= 2 && part.length <= 60).slice(0, 8).join(', ')
+    out.set(n, { description: clean(row.description, false), seo_title: clean(row.seo_title, true), seo_description: clean(row.seo_description, true), ...(keywords ? { seo_keywords: keywords } : {}) })
   }
   return out
 }
@@ -113,13 +114,15 @@ export function textJobPrompt(styleNote: string | null): string {
 - seo_title — заголовок сторінки для пошуковика, 35–60 знаків: що це + бренд + модель чи артикул + головна характеристика. Без назви магазину.
 - seo_description — опис для пошуковика, 110–155 знаків: що це, для чого, і спокійне завершення на кшталт «Замовляйте з доставкою по Україні». Без лапок і великих літер підряд.
 
+- seo_keywords — 4–8 коротких фраз через кому, якими шукають саме цей товар: вид товару, бренд, модель чи артикул, головна характеристика («моторна олива 5W-40, Castrol Magnatec, олива 4 л»). Лише з даних товару; без «купити», «ціна», назв міст.
+
 ЗАЛІЗНЕ ПРАВИЛО: тільки факти з даних товару. Жодного числа, бренду, моделі авто, стандарту, матеріалу чи властивості, яких у даних немає. Не знаєш, на яке авто, — не пиши авто взагалі. Мало даних — пиши коротше й загальніше, але правдиво. Програма перевіряє кожне число й кожне латинське слово за даними товару; текст із вигадкою на сайт не піде.
 ДАНІ БУВАЮТЬ НЕОХАЙНІ. Головне джерело — назва товару. Категорія може бути помилковою: якщо вона суперечить назві («Рульова колонка» в категорії «Кульова опора») — вір назві, категорію не згадуй. Службові коди з прайсів у назві («5 13348 40», «VL», «>>>») у текст не переноси. Назва російською — пиши українською, бренд, модель і артикул не перекладай. Якщо з назви не зрозуміло, що це за товар, — поверни для нього порожні рядки: програма відкладе його людині.
 НЕ ПИШИ: ціну, знижки, наявність, гарантію, сертифікати, країну виробництва, «оригінал», «найкращий», «найдешевший», строки служби, закупівлю, постачальника.
 СТИЛЬ: спокійно і по-людськи, без вигуків, без «унікальний», «ідеальний», «незамінний», без повтору назви в кожному реченні. Кожен текст свій: не один шаблон на всі товари з підставленою назвою. Слова, якими шукають (олива/масло, колодки гальмівні), — природно, один раз.
 Номери-аналоги (якщо дано) можна згадати одним реченням «Замінює номери: …» — лише ті, що в даних.${styleNote ? `\n\nПОБАЖАННЯ ВЛАСНИКА ДО СТИЛЮ (виконуй, якщо не суперечить правилам вище): ${styleNote}` : ''}
 
-Відповідь — ЛИШЕ JSON без пояснень: {"items":[{"n":<номер товару>,"description":"…","seo_title":"…","seo_description":"…"}]}`
+Відповідь — ЛИШЕ JSON без пояснень: {"items":[{"n":<номер товару>,"description":"…","seo_title":"…","seo_description":"…","seo_keywords":"…"}]}`
 }
 
 export function productLine(n: number, facts: ProductFacts): string {

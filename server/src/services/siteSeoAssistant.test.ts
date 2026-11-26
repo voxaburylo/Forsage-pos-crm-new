@@ -56,10 +56,36 @@ describe('site SEO assistant: reads the shop and the site, only proposes', () =>
     expect((await run('propose_article', { title: 'Коротко', content: 'мало' }, deps(), actions)).result.error).toMatch(/коротка/)
     await run('propose_article', { title: 'Шипи чи липучка: що брати на зиму', content: 'Абзац про вибір шин. '.repeat(40) }, deps(), actions)
     await run('propose_site_seo', { seo_title: 'Форсаж — шини й автозапчастини' }, deps(), actions)
-    const forum = await run('draft_forum_post', { kind: 'topic', title: 'Биття керма на 100 км/год', section: 'Ходова', body: 'Найчастіше причина — балансування. '.repeat(6) }, deps(), actions)
-    expect(actions.map(action => action.kind)).toEqual(['article', 'site_seo', 'forum_post'])
-    expect(forum.result.note).toMatch(/у форум не пише/)
-    expect((actions[2] as Extract<SeoAction, { kind: 'forum_post' }>).body.startsWith('Биття керма на 100 км/год\n\n')).toBe(true)
+    expect(actions.map(action => action.kind)).toEqual(['article', 'site_seo'])
+  })
+
+  // 27.11.2026, «Доповнення 5» контракту сайту: програма публікує на форумі від імені магазину.
+  it('forum: a topic needs a real section and honest text; a reply needs an open topic; fake customer voices are refused', async () => {
+    const forum = (over: Record<string, unknown> = {}) => deps({ gateway: vi.fn(async (action: string) => action === 'forum.sections.list' ? [{ id: 3, slug: 'khodova', name: 'Ходова' }]
+      : action === 'forum.topic.get' ? { title: 'Шипи чи липучка', is_locked: false, body: 'Питання', posts: [], ...over } : {}) })
+    const body = 'Биття керма на швидкості найчастіше дає дисбаланс коліс. Почніть із балансування: це найдешевша перевірка. '.repeat(4)
+    const actions: SeoAction[] = []
+    expect((await run('propose_forum_post', { kind: 'topic', section: 'nema', title: 'Биття керма на 100 км/год: що перевірити', body }, forum(), actions)).result.error).toMatch(/розділу форуму немає/)
+    expect((await run('propose_forum_post', { kind: 'topic', section: 'khodova', title: 'Биття керма на 100 км/год: що перевірити', body }, forum(), actions)).result.status).toBe('pending_user_confirmation')
+    expect((await run('propose_forum_post', { kind: 'reply', topic_id: '12', body: 'Для наших зим липучка зазвичай зручніша в місті. s' }, forum(), actions)).result.status).toBe('pending_user_confirmation')
+    expect(actions).toMatchObject([{ kind: 'forum_post', post_kind: 'topic', section: 'khodova', topic_id: null }, { kind: 'forum_post', post_kind: 'reply', topic_id: '12', topic_title: 'Шипи чи липучка' }])
+    expect((await run('propose_forum_post', { kind: 'reply', topic_id: '12', body: 'Тема закрита, але відповім все одно.' }, forum({ is_locked: true }))).result.error).toMatch(/закрита/)
+    expect((await run('propose_forum_post', { kind: 'topic', section: 'khodova', title: 'Відгук про шини Rosava', body: body + ' Наш клієнт розповів, що проїхав три зими.' }, forum())).result.error).toMatch(/вигаданий відгук/)
+    expect((await run('propose_forum_post', { kind: 'topic', section: 'khodova', title: 'Скільки коштує балансування', body: body + ' У нас це 150 грн.' }, forum())).result.error).toMatch(/ціна/)
+  })
+
+  it('catalogue sections: title, description, text and 3–5 questions; unknown sections and prices are refused', async () => {
+    const sections = deps({ gateway: vi.fn(async () => [{ id: 5, name: 'Моторні оливи', url: '/katalog/masla', description: '', faq: [] }]) })
+    const faq = [{ q: 'Яку вʼязкість вибрати?', a: 'Ту, яку вказав виробник авто в сервісній книжці.' }, { q: 'Чи можна змішувати оливи?', a: 'Краще не змішувати оливи різних типів.' }, { q: 'Як часто міняти оливу?', a: 'За регламентом виробника вашого авто.' }]
+    const { result, actions } = await run('propose_section_seo', { items: [
+      { id: 5, seo_title: 'Моторні оливи — купити в Синельниковому | Форсаж', seo_description: 'Моторні оливи для бензинових і дизельних двигунів: синтетика й напівсинтетика. Підберемо за допуском вашого авто, доставка по Україні.', faq },
+      { id: 9, seo_title: 'Немає такого розділу' }, { id: 5, seo_title: 'двічі' },
+    ] }, sections)
+    expect(result).toMatchObject({ status: 'pending_user_confirmation', accepted: 1 })
+    const action = actions[0] as Extract<SeoAction, { kind: 'section_seo' }>
+    expect(action.items[0]).toMatchObject({ id: '5', name: 'Моторні оливи', faq })
+    expect(action.refused).toEqual([{ id: '9', reason: 'розділу з таким id немає' }])
+    expect((await run('propose_section_seo', { items: [{ id: 5, description: 'Оливи від 300 грн за літр.' }] }, sections)).result.error).toBeTruthy()
   })
 
   it('reads only our site, as Google sees it: title, description, headings, links; scripts and styles are dropped', async () => {
@@ -75,8 +101,9 @@ describe('site SEO assistant: reads the shop and the site, only proposes', () =>
     expect(pageDigest('<urlset><url><loc>https://www.forsage-tires.com/p/1-s</loc></url></urlset>').links).toEqual(['/p/1-s'])
   })
 
-  it('the settings are honest: the forum is manual, nothing is promised; every declared tool has a handler', async () => {
-    expect(SITE_SEO_PROMPT).toMatch(/Писати у форум програма НЕ може/)
+  it('the settings are honest: no invented reviews or phones, nothing is promised; every declared tool has a handler', async () => {
+    expect(SITE_SEO_PROMPT).toMatch(/вигадані відгуки/)
+    expect(SITE_SEO_PROMPT).toMatch(/телефони бери ЛИШЕ з get_shop_contacts/)
     expect(SITE_SEO_PROMPT).toMatch(/Обіцяти «перше місце в Google»/)
     for (const tool of SITE_SEO_TOOLS) expect((await run(tool.name, {})).result).not.toEqual({ error: 'Невідомий інструмент' })
     expect(checkProductTexts([{ product_id: id(1) }], new Set([id(1)])).refused[0].reason).toBe('порожня пропозиція')

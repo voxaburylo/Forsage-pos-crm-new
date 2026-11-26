@@ -19,7 +19,17 @@ describe('site gateway proxy', () => {
     expect(() => checkSiteCall('promos.upsert', { items: [{ min_price: 1 }] })).toThrow('на сайт не передаються')
     expect(() => checkSiteCall('settings.set', { values: { contact_phone1: '1', admin_password: 'x' } })).toThrow('Невідоме налаштування сайту: admin_password')
     expect(checkSiteCall('settings.set', { values: { contact_phone1: '1' } }).changes).toBe(true)
-    expect(Object.keys(SITE_ACTIONS)).toHaveLength(30)
+    // 27.11.2026, «Доповнення 5»: форум і просування. Читання — без журналу, кожна зміна — в журнал аудиту.
+    expect(Object.keys(SITE_ACTIONS)).toHaveLength(53)
+    expect(checkSiteCall('forum.topics.list', { search: 's' }).changes).toBe(false)
+    expect(checkSiteCall('forum.photos.upload_url', { count: 2 }).changes).toBe(false)
+    for (const action of ['forum.topics.create', 'forum.topics.update', 'forum.topics.delete', 'forum.posts.create', 'forum.posts.update', 'forum.posts.delete', 'forum.sections.upsert', 'forum.sections.delete', 'seo.categories.set', 'seo.redirects.set'])
+      expect(checkSiteCall(action, { id: 1 }).changes).toBe(true)
+    expect(checkSiteCall('seo.products.set', { items: [{ program_product_id: 'p', seo_title: 't' }] }).changes).toBe(true)
+    expect(() => checkSiteCall('seo.products.set', { items: [] })).toThrow('від 1 до 500')
+    expect(() => checkSiteCall('seo.products.set', { items: [{ program_product_id: 'p', purchase_price: 1 }] })).toThrow('на сайт не передаються')
+    expect(() => checkSiteCall('seo.settings.set', { values: { seo_title: 't', contact_phone1: '1' } })).toThrow('лише налаштування просування')
+    expect(checkSiteCall('seo.settings.set', { values: { seo_title: 't', seo_hours: 'Mo-Su 08:00-19:00' } }).changes).toBe(true)
   })
 
   it('adds the key on the server and sends the action in the body', async () => {

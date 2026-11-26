@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Button, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { errorText } from './siteGateway'
-import { isOpen, textJobLine, textJobsApi, type TextItem, type TextJob, type TextJobAction } from './siteTextJobs'
+import { isOpen, textJobLine, textJobsApi, type TextItem, type TextJob, type TextJobAction, type TextJobScope } from './siteTextJobs'
 
 /**
  * Масова робота над текстами товарів — одна смужка вгорі вкладки помічника (26.11.2026, слово власника: «великі пачки,
@@ -13,7 +13,7 @@ export function SiteTextJobPanel({ refresh = 0 }: { refresh?: number }) {
   const [job, setJob] = useState<TextJob | null>(null)
   const [missing, setMissing] = useState(false)
   const [busy, setBusy] = useState('')
-  const [scope, setScope] = useState<'in_stock' | 'all'>('in_stock')
+  const [scope, setScope] = useState<TextJobScope>('site_missing')
   const [overwrite, setOverwrite] = useState(false)
   const [samples, setSamples] = useState<TextItem[]>([])
   const [note, setNote] = useState('')
@@ -43,12 +43,13 @@ export function SiteTextJobPanel({ refresh = 0 }: { refresh?: number }) {
   const open = isOpen(job)
   return (
     <section className="rounded-xl border border-gray-200 bg-white p-3" data-site-text-job={job?.status ?? 'none'}>
-      <p className="text-sm font-semibold text-gray-900">Тексти для всіх товарів одразу</p>
+      <p className="text-sm font-semibold text-gray-900">Заголовки, описи й ключові слова для всіх товарів одразу</p>
       {!open && (
         <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
-          <select aria-label="Які товари" value={scope} onChange={event => setScope(event.target.value as 'in_stock' | 'all')} className="rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-sm">
-            <option value="in_stock">Товари в наявності</option>
-            <option value="all">Усі товари</option>
+          <select aria-label="Які товари" value={scope} onChange={event => setScope(event.target.value as TextJobScope)} className="rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-sm">
+            <option value="site_missing">Товари сайту без заголовка чи опису для Google</option>
+            <option value="in_stock">Наші товари в наявності</option>
+            <option value="all">Усі наші товари</option>
           </select>
           <label className="flex items-center gap-1.5 text-xs text-gray-600"><input type="checkbox" checked={overwrite} onChange={event => setOverwrite(event.target.checked)} /> переписати й ті, де опис уже є</label>
           <Button size="sm" loading={busy === 'create'} onClick={() => void act('create', () => textJobsApi.create({ scope, overwrite }))} data-site-text-start>Почати — спершу 10 зразків</Button>
@@ -96,6 +97,7 @@ function TextCard({ item, footer }: { item: TextItem; footer?: React.ReactNode }
       {item.new_fields?.seo_title && <p className="mt-1 text-blue-800">{item.new_fields.seo_title}</p>}
       {item.new_fields?.seo_description && <p className="text-gray-600">{item.new_fields.seo_description}</p>}
       {item.new_fields?.description && <p className="mt-1 whitespace-pre-line text-gray-800">{item.new_fields.description}</p>}
+      {item.new_fields?.seo_keywords && <p className="mt-1 text-gray-500">Ключові слова: {item.new_fields.seo_keywords}</p>}
       {item.note && <p className="mt-1 text-gray-500">Чому відкладено: {item.note}</p>}
       {footer}
     </li>

@@ -105,7 +105,7 @@ try {
       }
       // Кожна вкладка каже, для чого вона; порожня — що на ній зробити.
       // 26.11.2026: чотири розділи (Товари, Замовлення, Вітрина, Налаштування); вкладка видна лише у своєму розділі.
-      assert.deepEqual(await page.locator('[data-site-section]').allInnerTexts(), ['Товари', 'Замовлення1', 'Вітрина', 'ШІ-помічник', 'Налаштування'], `${label}: розділи`)
+      assert.deepEqual(await page.locator('[data-site-section]').allInnerTexts(), ['Товари', 'Замовлення1', 'Вітрина', 'Просування', 'Налаштування'], `${label}: розділи`)
       assert.deepEqual(await page.locator('[data-site-tab]').evaluateAll(nodes => nodes.map(node => node.dataset.siteTab)), ['orders', 'customers', 'reviews'], `${label}: вкладки розділу «Замовлення»`)
       // Назви розділів не обрізаються.
       assert.ok(await page.locator('[data-site-section]').evaluateAll(nodes => nodes.every(node => node.scrollWidth <= node.clientWidth)), `${label}: назва розділу обрізана`)

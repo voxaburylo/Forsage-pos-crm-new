@@ -5,18 +5,19 @@ import { api } from '@/lib/api'
  * Тут — типи, виклики сервера й слова для екрана (спокійні, без «помилка!» і червоного).
  */
 export type TextJobStatus = 'sample' | 'sample_ready' | 'running' | 'paused' | 'reverting' | 'done' | 'cancelled'
+export type TextJobScope = 'site_missing' | 'in_stock' | 'all'
 export interface TextJob {
-  id: string; scope: 'in_stock' | 'all'; overwrite: boolean; style_note: string | null; status: TextJobStatus
+  id: string; scope: TextJobScope; overwrite: boolean; style_note: string | null; status: TextJobStatus
   total: number; processed: number; written: number; review: number; skipped: number; failed: number
   cost_usd: number; last_error: string | null; progress: number; created_at: string; updated_at: string
 }
-export interface TextItem { product_id: string; name: string; state: string; note: string | null; new_fields: { description?: string; seo_title?: string; seo_description?: string } | null }
+export interface TextItem { product_id: string; name: string; state: string; note: string | null; new_fields: { description?: string; seo_title?: string; seo_description?: string; seo_keywords?: string } | null }
 export type TextJobAction = 'approve_sample' | 'redo_sample' | 'pause' | 'resume' | 'cancel' | 'revert' | 'retry_failed' | 'write_review' | 'reject_review'
 
 const BASE = '/api/v1/site-admin/text-jobs'
 export const textJobsApi = {
   list: async () => (await api.get<{ data: TextJob[] }>(BASE, { silent: true })).data,
-  create: async (input: { scope: 'in_stock' | 'all'; overwrite: boolean; style_note?: string }) => (await api.post<{ data: TextJob }>(BASE, input, undefined, { silent: true })).data,
+  create: async (input: { scope: TextJobScope; overwrite: boolean; style_note?: string }) => (await api.post<{ data: TextJob }>(BASE, input, undefined, { silent: true })).data,
   action: async (id: string, action: TextJobAction, extra: { style_note?: string; product_ids?: string[] } = {}) =>
     (await api.post<{ data: TextJob }>(`${BASE}/${id}/action`, { action, ...extra }, undefined, { silent: true })).data,
   items: async (id: string, state: 'sample' | 'review' | 'written' | 'failed', page = 1) =>

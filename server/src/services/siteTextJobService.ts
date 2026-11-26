@@ -18,7 +18,8 @@ import { guardProductText, parseTextReply, productLine, textJobPrompt, type Prod
  */
 export const TEXT_CHUNK = 4, TEXT_PARALLEL = 6, TEXT_RUN_MS = 50_000, TEXT_SAMPLE = 10, TEXT_STALE_MS = 5 * 60_000, TEXT_ATTEMPTS = 3
 export const createTextJobSchema = z.object({
-  scope: z.enum(['in_stock', 'all']).default('in_stock'),
+  // 27.11.2026 («Доповнення 5» контракту сайту): site_missing — товари сайту без заголовка чи опису для Google; список дає сайт.
+  scope: z.enum(['site_missing', 'in_stock', 'all']).default('site_missing'),
   overwrite: z.boolean().default(false),
   style_note: z.string().trim().max(2000).optional(),
 })
@@ -39,7 +40,30 @@ function publicJob(row: JobRow) {
     progress: row.total ? Math.min(100, Math.round(row.processed / row.total * 100)) : 0 }
 }
 
-export async function createTextJob(tenantId: string, userId: string, input: z.infer<typeof createTextJobSchema>) {
+/** Товари сайту, яким бракує заголовка/опису для Google чи тексту опису (seo.products.missing), без повторів. */
+export async function readSiteMissing(user: { id: string; tenant_id: string }, gateway: TextGateway, maxPages = 300): Promise<Array<{ product_id: string; name: string; old: Record<string, unknown> }>> {
+  const found = new Map<string, { product_id: string; name: string; old: Record<string, unknown> }>()
+  for (const field of [undefined, 'description'] as const) {
+    for (let page = 0; page < maxPages; page++) {
+      const rows = await gateway(user, 'seo.products.missing', { limit: 100, offset: page * 100, ...(field ? { field } : {}) })
+      if (!Array.isArray(rows) || !rows.length) break
+      for (const row of rows as Array<Record<string, unknown>>) {
+        const id = String(row?.program_product_id ?? '')
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) || found.has(id)) continue
+        found.set(id, { product_id: id, name: String(row.title ?? '').slice(0, 400) || 'Товар', old: { seo_title: String(row.seo_title ?? ''), seo_description: String(row.seo_description ?? ''), has_description: Boolean(row.has_description), from_site_list: true } })
+      }
+      if (rows.length < 100) break
+    }
+  }
+  return [...found.values()]
+}
+
+export async function createTextJob(tenantId: string, userId: string, input: z.infer<typeof createTextJobSchema>, gateway?: TextGateway) {
+  // Список із сайту читаємо до транзакції: це кілька запитів до шлюзу, базу на цей час не тримаємо.
+  const missing = input.scope === 'site_missing'
+    ? await readSiteMissing({ id: userId, tenant_id: tenantId }, gateway ?? (async (user, action, params) => (await import('./siteGatewayService.js')).siteGatewayAction(user, action, params)))
+    : null
+  if (missing && !missing.length) throw new AppError('VALIDATION_ERROR', 'Сайт каже, що в усіх товарів уже є заголовок і опис для Google. Якщо хочете переписати — виберіть «Наші товари в наявності» й «переписати».', 422)
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
@@ -48,7 +72,12 @@ export async function createTextJob(tenantId: string, userId: string, input: z.i
     const { rows } = await client.query('INSERT INTO site_text_jobs (tenant_id, created_by, scope, overwrite, style_note) VALUES ($1, $2, $3, $4, $5) RETURNING *',
       [tenantId, userId, input.scope, input.overwrite, input.style_note || null])
     // Спершу товари в наявності й дорожчі: вони дають продажі, тож їхні сторінки мають зʼявитись у Google першими.
-    const filled = await client.query(
+    const filled = missing ? await client.query(
+      `INSERT INTO site_text_items (job_id, product_id, seq, name, old_fields)
+       SELECT $1, p.id, row_number() OVER (ORDER BY (p.qty_on_hand > 0) DESC, p.retail_price DESC, p.id), p.name, x.old
+         FROM jsonb_to_recordset($3::jsonb) AS x(product_id uuid, old jsonb)
+         JOIN products p ON p.id = x.product_id AND p.tenant_id = $2 AND p.deleted_at IS NULL`, [rows[0].id, tenantId, JSON.stringify(missing.map(row => ({ product_id: row.product_id, old: row.old })))])
+    : await client.query(
       `INSERT INTO site_text_items (job_id, product_id, seq, name)
        SELECT $1, p.id, row_number() OVER (ORDER BY (p.qty_on_hand > 0) DESC, p.retail_price DESC, p.id), p.name
          FROM products p WHERE p.tenant_id = $2 AND p.deleted_at IS NULL AND p.is_active AND NOT COALESCE(p.is_service, false)
@@ -143,12 +172,18 @@ async function loadFacts(tenantId: string, ids: string[]): Promise<Map<string, P
     unit: row.unit, oem: row.oem_number, specs: row.specs, crosses: Array.isArray(row.crosses) ? row.crosses : [] }]))
 }
 
-const siteFields = (current: Record<string, unknown>) => ({ description: String(current.description ?? ''), seo_title: String(current.seo_title ?? ''), seo_description: String(current.seo_description ?? '') })
-async function writeToSite(user: { id: string; tenant_id: string }, gateway: TextGateway, productId: string, fields: TextFields, current?: Record<string, unknown>) {
-  const now = current ?? ((await gateway(user, 'products.site_fields.get', { program_product_id: productId }) ?? {}) as Record<string, unknown>)
-  await gateway(user, 'products.site_fields.set', { program_product_id: productId, description: fields.description, seo_title: fields.seo_title, seo_description: fields.seo_description,
-    specs: now.specs && typeof now.specs === 'object' ? now.specs : {}, hidden: Boolean(now.hidden) })
-  return siteFields(now)
+/** Що стояло на сайті до запису — для «повернути як було». has_description: опис на сайті вже був (його не переписуємо без прохання). */
+function siteFields(current: Record<string, unknown>, overwrite: boolean) {
+  const has = current.from_site_list ? Boolean(current.has_description) : String(current.description ?? '').trim().length >= 80
+  return { description: current.from_site_list ? '' : String(current.description ?? ''), seo_title: String(current.seo_title ?? ''), seo_description: String(current.seo_description ?? ''),
+    seo_keywords: String(current.seo_keywords ?? ''), has_description: has, write_description: overwrite || !has }
+}
+class NotOnSite extends Error {}
+/** Запис на сайт пачковою дією seo.products.set (27.11.2026): лише поля для Google і, за потреби, опис; решта товару не чіпається. */
+async function writeToSite(user: { id: string; tenant_id: string }, gateway: TextGateway, productId: string, fields: TextFields, withDescription: boolean) {
+  const answer = (await gateway(user, 'seo.products.set', { items: [{ program_product_id: productId, seo_title: fields.seo_title, seo_description: fields.seo_description,
+    seo_keywords: fields.seo_keywords ?? '', ...(withDescription ? { description: fields.description } : {}) }] }) ?? {}) as { saved?: unknown; not_on_site?: unknown }
+  if ((Array.isArray(answer.not_on_site) && answer.not_on_site.map(String).includes(productId)) || answer.saved === 0) throw new NotOnSite()
 }
 
 /** Одна пачка: що стоїть на сайті → кому текст потрібен → модель → автоперевірка → запис (або «на перевірку»). */
@@ -156,13 +191,15 @@ export async function processTextChunk(row: Pick<JobRow, 'id' | 'tenant_id' | 'c
   model: TextModel, gateway: TextGateway, budget: AiExecutionBudget): Promise<ClaudeUsage | null> {
   const user = { id: row.created_by, tenant_id: row.tenant_id }
   const facts = await loadFacts(row.tenant_id, items.map(item => item.product_id))
-  const work: Array<{ item: Item; facts: ProductFacts; current: Record<string, unknown> }> = []
+  const work: Array<{ item: Item; facts: ProductFacts; current: ReturnType<typeof siteFields> }> = []
   await Promise.all(items.map(async item => {
     const data = facts.get(item.product_id)
     if (!data) { await finish(row.id, item.product_id, 'skipped', 'товар видалено'); return }
     try {
-      const current = (await gateway(user, 'products.site_fields.get', { program_product_id: item.product_id }) ?? {}) as Record<string, unknown>
-      if (!row.overwrite && String(current.description ?? '').trim().length >= 80) { await finish(row.id, item.product_id, 'skipped', 'на сайті вже є опис', { old: siteFields(current) }); return }
+      // Товар зі списку сайту (seo.products.missing) уже несе те, що стоїть на сайті; інакше питаємо сайт.
+      const known = item.old_fields?.from_site_list ? item.old_fields : (await gateway(user, 'products.site_fields.get', { program_product_id: item.product_id }) ?? {}) as Record<string, unknown>
+      const current = siteFields(known, row.overwrite)
+      if (!row.overwrite && current.has_description && current.seo_title.trim() && current.seo_description.trim()) { await finish(row.id, item.product_id, 'skipped', 'на сайті вже все заповнено', { old: current }); return }
       work.push({ item, facts: data, current })
     } catch { await retryOrFail(row.id, item, 'сайт не відповів') }
   }))
@@ -179,10 +216,13 @@ export async function processTextChunk(row: Pick<JobRow, 'id' | 'tenant_id' | 'c
     const fields = replies.get(item.seq)
     if (!fields) { await retryOrFail(row.id, item, 'помічник не дав тексту'); return }
     const problems = guardProductText(data, fields)
-    if (problems.length) { await finish(row.id, item.product_id, 'review', problems.join('; '), { old: siteFields(current), next: fields }); return }
-    if (sample) { await finish(row.id, item.product_id, 'sample', null, { old: siteFields(current), next: fields }); return }
-    try { await writeToSite(user, gateway, item.product_id, fields, current); await finish(row.id, item.product_id, 'written', null, { old: siteFields(current), next: fields }) }
-    catch { await finish(row.id, item.product_id, 'towrite', 'сайт не прийняв — повторимо', { old: siteFields(current), next: fields }) }
+    if (problems.length) { await finish(row.id, item.product_id, 'review', problems.join('; '), { old: current, next: fields }); return }
+    if (sample) { await finish(row.id, item.product_id, 'sample', null, { old: current, next: fields }); return }
+    try { await writeToSite(user, gateway, item.product_id, fields, current.write_description); await finish(row.id, item.product_id, 'written', null, { old: current, next: fields }) }
+    catch (error) {
+      if (error instanceof NotOnSite) await finish(row.id, item.product_id, 'skipped', 'цього товару немає на сайті', { old: current, next: fields })
+      else await finish(row.id, item.product_id, 'towrite', 'сайт не прийняв — повторимо', { old: current, next: fields })
+    }
   }))
   return answer
 }
@@ -209,7 +249,10 @@ export async function runSiteTextStep(deps: { model?: (apiKey: string, model: st
         if (!items.length) { await pool.query("UPDATE site_text_jobs SET status = 'cancelled', updated_at = now() WHERE id = $1 AND status = 'reverting'", [row.id]); break }
         await Promise.all(items.map(async item => {
           const old = (item.old_fields ?? {}) as Record<string, unknown>
-          try { await writeToSite(user, gateway, item.product_id, { description: String(old.description ?? ''), seo_title: String(old.seo_title ?? ''), seo_description: String(old.seo_description ?? '') }); await finish(row.id, item.product_id, 'reverted', null) }
+          try {
+            await writeToSite(user, gateway, item.product_id, { description: String(old.description ?? ''), seo_title: String(old.seo_title ?? ''), seo_description: String(old.seo_description ?? ''), seo_keywords: String(old.seo_keywords ?? '') }, old.write_description !== false)
+            await finish(row.id, item.product_id, 'reverted', null)
+          }
           catch { errors += 1; await pool.query('UPDATE site_text_items SET claimed_at = now() WHERE job_id = $1 AND product_id = $2', [row.id, item.product_id]) }
         }))
         await refreshCounters(row.id)
@@ -227,8 +270,8 @@ export async function runSiteTextStep(deps: { model?: (apiKey: string, model: st
       // Спершу — уже погоджені тексти (зразки після «годиться», відмічені «на перевірку»): їм модель не потрібна.
       const ready = sample ? [] : await claim(row.id, 'towrite', 12)
       await Promise.all(ready.map(async item => {
-        try { await writeToSite(user, gateway, item.product_id, item.new_fields as TextFields); await finish(row.id, item.product_id, 'written', null) }
-        catch { errors += 1 }
+        try { await writeToSite(user, gateway, item.product_id, item.new_fields as TextFields, (item.old_fields as { write_description?: boolean } | null)?.write_description !== false); await finish(row.id, item.product_id, 'written', null) }
+        catch (error) { if (error instanceof NotOnSite) await finish(row.id, item.product_id, 'skipped', 'цього товару немає на сайті'); else errors += 1 }
       }))
       const sampled = sample ? (await pool.query("SELECT count(*)::int AS n FROM site_text_items WHERE job_id = $1 AND state = 'sample'", [row.id])).rows[0].n : 0
       if (sample && sampled >= TEXT_SAMPLE) { await pool.query("UPDATE site_text_jobs SET status = 'sample_ready', updated_at = now() WHERE id = $1 AND status = 'sample'", [row.id]); break }

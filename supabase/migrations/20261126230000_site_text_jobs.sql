@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS public.site_text_jobs (
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id   uuid NOT NULL,
   created_by  uuid NOT NULL,
-  scope       text NOT NULL CHECK (scope IN ('in_stock', 'all')),
+  scope       text NOT NULL CHECK (scope IN ('site_missing', 'in_stock', 'all')),
   overwrite   boolean NOT NULL DEFAULT false,
   style_note  text CHECK (style_note IS NULL OR char_length(style_note) <= 2000),
   status      text NOT NULL DEFAULT 'sample' CHECK (status IN ('sample', 'sample_ready', 'running', 'paused', 'reverting', 'done', 'cancelled')),
