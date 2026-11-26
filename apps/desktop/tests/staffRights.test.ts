@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { LocalDatabase } from '../src/db/localDatabase'
 import { DEFAULT_TENANT_ID } from '../src/db/localTypes'
 import { isDesktopChannelAllowed } from '../src/security/desktopAuthorization'
-import { allStaffRights, effectiveStaffRights, setStaffRight } from '../src/security/staffRights'
+import { allStaffRights, effectiveStaffRights, setStaffRight, WRITEOFF_CREATE_CHANNELS } from '../src/security/staffRights'
 import { webRpcChannelAllowed } from '../src/lan/webRpcChannels'
 
 // 24.11.2026 (рішення власника): права працівника — перемикачами в його картці; зберігає головний ПК.
@@ -27,29 +27,29 @@ describe('staff rights switched on by the owner', () => {
   afterEach(() => { db.close(); rmSync(root, { recursive: true, force: true }) })
 
   it('without switches every role keeps exactly what it had before', () => {
-    expect(effectiveStaffRights(db, 'owner-1', 'owner')).toEqual({ orders: true, purchase_prices: true, reports: true })
-    expect(effectiveStaffRights(db, 'manager-1', 'manager')).toEqual({ orders: true, purchase_prices: false, reports: true })
-    expect(effectiveStaffRights(db, 'cashier-1', 'cashier')).toEqual({ orders: false, purchase_prices: false, reports: false })
-    expect(effectiveStaffRights(db, 'store-1', 'storekeeper')).toEqual({ orders: false, purchase_prices: true, reports: false })
-    expect(effectiveStaffRights(db, 'tire-1', 'tire_worker')).toEqual({ orders: false, purchase_prices: false, reports: false })
+    expect(effectiveStaffRights(db, 'owner-1', 'owner')).toEqual({ orders: true, purchase_prices: true, reports: true, writeoffs: true })
+    expect(effectiveStaffRights(db, 'manager-1', 'manager')).toEqual({ orders: true, purchase_prices: false, reports: true, writeoffs: false })
+    expect(effectiveStaffRights(db, 'cashier-1', 'cashier')).toEqual({ orders: false, purchase_prices: false, reports: false, writeoffs: false })
+    expect(effectiveStaffRights(db, 'store-1', 'storekeeper')).toEqual({ orders: false, purchase_prices: true, reports: false, writeoffs: true })
+    expect(effectiveStaffRights(db, 'tire-1', 'tire_worker')).toEqual({ orders: false, purchase_prices: false, reports: false, writeoffs: false })
   })
 
   it('a switch adds the right to this employee only, survives a reread, and can be turned off', () => {
-    expect(setStaffRight(db, 'cashier-1', 'orders', true)).toEqual({ orders: true, purchase_prices: false, reports: false })
-    expect(setStaffRight(db, 'cashier-1', 'reports', true)).toEqual({ orders: true, purchase_prices: false, reports: true })
+    expect(setStaffRight(db, 'cashier-1', 'orders', true)).toEqual({ orders: true, purchase_prices: false, reports: false, writeoffs: false })
+    expect(setStaffRight(db, 'cashier-1', 'reports', true)).toEqual({ orders: true, purchase_prices: false, reports: true, writeoffs: false })
     expect(effectiveStaffRights(db, 'cashier-2', 'cashier').orders).toBe(false)
-    expect(allStaffRights(db)['cashier-1']).toEqual({ orders: true, purchase_prices: false, reports: true })
+    expect(allStaffRights(db)['cashier-1']).toEqual({ orders: true, purchase_prices: false, reports: true, writeoffs: false })
     expect(allStaffRights(db)['manager-1'].purchase_prices).toBe(false)
     expect(setStaffRight(db, 'manager-1', 'purchase_prices', true).purchase_prices).toBe(true)
-    expect(setStaffRight(db, 'cashier-1', 'orders', false)).toEqual({ orders: false, purchase_prices: false, reports: true })
-    expect(setStaffRight(db, 'cashier-1', 'reports', false)).toEqual({ orders: false, purchase_prices: false, reports: false })
+    expect(setStaffRight(db, 'cashier-1', 'orders', false)).toEqual({ orders: false, purchase_prices: false, reports: true, writeoffs: false })
+    expect(setStaffRight(db, 'cashier-1', 'reports', false)).toEqual({ orders: false, purchase_prices: false, reports: false, writeoffs: false })
   })
 
   it('a stored switch stops working when the role no longer allows it', () => {
     setStaffRight(db, 'cashier-1', 'reports', true)
     // Працівника перевели в комірники: «Бачить звіти» для комірника не вмикається — право не діє.
     expect(effectiveStaffRights(db, 'cashier-1', 'storekeeper').reports).toBe(false)
-    expect(effectiveStaffRights(db, 'cashier-1', 'tire_worker')).toEqual({ orders: false, purchase_prices: false, reports: false })
+    expect(effectiveStaffRights(db, 'cashier-1', 'tire_worker')).toEqual({ orders: false, purchase_prices: false, reports: false, writeoffs: false })
   })
 
   it('refuses a wrong employee, a wrong right, a role that already has it and a role it does not fit', () => {
@@ -62,11 +62,24 @@ describe('staff rights switched on by the owner', () => {
     expect(() => setStaffRight(db, "x' OR 1=1", 'orders', true)).toThrow('Некоректний працівник')
   })
 
+  // 26.11.2026, власник: «зробити доступ до списання в картці менеджера».
+  it('write-off: the owner switches it on for the manager only; the main PC refuses a manager write-off without it', () => {
+    expect(effectiveStaffRights(db, 'manager-1', 'manager').writeoffs).toBe(false)
+    expect(setStaffRight(db, 'manager-1', 'writeoffs', true).writeoffs).toBe(true)
+    expect(effectiveStaffRights(db, 'manager-1', 'manager').writeoffs).toBe(true)
+    expect(() => setStaffRight(db, 'cashier-1', 'writeoffs', true)).toThrow('не вмикається')
+    expect(() => setStaffRight(db, 'store-1', 'writeoffs', true)).toThrow('уже має за своєю роллю')
+    expect(WRITEOFF_CREATE_CHANNELS.has('desktop:warehouse:create-writeoff')).toBe(true)
+    const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8')
+    expect(main).toContain("session.role === 'manager' && WRITEOFF_CREATE_CHANNELS.has(channel)")
+    expect(main).toContain('.writeoffs) {')
+  })
+
   it('damaged stored data never grants anything', () => {
     const now = new Date().toISOString()
     for (const value of ['not json', '{"users":[]}', '{"users":{"cashier-1":{"orders":"yes","reports":1}}}', '{"users":{"cashier-1":null}}']) {
       db.prepare(`INSERT INTO app_meta(key,value_json,updated_at) VALUES('staff-rights:v1',?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json`).run(value, now)
-      expect(effectiveStaffRights(db, 'cashier-1', 'cashier')).toEqual({ orders: false, purchase_prices: false, reports: false })
+      expect(effectiveStaffRights(db, 'cashier-1', 'cashier')).toEqual({ orders: false, purchase_prices: false, reports: false, writeoffs: false })
     }
   })
 

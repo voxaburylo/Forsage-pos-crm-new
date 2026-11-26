@@ -28,7 +28,7 @@ const businessDateFormatter = new Intl.DateTimeFormat('sv-SE', {
   month: '2-digit',
   day: '2-digit',
 })
-function businessDate(value: string | Date = new Date()): string {
+export function businessDate(value: string | Date = new Date()): string {
   const parsed = value instanceof Date ? value : new Date(value)
   return businessDateFormatter.format(Number.isNaN(parsed.getTime()) ? new Date() : parsed)
 }
@@ -1314,6 +1314,32 @@ export class LocalStaffRepository {
         }))
       }
       return created
+    })
+  }
+
+  /**
+   * 26.11.2026, рішення власника: «денна ставка менеджера — за день, коли він увійшов у програму». Менеджер не видає собі
+   * зарплату з каси, тож ставку нараховує перша його дія за день (на головному ПК, з ПК менеджера чи з вебу) — один раз.
+   * Повертає true, якщо нараховано зараз.
+   */
+  accrueManagerWorkDay(userId: string, tenantId = DEFAULT_TENANT_ID, workDate = currentDate()): boolean {
+    const user = this.db.prepare(`
+      SELECT id, full_name, role, base_rate, rate_period FROM staff_users
+      WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL AND COALESCE(is_active, 1) = 1
+    `).get(userId, tenantId) as { id: string; full_name: string; role: string; base_rate: number; rate_period: string } | undefined
+    if (!user || user.role !== 'manager' || user.rate_period !== 'day' || money(user.base_rate) <= 0) return false
+    return this.db.transaction(() => {
+      const existing = this.db.prepare(`
+        SELECT id FROM salary_payments
+        WHERE tenant_id = ? AND employee_id = ? AND work_date = ? AND source = 'daily_rate' AND deleted_at IS NULL LIMIT 1
+      `).get(tenantId, user.id, workDate)
+      if (existing) return false
+      this.insertSalary({
+        tenantId, employeeId: user.id, employeeName: user.full_name, amount: money(user.base_rate), type: 'salary', method: 'cash',
+        period: workDate.slice(0, 7), workDate, source: 'daily_rate', note: 'Денна ставка (день входу в програму)',
+        shiftId: null, userId: user.id, timestamp: nowIso(),
+      })
+      return true
     })
   }
 

@@ -4,7 +4,7 @@
  * разом із вкладеними категоріями й лише тих товарів, що вибрані («Усі», «Наші», «Від постачальників»).
  */
 export interface CatalogCategory { id: string; parent_id: string | null; name: string; ours: number; supplier: number }
-export interface CatalogCategoryTree { categories: CatalogCategory[]; none: { ours: number; supplier: number } }
+export interface CatalogCategoryTree { categories: CatalogCategory[]; none: { ours: number; supplier: number }; suppliers?: Array<{ id: string; name: string }> }
 export type CatalogSource = 'all' | 'ours' | 'supplier'
 export interface CategoryNode { id: string; name: string; total: number; children: CategoryNode[] }
 

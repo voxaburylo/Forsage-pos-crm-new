@@ -180,7 +180,10 @@ export async function listConnections(tenantId: string) {
             c.photos_enabled,
             (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.total_qty > 0)::int AS photos_total,
             (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.total_qty > 0 AND (o.image_url IS NOT NULL OR o.photo_checked_at IS NOT NULL))::int AS photos_done,
-            (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.photo_checked_at > now() - interval '1 hour')::int AS photos_hour
+            (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.photo_checked_at > now() - interval '1 hour')::int AS photos_hour,
+            -- 26.11.2026 (власник: «показати лише фото, товари, кроси, опис — що є і що дає сайту»): скільки товарів уже з фото й з описом.
+            (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.image_url IS NOT NULL)::int AS photos_have,
+            (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND COALESCE(o.description, '') <> '')::int AS descriptions
        FROM supplier_api_connections c WHERE c.tenant_id = $1 ORDER BY c.created_at`, [tenantId])
   const warehouses = (await pool.query('SELECT id, connection_id, code, name, city, days_to_ship, is_active FROM supplier_warehouses WHERE tenant_id = $1 ORDER BY name', [tenantId])).rows
   return rows.map((row: any) => ({
@@ -189,6 +192,7 @@ export async function listConnections(tenantId: string) {
     syncing: Boolean(row.sync_started_at), sync_page: row.sync_page, last_full_sync_at: row.last_full_sync_at ? new Date(row.last_full_sync_at).toISOString() : null,
     last_error: row.last_error, total_offers: row.total_offers, offers: row.offers, linked: row.linked,
     crosses_done: row.crosses_done ?? 0, crosses_total: row.crosses_total ?? 0, details_done: row.details_done ?? 0,
+    photos_have: row.photos_have ?? 0, descriptions: row.descriptions ?? 0,
     progress: connectionProgress(row),
     warehouses: warehouses.filter((w: any) => w.connection_id === row.id).map((w: any) => ({ id: w.id, code: w.code, name: w.name, city: w.city, days_to_ship: w.days_to_ship, is_active: w.is_active })),
   }))

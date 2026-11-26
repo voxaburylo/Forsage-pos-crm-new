@@ -4,6 +4,7 @@
   "installCommand": "pnpm install --no-frozen-lockfile",
   "framework": "vite",
   "regions": ["dub1"],
+  "fluid": true,
   "build": {
     "env": {
       "VITE_SUPABASE_URL": "https://zuhanlspejgizjbwbnda.supabase.co",

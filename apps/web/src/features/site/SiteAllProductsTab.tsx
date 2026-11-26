@@ -39,8 +39,11 @@ const message = (reason: unknown, fallback: string) => reason instanceof Error &
 const qtyText = (qty: number) => Number.isInteger(qty) ? String(qty) : qty.toFixed(2)
 
 export const catalogApi = {
-  list: (params: { q: string; source: string; flag: string; page: number; category?: string }) =>
-    api.get<{ data: CatalogPage }>(`${BASE}?${new URLSearchParams({ q: params.q, source: params.source, flag: params.flag, category: params.category ?? '', page: String(params.page), per_page: '50' })}`, quiet),
+  // «conn:<id>» у виборі «Чиї товари» — товари одного постачальника (Омега, GPL).
+  list: (params: { q: string; source: string; flag: string; page: number; category?: string }) => {
+    const connection = params.source.startsWith('conn:') ? params.source.slice(5) : ''
+    return api.get<{ data: CatalogPage }>(`${BASE}?${new URLSearchParams({ q: params.q, source: connection ? 'supplier' : params.source, connection, flag: params.flag, category: params.category ?? '', page: String(params.page), per_page: '50' })}`, quiet)
+  },
   categories: () => api.get<{ data: CatalogCategoryTree }>(`${BASE}/categories`, quiet),
   offer: (key: string) => api.get<{ data: OfferCard }>(`${BASE}/offers/${encodeURIComponent(key)}`, quiet),
   patchOffer: (key: string, body: Record<string, unknown>) => api.patch<{ data: OfferCard }>(`${BASE}/offers/${encodeURIComponent(key)}`, body, quiet),
@@ -123,7 +126,7 @@ export function SiteAllProductsTab() {
 
   return (
     <div className="flex flex-col gap-3 md:flex-row md:items-start" data-site-all-products>
-      <SiteCategoryPanel tree={tree} source={source as CatalogSource} value={category} onChange={setCategory} />
+      <SiteCategoryPanel tree={tree} source={(source.startsWith('conn:') ? 'supplier' : source) as CatalogSource} value={category} onChange={setCategory} />
       <div className="min-w-0 flex-1 space-y-3">
       <nav aria-label="Де ви зараз" className="flex flex-wrap items-center gap-1 text-sm text-gray-500" data-site-breadcrumb>
         <button type="button" onClick={() => setCategory('')} className={category ? 'hover:text-gray-900 hover:underline' : 'font-semibold text-gray-900'}>Усі товари</button>
@@ -144,9 +147,12 @@ export function SiteAllProductsTab() {
         <div className="flex w-full gap-2 sm:w-auto" data-site-filters>
         <select aria-label="Чиї товари" value={source} onChange={event => { setSource(event.target.value); setPage(1) }} className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-2 py-2 text-sm sm:flex-none">
           <option value="all">Усі</option><option value="ours">Наші</option><option value="supplier">Від постачальників</option>
+          {/* 26.11.2026 (власник): «і за постачальниками» — кожен постачальник окремо. */}
+          {(tree?.suppliers ?? []).map(item => <option key={item.id} value={'conn:' + item.id}>{item.name}</option>)}
         </select>
         <select aria-label="Відбір" value={flag} onChange={event => { setFlag(event.target.value); setPage(1) }} className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-2 py-2 text-sm sm:flex-none">
-          <option value="">Без відбору</option><option value="no_barcode">Без штрихкоду</option><option value="no_photo">Без фото</option>
+          <option value="">Без відбору</option><option value="in_stock">В наявності</option><option value="with_photo">З фото</option>
+          <option value="no_photo">Без фото</option><option value="no_barcode">Без штрихкоду</option>
           <option value="no_stock">Немає в наявності</option><option value="hidden">Прибрані з сайту</option>
         </select>
         </div>

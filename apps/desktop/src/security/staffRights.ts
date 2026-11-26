@@ -8,7 +8,8 @@ import type { LocalDatabase } from '../db/localDatabase'
  *  - purchase_prices — закупівельна ціна в картці товару (бачить і може змінити);
  *  - reports         — «Аналітика → Статистика» (обороти, залишки, борги; прибуток лишається власнику).
  */
-export const STAFF_RIGHTS = ['orders', 'purchase_prices', 'reports'] as const
+// 26.11.2026 (власник: «зробити доступ до списання в картці менеджера»): writeoffs — «Склад → Списання» (акт списання).
+export const STAFF_RIGHTS = ['orders', 'purchase_prices', 'reports', 'writeoffs'] as const
 export type StaffRight = typeof STAFF_RIGHTS[number]
 export type StaffRights = Record<StaffRight, boolean>
 
@@ -18,13 +19,18 @@ const BY_ROLE: Record<StaffRight, readonly string[]> = {
   orders: ['owner', 'admin', 'manager'],
   purchase_prices: ['owner', 'admin', 'storekeeper'],
   reports: ['owner', 'admin', 'manager'],
+  writeoffs: ['owner', 'admin', 'storekeeper'],
 }
 /** Кому перемикач має сенс: роль із входом у програму, якій право не дане роллю. */
 const SWITCHABLE: Record<StaffRight, readonly string[]> = {
   orders: ['cashier', 'storekeeper'],
   purchase_prices: ['cashier', 'manager'],
   reports: ['cashier'],
+  writeoffs: ['manager'],
 }
+
+/** Дії, що створюють списання: менеджеру — лише з перемикачем «Списує товар». */
+export const WRITEOFF_CREATE_CHANNELS = new Set(['desktop:warehouse:create-writeoff'])
 
 type Stored = Record<string, Partial<Record<StaffRight, boolean>>>
 

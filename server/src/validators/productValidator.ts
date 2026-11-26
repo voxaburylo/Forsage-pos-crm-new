@@ -54,7 +54,7 @@ export const productListSchema = z.object({
   low_stock: z.enum(['true', 'false']).optional(),
   // Контрольні фільтри власника: від'ємні залишки (наслідок продажу при 0)
   // та товари без роздрібної ціни (нерозпізнана ціна при імпорті)
-  stock_filter: z.enum(['negative', 'no_price']).optional(),
+  stock_filter: z.enum(['negative', 'no_price', 'in_stock']).optional(),
   // Галерея «Швидкий доступ» на касі: лише товари з позначкою «⭐ Швидкий товар».
   favorites: z.enum(['true', 'false']).optional(),
   page: z.coerce.number().int().min(1).default(1),

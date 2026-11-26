@@ -120,7 +120,7 @@ export const INVENTORY_TABS = [
   { to: '/inventory', label: 'Ревізія залишків', roles: ['owner', 'admin', 'manager', 'cashier', 'storekeeper', 'sto_viewer'] },
   { to: '/inventory/movements', label: 'Між комірками', roles: ['owner', 'admin', 'storekeeper'] },
   { to: '/inventory/reserves', label: 'Резерви замовлень', roles: ['owner', 'admin', 'manager', 'storekeeper'] },
-  { to: '/inventory/writeoffs', label: 'Списання', roles: ['owner', 'admin', 'storekeeper'] },
+  { to: '/inventory/writeoffs', label: 'Списання', roles: ['owner', 'admin', 'storekeeper'], right: 'writeoffs' },
   // 24.11.2026: товар, узятий зі складу для потреб самого магазину (раніше — окремий пункт меню «Внутрішнє споживання»).
   { to: '/internal', label: 'Для потреб магазину', roles: ['owner', 'admin', 'manager'] },
 ]

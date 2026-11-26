@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { ChevronDown } from 'lucide-react'
 import { desktopBridge } from '@/lib/desktopBridge'
 import { toast } from '@/components/ui/Toast'
 import { RIGHT_SWITCH_TEXT, roleRights, roleSwitches } from './staffRights'
@@ -134,7 +135,7 @@ export function ManagerSaleToggle({ userId }: { userId: string }) {
  * 24.11.2026 (рішення власника): право працівника, яке вмикає власник понад роль — замовлення, закупівельні ціни, звіти.
  * Діє одразу, зберігається в базі головного ПК; у працівника — за хвилину або після повернення до вікна.
  */
-export function StaffRightToggle({ userId, right }: { userId: string; right: 'orders' | 'purchase_prices' | 'reports' }) {
+export function StaffRightToggle({ userId, right }: { userId: string; right: 'orders' | 'purchase_prices' | 'reports' | 'writeoffs' }) {
   const staff = desktopBridge()?.staff
   const text = RIGHT_SWITCH_TEXT[right]
   const [allowed, setAllowed] = useState<boolean | null>(null)
@@ -182,9 +183,14 @@ export function StaffRightsBlock({ userId, role, savedRole }: { userId: string; 
   const rights = roleRights(role)
   const switches = roleSwitches(role)
   const online = Boolean(desktopBridge()?.staff?.webAccess)
+  // 26.11.2026, власник: «галочки функцій менеджера — випадаючим вікном»: блок згорнутий в один рядок, розгортається натиском.
   return (
-    <div className="bg-blue-50/60 rounded-xl p-4 space-y-3 border border-blue-100" data-staff-rights={role}>
-      <h4 className="text-sm font-bold text-gray-800">Права</h4>
+    <details className="group rounded-xl border border-blue-100 bg-blue-50/60" data-staff-rights={role}>
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-4 py-3 text-sm font-bold text-gray-800 [&::-webkit-details-marker]:hidden">
+        <span>Права й дозволи{switches.length > 0 ? <span className="ml-1.5 font-normal text-gray-500">· перемикачів: {switches.length}</span> : null}</span>
+        <ChevronDown size={16} className="shrink-0 text-gray-500 transition-transform group-open:rotate-180" aria-hidden="true" />
+      </summary>
+      <div className="space-y-3 border-t border-blue-100 px-4 pb-4 pt-3">
       {rights.can.length > 0 && (
         <div>
           <p className="text-xs font-semibold text-emerald-800">Дозволено за роллю</p>
@@ -205,7 +211,7 @@ export function StaffRightsBlock({ userId, role, savedRole }: { userId: string; 
             : !online
               ? <p className="text-xs text-amber-800">Перемикачі доступні, коли головний ПК увімкнено й на звʼязку.</p>
               : <>
-                {(['orders', 'purchase_prices', 'reports'] as const).filter(right => switches.includes(right)).map(right => <StaffRightToggle key={right} userId={userId} right={right} />)}
+                {(['orders', 'purchase_prices', 'reports', 'writeoffs'] as const).filter(right => switches.includes(right)).map(right => <StaffRightToggle key={right} userId={userId} right={right} />)}
                 {switches.includes('web') && <WebWorkToggle userId={userId} />}
                 {switches.includes('sale') && <ManagerSaleToggle userId={userId} />}
                 {switches.includes('deposit') && <ManagerDepositToggle userId={userId} />}
@@ -213,6 +219,7 @@ export function StaffRightsBlock({ userId, role, savedRole }: { userId: string; 
         </div>
       )}
       <p className="text-xs text-gray-500">Інші права дає роль: змініть «Роль» у профілі вище.</p>
-    </div>
+      </div>
+    </details>
   )
 }

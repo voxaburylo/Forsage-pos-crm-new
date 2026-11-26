@@ -157,7 +157,7 @@ export interface DesktopCatalogListOptions {
   categoryId?: string
   brandId?: string
   lowStock?: boolean
-  stockFilter?: 'negative' | 'no_price' | ''
+  stockFilter?: 'negative' | 'no_price' | 'in_stock' | ''
   favorites?: boolean
   sortField?: 'sku' | 'name' | 'retail_price' | 'qty_on_hand' | 'brand'
   sortDir?: 'asc' | 'desc'
@@ -707,12 +707,12 @@ export interface ForsageDesktopBridge {
     webAccess?: () => Promise<string[]>
     setWebAccess?: (id: string, enabled: boolean) => Promise<string[]>
     /** 24.11.2026: права працівника перемикачами (замовлення, закупівельні ціни, звіти) — зберігає головний ПК. */
-    rights?: () => Promise<Record<string, { orders: boolean; purchase_prices: boolean; reports: boolean }>>
+    rights?: () => Promise<Record<string, { orders: boolean; purchase_prices: boolean; reports: boolean; writeoffs?: boolean }>>
     /** 24.11.2026 (план C9): стиснення старого журналу відправлених операцій (лише власник, головний ПК). */
     outboxPreview?: () => Promise<{ rows: number; bytes: number; older_than: string; journal_rows: number; journal_bytes: number }>
     outboxCompact?: () => Promise<{ rows: number; bytes: number }>
-    setRight?: (id: string, right: string, enabled: boolean) => Promise<{ orders: boolean; purchase_prices: boolean; reports: boolean }>
-    myRights?: () => Promise<{ orders: boolean; purchase_prices: boolean; reports: boolean }>
+    setRight?: (id: string, right: string, enabled: boolean) => Promise<{ orders: boolean; purchase_prices: boolean; reports: boolean; writeoffs?: boolean }>
+    myRights?: () => Promise<{ orders: boolean; purchase_prices: boolean; reports: boolean; writeoffs?: boolean }>
     /** 22.11.2026: менеджери, яким власник дозволив лише приймати задаток за замовленнями. */
     depositAccess?: () => Promise<string[]>
     setDepositAccess?: (id: string, enabled: boolean) => Promise<string[]>

@@ -26,7 +26,7 @@ describe('rights block in the staff card', () => {
 
   it('shows the owner switches by role', () => {
     expect(roleSwitches('cashier')).toEqual(['orders', 'purchase_prices', 'reports', 'web'])
-    expect(roleSwitches('manager')).toEqual(['sale', 'deposit', 'purchase_prices'])
+    expect(roleSwitches('manager')).toEqual(['sale', 'deposit', 'purchase_prices', 'writeoffs'])
     expect(roleSwitches('storekeeper')).toEqual(['orders'])
     expect(roleSwitches('owner')).toEqual([])
     expect(roleSwitches('tire_worker')).toEqual([])

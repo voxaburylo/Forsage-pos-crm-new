@@ -2,7 +2,7 @@ export type CatalogSearchScope = {
   category: string
   brand: string
   lowStock: boolean
-  stock: '' | 'negative' | 'no_price'
+  stock: '' | 'negative' | 'no_price' | 'in_stock'
 }
 
 /** Scope transition shared by typed search and the existing barcode scanner. */

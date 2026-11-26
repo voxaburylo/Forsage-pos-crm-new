@@ -16,6 +16,7 @@ export function catalogListQuery(filters: ProductListQuery, tenantId: string, te
   if (filters.low_stock === 'true') where.push('p.qty_on_hand <= p.reorder_point')
   if (filters.stock_filter === 'negative') where.push('p.qty_on_hand < 0')
   if (filters.stock_filter === 'no_price') where.push('p.retail_price = 0')
+  if (filters.stock_filter === 'in_stock') where.push('p.qty_on_hand > 0')
   if (filters.favorites === 'true') where.push('p.is_favorite IS TRUE')
 
   const raw = filters.search?.trim() ?? ''

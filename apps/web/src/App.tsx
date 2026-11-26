@@ -295,9 +295,9 @@ function Workspace() {
           <Route path="/inventory/:id"          element={<TillOnly what="Ревізія"><ProtectedRoute roles={INVENTORY_COUNTER_ROLES}><ActiveSession /></ProtectedRoute></TillOnly>} />
           <Route path="/inventory/reserves"      element={<TillOnly what="Резерви"><ProtectedRoute roles={['owner', 'admin', 'manager', 'storekeeper']}><ReservesList /></ProtectedRoute></TillOnly>} />
           <Route path="/inventory/movements"     element={<TillOnly what="Переміщення складу"><ProtectedRoute roles={WAREHOUSE_ROLES}><WarehouseMovementPage /></ProtectedRoute></TillOnly>} />
-          <Route path="/inventory/writeoffs"     element={<TillOnly what="Списання"><ProtectedRoute roles={WAREHOUSE_ROLES}><WriteoffsPage /></ProtectedRoute></TillOnly>} />
-          <Route path="/inventory/writeoffs/new" element={<TillOnly what="Списання"><ProtectedRoute roles={WAREHOUSE_ROLES}><WriteoffFormPage /></ProtectedRoute></TillOnly>} />
-          <Route path="/inventory/writeoffs/:id" element={<TillOnly what="Списання"><ProtectedRoute roles={WAREHOUSE_ROLES}><WriteoffDetailPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/inventory/writeoffs"     element={<TillOnly what="Списання"><ProtectedRoute roles={WAREHOUSE_ROLES} right="writeoffs"><WriteoffsPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/inventory/writeoffs/new" element={<TillOnly what="Списання"><ProtectedRoute roles={WAREHOUSE_ROLES} right="writeoffs"><WriteoffFormPage /></ProtectedRoute></TillOnly>} />
+          <Route path="/inventory/writeoffs/:id" element={<TillOnly what="Списання"><ProtectedRoute roles={WAREHOUSE_ROLES} right="writeoffs"><WriteoffDetailPage /></ProtectedRoute></TillOnly>} />
 
           {/* Чат-боти — окремий розділ (той самий компонент у режимі chatMode) */}
           <Route path="/chats" element={<TillOnly what="Замовлення"><ProtectedRoute roles={OFFICE_ROLES} right="orders"><OrdersPage /></ProtectedRoute></TillOnly>} />

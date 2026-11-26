@@ -31,7 +31,7 @@ describe('load circle text', () => {
 describe('API keys tab layout', () => {
   const read = (file: string) => readFileSync(new URL(file, import.meta.url), 'utf8')
 
-  it('suppliers and their warehouses fold; every warehouse row has the circle; numbers being typed survive the auto-refresh', () => {
+  it('suppliers and their warehouses fold; no circle by the warehouses (owner, 26.11); numbers being typed survive the auto-refresh', () => {
     const card = read('./SupplierApiCard.tsx')
     expect(card).toContain('<details open={open || undefined}')
     // 26.11.2026: склади — усередині блоку постачальника; у заголовку — загальний стан усіх завантажень.
@@ -39,7 +39,9 @@ describe('API keys tab layout', () => {
     expect(card).toContain('{warehousesOf(omega)}')
     expect(card).toContain('{warehousesOf(gpl)}')
     expect(card).toContain('conn.progress?.overall ?? conn.progress?.price')
-    expect(card).toContain("<LoadRing progress={w.is_active ? conn.progress?.price : null}")
+    expect(card).not.toContain('<LoadRing progress={w.is_active')
+    expect(card).toContain('<SupplierStats conn={omega} />')
+    expect(card).toContain('<SupplierStats conn={gpl} />')
     expect(card).toContain('}, 120_000)')
     expect(card).toContain('...current }))')
     expect(card).toContain('data-supplier-gpl')

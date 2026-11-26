@@ -18,7 +18,7 @@ const shot = process.argv.find(arg => arg.startsWith('--screenshot='))?.slice('-
 const warehouses = Array.from({ length: 14 }, (_, i) => ({ id: 'w' + i, code: 'W' + i, name: ['Житомир 1', 'Запоріжжя 1', 'Київ 1', 'Київ 2', 'Львів 1', 'Одеса 1', 'Дніпро 1'][i % 7] + (i >= 7 ? ' (2)' : ''), city: null, days_to_ship: i === 0 ? 1 : null, is_active: i !== 3 }))
 const connections = [
   { id: 'c1', provider: 'omega', name: 'Омега', key_hint: '…ab12', enabled: true, syncing: true, sync_page: 21, last_full_sync_at: null, last_error: null, total_offers: 80000, offers: 79075, linked: 370,
-    crosses_done: 1200, crosses_total: 30000, details_done: 900, warehouses,
+    crosses_done: 1200, crosses_total: 30000, details_done: 900, photos_have: 4803, descriptions: 0, warehouses,
     progress: { overall: { fraction: 0.09, eta_ms: 16 * 86400000, loading: true, next_at: null }, photos: { fraction: 0.05, eta_ms: null, loading: true, next_at: null, note: 'разом із кросами, повільніше' }, price: { fraction: 0.25, eta_ms: 3 * 3600000 + 20 * 60000, loading: true, next_at: null },
       crosses: { fraction: 0.015, eta_ms: 16 * 86400000, loading: true, next_at: null }, details: { fraction: 0.011, eta_ms: 13 * 86400000, loading: true, next_at: null } } },
 ]
@@ -87,10 +87,16 @@ try {
         // У заголовку — загальний стан усіх завантажень (кроси ще вантажаться — отже, не «завантажено»).
         assert.match(await page.locator('details[data-supplier-fold="Омега"] summary').innerText(), /9 %.*лишилось ≈ 16 дн/s, label)
         await page.locator('details[data-supplier-fold="Омега"] summary').click()
-        const details = await page.locator('details[data-supplier-fold="Омега"] [data-supplier-progress]').innerText()
-        for (const text of ['Прайс і склади', 'Кроси', 'Опис', 'Фото', 'разом із кросами, повільніше']) assert.ok(details.includes(text), `${label}: у розкритому блоці немає «${text}»`)
+        // 26.11.2026 (власник): чотири плитки — товари, фото, кроси, опис; без «налiпленого» тексту.
+        const tiles = await page.locator('details[data-supplier-fold="Омега"] [data-supplier-tile]').evaluateAll(nodes => nodes.map(node => node.dataset.supplierTile + ':' + node.innerText.replace(/\s+/g, ' ')))
+        assert.deepEqual(tiles.map(tile => tile.split(':')[0]), ['goods', 'photos', 'crosses', 'details'], label)
+        assert.match(tiles[0], /79 075/, label)
+        assert.match(tiles[1], /4 803/, label)
+        assert.match(tiles[2], /1 200.*вантажиться · 1 %/, label)
+        const rows = await page.locator('details[data-supplier-fold="Омега"] [data-supplier-tile]').evaluateAll(nodes => new Set(nodes.map(node => Math.round(node.getBoundingClientRect().top))).size)
+        assert.ok(rows <= 2, `${label}: плитки в ${rows} ряди`)
         assert.ok(await page.locator('details[data-supplier-fold="Омега"] [data-supplier-warehouses]').isVisible(), label + ': склади — усередині блоку Омеги')
-        assert.equal(await page.locator('[data-supplier-warehouses] li [data-load-ring]').count(), 13, label + ': кружечок біля кожного ввімкненого складу')
+        assert.equal(await page.locator('[data-supplier-warehouses] li [data-load-ring]').count(), 0, label + ': кружечок біля складу прибрано')
         // Прокручуємо: панель вкладок прилягає до верху робочої області, над нею сторінку не видно.
         const main = page.locator('#app-main-scroll')
         await main.evaluate(node => { node.scrollTop = 600 })
@@ -122,7 +128,7 @@ try {
     } finally { await browser.close() }
   }
   console.log(results.join('\n'))
-  console.log('PASS settings API tab: flush tab bar, folded suppliers and warehouses, load circles')
+  console.log('PASS settings API tab: flush tab bar, folded suppliers and warehouses, four tiles (goods, photos, crosses, description)')
 } finally {
   await server.close()
 }
