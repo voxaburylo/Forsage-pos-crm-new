@@ -28,7 +28,7 @@ export interface SeoUser { id: string; tenant_id: string; role?: string }
 /** Усе зовнішнє — параметрами, щоб розмову можна було перевірити тестом без бази, сайту й моделі. */
 export interface SeoDeps {
   gateway: (action: string, params: Record<string, unknown>) => Promise<unknown>
-  listProducts: (query: { q: string; category: string; flag: '' | 'in_stock' | 'with_photo'; page: number }) => Promise<{ rows: Array<Record<string, any>>; total: number; pages: number }>
+  listProducts: (query: { q: string; category: string; flag: '' | 'in_stock' | 'with_photo' | 'in_stock_photo'; page: number }) => Promise<{ rows: Array<Record<string, any>>; total: number; pages: number }>
   listCategories: () => Promise<Array<{ id: string; parent_id: string | null; name: string }>>
   productNames: (ids: string[]) => Promise<Map<string, { name: string; sku: string | null }>>
   fetchPage: (path: string) => Promise<string>
@@ -39,12 +39,17 @@ export interface SeoDeps {
 const newId = () => 'seo_' + Math.random().toString(36).slice(2, 10)
 const str = (value: unknown, max: number) => typeof value === 'string' ? value.trim().slice(0, max) : ''
 
+/** Обидва відбори разом — окремий прапорець: раніше «в наявності» мовчки відкидало «з фото» (26.11.2026, слова помічника наживо). */
+export function productFlag(inStock: boolean, withPhoto: boolean): '' | 'in_stock' | 'with_photo' | 'in_stock_photo' {
+  return inStock && withPhoto ? 'in_stock_photo' : inStock ? 'in_stock' : withPhoto ? 'with_photo' : ''
+}
+
 export async function handleSeoTool(name: string, args: Record<string, any>, deps: SeoDeps, actions: SeoAction[],
   research: (topic: string) => Promise<unknown>): Promise<unknown> {
   switch (name) {
     case 'list_products': {
       const page = Math.min(Math.max(Math.trunc(Number(args.page) || 1), 1), 5000)
-      const found = await deps.listProducts({ q: str(args.q, 120), category: str(args.category_id, 40), flag: args.in_stock === true ? 'in_stock' : args.with_photo === true ? 'with_photo' : '', page })
+      const found = await deps.listProducts({ q: str(args.q, 120), category: str(args.category_id, 40), flag: productFlag(args.in_stock === true, args.with_photo === true), page })
       return { total: found.total, page, pages: found.pages, products: found.rows.map(row => ({
         product_id: row.id, sku: row.sku, name: row.name, brand: row.brand, category: row.category, qty: Number(row.qty) || 0, has_photo: Boolean(row.photo), hidden: Boolean(row.hidden) })) }
     }

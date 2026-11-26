@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { applyArticle, applyForumPost, applyProductTexts, applySectionSeo, applySiteSeo, SEO_QUICK, seoHistory, type SeoCall } from './siteSeo'
-import { forumStatsLine, forumTextProblem, waitingTopics } from './siteForum'
+import { forumStatsLine, forumTextProblem, sectionName, waitingTopics } from './siteForum'
 
 // Помічник сайту: підтверджене власником записується на сайт через шлюз (кожна зміна — в журнал аудиту на сервері).
 describe('site SEO assistant: confirmed proposals are written through the site gateway', () => {
@@ -89,6 +89,13 @@ describe('forum tab helpers', () => {
     const topics = [{ id: 1, title: 'a', replies_count: 0 }, { id: 2, title: 'b', replies_count: 0, is_shop: true }, { id: 3, title: 'c', replies_count: 2 },
       { id: 4, title: 'd', replies_count: 0, is_hidden: true }, { id: 5, title: 'e', replies_count: 0, is_locked: true }, { id: 6, title: 'f s' }]
     expect(waitingTopics(topics).map(topic => topic.id)).toEqual([1, 6])
+  })
+  it('a topic shows the section name, not its code', () => {
+    const sections = [{ id: 7, slug: 'viyskovi-l200', name: 'Mitsubishi L200 / Pajero Sport' }, { id: 8, slug: 'shyny', name: 'Шини s' }]
+    expect(sectionName(sections, 'viyskovi-l200')).toBe('Mitsubishi L200 / Pajero Sport')
+    expect(sectionName(sections, '8')).toBe('Шини s')
+    expect(sectionName(sections, 'unknown-code')).toBe('unknown-code')
+    expect(sectionName(null, null)).toBe('')
   })
   it('the weekly statistics line shows the numbers the site gave, in plain words', () => {
     expect(forumStatsLine({ new_topics: 4, replies: 12, new_customers: 2, popular: [{ id: 1 }] }, 7)).toBe('За 7 днів: 4 нових тем · 12 відповідей · 2 нових покупців.')

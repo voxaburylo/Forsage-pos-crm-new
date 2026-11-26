@@ -11,7 +11,7 @@ export interface ProductFacts {
   oem?: string | null; specs?: unknown; crosses?: readonly string[]
 }
 export interface TextFields { description: string; seo_title: string; seo_description: string; seo_keywords?: string }
-export const TEXT_LIMITS = { descriptionMin: 150, descriptionMax: 1500, titleMin: 20, titleMax: 70, metaMin: 70, metaMax: 170 } as const
+export const TEXT_LIMITS = { descriptionMin: 150, descriptionMax: 1500, titleMin: 20, titleMax: 70, metaMin: 100, metaMax: 170 } as const
 
 /** Загальновживані позначення, які не є фактом про конкретний товар. */
 const COMMON_LATIN = new Set(['sae', 'api', 'acea', 'oem', 'oe', 'led', 'abs', 'esp', 'dot', 'iso', 'din', 'atf', 'suv', 'gps', 'usb', 'pvc', 'ok'])
@@ -112,7 +112,7 @@ export function textJobPrompt(styleNote: string | null): string {
 Для КОЖНОГО товару зі списку поверни три тексти українською:
 - description — опис для сторінки, ${TEXT_LIMITS.descriptionMin + 100}–700 знаків, 3–5 речень звичайною мовою: що це за товар, для чого він, що видно з його даних (бренд, розмір, обʼєм, вʼязкість, сторона, комплектність, артикул), на що звернути увагу при виборі.
 - seo_title — заголовок сторінки для пошуковика, 35–60 знаків: що це + бренд + модель чи артикул + головна характеристика. Без назви магазину.
-- seo_description — опис для пошуковика, 110–155 знаків: що це, для чого, і спокійне завершення на кшталт «Замовляйте з доставкою по Україні». Без лапок і великих літер підряд.
+- seo_description — опис для пошуковика, 140–160 знаків (порахуй: коротший за 140 не годиться): що це, для чого чи на яке авто, головна характеристика з даних товару, і спокійне завершення на кшталт «Замовляйте з доставкою по Україні». Без лапок і великих літер підряд.
 
 - seo_keywords — 4–8 коротких фраз через кому, якими шукають саме цей товар: вид товару, бренд, модель чи артикул, головна характеристика («моторна олива 5W-40, Castrol Magnatec, олива 4 л»). Лише з даних товару; без «купити», «ціна», назв міст.
 

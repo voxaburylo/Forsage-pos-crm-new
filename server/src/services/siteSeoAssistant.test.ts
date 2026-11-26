@@ -109,3 +109,14 @@ describe('site SEO assistant: reads the shop and the site, only proposes', () =>
     expect(checkProductTexts([{ product_id: id(1) }], new Set([id(1)])).refused[0].reason).toBe('порожня пропозиція')
   })
 })
+
+// 26.11.2026 (перевірка наживо): «в наявності» мовчки відкидало «з фото» — помічник отримував товари без фото.
+describe('product filter: both wishes together', () => {
+  it('keeps both, and each one alone', async () => {
+    const { productFlag } = await import('./siteSeoAssistant.js')
+    expect(productFlag(true, true)).toBe('in_stock_photo')
+    expect(productFlag(true, false)).toBe('in_stock')
+    expect(productFlag(false, true)).toBe('with_photo')
+    expect(productFlag(false, false)).toBe('')
+  })
+})
