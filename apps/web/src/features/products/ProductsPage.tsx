@@ -100,7 +100,7 @@ export default function ProductsPage() {
   const [debouncedSearch, setDebouncedSearch] = useState(search)
   const [lowStock, setLowStock]     = useListViewState('products:lowStock', false)
   // Контрольні фільтри власника: мінусові залишки / товари без ціни
-  const [stockFilter, setStockFilter] = useListViewState<'' | 'negative' | 'no_price'>('products:stockFilter', '')
+  const [stockFilter, setStockFilter] = useListViewState<'' | 'negative' | 'no_price' | 'in_stock'>('products:stockFilter', '')
   const [page, setPage]             = useListViewState('products:page', 1)
   // Нескінченний скрол: накопичуємо сторінки по 100 (ключ = номер сторінки),
   // щоб при докручуванні донизу дозавантажувати наступні 100, а не гортати сторінками.
@@ -680,6 +680,14 @@ export default function ProductsPage() {
                 lowStock ? 'bg-orange-100 border-orange-300 text-orange-700' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
               }`}>
               <AlertTriangle size={14} /> Мало на складі
+            </button>
+            {/* 26.11.2026 (власник): «у товарах — які в наявності, теж такий відбір». */}
+            <button onClick={() => { setStockFilter(stockFilter === 'in_stock' ? '' : 'in_stock'); setPage(1) }} data-stock-filter="in_stock"
+              title="Лише товари, що є на складі (залишок більше нуля)"
+              className={`w-full md:w-auto justify-center flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-medium border transition-colors ${
+                stockFilter === 'in_stock' ? 'bg-emerald-100 border-emerald-300 text-emerald-700' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
+              }`}>
+              ✓ В наявності
             </button>
             <button onClick={() => { setStockFilter(stockFilter === 'negative' ? '' : 'negative'); setPage(1) }}
               title="Товари, що пішли в мінус через продаж при нульовому залишку — вирівняйте ревізією"

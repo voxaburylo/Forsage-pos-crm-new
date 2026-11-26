@@ -36,7 +36,7 @@ export interface ProductFilters {
   brand_id?: string
   is_active?: string
   low_stock?: string
-  stock_filter?: 'negative' | 'no_price'
+  stock_filter?: 'negative' | 'no_price' | 'in_stock'
   /** 'true' — лише товари з позначкою «⭐ Швидкий товар». */
   favorites?: 'true'
   page?: number

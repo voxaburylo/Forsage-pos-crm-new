@@ -157,7 +157,7 @@ export interface DesktopCatalogListOptions {
   categoryId?: string
   brandId?: string
   lowStock?: boolean
-  stockFilter?: 'negative' | 'no_price' | ''
+  stockFilter?: 'negative' | 'no_price' | 'in_stock' | ''
   favorites?: boolean
   sortField?: 'sku' | 'name' | 'retail_price' | 'qty_on_hand' | 'brand'
   sortDir?: 'asc' | 'desc'

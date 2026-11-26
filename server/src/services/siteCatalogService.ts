@@ -17,7 +17,10 @@ import { categoryRows, categorySubtree } from './siteCatalogCategories.js'
 export const catalogQuerySchema = z.object({
   q: z.string().trim().max(120).optional().default(''),
   source: z.enum(['all', 'ours', 'supplier']).default('all'),
-  flag: z.enum(['', 'no_barcode', 'no_photo', 'hidden', 'no_stock']).default(''),
+  // 26.11.2026 (власник): ще «з фото» і «в наявності».
+  flag: z.enum(['', 'no_barcode', 'no_photo', 'with_photo', 'in_stock', 'hidden', 'no_stock']).default(''),
+  // 26.11.2026 (власник: «і за постачальниками»): товари одного підключення (Омега, GPL); з ним «наших» не показуємо.
+  connection: z.union([z.literal(''), z.string().uuid()]).optional().default(''),
   // 26.11.2026: категорія програми (разом із вкладеними) або 'none' — «Без категорії»; порожньо — усі товари.
   category: z.union([z.literal(''), z.literal('none'), z.string().uuid()]).optional().default(''),
   page: z.coerce.number().int().min(1).max(100_000).default(1),
@@ -59,6 +62,8 @@ function sourceFilters(kind: 'ours' | 'supplier', terms: string[], flag: Catalog
   const column = (ours: string, offer: string) => kind === 'ours' ? ours : offer
   if (flag === 'no_barcode') where.push(`COALESCE(${column('p.barcode', 'COALESCE(o.custom_barcode, o.barcode)')}, '') = ''`)
   if (flag === 'no_photo') where.push(`COALESCE(${column('p.photo_url', 'o.image_url')}, '') = ''`)
+  if (flag === 'with_photo') where.push(`COALESCE(${column('p.photo_url', 'o.image_url')}, '') <> ''`)
+  if (flag === 'in_stock') where.push(`${column('p.qty_on_hand', 'o.total_qty')} > 0`)
   if (flag === 'hidden') where.push(kind === 'ours' ? 'false' : 'o.hidden')
   if (flag === 'no_stock') where.push(`${column('p.qty_on_hand', 'o.total_qty')} <= 0`)
   return where
@@ -72,13 +77,15 @@ export async function listSiteCatalog(tenantId: string, role: string, query: Cat
   const terms = searchTerms(query.q)
   const size = query.per_page
   const offset = (query.page - 1) * size
-  const wantOurs = query.source !== 'supplier', wantOffers = query.source !== 'ours'
+  const wantOurs = query.source !== 'supplier' && !query.connection, wantOffers = query.source !== 'ours'
   const category: CategoryPick = query.category === 'none' ? 'none' : query.category ? categorySubtree(await categoryRows(tenantId), query.category) : null
 
   const oursParams: unknown[] = [tenantId]
   const oursWhere = ['p.tenant_id = $1', 'p.deleted_at IS NULL', ...sourceFilters('ours', terms, query.flag, oursParams, category)].join(' AND ')
   const offersParams: unknown[] = [tenantId]
-  const offersWhere = ['o.tenant_id = $1', ...sourceFilters('supplier', terms, query.flag, offersParams, category)].join(' AND ')
+  const offersFilters = sourceFilters('supplier', terms, query.flag, offersParams, category)
+  if (query.connection) { offersParams.push(query.connection); offersFilters.push(`o.connection_id = $${offersParams.length}`) }
+  const offersWhere = ['o.tenant_id = $1', ...offersFilters].join(' AND ')
 
   const [oursTotal, offersTotal] = await Promise.all([
     wantOurs ? pool.query(`SELECT count(*)::int AS n FROM products p WHERE ${oursWhere}`, oursParams).then(r => Number(r.rows[0]?.n ?? 0)) : Promise.resolve(0),

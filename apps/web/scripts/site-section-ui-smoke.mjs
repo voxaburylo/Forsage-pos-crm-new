@@ -37,7 +37,7 @@ const modules = {
   '@/lib/auth': `export async function signOut(){}`,
   '@/lib/api': `const G=${JSON.stringify(gateway)};
     window.__catalogCalls=[];
-    const TREE={categories:[{id:'c1',parent_id:null,name:'Оливи',ours:5,supplier:20},{id:'c2',parent_id:'c1',name:'Моторні оливи',ours:3,supplier:10},{id:'c3',parent_id:null,name:'Фільтри',ours:0,supplier:0}],none:{ours:2,supplier:7}};
+    const TREE={categories:[{id:'c1',parent_id:null,name:'Оливи',ours:5,supplier:20},{id:'c2',parent_id:'c1',name:'Моторні оливи',ours:3,supplier:10},{id:'c3',parent_id:null,name:'Фільтри',ours:0,supplier:0}],none:{ours:2,supplier:7},suppliers:[{id:'44444444-4444-4444-8444-444444444444',name:'Омега'},{id:'55555555-5555-4555-8555-555555555555',name:'GPL'}]};
     export const api={get:async(p)=>(p.includes('/site-admin/catalog')&&!p.includes('/catalog/categories')?window.__catalogCalls.push(p):0,{data:p.includes('/site-admin/catalog/categories')?TREE:p.includes('/site-admin/catalog')?{rows:[],total:0,ours_total:0,page:1,pages:1}:p.includes('/categories')?[{id:'p1',parent_id:null,name:'Фільтри'},{id:'p2',parent_id:null,name:'Оливи-ATF'}]:p.includes('/access')?{user_ids:[],users:[]}:p.includes('/orders')?[]:{enabled:false,settings:{show_prices:true,stock_mode:'flag',only_in_stock:false,hidden_category_ids:[],price_change_pct:0,accept_orders:true,min_order_kopecks:0,title:'',phone:'',address:'',working_hours:'',banner_text:'',about:'',delivery_text:'',payment_text:''},key_hint:null,key_created_at:null,updated_at:null}}),
       post:async(_p,b)=>{if(b&&b.action==='boom')throw new Error('x');return {data:G[b.action]??null}},put:async()=>({data:{}}),delete:async()=>({data:{}})};
     export const isWebReadOnlyRequest=()=>false;`,
@@ -121,6 +121,13 @@ try {
       // «Усі» і «Без відбору» — в одному ряду (власник: «навіщо одне під одним, коли праворуч купа місця»).
       const filterTops = await page.locator('[data-site-filters] select').evaluateAll(nodes => nodes.map(node => Math.round(node.getBoundingClientRect().top)))
       assert.equal(new Set(filterTops).size, 1, `${label}: фільтри одне під одним`)
+      // «Ще з фото, і за постачальниками; які в наявності» (26.11.2026).
+      const flags = await page.locator('select[aria-label="Відбір"] option').allInnerTexts()
+      for (const text of ['В наявності', 'З фото', 'Без фото']) assert.ok(flags.includes(text), `${label}: немає відбору «${text}»`)
+      await page.waitForFunction(() => document.querySelectorAll('select[aria-label="Чиї товари"] option').length === 5)
+      await page.locator('select[aria-label="Чиї товари"]').selectOption({ label: 'GPL' })
+      await page.waitForFunction(() => window.__catalogCalls.some(call => call.includes('connection=55555555-5555-4555-8555-555555555555') && call.includes('source=supplier')))
+      await page.locator('select[aria-label="Чиї товари"]').selectOption('all')
       const list = page.locator('[data-site-category-list]').locator('visible=true')
       await list.locator('[data-site-category=""]').waitFor()
       // Усього 5+20+3+10+2+7 = 47; «Оливи» разом із вкладеними 38; порожніх «Фільтрів» не видно.

@@ -90,4 +90,22 @@ describe('site catalog: our goods and supplier goods in one list', () => {
     expect(query.mock.calls.filter(call => String(call[0]).startsWith('SELECT count(*)')).some(call => String(call[0]).includes('category_id'))).toBe(false)
     expect(catalogQuerySchema.safeParse({ category: "x' OR 1=1" }).success).toBe(false)
   })
+
+  // 26.11.2026, слово власника: «ще з фото, і за постачальниками; які в наявності».
+  it('with photo, in stock and one supplier: the right conditions; one supplier hides our own goods', async () => {
+    const CONN = '44444444-4444-4444-8444-444444444444'
+    query.mockImplementation(async (sql: string = '') => sql.startsWith('SELECT count(*)') ? { rows: [{ n: 1 }] } : { rows: [] })
+    await listSiteCatalog('t', 'owner', catalogQuerySchema.parse({ flag: 'with_photo' }))
+    const photo = query.mock.calls.filter(call => String(call[0]).startsWith('SELECT count(*)')).map(call => String(call[0]))
+    expect(photo[0]).toContain("COALESCE(p.photo_url, '') <> ''")
+    expect(photo[1]).toContain("COALESCE(o.image_url, '') <> ''")
+    query.mockClear()
+    await listSiteCatalog('t', 'owner', catalogQuerySchema.parse({ flag: 'in_stock', connection: CONN }))
+    const counts = query.mock.calls.filter(call => String(call[0]).startsWith('SELECT count(*)'))
+    expect(counts).toHaveLength(1) // наших не рахуємо — вибрано одного постачальника
+    expect(String(counts[0][0])).toContain('o.total_qty > 0')
+    expect(String(counts[0][0])).toMatch(/o\.connection_id = \$2/)
+    expect(counts[0][1]).toEqual(['t', CONN])
+    expect(catalogQuerySchema.safeParse({ connection: 'omega' }).success).toBe(false)
+  })
 })

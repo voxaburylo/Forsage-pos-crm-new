@@ -2,6 +2,7 @@ import { normalizeCatalogSearchQuery, articleSearchTerms } from '../lib/catalogS
 import { randomUUID } from 'node:crypto'
 import { catalogLanguageTokenGroups } from '../lib/catalogLanguageSearch'
 import type { LocalDatabase } from '../db/localDatabase'
+import { catalogStockFilterClause, type CatalogStockFilter } from './catalogStockFilter'
 import { DEFAULT_TENANT_ID, type LocalProduct, type LocalProductUpsert } from '../db/localTypes'
 import { readProductCatalogSnapshot } from './productCatalogSnapshot'
 
@@ -60,7 +61,7 @@ export interface LocalProductListOptions {
   categoryId?: string
   brandId?: string
   lowStock?: boolean
-  stockFilter?: 'negative' | 'no_price' | ''
+  stockFilter?: CatalogStockFilter
   /** Лише «⭐ Швидкі товари» — галерея на касі. */
   favorites?: boolean
   limit?: number
@@ -1049,12 +1050,8 @@ export class LocalCatalogRepository {
     if (options.lowStock) {
       where.push('p.qty_on_hand <= p.reorder_point')
     }
-    if (options.stockFilter === 'negative') {
-      where.push('p.qty_on_hand < 0')
-    }
-    if (options.stockFilter === 'no_price') {
-      where.push('p.retail_price = 0')
-    }
+    const stockClause = catalogStockFilterClause(options.stockFilter)
+    if (stockClause) where.push(stockClause)
     if (options.favorites === true) {
       where.push('p.is_favorite = 1')
     }

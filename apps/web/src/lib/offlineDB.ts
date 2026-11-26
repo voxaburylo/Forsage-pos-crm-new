@@ -777,7 +777,7 @@ export async function listProductsOffline(options: {
   categoryId?: string
   brandId?: string
   lowStock?: boolean
-  stockFilter?: 'negative' | 'no_price' | ''
+  stockFilter?: 'negative' | 'no_price' | 'in_stock' | ''
   page?: number
   perPage?: number
   sortField?: string
@@ -806,6 +806,7 @@ export async function listProductsOffline(options: {
     if (options.lowStock && Number(product.qty_on_hand ?? 0) > Number(product.reorder_point ?? 0)) return false
     if (options.stockFilter === 'negative' && Number(product.qty_on_hand ?? 0) >= 0) return false
     if (options.stockFilter === 'no_price' && Number(product.retail_price ?? 0) !== 0) return false
+    if (options.stockFilter === 'in_stock' && !(Number(product.qty_on_hand ?? 0) > 0)) return false
     return offlineProductMatchesQuery(product, search)
   })
 
