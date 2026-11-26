@@ -126,8 +126,9 @@ export default function SitePage() {
           <div role="tablist" aria-label="Розділи сайту" className="inline-flex w-max max-w-full shrink-0 gap-0.5 overflow-x-auto rounded-lg bg-gray-100 p-0.5" data-site-sections>
             {SITE_SECTIONS.map(item => (
               <button key={item.id} type="button" role="tab" aria-selected={section === item.id} data-site-section={item.id}
+                ref={section === item.id ? node => node?.scrollIntoView?.({ inline: 'center', block: 'nearest' }) : undefined}
                 onClick={() => { if (section !== item.id) setTab(item.tabs.find(allowed)!.id) }}
-                className={`shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 text-sm ${section === item.id ? 'bg-white font-semibold text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}>
+                className={`shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 text-sm max-sm:px-2.5 ${section === item.id ? 'bg-white font-semibold text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}>
                 {item.label}{badge(item.id === 'sales')}
               </button>
             ))}

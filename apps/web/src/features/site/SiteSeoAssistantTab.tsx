@@ -105,7 +105,7 @@ export function SiteSeoAssistantTab() {
         {sending && <p role="status" className="text-sm text-gray-500">Помічник читає сайт і пише… це може тривати хвилину-дві.</p>}
         <div ref={bottom} />
       </div>
-      <form className="sticky bottom-0 flex items-end gap-2 rounded-xl border border-gray-200 bg-white p-2" onSubmit={event => { event.preventDefault(); void send(text) }}>
+      <form className="flex items-end gap-2 rounded-xl border border-gray-200 bg-white p-2" data-site-seo-form onSubmit={event => { event.preventDefault(); void send(text) }}>
         <textarea value={text} onChange={event => setText(event.target.value)} rows={2} maxLength={8000} disabled={sending} aria-label="Завдання помічнику"
           onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(text) } }}
           placeholder="Напр.: напиши описи для моторних олив Castrol у наявності" className="min-h-[44px] flex-1 resize-y rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-yellow-400" />

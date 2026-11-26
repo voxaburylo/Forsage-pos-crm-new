@@ -40,6 +40,11 @@ export function forumTextProblem(kind: 'topic' | 'reply', title: string, body: s
   return ''
 }
 
+/** Теми покупців без жодної відповіді (не сховані й не закриті): на них магазин має відповісти першим. */
+export function waitingTopics<T extends ForumTopicRow>(topics: readonly T[]): T[] {
+  return topics.filter(topic => !topic.is_shop && !topic.is_hidden && !topic.is_locked && (topic.replies_count ?? 0) === 0)
+}
+
 export const when = (iso?: string | null) => {
   const time = iso ? Date.parse(iso) : NaN
   return Number.isFinite(time) ? new Date(time).toLocaleString('uk-UA', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''

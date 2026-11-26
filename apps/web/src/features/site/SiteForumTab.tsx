@@ -3,7 +3,7 @@ import { ExternalLink, EyeOff, ImagePlus, Lock, Pin, Plus, Search } from 'lucide
 import { Button, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { errorText, SITE_URL, siteCall, useSiteData } from './siteGateway'
-import { forumStatsLine, forumTextProblem, FORUM_LIMITS, uploadForumPhotos, when, type ForumPost, type ForumSection, type ForumTopic, type ForumTopicRow } from './siteForum'
+import { forumStatsLine, forumTextProblem, FORUM_LIMITS, uploadForumPhotos, waitingTopics, when, type ForumPost, type ForumSection, type ForumTopic, type ForumTopicRow } from './siteForum'
 
 /**
  * Вкладка «Форум» розділу «Сайт» (27.11.2026): теми, перегляд, нова тема й відповідь від магазину, сховати, закріпити,
@@ -17,17 +17,24 @@ export function SiteForumTab() {
   const [section, setSection] = useState('')
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
-  const [only, setOnly] = useState<'' | 'hidden' | 'shop'>('')
-  const params = useMemo(() => ({ limit: 50, ...(section ? { section } : {}), ...(query ? { search: query } : {}), ...(only === 'hidden' ? { hidden: true } : {}), ...(only === 'shop' ? { from_shop: true } : {}) }), [section, query, only])
+  const [only, setOnly] = useState<'' | 'hidden' | 'shop' | 'unanswered'>('')
+  const serverOnly = only === 'unanswered' ? '' : only
+  const params = useMemo(() => ({ limit: 50, ...(section ? { section } : {}), ...(query ? { search: query } : {}), ...(serverOnly === 'hidden' ? { hidden: true } : {}), ...(serverOnly === 'shop' ? { from_shop: true } : {}) }), [section, query, serverOnly])
   const topics = useSiteData<ForumTopicRow[]>('forum.topics.list', params)
   const stats = useSiteData<unknown>('forum.stats', { days: 7 })
   const [openId, setOpenId] = useState<string | number | null>(null)
   const [creating, setCreating] = useState(false)
   const [managing, setManaging] = useState(false)
   const list = sections.data ?? []
+  // Теми покупців, де ще ніхто не відповів: головне, заради чого сюди заходять щодня. Рахуємо серед завантажених тем.
+  const unanswered = waitingTopics(topics.data ?? [])
+  const shown = only === 'unanswered' ? unanswered : topics.data ?? []
   return (
     <div className="space-y-3" data-site-forum>
-      {forumStatsLine(stats.data, 7) && <p className="text-xs text-gray-500" data-site-forum-stats>{forumStatsLine(stats.data, 7)}</p>}
+      <p className="text-xs text-gray-500" data-site-forum-stats>
+        {unanswered.length > 0 && only !== 'unanswered' && <button type="button" onClick={() => setOnly('unanswered')} className="mr-2 rounded bg-yellow-100 px-1.5 py-0.5 font-medium text-gray-900" data-site-forum-waiting>Без відповіді: {unanswered.length}</button>}
+        {forumStatsLine(stats.data, 7)}
+      </p>
       <div className="flex flex-wrap items-center gap-2">
         <select aria-label="Розділ форуму" value={section} onChange={event => setSection(event.target.value)} className="rounded-lg border border-gray-200 bg-white px-2 py-2 text-sm">
           <option value="">Усі розділи</option>
@@ -38,7 +45,7 @@ export function SiteForumTab() {
           <Button type="submit" size="sm" variant="secondary" icon={<Search size={14} />}>Знайти</Button>
         </form>
         <select aria-label="Які теми" value={only} onChange={event => setOnly(event.target.value as typeof only)} className="rounded-lg border border-gray-200 bg-white px-2 py-2 text-sm">
-          <option value="">Усі теми</option><option value="shop">Теми магазину</option><option value="hidden">Сховані</option>
+          <option value="">Усі теми</option><option value="unanswered">Без відповідей</option><option value="shop">Теми магазину</option><option value="hidden">Сховані</option>
         </select>
         <Button size="sm" icon={<Plus size={14} />} onClick={() => setCreating(true)} data-site-forum-new>Нова тема</Button>
         <Button size="sm" variant="ghost" onClick={() => setManaging(true)}>Розділи</Button>
@@ -46,7 +53,7 @@ export function SiteForumTab() {
       {topics.error && <p role="alert" className="text-sm text-gray-600">{topics.error} <button type="button" className="underline" onClick={() => void topics.reload()}>Повторити</button></p>}
       {topics.loading && !topics.data && <p role="status" className="text-sm text-gray-500">Завантажуємо теми…</p>}
       <ul className="divide-y divide-gray-100 rounded-xl border border-gray-200 bg-white" data-site-forum-topics>
-        {(topics.data ?? []).map(topic => (
+        {shown.map(topic => (
           <li key={String(topic.id)}>
             <button type="button" onClick={() => setOpenId(topic.id)} className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-left hover:bg-gray-50">
               <span className="min-w-0 flex-1 text-sm font-medium text-gray-900">{topic.title}</span>
@@ -55,7 +62,7 @@ export function SiteForumTab() {
             </button>
           </li>
         ))}
-        {topics.data && !topics.data.length && <li className="px-3 py-8 text-center text-sm text-gray-400">Тем не знайдено</li>}
+        {topics.data && !shown.length && <li className="px-3 py-8 text-center text-sm text-gray-400">{only === 'unanswered' ? 'Усі теми покупців мають відповідь' : 'Тем не знайдено'}</li>}
       </ul>
       {openId !== null && <TopicModal id={openId} onClose={() => { setOpenId(null); void topics.reload() }} />}
       {creating && <NewTopicModal sections={list} initial={section} onClose={created => { setCreating(false); if (created) void topics.reload() }} />}
@@ -131,7 +138,7 @@ function TopicModal({ id, onClose }: { id: string | number; onClose: () => void 
           <ul className="space-y-2">
             {(topic.posts ?? []).map(post => (
               <li key={String(post.id)} className={`rounded-lg border border-gray-100 p-3 text-sm ${post.parent_id ? 'ml-6' : ''} ${post.is_hidden ? 'opacity-60' : ''}`}>
-                <p className="text-xs text-gray-500">{post.author_name ?? 'Гість'}{post.is_shop ? ' · магазин' : ''} · {when(post.created_at)}{post.is_hidden ? ' · сховано' : ''}</p>
+                <p className="text-xs text-gray-500">{post.author_name ?? 'Гість'}{post.is_shop && !/магазин/i.test(post.author_name ?? '') ? ' · магазин' : ''} · {when(post.created_at)}{post.is_hidden ? ' · сховано' : ''}</p>
                 <p className="mt-1 whitespace-pre-line text-gray-800">{post.body}</p><Images urls={post.images} />
                 <div className="mt-1.5 flex gap-3 text-xs">
                   <button type="button" className="text-blue-700 underline" onClick={() => setReplyTo(post)}>Відповісти</button>

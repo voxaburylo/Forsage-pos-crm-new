@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn(async () => ({ data: [] })), post: vi.fn(async () => ({ data: {} })) } }))
-import { etaText, isOpen, textJobLine, type TextJob } from './siteTextJobs'
+import { etaText, isOpen, textJobLine, textJobShort, type TextJob } from './siteTextJobs'
 import { SiteTextJobPanel } from './SiteTextJobPanel'
 
 // 26.11.2026, власник: «великі пачки, без купи підтверджень і всього червоного; зручно й тактовно».
@@ -18,6 +18,13 @@ describe('mass product texts for the site: one calm status line, one decision fr
     expect(running).toMatch(/Екран можна закрити/)
     expect(textJobLine(job({ status: 'cancelled', written: 0, review: 0, skipped: 0, failed: 0 }))).toBe('Скасовано. На сайті — як було.')
     expect(textJobLine(job({ status: 'done' }))).toMatch(/^Готово: на сайті/)
+  })
+
+  it('the folded line says the state in a few words', () => {
+    expect(textJobShort(null)).toBe('не запущено')
+    expect(textJobShort(job({ status: 'sample_ready' }))).toBe('зразки готові — подивіться')
+    expect(textJobShort(job({}))).toBe('працюю, 19%')
+    expect(textJobShort(job({ status: 'done' }))).toMatch(/^на сайті 1.180, відкладено 37$/)
   })
 
   it('an honest time estimate and what counts as work in progress', () => {

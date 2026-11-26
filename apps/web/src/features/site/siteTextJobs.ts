@@ -41,6 +41,18 @@ export function textJobLine(job: TextJob): string {
     case 'cancelled': return job.written ? `Зупинено: ${parts}.` : 'Скасовано. На сайті — як було.'
   }
 }
+/** Кілька слів для згорнутого рядка. */
+export function textJobShort(job: TextJob | null): string {
+  if (!job || job.status === 'cancelled' && !job.written) return 'не запущено'
+  switch (job.status) {
+    case 'sample': return 'готую зразки'
+    case 'sample_ready': return 'зразки готові — подивіться'
+    case 'running': return `працюю, ${job.progress}%`
+    case 'paused': return `на паузі, ${job.progress}%`
+    case 'reverting': return 'повертаю як було'
+    default: return `на сайті ${count(job.written)}` + (job.review ? `, відкладено ${count(job.review)}` : '')
+  }
+}
 /** Приблизно 24 товари за хвилину (6 пачок по 4). Чесна оцінка, не обіцянка. */
 export function etaText(left: number): string {
   const minutes = Math.ceil(left / 24)

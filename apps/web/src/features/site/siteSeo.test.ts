@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { applyArticle, applyForumPost, applyProductTexts, applySectionSeo, applySiteSeo, SEO_QUICK, seoHistory, type SeoCall } from './siteSeo'
-import { forumStatsLine, forumTextProblem } from './siteForum'
+import { forumStatsLine, forumTextProblem, waitingTopics } from './siteForum'
 
 // Помічник сайту: підтверджене власником записується на сайт через шлюз (кожна зміна — в журнал аудиту на сервері).
 describe('site SEO assistant: confirmed proposals are written through the site gateway', () => {
@@ -84,6 +84,11 @@ describe('forum tab helpers', () => {
     expect(forumTextProblem('topic', 'Биття керма на 100 км/год', 'Текст '.repeat(10), 's')).toBe('')
     expect(forumTextProblem('reply', '', ' ')).toMatch(/відповідь/)
     expect(forumTextProblem('reply', '', 'ок')).toBe('')
+  })
+  it('«without an answer» — customers\u2019 topics nobody replied to; shop, hidden and closed topics do not count', () => {
+    const topics = [{ id: 1, title: 'a', replies_count: 0 }, { id: 2, title: 'b', replies_count: 0, is_shop: true }, { id: 3, title: 'c', replies_count: 2 },
+      { id: 4, title: 'd', replies_count: 0, is_hidden: true }, { id: 5, title: 'e', replies_count: 0, is_locked: true }, { id: 6, title: 'f s' }]
+    expect(waitingTopics(topics).map(topic => topic.id)).toEqual([1, 6])
   })
   it('the weekly statistics line shows the numbers the site gave, in plain words', () => {
     expect(forumStatsLine({ new_topics: 4, replies: 12, new_customers: 2, popular: [{ id: 1 }] }, 7)).toBe('За 7 днів: 4 нових тем · 12 відповідей · 2 нових покупців.')

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Button, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { errorText } from './siteGateway'
-import { isOpen, textJobLine, textJobsApi, type TextItem, type TextJob, type TextJobAction, type TextJobScope } from './siteTextJobs'
+import { isOpen, textJobLine, textJobShort, textJobsApi, type TextItem, type TextJob, type TextJobAction, type TextJobScope } from './siteTextJobs'
 
 /**
  * Масова робота над текстами товарів — одна смужка вгорі вкладки помічника (26.11.2026, слово власника: «великі пачки,
@@ -18,6 +18,9 @@ export function SiteTextJobPanel({ refresh = 0 }: { refresh?: number }) {
   const [samples, setSamples] = useState<TextItem[]>([])
   const [note, setNote] = useState('')
   const [reviewOpen, setReviewOpen] = useState(false)
+  const [shown, setShown] = useState<boolean | null>(null)
+  // Зразки готові — це єдине місце, де потрібне рішення власника: розкриваємо, навіть якщо він згортав раніше.
+  useEffect(() => { if (job?.status === 'sample_ready') setShown(null) }, [job?.status])
 
   const load = useCallback(async () => {
     try { const jobs = await textJobsApi.list(); setJob(jobs[0] ?? null); setMissing(false) } catch { setMissing(true) }
@@ -42,8 +45,13 @@ export function SiteTextJobPanel({ refresh = 0 }: { refresh?: number }) {
   if (missing) return null
   const open = isOpen(job)
   return (
-    <section className="rounded-xl border border-gray-200 bg-white p-3" data-site-text-job={job?.status ?? 'none'}>
-      <p className="text-sm font-semibold text-gray-900">Заголовки, описи й ключові слова для всіх товарів одразу</p>
+    <details className="group rounded-xl border border-gray-200 bg-white" open={shown ?? (!job || job.status === 'sample_ready' || job.status === 'sample')} onToggle={event => setShown(event.currentTarget.open)} data-site-text-job={job?.status ?? 'none'}>
+      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 [&::-webkit-details-marker]:hidden">
+        <span className="text-sm font-semibold text-gray-900">Заголовки, описи й ключові слова для всіх товарів</span>
+        <span className="text-xs text-gray-500" data-site-text-short>{textJobShort(job)}</span>
+        <span className="ml-auto text-xs text-gray-400 group-open:hidden">показати</span>
+      </summary>
+      <div className="border-t border-gray-100 px-3 pb-3 pt-2">
       {!open && (
         <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
           <select aria-label="Які товари" value={scope} onChange={event => setScope(event.target.value as TextJobScope)} className="rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-sm">
@@ -86,7 +94,8 @@ export function SiteTextJobPanel({ refresh = 0 }: { refresh?: number }) {
         </div>
       )}
       {job && reviewOpen && <ReviewModal job={job} onClose={() => { setReviewOpen(false); void load() }} onJob={setJob} />}
-    </section>
+      </div>
+    </details>
   )
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { newCategoriesText, sortLineText, type SortState } from './SiteCategorySortPanel'
+import { newCategoriesText, sortHeadline, sortLineText, sortTiles, type SortState } from './SiteCategorySortPanel'
 
 // 26.11.2026, власник: «товари, що прийшли по API й ще прийдуть, не розсортовані».
 const state = (over: Partial<SortState>): SortState => ({ enabled: false, waiting: 62937, sorted: 0, unsure: 0, with_category: 48948, total: 111885, cost_usd: 0, last_error: null, ...over })
@@ -27,5 +27,19 @@ describe('new categories are created by the main PC and said in plain words', ()
     expect(text).toMatch(/створюю нові: «Кузовні деталі», «Системи кондиціонування»\. Їх створює головний ПК; щойно він у мережі, 1.840 товарів ляжуть у них самі\.$/)
     expect(newCategoriesText(state({ waiting_names: ['Кузовні деталі'], waiting_new: 5, till_error: 'Невідома команда. Оновіть програму на касі.' }))).toMatch(/Головний ПК поки відповів: Невідома команда/)
     expect(newCategoriesText(state({}))).toBe('')
+  })
+})
+
+// 27.11.2026 (огляд знімків): одне довге речення з чотирма числами читалось важко — числа пішли в плитки.
+describe('numbers in tiles, one short sentence above them', () => {
+  it('shows only the tiles that have something to say; «waiting» is always there', () => {
+    expect(sortTiles(state({}))).toEqual([{ label: 'чекають розкладки', value: 62937 }])
+    expect(sortTiles(state({ enabled: true, waiting: 20140, sorted: 39850, unsure: 2947, waiting_new: 1840 })).map(tile => tile.value)).toEqual([20140, 39850, 2947, 1840])
+    expect(sortTiles(state({ waiting: 0, sorted: 5 }))).toEqual([{ label: 'чекають розкладки', value: 0 }, { label: 'розклав помічник', value: 5 }])
+  })
+  it('the headline says what is going on without numbers', () => {
+    expect(sortHeadline(state({ enabled: true }))).toBe('Розкладаю. Екран можна закрити.')
+    expect(sortHeadline(state({ enabled: true, waiting: 0 }))).toMatch(/розкладатимуться самі/)
+    expect(sortHeadline(state({}))).toMatch(/не потрапляють у жоден розділ/)
   })
 })
