@@ -1305,6 +1305,7 @@ export default function ActiveSession() {
                 <input
                   ref={inputRef}
                   value={query}
+                  data-scan-field
                   onChange={(event) => { setQuery(event.target.value); setSelected(null); setQuickCreateOpen(false) }}
                   onKeyDown={event => {
                     if (event.nativeEvent.isComposing) return

@@ -15,6 +15,7 @@ const { chromium } = await import('playwright')
 const entry = `
 import { createZxingDetector } from '/src/lib/zxingDetector.ts'
 import { CAMERA_FORMATS } from '/src/lib/cameraScan.ts'
+import { frameRegion } from '/src/lib/cameraReader.ts'
 const L = ['0001101','0011001','0010011','0111101','0100011','0110001','0101111','0111011','0110111','0001011']
 const G = ['0100111','0110011','0011011','0100001','0011101','0111001','0000101','0010001','0001001','0010111']
 const R = L.map(code => [...code].map(bit => bit === '1' ? '0' : '1').join(''))
@@ -45,14 +46,11 @@ function crop(source, mode) {
     const band = Math.round(height * 0.45), scale = Math.min(1, 960 / width)
     canvas.width = Math.round(width * scale); canvas.height = Math.round(band * scale)
     context.drawImage(source, 0, Math.round((height - band) / 2), width, band, 0, 0, canvas.width, canvas.height)
-  } else if (mode === 'center') {
-    const cropWidth = Math.round(width * 0.8), cropHeight = Math.round(height * 0.5)
-    canvas.width = cropWidth; canvas.height = cropHeight
-    context.drawImage(source, Math.round((width - cropWidth) / 2), Math.round((height - cropHeight) / 2), cropWidth, cropHeight, 0, 0, cropWidth, cropHeight)
   } else {
-    const scale = Math.min(1, 1920 / Math.max(width, height))
-    canvas.width = Math.round(width * scale); canvas.height = Math.round(height * scale)
-    context.drawImage(source, 0, 0, canvas.width, canvas.height)
+    // Та сама розкладка кадру, що й у програмі (cameraReader.ts): 'center' — середина, 'full' — весь кадр.
+    const region = frameRegion(width, height, mode === 'center' ? 1 : 2)
+    canvas.width = region.width; canvas.height = region.height
+    context.drawImage(source, region.sx, region.sy, region.sw, region.sh, 0, 0, region.width, region.height)
   }
   return canvas
 }

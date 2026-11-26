@@ -646,7 +646,7 @@ export default function ProductsPage() {
             <div className="relative flex-1 min-w-0">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
-                value={search} onChange={(e) => handleSearchChange(e.target.value)}
+                value={search} onChange={(e) => handleSearchChange(e.target.value)} data-scan-field
                 placeholder="Пошук за артикулом, назвою, штрихкодом, аналогом... (oem: для OEM)"
                 className="w-full pl-9 pr-20 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent bg-white"
               />

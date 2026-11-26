@@ -575,7 +575,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       <div className="relative mb-3 flex gap-2 shrink-0">
         <div className="relative flex-1 min-w-0">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 md:size-[20px] size-[18px]" />
-          <input ref={inputRef} type="text" value={query} data-pos-search="true"
+          <input ref={inputRef} type="text" value={query} data-pos-search="true" data-scan-field
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Натисніть тут для пошуку товару"

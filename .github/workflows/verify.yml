@@ -156,6 +156,7 @@ jobs:
       - run: node apps/web/scripts/settings-api-ui-smoke.mjs
       - run: node apps/web/scripts/site-all-products-ui-smoke.mjs
       - run: node apps/web/scripts/camera-decode-smoke.mjs
+      - run: node apps/web/scripts/scan-trigger-ui-smoke.mjs
       # 23.11.2026 (план T8): ключові екрани — ще й у Microsoft Edge (сканер каси працював у Chrome і не працював в Edge).
       - run: node apps/web/scripts/run-in-edge.mjs apps/web/scripts/pos-dialog-ui-smoke.mjs
       - run: node apps/web/scripts/run-in-edge.mjs apps/web/scripts/pos-usability-ui-smoke.mjs
