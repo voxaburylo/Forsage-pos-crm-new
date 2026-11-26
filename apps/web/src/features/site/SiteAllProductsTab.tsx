@@ -10,6 +10,8 @@ import { productApi } from '@/features/products/productApi'
 import { BulkEditModal } from '@/features/products/BulkEditModal'
 import { canDeleteCatalog } from '@/features/products/catalogDeletePermissions'
 import { ProductEditor } from './SiteProductsTab'
+import { SiteCategoryPanel } from './SiteCategoryPanel'
+import { categoryPath, type CatalogCategoryTree, type CatalogSource } from './siteCategoryTree'
 
 /**
  * 26.11.2026, слово власника: «у вкладці “Сайт” — ще всі товари, і наші, і від постачальників, у купі: перегляд,
@@ -37,8 +39,9 @@ const message = (reason: unknown, fallback: string) => reason instanceof Error &
 const qtyText = (qty: number) => Number.isInteger(qty) ? String(qty) : qty.toFixed(2)
 
 export const catalogApi = {
-  list: (params: { q: string; source: string; flag: string; page: number }) =>
-    api.get<{ data: CatalogPage }>(`${BASE}?${new URLSearchParams({ q: params.q, source: params.source, flag: params.flag, page: String(params.page), per_page: '50' })}`, quiet),
+  list: (params: { q: string; source: string; flag: string; page: number; category?: string }) =>
+    api.get<{ data: CatalogPage }>(`${BASE}?${new URLSearchParams({ q: params.q, source: params.source, flag: params.flag, category: params.category ?? '', page: String(params.page), per_page: '50' })}`, quiet),
+  categories: () => api.get<{ data: CatalogCategoryTree }>(`${BASE}/categories`, quiet),
   offer: (key: string) => api.get<{ data: OfferCard }>(`${BASE}/offers/${encodeURIComponent(key)}`, quiet),
   patchOffer: (key: string, body: Record<string, unknown>) => api.patch<{ data: OfferCard }>(`${BASE}/offers/${encodeURIComponent(key)}`, body, quiet),
   bulkOffers: (body: { keys: string[]; hidden?: boolean; price_pct?: number; reset_price?: boolean }) =>
@@ -61,13 +64,22 @@ export function SiteAllProductsTab() {
   // 26.11.2026: наш товар відкривається тут же — фото, опис і «сховати» для сайту; повна картка програми — кнопкою.
   const [own, setOwn] = useState<CatalogRow | null>(null)
   const [bulkPrices, setBulkPrices] = useState(false)
+  // 26.11.2026: «товари → категорії → товари в категорії; або “усі товари” — усе підряд». '' — усі, 'none' — без категорії.
+  const [category, setCategoryState] = useState('')
+  const [tree, setTree] = useState<CatalogCategoryTree | null>(null)
+  const setCategory = (next: string) => { setCategoryState(next); setPage(1) }
+  useEffect(() => {
+    const empty: CatalogCategoryTree = { categories: [], none: { ours: 0, supplier: 0 } }
+    catalogApi.categories().then(answer => setTree(Array.isArray(answer.data?.categories) && answer.data.none ? answer.data : empty), () => setTree(empty))
+  }, [])
 
   // Пошук — через пів секунди після останньої літери, щоб не смикати сервер на кожну.
   useEffect(() => { const timer = window.setTimeout(() => { setQuery(q.trim()); setPage(1) }, 450); return () => window.clearTimeout(timer) }, [q])
   const load = useCallback(async () => {
-    try { setData((await catalogApi.list({ q: query, source, flag, page })).data); setError('') }
+    try { setData((await catalogApi.list({ q: query, source, flag, page, category })).data); setError('') }
     catch (reason) { setError(message(reason, 'Не вдалося отримати товари. Потрібен інтернет.')) }
-  }, [query, source, flag, page])
+  }, [query, source, flag, page, category])
+  const path = tree && category && category !== 'none' ? categoryPath(tree.categories, category) : []
   useEffect(() => { void load() }, [load])
 
   const ours = useMemo(() => [...picked.values()].filter(row => row.kind === 'ours'), [picked])
@@ -110,7 +122,19 @@ export function SiteAllProductsTab() {
   }
 
   return (
-    <div className="space-y-3" data-site-all-products>
+    <div className="flex flex-col gap-3 md:flex-row md:items-start" data-site-all-products>
+      <SiteCategoryPanel tree={tree} source={source as CatalogSource} value={category} onChange={setCategory} />
+      <div className="min-w-0 flex-1 space-y-3">
+      <nav aria-label="Де ви зараз" className="flex flex-wrap items-center gap-1 text-sm text-gray-500" data-site-breadcrumb>
+        <button type="button" onClick={() => setCategory('')} className={category ? 'hover:text-gray-900 hover:underline' : 'font-semibold text-gray-900'}>Усі товари</button>
+        {category === 'none' && <><span aria-hidden="true">›</span><span className="font-semibold text-gray-900">Без категорії</span></>}
+        {path.map((item, index) => (
+          <span key={item.id} className="flex items-center gap-1"><span aria-hidden="true">›</span>
+            {index === path.length - 1 ? <span className="font-semibold text-gray-900">{item.name}</span>
+              : <button type="button" onClick={() => setCategory(item.id)} className="hover:text-gray-900 hover:underline">{item.name}</button>}
+          </span>
+        ))}
+      </nav>
       <div className="flex flex-wrap items-center gap-2">
         <label className="flex min-w-[14rem] flex-1 items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2">
           <Search size={15} className="text-gray-400" aria-hidden="true" />
@@ -191,6 +215,7 @@ export function SiteAllProductsTab() {
       {bulkPrices && <BulkEditModal open productIds={ours.map(row => row.id)} onClose={() => setBulkPrices(false)} onUpdated={() => { setBulkPrices(false); setPicked(new Map()); void load() }} />}
       {own && <OwnProductModal row={own} onClose={() => setOwn(null)} onOpenCard={() => navigate('/products/' + own.id)} />}
       {offer && <OfferCardModal offerKey={offer} onClose={() => setOffer(null)} onSaved={() => void load()} />}
+      </div>
     </div>
   )
 }

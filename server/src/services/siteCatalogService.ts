@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { pool } from '../db/pg.js'
 import { AppError } from '../middleware/errorHandler.js'
+import { categoryRows, categorySubtree } from './siteCatalogCategories.js'
 
 /**
  * 26.11.2026, слово власника: «у вкладці “Сайт” хай будуть ще всі товари — і наші, і від постачальників — у купі,
@@ -17,6 +18,8 @@ export const catalogQuerySchema = z.object({
   q: z.string().trim().max(120).optional().default(''),
   source: z.enum(['all', 'ours', 'supplier']).default('all'),
   flag: z.enum(['', 'no_barcode', 'no_photo', 'hidden', 'no_stock']).default(''),
+  // 26.11.2026: категорія програми (разом із вкладеними) або 'none' — «Без категорії»; порожньо — усі товари.
+  category: z.union([z.literal(''), z.literal('none'), z.string().uuid()]).optional().default(''),
   page: z.coerce.number().int().min(1).max(100_000).default(1),
   per_page: z.coerce.number().int().min(10).max(200).default(50),
 })
@@ -41,8 +44,14 @@ export const OFFER_SEARCH_EXPR = "lower(COALESCE(o.custom_name, o.name) || ' ' |
 const OURS_ORDER = 'lower(p.name), p.id'
 const OFFERS_ORDER = 'lower(COALESCE(o.custom_name, o.name)), o.external_id'
 
-function sourceFilters(kind: 'ours' | 'supplier', terms: string[], flag: CatalogQuery['flag'], params: unknown[]): string[] {
+/** Вибрана категорія: список id (сама + вкладені), 'none' або нічого. */
+type CategoryPick = string[] | 'none' | null
+
+function sourceFilters(kind: 'ours' | 'supplier', terms: string[], flag: CatalogQuery['flag'], params: unknown[], category: CategoryPick = null): string[] {
   const where: string[] = []
+  const alias = kind === 'ours' ? 'p' : 'o'
+  if (Array.isArray(category)) { params.push(category); where.push(`${alias}.category_id = ANY($${params.length}::uuid[])`) }
+  if (category === 'none') where.push(`(${alias}.category_id IS NULL OR NOT EXISTS (SELECT 1 FROM categories cx WHERE cx.id = ${alias}.category_id AND cx.deleted_at IS NULL))`)
   for (const term of terms) {
     params.push('%' + term + '%')
     where.push(kind === 'ours' ? `p.search_text ILIKE $${params.length}` : `${OFFER_SEARCH_EXPR} LIKE $${params.length}`)
@@ -64,11 +73,12 @@ export async function listSiteCatalog(tenantId: string, role: string, query: Cat
   const size = query.per_page
   const offset = (query.page - 1) * size
   const wantOurs = query.source !== 'supplier', wantOffers = query.source !== 'ours'
+  const category: CategoryPick = query.category === 'none' ? 'none' : query.category ? categorySubtree(await categoryRows(tenantId), query.category) : null
 
   const oursParams: unknown[] = [tenantId]
-  const oursWhere = ['p.tenant_id = $1', 'p.deleted_at IS NULL', ...sourceFilters('ours', terms, query.flag, oursParams)].join(' AND ')
+  const oursWhere = ['p.tenant_id = $1', 'p.deleted_at IS NULL', ...sourceFilters('ours', terms, query.flag, oursParams, category)].join(' AND ')
   const offersParams: unknown[] = [tenantId]
-  const offersWhere = ['o.tenant_id = $1', ...sourceFilters('supplier', terms, query.flag, offersParams)].join(' AND ')
+  const offersWhere = ['o.tenant_id = $1', ...sourceFilters('supplier', terms, query.flag, offersParams, category)].join(' AND ')
 
   const [oursTotal, offersTotal] = await Promise.all([
     wantOurs ? pool.query(`SELECT count(*)::int AS n FROM products p WHERE ${oursWhere}`, oursParams).then(r => Number(r.rows[0]?.n ?? 0)) : Promise.resolve(0),
@@ -89,9 +99,10 @@ export async function listSiteCatalog(tenantId: string, role: string, query: Cat
     const { rows: found } = await pool.query(
       `SELECT 'supplier' AS kind, o.connection_id::text || ':' || o.external_id AS id, o.number AS sku, COALESCE(o.custom_name, o.name) AS name, o.brand,
               COALESCE(o.custom_barcode, o.barcode) AS barcode, COALESCE(o.custom_price, o.retail_price) AS price, o.purchase_price AS purchase,
-              o.total_qty AS qty, o.image_url AS photo, o.category_name AS category, sc.name AS supplier, o.hidden, o.product_id IS NOT NULL AS linked,
+              o.total_qty AS qty, o.image_url AS photo, COALESCE(oc.name, o.category_name) AS category, sc.name AS supplier, o.hidden, o.product_id IS NOT NULL AS linked,
               (o.custom_name IS NOT NULL OR o.custom_barcode IS NOT NULL OR o.custom_price IS NOT NULL) AS custom
          FROM supplier_offers o JOIN supplier_api_connections sc ON sc.id = o.connection_id
+         LEFT JOIN categories oc ON oc.id = o.category_id AND oc.deleted_at IS NULL
         WHERE ${offersWhere} ORDER BY ${OFFERS_ORDER} LIMIT ${left} OFFSET ${offersOffset}`, offersParams)
     rows.push(...found)
   }

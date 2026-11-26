@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { exactProductMatch, fitSide, groupPhotoFiles, isoToLocalInput, localInputToIso, photoFileKey, siteOrderToProgramOrder, type SiteOrder } from './siteGateway'
 import { BANNERS, CATEGORIES, PAGES, PROMOS, formProblem, formToPayload, rowToForm } from './SiteCrudTab'
-import { SITE_SETTING_FIELDS, completeHomeBlocks } from './SiteSimpleTabs'
+import { SITE_SETTING_FIELDS, SITE_SETTING_GROUPS, completeHomeBlocks } from './SiteSimpleTabs'
 import { specsFromText, specsToText } from './SiteProductsTab'
 import { SITE_SECTIONS, SITE_TABS } from './SitePage'
 
@@ -80,11 +80,14 @@ describe('site section through the gateway', () => {
     const server = read('../../../../../server/src/services/siteGatewayService.ts')
     for (const field of SITE_SETTING_FIELDS) expect(server, field.key).toContain(`'${field.key}'`)
     expect(SITE_SETTING_FIELDS).toHaveLength(13)
+    // Кожне поле — рівно в одній групі (інакше поле зникло б з екрана).
+    expect(SITE_SETTING_GROUPS.flatMap(group => group.keys).sort()).toEqual(SITE_SETTING_FIELDS.map(field => field.key).sort())
     // 26.11.2026, слово власника: «чітка ієрархія: товари — уся робота з товарами; замовлення — уся робота із замовленнями».
     expect(SITE_SECTIONS.map(section => [section.label, section.tabs.map(tab => tab.label)])).toEqual([
-      ['Товари', ['Усі товари', 'Фото', 'Категорії сайту', 'Акції']],
+      // 26.11.2026: «товари → категорії → товари в категорії»: категорії — ліворуч у «Товарах»; меню сайту — у «Вітрині».
+      ['Товари', ['Товари за категоріями', 'Фото', 'Акції']],
       ['Замовлення', ['Замовлення', 'Покупці', 'Відгуки']],
-      ['Вітрина', ['Головна сторінка', 'Банери', 'Сторінки і статті']],
+      ['Вітрина', ['Головна сторінка', 'Меню каталогу', 'Банери', 'Сторінки і статті']],
       ['Налаштування', ['Налаштування сайту', 'Каталог для сайту', 'Доступ']],
     ])
     expect(new Set(SITE_TABS.map(tab => tab.id)).size).toBe(SITE_TABS.length)
@@ -129,8 +132,8 @@ describe('site section is readable and the menu is not cluttered', () => {
   })
   it('the section uses the page width, tabs wrap on a PC; internal consumption left the menu for the inventory tabs', () => {
     const page = read('./SitePage.tsx')
-    expect(page).toContain('className="w-full space-y-4" data-site-body')
-    expect(page).toContain('max-md:overflow-x-auto md:flex-wrap')
+    expect(page).toContain('className="w-full space-y-3" data-site-body')
+    expect(page).toContain('max-lg:overflow-x-auto lg:flex-wrap')
     expect(page).not.toContain('max-w-4xl')
     expect(read('../../components/Sidebar.tsx')).not.toMatch(/to: '\/internal'/)
     expect(read('../../components/SubNavTabs.tsx')).toMatch(/to: '\/internal', label: 'Для потреб магазину'/)

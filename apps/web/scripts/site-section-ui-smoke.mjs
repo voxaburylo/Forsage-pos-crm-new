@@ -36,7 +36,9 @@ const modules = {
   '@/stores/authStore': `import{create}from'zustand';export const useAuthStore=create(()=>({loading:false,offlineMode:false,session:{user:{id:'u',app_metadata:{role:'owner',tenant_id:'t'}}}}));`,
   '@/lib/auth': `export async function signOut(){}`,
   '@/lib/api': `const G=${JSON.stringify(gateway)};
-    export const api={get:async(p)=>({data:p.includes('/site-admin/catalog')?{rows:[],total:0,ours_total:0,page:1,pages:1}:p.includes('/categories')?[{id:'p1',parent_id:null,name:'Фільтри'},{id:'p2',parent_id:null,name:'Оливи-ATF'}]:p.includes('/access')?{user_ids:[],users:[]}:p.includes('/orders')?[]:{enabled:false,settings:{show_prices:true,stock_mode:'flag',only_in_stock:false,hidden_category_ids:[],price_change_pct:0,accept_orders:true,min_order_kopecks:0,title:'',phone:'',address:'',working_hours:'',banner_text:'',about:'',delivery_text:'',payment_text:''},key_hint:null,key_created_at:null,updated_at:null}}),
+    window.__catalogCalls=[];
+    const TREE={categories:[{id:'c1',parent_id:null,name:'Оливи',ours:5,supplier:20},{id:'c2',parent_id:'c1',name:'Моторні оливи',ours:3,supplier:10},{id:'c3',parent_id:null,name:'Фільтри',ours:0,supplier:0}],none:{ours:2,supplier:7}};
+    export const api={get:async(p)=>(p.includes('/site-admin/catalog')&&!p.includes('/catalog/categories')?window.__catalogCalls.push(p):0,{data:p.includes('/site-admin/catalog/categories')?TREE:p.includes('/site-admin/catalog')?{rows:[],total:0,ours_total:0,page:1,pages:1}:p.includes('/categories')?[{id:'p1',parent_id:null,name:'Фільтри'},{id:'p2',parent_id:null,name:'Оливи-ATF'}]:p.includes('/access')?{user_ids:[],users:[]}:p.includes('/orders')?[]:{enabled:false,settings:{show_prices:true,stock_mode:'flag',only_in_stock:false,hidden_category_ids:[],price_change_pct:0,accept_orders:true,min_order_kopecks:0,title:'',phone:'',address:'',working_hours:'',banner_text:'',about:'',delivery_text:'',payment_text:''},key_hint:null,key_created_at:null,updated_at:null}}),
       post:async(_p,b)=>{if(b&&b.action==='boom')throw new Error('x');return {data:G[b.action]??null}},put:async()=>({data:{}}),delete:async()=>({data:{}})};
     export const isWebReadOnlyRequest=()=>false;`,
   '@/lib/apiBaseUrl': `export const API_BASE_URL='https://example.test'`,
@@ -105,9 +107,31 @@ try {
       // 26.11.2026: чотири розділи (Товари, Замовлення, Вітрина, Налаштування); вкладка видна лише у своєму розділі.
       assert.deepEqual(await page.locator('[data-site-section]').allInnerTexts(), ['Товари', 'Замовлення1', 'Вітрина', 'Налаштування'], `${label}: розділи`)
       assert.deepEqual(await page.locator('[data-site-tab]').evaluateAll(nodes => nodes.map(node => node.dataset.siteTab)), ['orders', 'customers', 'reviews'], `${label}: вкладки розділу «Замовлення»`)
-      // Назви розділів не обрізаються (на телефоні — 2×2).
+      // Назви розділів не обрізаються.
       assert.ok(await page.locator('[data-site-section]').evaluateAll(nodes => nodes.every(node => node.scrollWidth <= node.clientWidth)), `${label}: назва розділу обрізана`)
-      const SECTION = { customers: 'sales', reviews: 'sales', photos: 'goods', categories: 'goods', promos: 'goods', home: 'showcase', banners: 'showcase', pages: 'showcase', settings: 'setup', catalog: 'setup', access: 'setup' }
+      // 26.11.2026, слово власника: «чотири колонки на всю ширину — некрасиво, багато порожнього місця»: розділи — за шириною слів.
+      const bar = await page.locator('[data-site-sections]').boundingBox()
+      if (size.width >= 1024) assert.ok(bar && bar.width < 520, `${label}: розділи розтягнуті на ${Math.round(bar?.width ?? 0)}px`)
+      assert.ok(bar && bar.height < 48, `${label}: розділи у кілька рядків (${Math.round(bar?.height ?? 0)}px)`)
+
+      // «Товари → категорії → товари в категорії; або “усі товари” — усе підряд».
+      await page.locator('[data-site-section="goods"]').click()
+      await page.locator('[data-site-tab="all"]').click()
+      if (size.name === 'phone') await page.locator('[data-site-category-toggle]').click()
+      const list = page.locator('[data-site-category-list]').locator('visible=true')
+      await list.locator('[data-site-category=""]').waitFor()
+      // Усього 5+20+3+10+2+7 = 47; «Оливи» разом із вкладеними 38; порожніх «Фільтрів» не видно.
+      assert.match(await list.locator('[data-site-category=""]').innerText(), /Усі товари\s*47/, `${label}: «Усі товари» без кількості`)
+      assert.match(await list.locator('[data-site-category="c1"]').innerText(), /Оливи\s*38/, `${label}: категорія без вкладених`)
+      assert.equal(await list.locator('[data-site-category="c3"]').count(), 0, `${label}: порожня категорія видна`)
+      await list.locator('[data-site-category="c1"]').click()
+      await page.waitForFunction(() => window.__catalogCalls.some(call => call.includes('category=c1')))
+      assert.match(await page.locator('[data-site-breadcrumb]').innerText(), /Усі товари\s*›\s*Оливи/, `${label}: не видно, в якій категорії`)
+      await page.locator('[data-site-breadcrumb] button', { hasText: 'Усі товари' }).click()
+      await page.waitForFunction(() => /category=(&|$)/.test(window.__catalogCalls.at(-1)))
+      if (shots) await page.screenshot({ path: path.join(shots, `site-${size.name}-goods.png`) })
+
+      const SECTION = { customers: 'sales', reviews: 'sales', photos: 'goods', categories: 'showcase', promos: 'goods', home: 'showcase', banners: 'showcase', pages: 'showcase', settings: 'setup', catalog: 'setup', access: 'setup' }
       assert.equal(await page.locator('[data-site-tab="products"]').count(), 0, `${label}: окремої вкладки «Товари на сайті» немає`)
       for (const tab of ['customers', 'photos', 'categories', 'banners', 'promos', 'home', 'pages', 'reviews', 'settings', 'catalog', 'access']) {
         await page.locator(`[data-site-section="${SECTION[tab]}"]`).click()

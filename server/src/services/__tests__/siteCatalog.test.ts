@@ -65,4 +65,29 @@ describe('site catalog: our goods and supplier goods in one list', () => {
     expect(update).toContain('>= purchase_price')
     expect(query.mock.calls[1][1][2]).toBeCloseTo(0.9)
   })
+
+  // 26.11.2026, слово власника: «товари → категорії → товари в категорії, як на великих сайтах; або “усі товари”».
+  it('a chosen category shows its goods together with nested categories — ours and supplier goods alike', async () => {
+    const OILS = '11111111-1111-4111-8111-111111111111', MOTOR = '22222222-2222-4222-8222-222222222222', OTHER = '33333333-3333-4333-8333-333333333333'
+    query.mockImplementation(async (sql: string = '') => {
+      if (sql.startsWith('SELECT id::text AS id, parent_id::text')) return { rows: [{ id: OILS, parent_id: null, name: 'Оливи' }, { id: MOTOR, parent_id: OILS, name: 'Моторні' }, { id: OTHER, parent_id: null, name: 'Фільтри' }] }
+      if (sql.startsWith('SELECT count(*)')) return { rows: [{ n: 1 }] }
+      return { rows: [] }
+    })
+    await listSiteCatalog('t', 'owner', catalogQuerySchema.parse({ category: OILS }))
+    const counts = query.mock.calls.filter(call => String(call[0]).startsWith('SELECT count(*)'))
+    expect(counts).toHaveLength(2)
+    for (const call of counts) {
+      expect(String(call[0])).toMatch(/category_id = ANY\(\$2::uuid\[\]\)/)
+      expect(call[1][1]).toEqual([OILS, MOTOR])
+    }
+    query.mockClear()
+    await listSiteCatalog('t', 'owner', catalogQuerySchema.parse({ category: 'none' }))
+    expect(String(query.mock.calls[0][0])).toContain('category_id IS NULL OR NOT EXISTS')
+    query.mockClear()
+    await listSiteCatalog('t', 'owner', catalogQuerySchema.parse({}))
+    // «Усі товари» — без відбору за категорією (у переліку рядків категорія лише підписується).
+    expect(query.mock.calls.filter(call => String(call[0]).startsWith('SELECT count(*)')).some(call => String(call[0]).includes('category_id'))).toBe(false)
+    expect(catalogQuerySchema.safeParse({ category: "x' OR 1=1" }).success).toBe(false)
+  })
 })
