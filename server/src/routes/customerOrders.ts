@@ -149,7 +149,7 @@ const createOrderSchema = z.object({
     vin: z.string().optional(),
   }).optional().nullable(),
   comment:               z.string().max(2000).optional().nullable(),
-  source:                z.enum(['walk_in', 'messenger', 'telegram_bot', 'mobile_draft', 'phone']).default('walk_in'),
+  source:                z.enum(['walk_in', 'messenger', 'telegram_bot', 'mobile_draft', 'phone', 'site']).default('walk_in'),
   prepayment:            z.number().int().min(0).default(0),
   prepayment_method:     z.enum(['cash', 'card', 'transfer']).optional().nullable(),
   prepayment_is_fiscal:  z.boolean().default(false),

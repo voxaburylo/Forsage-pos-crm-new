@@ -80,7 +80,8 @@ export function siteOrderToProgramOrder(order: SiteOrder) {
     payload: {
       customer_phone: phone.length >= 10 && phone.length <= 12 ? phone : null,
       customer_name: String(order.customer_name ?? '').trim().slice(0, 120) || null,
-      comment, author: 'Сайт', items,
+      // 27.11.2026: звичайне замовлення з джерелом «сайт» (стара збірка каси це поле просто не бачить).
+      comment, author: 'Сайт', source: 'site' as const, items,
     },
     textOnly: notes,
   }

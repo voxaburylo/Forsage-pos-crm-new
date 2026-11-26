@@ -1,4 +1,5 @@
 import { api } from '@/lib/api'
+import { SITE_CANCEL_REASON } from '@/features/tillCommands/tillSiteCancel'
 import { deliverTillAnswer, type TillLinkContext } from './useTillRpc'
 import { planTillProductUpdate, type TillProductUpdate } from '@/features/tillCommands/tillCommandModel'
 import type { TillOrderCard } from '@/features/tillCommands/tillOrderModel'
@@ -35,7 +36,20 @@ export async function claimTillCommands({ bridge, deviceId }: TillLinkContext): 
         tillOrderToCreate(order, null, command.operation_id, cards)
         const customerId = order.customer_phone ? (await customerApi.quickCreate(order.customer_phone, order.customer_name ?? '')).data.id : null
         const saved = await orderApi.create(tillOrderToCreate(order, customerId, command.operation_id, cards))
-        return { status: 'done', result: { order_id: saved.data.id, order_number: saved.data.order_number, total_amount: saved.data.total_amount } }
+        // 27.11.2026: замовлення, яке на сайті вже скасували, зберігаємо й одразу скасовуємо — грошей у ньому ще немає.
+        if (order.canceled) await orderApi.cancel(saved.data.id, false, SITE_CANCEL_REASON)
+        return { status: 'done', result: { order_id: saved.data.id, order_number: saved.data.order_number, total_amount: saved.data.total_amount, ...(order.canceled ? { canceled: true } : {}) } }
+      }
+      // 27.11.2026: покупець скасував замовлення на сайті вже після того, як каса його створила.
+      if (command.command === 'order.site_cancel') {
+        const { orderApi } = await import('@/features/orders/orderApi')
+        const { siteCancelPlan, SITE_CANCEL_REASON: reason } = await import('@/features/tillCommands/tillSiteCancel')
+        const orderId = String((command.payload as { order_id?: unknown })?.order_id ?? '')
+        const current = await orderApi.get(orderId).then(found => found.data, () => null)
+        const plan = siteCancelPlan(current)
+        if (plan.action === 'refuse') throw new Error(plan.reason)
+        if (plan.action === 'cancel') await orderApi.cancel(orderId, false, reason)
+        return { status: 'done', result: { order_id: orderId, canceled: plan.action === 'cancel', note: plan.reason } }
       }
       // 22.11.2026: дозамовлення з вебу — лише нові позиції й примітка до відкритого замовлення; решту каса лишає як є.
       if (command.command === 'order.append') {
@@ -82,7 +96,7 @@ export async function claimTillCommands({ bridge, deviceId }: TillLinkContext): 
       return { status: 'failed', error: (error instanceof Error ? error.message : 'Каса не змогла виконати зміну').slice(0, 500) }
     }
   }
-  const { data } = await api.post<{ data: ClaimedCommand[] }>('/api/v1/till-commands/claim', { device_id: deviceId }, undefined, { silent: true, timeoutMs: 10_000 })
+  const { data } = await api.post<{ data: ClaimedCommand[] }>('/api/v1/till-commands/claim', { device_id: deviceId, site_orders: true }, undefined, { silent: true, timeoutMs: 10_000 })
   for (const command of data) {
     const outcome = await execute(command)
     // Команду вже виконано в базі каси — відповідь не має загубитися через блимання мережі.

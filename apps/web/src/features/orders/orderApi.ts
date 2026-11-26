@@ -8,7 +8,7 @@ import { moneyOnlyAtTill } from '@/lib/moneyOnlyAtTill'
 
 export type CustomerOrderStatus = 'lead' | 'quoted' | 'new' | 'in_progress' | 'ordered' | 'arrived' | 'called' | 'no_answer' | 'ready' | 'completed' | 'canceled' | 'archived'
 export type ItemStatus = 'pending' | 'ordered' | 'arrived' | 'handed' | 'canceled' | 'returned'
-export type OrderSource = 'walk_in' | 'phone' | 'messenger' | 'telegram_bot' | 'mobile_draft'
+export type OrderSource = 'walk_in' | 'phone' | 'messenger' | 'telegram_bot' | 'mobile_draft' | 'site'
 
 export interface CustomerOrderItem {
   is_draft_note?: boolean

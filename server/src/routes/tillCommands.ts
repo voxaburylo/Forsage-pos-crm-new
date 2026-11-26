@@ -39,7 +39,7 @@ tillCommandsRouter.post('/', requireRole(...WEB_COMMAND_ROLES), async (req, res,
 
 // Каса: присутність + забрати свіжі команди. Ідентифікатор пристрою — з програми на касі.
 tillCommandsRouter.post('/claim', requireRole(...TILL_ROLES), async (req, res, next) => {
-  try { res.json({ data: await claimCommands(req.user!.tenant_id, String(req.body?.device_id ?? '')) }) } catch (err) { next(err) }
+  try { res.json({ data: await claimCommands(req.user!.tenant_id, String(req.body?.device_id ?? ''), req.body?.site_orders === true) }) } catch (err) { next(err) }
 })
 
 tillCommandsRouter.post('/:id/result', requireRole(...TILL_ROLES), async (req, res, next) => {
