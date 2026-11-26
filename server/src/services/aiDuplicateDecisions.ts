@@ -1,5 +1,4 @@
 import { z } from 'zod'
-import { pool } from '../db/pg.js'
 import { logger } from '../lib/logger.js'
 
 /**
@@ -16,6 +15,7 @@ export const pairKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${
 
 export async function saveDistinctPairs(tenantId: string, userId: string, pairs: Array<{ a: string; b: string }>): Promise<number> {
   const unique = [...new Map(pairs.map(pair => [pairKey(pair.a, pair.b), pair.a < pair.b ? pair : { a: pair.b, b: pair.a }])).values()]
+  const { pool } = await import('../db/pg.js') // лінивий імпорт: модуль читають і тести без бази
   const { rowCount } = await pool.query(
     `INSERT INTO ai_duplicate_decisions (tenant_id, product_a, product_b, decided_by)
      SELECT $1, x.a, x.b, $2 FROM unnest($3::uuid[], $4::uuid[]) AS x(a, b)
@@ -27,6 +27,7 @@ export async function saveDistinctPairs(tenantId: string, userId: string, pairs:
 /** Пари «не дублі» цього магазину; таблиці немає чи помилка — порожньо (пошук як раніше). */
 export async function readDistinctPairs(tenantId: string): Promise<Set<string>> {
   try {
+    const { pool } = await import('../db/pg.js')
     const { rows } = await pool.query('SELECT product_a::text AS a, product_b::text AS b FROM ai_duplicate_decisions WHERE tenant_id = $1', [tenantId])
     return new Set(rows.map((row: { a: string; b: string }) => pairKey(row.a, row.b)))
   } catch (error) {
