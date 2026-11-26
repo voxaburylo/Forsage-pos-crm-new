@@ -100,7 +100,7 @@ function accessHint(provider: string, stored: string): string {
  * складу — це прогрес проходу прайсу. Час — за фактичною швидкістю (а не за обіцянкою): прохід — від його початку,
  * черги кросів і опису — за кількістю оброблених за останню годину.
  */
-export type LoadProgress = { fraction: number | null; eta_ms: number | null; loading: boolean; next_at: string | null }
+export type LoadProgress = { fraction: number | null; eta_ms: number | null; loading: boolean; next_at: string | null; note?: string }
 /** Розмір сторінки прайсу; для GPL — те саме, що GPL_PAGE_SIZE у supplierGpl.ts (перевіряє тест). */
 export const PAGE_SIZE_BY_PROVIDER: Readonly<Record<string, number>> = { omega: OMEGA_PAGE_SIZE, gpl: 100 }
 
@@ -126,6 +126,42 @@ export function queueProgress(done: number, total: number, perLastHour: number):
   return { fraction, eta_ms: left === 0 ? 0 : perLastHour > 0 ? Math.round(left / perLastHour * 3_600_000) : null, loading: left > 0, next_at: null }
 }
 
+/**
+ * 26.11.2026 (фото власника: «написано “завантажено”, хоча кроси ще вантажаться, фото теж»): у заголовку постачальника —
+ * загальний стан УСІХ завантажень. Частка — середня по частинах, що мають частку; «вантажиться», якщо хоч щось
+ * вантажиться; час — найдовший із відомих.
+ */
+export function overallProgress(parts: ReadonlyArray<LoadProgress | undefined>): LoadProgress {
+  const known = parts.filter((part): part is LoadProgress => Boolean(part))
+  const withFraction = known.filter(part => part.fraction != null)
+  const loading = known.filter(part => part.loading)
+  const etas = loading.map(part => part.eta_ms).filter((eta): eta is number => eta != null)
+  return {
+    fraction: withFraction.length ? withFraction.reduce((sum, part) => sum + (part.fraction as number), 0) / withFraction.length : null,
+    eta_ms: etas.length ? Math.max(...etas) : null,
+    loading: loading.length > 0,
+    next_at: loading.length ? null : known.map(part => part.next_at).filter(Boolean).sort()[0] ?? null,
+  }
+}
+
+/** Фото Омеги — для товарів у наявності; поки кроси не докачані, фото на паузі (ліміт запитів іде кросам). */
+export function photoProgress(row: { photos_enabled?: boolean; photos_total?: number; photos_done?: number; photos_hour?: number }, crosses: LoadProgress): LoadProgress {
+  const base = queueProgress(row.photos_done ?? 0, row.photos_total ?? 0, row.photos_hour ?? 0)
+  if (!row.photos_enabled) return { ...base, loading: false, eta_ms: null, note: 'вимкнено' }
+  if (base.loading && crosses.loading) return { ...base, eta_ms: null, note: 'на паузі, поки вантажаться кроси' }
+  return base
+}
+
+/** Хід усіх завантажень постачальника: прайс і склади; для Омеги ще кроси, опис і фото (у GPL фото й опис — у прайсі). */
+export function connectionProgress(row: any): { overall: LoadProgress; price: LoadProgress; crosses?: LoadProgress; details?: LoadProgress; photos?: LoadProgress } {
+  const price = pricePassProgress(row)
+  if (row.provider !== 'omega') return { overall: price, price }
+  const crosses = queueProgress(row.crosses_done ?? 0, row.offers ?? 0, row.crosses_hour ?? 0)
+  const details = queueProgress(row.details_done ?? 0, row.offers ?? 0, row.details_hour ?? 0)
+  const photos = photoProgress(row, crosses)
+  return { overall: overallProgress([price, crosses, details, row.photos_enabled ? photos : undefined]), price, crosses, details, photos }
+}
+
 export async function listConnections(tenantId: string) {
   const { rows } = await pool.query(
     `SELECT c.id, c.provider, c.name, c.api_key, c.meta, c.enabled, c.supplier_id, c.sync_page, c.sync_started_at, c.last_full_sync_at, c.last_error, c.total_offers, c.updated_at,
@@ -135,7 +171,11 @@ export async function listConnections(tenantId: string) {
             (SELECT count(*) FROM supplier_offer_crosses x WHERE x.connection_id = c.id)::int AS crosses_total,
             (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.details_checked_at IS NOT NULL)::int AS details_done,
             (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.crosses_checked_at > now() - interval '1 hour')::int AS crosses_hour,
-            (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.details_checked_at > now() - interval '1 hour')::int AS details_hour
+            (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.details_checked_at > now() - interval '1 hour')::int AS details_hour,
+            c.photos_enabled,
+            (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.total_qty > 0)::int AS photos_total,
+            (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.total_qty > 0 AND (o.image_url IS NOT NULL OR o.photo_checked_at IS NOT NULL))::int AS photos_done,
+            (SELECT count(*) FROM supplier_offers o WHERE o.connection_id = c.id AND o.photo_checked_at > now() - interval '1 hour')::int AS photos_hour
        FROM supplier_api_connections c WHERE c.tenant_id = $1 ORDER BY c.created_at`, [tenantId])
   const warehouses = (await pool.query('SELECT id, connection_id, code, name, city, days_to_ship, is_active FROM supplier_warehouses WHERE tenant_id = $1 ORDER BY name', [tenantId])).rows
   return rows.map((row: any) => ({
@@ -144,14 +184,7 @@ export async function listConnections(tenantId: string) {
     syncing: Boolean(row.sync_started_at), sync_page: row.sync_page, last_full_sync_at: row.last_full_sync_at ? new Date(row.last_full_sync_at).toISOString() : null,
     last_error: row.last_error, total_offers: row.total_offers, offers: row.offers, linked: row.linked,
     crosses_done: row.crosses_done ?? 0, crosses_total: row.crosses_total ?? 0, details_done: row.details_done ?? 0,
-    progress: {
-      price: pricePassProgress(row),
-      // Кроси й опис завантажуються лише для Омеги.
-      ...(row.provider === 'omega' ? {
-        crosses: queueProgress(row.crosses_done ?? 0, row.offers ?? 0, row.crosses_hour ?? 0),
-        details: queueProgress(row.details_done ?? 0, row.offers ?? 0, row.details_hour ?? 0),
-      } : {}),
-    },
+    progress: connectionProgress(row),
     warehouses: warehouses.filter((w: any) => w.connection_id === row.id).map((w: any) => ({ id: w.id, code: w.code, name: w.name, city: w.city, days_to_ship: w.days_to_ship, is_active: w.is_active })),
   }))
 }

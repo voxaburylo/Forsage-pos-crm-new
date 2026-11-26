@@ -2,7 +2,7 @@
  * 25.11.2026, слово власника: «кружечок навпроти складу — заповнюється зеленим у міру завантаження, і скільки
  * лишилось у днях, годинах чи хвилинах; ненавʼязливо, щоб не заважало; кружечок з анімацією».
  */
-export type LoadProgress = { fraction: number | null; eta_ms: number | null; loading: boolean; next_at: string | null }
+export type LoadProgress = { fraction: number | null; eta_ms: number | null; loading: boolean; next_at: string | null; note?: string }
 
 /** «≈ 2 дн 5 год», «≈ 1 год 20 хв», «≈ 15 хв», «< 1 хв». */
 export function leftText(ms: number | null | undefined): string {
@@ -21,8 +21,10 @@ export function progressText(progress: LoadProgress | null | undefined): string 
   if (progress.loading) {
     const percent = progress.fraction == null ? '' : `${Math.floor(progress.fraction * 100)} %`
     const left = leftText(progress.eta_ms)
-    return [percent, left && `лишилось ${left}`].filter(Boolean).join(' · ') || 'завантажується'
+    return [percent, left && `лишилось ${left}`, progress.note].filter(Boolean).join(' · ') || 'завантажується'
   }
+  // 26.11.2026: пояснення від сервера («вимкнено», «на паузі, поки вантажаться кроси»).
+  if (progress.note) return [progress.fraction == null ? '' : `${Math.floor(progress.fraction * 100)} %`, progress.note].filter(Boolean).join(' · ')
   if (progress.fraction === 1) return 'завантажено'
   return progress.fraction == null ? '' : 'ще не завантажувалось'
 }
