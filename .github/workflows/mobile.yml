@@ -54,13 +54,23 @@ jobs:
       - name: Copy screens into the Android project
         working-directory: apps/mobile
         run: npx cap sync android
+      # Постійний ключ підпису — у секретах репозиторію; без нього збірка не робиться: тимчасовий підпис не дає оновлювати.
+      - name: Signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then echo "::error::Немає секрету ANDROID_KEYSTORE_BASE64"; exit 1; fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/forsage.p12"
+          echo "FORSAGE_KEYSTORE_FILE=$RUNNER_TEMP/forsage.p12" >> "$GITHUB_ENV"
       - name: Build the APK
         working-directory: apps/mobile/android
-        run: chmod +x gradlew && ./gradlew assembleDebug --no-daemon
+        env:
+          FORSAGE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: chmod +x gradlew && ./gradlew assembleRelease --no-daemon && cp app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/Forsage-android.apk"
       - uses: actions/upload-artifact@v4
         with:
           name: forsage-android
-          path: apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          path: ${{ runner.temp }}/Forsage-android.apk
           if-no-files-found: error
 
   ios:
