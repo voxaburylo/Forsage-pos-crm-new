@@ -10,6 +10,7 @@ describe('assistant background jobs panel does not eat the chat', () => {
   })
   it('the folded line says when a job waits for its start or is ready for review', () => {
     expect(panel).toContain('чекає запуску')
-    expect(panel).toContain('готово — перегляньте')
+    expect(panel).toContain('готово — переглянути й застосувати')
+    expect(panel).toContain('data-ai-jobs-review')
   })
 })

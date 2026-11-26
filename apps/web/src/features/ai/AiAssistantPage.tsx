@@ -29,6 +29,7 @@ import type { AiChatResponse, AiStatus, AiPendingAction, AiChatMessage, AiAction
 import { OrderConfirmModal } from './OrderConfirmModal'
 import { BulkPreviewTable } from './AiBulkPreview'
 import { MergeProposal } from './AiMergeProposal'
+import { AiActionButtons, aiActionKind } from './AiActionButtons'
 import { openAiInvoiceDraft } from './openAiInvoiceDraft'
 import { useAuthStore } from '@/stores/authStore'
 import { api } from '@/lib/api'
@@ -42,7 +43,7 @@ import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
 import { useWritesToMainPc, writesToMainPc } from '@/lib/mainPcData'
 import { ReplyText } from './ReplyText'
 import { aiChatStorageKey, readAiChat, saveAiChat } from './aiChatStorage'
-import { aiRequestHistory } from './aiRequestHistory'
+import { aiRequestHistoryWithOutcomes } from './aiRequestHistory'
 import { clearPendingReply, isLostConnection, newAiRequestId, readPendingReply, waitForPendingReply, writePendingReply, type PendingAiReply } from './aiPendingReply'
 import { isOrderPhotoRequest, isSupplyRecognitionRequest, SUPPLY_PHOTO_INSTRUCTION } from './aiPhotoIntent'
 import { useLatestRequest } from '@/hooks/useLatestRequest'
@@ -481,7 +482,7 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
     const sendToken = newAiRequestId()
     activeSend.current = sendToken
 
-    const history: AiChatMessage[] = aiRequestHistory(entries)
+    const history: AiChatMessage[] = aiRequestHistoryWithOutcomes(entries, { applied, applyMsg, applyErrors })
     const attachmentNote = [
       attachment ? `📎 ${attachment.name}` : null,
       ...imageAttachments.map((img) => `🖼️ ${img.name}`),
@@ -1216,29 +1217,11 @@ function AiAssistantContent({ invoiceOnly, storageKey }: { invoiceOnly: boolean;
                           {/* Подивитись усі рядки можна й без права запису — кнопка «Застосувати» у вікні буде вимкнена. */}
                           {isBulk && action.tool !== 'create_products_bulk' && <button type="button" onClick={() => setModalAction(action)} className="mt-1 block font-semibold text-blue-700 underline">Переглянути всі рядки{action.count ? ` (${action.count})` : ''}</button>}</p>
                       ) : (
-                        <div className="space-y-2">
-                          <div className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-600 bg-amber-50 rounded-md px-2 py-1">
-                            <AlertTriangle size={12} /> Ще не збережено — потрібне ваше підтвердження
-                          </div>
-                          <div className="flex gap-2">
-                            {isOrder ? (
-                              <Button disabled={!!applyingId || sending} type="button" onClick={() => setOrderModalAction(action)} className="text-xs">
-                                <Eye size={14} className="mr-1" /> Перевірити та створити замовлення
-                              </Button>
-                            ) : isBulk || isInvoice ? (
-                              <Button disabled={!!applyingId || sending} type="button" onClick={() => isInvoice ? void openInvoice(action) : setModalAction(action)} className="text-xs">
-                                <Eye size={14} className="mr-1" /> {isInvoice ? 'Відкрити накладну' : 'Переглянути та підтвердити'}{action.count ? ` (${action.count})` : ''}
-                              </Button>
-                            ) : (
-                              <Button type="button" onClick={() => applyAction(action)} loading={applyingId === action.id} className="text-xs">
-                                <Check size={14} className="mr-1" /> Застосувати
-                              </Button>
-                            )}
-                            <Button disabled={!!applyingId || sending} type="button" variant="secondary" onClick={() => setApplied((p) => ({ ...p, [action.id]: 'rejected' }))} className="text-xs">
-                              Відхилити
-                            </Button>
-                          </div>
-                        </div>
+                        <AiActionButtons kind={aiActionKind({ isOrder, isInvoice, isBulk })} count={action.count}
+                          loading={applyingId === action.id} disabled={!!applyingId || sending}
+                          onPrimary={() => isOrder ? setOrderModalAction(action) : isInvoice ? void openInvoice(action) : void applyAction(action)}
+                          onViewAll={() => setModalAction(action)}
+                          onReject={() => setApplied((p) => ({ ...p, [action.id]: 'rejected' }))} />
                       )}
                     </Card>
                   )

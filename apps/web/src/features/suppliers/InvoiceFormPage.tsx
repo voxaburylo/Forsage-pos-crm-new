@@ -31,6 +31,7 @@ import { shiftApi } from '@/features/pos/shiftApi'
 import { formatMoney } from '@/lib/utils'
 import { desktopBridge, desktopProductToProduct } from '@/lib/desktopBridge'
 import { resolveCachedInvoiceProduct } from './invoiceProductCache'
+import { InvoiceLineProblem } from './InvoiceLineProblem'
 import { captureInvoiceQuantities, nextInvoiceItems } from './invoiceQuantityGuard'
 import { focusInvoiceLine } from './invoiceLineFocus'
 import { OrderPartSuggestions } from '@/features/orders/OrderPartSuggestions'
@@ -1705,13 +1706,8 @@ export default function InvoiceFormPage() {
                       placeholder="Назва товару"
                       className="w-full rounded-lg border border-transparent bg-transparent px-2 py-1 text-sm font-medium outline-none hover:border-gray-200 focus:border-yellow-400 focus:bg-white focus:ring-2 focus:ring-yellow-100 disabled:bg-gray-50 disabled:text-gray-400" />
                     {problemLineKey === item.client_key && (
-                      <div className="mt-1 rounded-lg border border-red-200 bg-red-100 px-2 py-1 text-[11px] font-semibold text-red-700">
-                        {problemLineMessage || 'Проблемний рядок.'} Виправте рядок або виберіть товар через пошук.
-                        <button type="button" onClick={() => askAssistantAboutLine(item)}
-                          className="ml-2 rounded-md bg-white px-2 py-0.5 text-[11px] font-semibold text-purple-700 ring-1 ring-purple-200 hover:bg-purple-50">
-                          Спитати помічника
-                        </button>
-                      </div>
+                      <InvoiceLineProblem name={item.product_name} message={problemLineMessage} onAsk={() => askAssistantAboutLine(item)}
+                        onChoose={product => { setItems(current => current.map(row => row.client_key === item.client_key ? bindExistingProductToItem(row, product) : row)); setProblemLineKey(null) }} />
                     )}
                     <div className="flex items-center gap-1.5 mt-1 px-2 text-xs">
                       <span className="text-gray-400 font-semibold uppercase text-[10px]">SKU:</span>
@@ -1911,13 +1907,8 @@ export default function InvoiceFormPage() {
                       placeholder="Назва товару"
                       className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-sm font-medium outline-none focus:ring-2 focus:ring-yellow-400 disabled:bg-gray-50 disabled:text-gray-400" />
                     {problemLineKey === item.client_key && (
-                      <div className="mt-1 rounded-lg border border-red-200 bg-red-100 px-2 py-1 text-[11px] font-semibold text-red-700">
-                        {problemLineMessage || 'Проблемний рядок.'} Виправте рядок або виберіть товар через пошук.
-                        <button type="button" onClick={() => askAssistantAboutLine(item)}
-                          className="ml-2 rounded-md bg-white px-2 py-0.5 text-[11px] font-semibold text-purple-700 ring-1 ring-purple-200 hover:bg-purple-50">
-                          Спитати помічника
-                        </button>
-                      </div>
+                      <InvoiceLineProblem name={item.product_name} message={problemLineMessage} onAsk={() => askAssistantAboutLine(item)}
+                        onChoose={product => { setItems(current => current.map(row => row.client_key === item.client_key ? bindExistingProductToItem(row, product) : row)); setProblemLineKey(null) }} />
                     )}
                   </div>
                   {canEditDraft && (

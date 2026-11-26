@@ -59,7 +59,7 @@ export async function readAiDuplicates(
   db: ReadDb, tenantId: string, by: 'name' | 'sku', limit: number, parent: AiExecutionBudget,
 ) {
   return withAiExecutionBudget(AI_TIME_LIMITS.read, async budget => {
-    const rows = await readAll(db, tenantId, 'products', 'id, sku, name, qty_on_hand, retail_price', AI_CATALOG_LIMITS.products, budget)
+    const rows = await readAll(db, tenantId, 'products', 'id, sku, name, barcode, qty_on_hand, retail_price', AI_CATALOG_LIMITS.products, budget)
     const groups = new Map<string, Row[]>()
     for (const row of rows) {
       budget.check()
@@ -77,7 +77,7 @@ export async function readAiDuplicates(
       showing: Math.min(limit, duplicates.length),
       groups: duplicates.slice(0, limit).map(group => ({
         products: group.map(row => ({
-          product_id: row.id, sku: row.sku, name: row.name,
+          product_id: row.id, sku: row.sku, name: row.name, barcode: row.barcode ?? null,
           qty: row.qty_on_hand, price_uah: (row.retail_price ?? 0) / 100,
         })),
       })),
