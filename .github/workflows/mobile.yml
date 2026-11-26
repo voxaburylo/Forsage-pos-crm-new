@@ -104,5 +104,6 @@ jobs:
       - name: Build for the simulator (no signing)
         working-directory: apps/mobile/ios/App
         run: |
+          set -o pipefail
           xcodebuild -workspace App.xcworkspace -scheme App -configuration Debug -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' IPHONEOS_DEPLOYMENT_TARGET=15.5 CODE_SIGNING_ALLOWED=NO build | tail -40
