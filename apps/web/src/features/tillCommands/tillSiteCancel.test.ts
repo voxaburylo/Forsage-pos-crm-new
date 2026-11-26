@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { siteCancelPlan } from './tillSiteCancel'
 import { checkTillOrder, tillOrderToCreate } from './tillOrderModel'
+import { siteOrderLinkProblem } from '@/features/site/SiteOrdersTab'
 
 // 27.11.2026: замовлення із сайту — звичайне замовлення з джерелом «сайт»; скасоване на сайті каса скасовує лише без грошей.
 describe('site orders on the till', () => {
@@ -20,6 +21,14 @@ describe('site orders on the till', () => {
     const plain = { ...blank, source: 'telegram_bot', canceled: undefined }
     expect(checkTillOrder(plain).source).toBeUndefined()
     expect(tillOrderToCreate(plain as never, null, 'op-2').source).toBe('walk_in')
+  })
+
+  it('the button does not make a second program order, and not for an order canceled on the site', () => {
+    const link = { id: 'row', external_id: '15', canceled: false, site_status: 'new', program_order_number: null, waiting_till: false }
+    expect(siteOrderLinkProblem(link)).toBe('')
+    expect(siteOrderLinkProblem({ ...link, program_order_number: '2041' })).toMatch(/вже є замовлення програми № 2041/)
+    expect(siteOrderLinkProblem({ ...link, waiting_till: true })).toMatch(/вже передано на касу/)
+    expect(siteOrderLinkProblem({ ...link, canceled: true })).toMatch(/скасував/)
   })
 
   it('cancel from the site: only an order without money and not handed over', () => {

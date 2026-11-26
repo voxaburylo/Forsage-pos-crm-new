@@ -257,11 +257,11 @@ export async function readCommand(tenantId: string, operationId: string) {
 
 /** Каса: «я в мережі» + забрати свіжі команди. Забрати можна лише раз (атомарно), лише свіжу. */
 /**
- * 27.11.2026: команди про замовлення із сайту розуміє лише нова збірка каси (джерело «сайт», «скасовано на сайті»).
- * Стара збірка створила б звичайне замовлення без позначок, тому такі команди віддаємо тільки касі, яка сама сказала,
- * що вміє (knowsSiteOrders); до оновлення вони чекають у черзі (7 діб).
+ * 27.11.2026: команду «замовлення скасували на сайті» розуміє лише нова збірка каси; стара відповіла б «невідома
+ * команда», і скасування загубилось би. Тому віддаємо її тільки касі, яка сама сказала, що вміє (knowsSiteOrders);
+ * до оновлення вона чекає в черзі (7 діб).
  */
-export const SITE_COMMAND_SQL = `(command = 'order.site_cancel' OR (command = 'order.save' AND payload->>'source' = 'site'))`
+export const SITE_COMMAND_SQL = `(command = 'order.site_cancel')`
 
 export async function claimCommands(tenantId: string, deviceId: string, knowsSiteOrders = false) {
   if (!z.string().uuid().safeParse(deviceId).success) throw new AppError('VALIDATION_ERROR', 'Некоректний ідентифікатор каси', 422)

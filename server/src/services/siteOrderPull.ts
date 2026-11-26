@@ -6,10 +6,11 @@ import { SITE_ORDER_AUTHOR } from './tillCommandService.js'
 import { wakeTill } from './tillWake.js'
 
 /**
- * Замовлення із сайту зберігаються в програмі (27.11.2026). Раз на хвилину сервер питає сайт (шлюз, дія orders.list),
- * нове замовлення пише в site_orders (external_id = номер замовлення на сайті) і ставить касі команду створити звичайне
- * замовлення з джерелом 'site'. Замовлення — дані каси, тому в customer_orders його створює КАСА, а в хмару воно
- * приходить звичайним обміном; сервер у customer_orders сам не пише.
+ * Замовлення із сайту зберігаються в програмі (27.11.2026). Раз на хвилину сервер питає сайт (шлюз, дія orders.list)
+ * і нове замовлення пише в site_orders (external_id = номер замовлення на сайті).
+ * РІШЕННЯ ВЛАСНИКА того ж дня: «навіщо плутати замовлення інтернет-магазину з касою?» — у замовлення каси воно САМЕ
+ * не потрапляє. Звичайне замовлення з джерелом 'site' зʼявляється лише коли менеджер натисне «Створити замовлення в
+ * програмі» у картці замовлення сайту (підтвердив із покупцем) — і створює його КАСА, сервер у customer_orders не пише.
  * Скасоване на сайті теж зберігається — з позначкою «скасовано». Те саме замовлення двічі не записується:
  * номер сайту унікальний у site_orders, а команда касі має номер операції = рядок site_orders.
  */
@@ -87,27 +88,19 @@ export async function pullSiteOrders(tenantId: string, startedBy: string, deps: 
       if (inserted.rows[0]) {
         saved += 1
         if (row.canceled) canceled += 1
-        // Замовлення без жодної позиції каса не прийме — воно лишається в site_orders, видно у вкладці «Замовлення».
-        if (row.items.length) await client.query(
-          `INSERT INTO till_commands (tenant_id, operation_id, command, payload, requested_by) VALUES ($1, $2, 'order.save', $3::jsonb, $4)`,
-          [tenantId, inserted.rows[0].id, JSON.stringify(tillOrderPayload(row)), startedBy])
       } else {
         // Відоме замовлення: оновити статус; щойно скасоване на сайті — позначити й сказати касі.
-        const known = await client.query('SELECT id, canceled, site_status FROM site_orders WHERE tenant_id = $1 AND external_id = $2 FOR UPDATE', [tenantId, row.external_id])
-        const before = known.rows[0] as { id: string; canceled: boolean; site_status: string | null } | undefined
+        const known = await client.query('SELECT id, canceled, site_status, program_order_id::text AS program_order_id FROM site_orders WHERE tenant_id = $1 AND external_id = $2 FOR UPDATE', [tenantId, row.external_id])
+        const before = known.rows[0] as { id: string; canceled: boolean; site_status: string | null; program_order_id: string | null } | undefined
         if (before && (before.site_status !== row.site_status || before.canceled !== row.canceled))
           await client.query('UPDATE site_orders SET site_status = $3, canceled = $4, updated_at = now() WHERE tenant_id = $1 AND external_id = $2', [tenantId, row.external_id, row.site_status, row.canceled || before.canceled])
         if (before && row.canceled && !before.canceled) {
           canceled += 1
-          await client.query(
+          // Замовлення програми за ним уже створили кнопкою — сказати касі; не створювали — досить позначки.
+          if (before.program_order_id) await client.query(
             `INSERT INTO till_commands (tenant_id, operation_id, command, payload, requested_by)
-             SELECT $1, gen_random_uuid(), 'order.site_cancel', jsonb_build_object('site_order_id', $2::text, 'external_id', $3::text, 'order_id', c.result->>'order_id'), $4
-               FROM till_commands c WHERE c.tenant_id = $1 AND c.operation_id = $2 AND c.command = 'order.save' AND c.status = 'done' AND c.result->>'order_id' IS NOT NULL`,
-            [tenantId, before.id, row.external_id, startedBy])
-          // Каса ще не встигла створити замовлення — нехай створить уже з позначкою «скасовано».
-          await client.query(
-            `UPDATE till_commands SET payload = payload || '{"canceled": true}'::jsonb WHERE tenant_id = $1 AND operation_id = $2 AND command = 'order.save' AND status = 'pending'`,
-            [tenantId, before.id])
+             VALUES ($1, gen_random_uuid(), 'order.site_cancel', jsonb_build_object('external_id', $2::text, 'order_id', $3::text), $4)`,
+            [tenantId, row.external_id, before.program_order_id, startedBy])
         }
       }
       await client.query('COMMIT')
@@ -116,8 +109,40 @@ export async function pullSiteOrders(tenantId: string, startedBy: string, deps: 
       throw error
     } finally { client.release() }
   }
-  if (saved || canceled) await (deps.wake ?? wakeTill)(tenantId).catch(() => undefined)
+  // Замовлення, передане на касу кнопкою з вебу: каса відповіла — запамʼятати номер замовлення програми.
+  await pool.query(
+    `UPDATE site_orders o SET program_order_id = (c.result->>'order_id')::uuid, program_order_number = c.result->>'order_number', updated_at = now()
+       FROM till_commands c
+      WHERE o.tenant_id = $1 AND o.program_order_id IS NULL AND c.tenant_id = o.tenant_id AND c.operation_id = o.id AND c.command = 'order.save' AND c.status = 'done'
+        AND c.result->>'order_id' ~* '^[0-9a-f-]{36}$'`, [tenantId])
+  if (canceled) await (deps.wake ?? wakeTill)(tenantId).catch(() => undefined)
   return { seen: list.length, saved, canceled }
+}
+
+/**
+ * Кнопка «Створити замовлення в програмі»: що програма знає про це замовлення сайту. Рядка ще немає (щойно прийшло) —
+ * забираємо із сайту зараз. id рядка стає номером операції замовлення на касі: подвійне натискання не дасть двох.
+ */
+export async function siteOrderLink(user: { id: string; tenant_id: string }, externalId: string, deps: PullDeps = {}) {
+  if (!/^[A-Za-z0-9._:-]{1,64}$/.test(externalId)) throw new AppError('NOT_FOUND', 'Замовлення сайту не знайдено', 404)
+  const find = async () => (await pool.query(
+    `SELECT o.id::text AS id, o.external_id, o.canceled, o.site_status, o.program_order_number,
+            (SELECT c.status FROM till_commands c WHERE c.tenant_id = o.tenant_id AND c.operation_id = o.id AND c.command = 'order.save') AS command_status
+       FROM site_orders o WHERE o.tenant_id = $1 AND o.external_id = $2`, [user.tenant_id, externalId])).rows[0]
+  let row = await find()
+  if (!row) { await pullSiteOrders(user.tenant_id, user.id, deps); row = await find() }
+  if (!row) throw new AppError('NOT_FOUND', 'Цього замовлення ще немає в програмі. Оновіть список і спробуйте за хвилину.', 404)
+  return { id: String(row.id), external_id: String(row.external_id), canceled: Boolean(row.canceled), site_status: row.site_status ? String(row.site_status) : null,
+    program_order_number: row.program_order_number ? String(row.program_order_number) : null, waiting_till: ['pending', 'claimed'].includes(String(row.command_status ?? '')) }
+}
+
+/** Каса створила замовлення в себе (кнопку натиснули на головному ПК) — запамʼятати, щоб не створити вдруге й знати, що скасовувати. */
+export async function markSiteOrderInProgram(tenantId: string, externalId: string, orderId: string, orderNumber: string) {
+  if (!UUID.test(orderId)) throw new AppError('VALIDATION_ERROR', 'Некоректний номер замовлення програми', 422)
+  const { rowCount } = await pool.query(
+    'UPDATE site_orders SET program_order_id = $3, program_order_number = $4, updated_at = now() WHERE tenant_id = $1 AND external_id = $2 AND program_order_id IS NULL',
+    [tenantId, externalId, orderId, text(orderNumber, 40) || null])
+  return { saved: Boolean(rowCount) }
 }
 
 /** Пробудження від планувальника (щохвилини, разом із фоновими задачами). Помилка одного магазину не заважає іншим. */

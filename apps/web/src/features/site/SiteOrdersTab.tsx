@@ -9,6 +9,15 @@ import {
   type SiteOrder, type SiteOrderStatus,
 } from './siteGateway'
 
+export interface SiteOrderLink { id: string; external_id: string; canceled: boolean; site_status: string | null; program_order_number: string | null; waiting_till: boolean }
+/** Чому замовлення програми створювати не треба; порожньо — можна. */
+export function siteOrderLinkProblem(link: SiteOrderLink): string {
+  if (link.program_order_number) return 'За цим замовленням сайту вже є замовлення програми № ' + link.program_order_number + '.'
+  if (link.waiting_till) return 'Це замовлення вже передано на касу — воно зʼявиться в «Замовленнях», коли каса на звʼязку.'
+  if (link.canceled) return 'Покупець скасував це замовлення на сайті — у програмі його не створюємо.'
+  return ''
+}
+
 const TONE: Record<SiteOrderStatus, string> = {
   new: 'bg-red-100 text-red-800', confirmed: 'bg-amber-100 text-amber-900', shipped: 'bg-blue-100 text-blue-800',
   completed: 'bg-emerald-100 text-emerald-800', canceled: 'bg-gray-100 text-gray-600',
@@ -21,7 +30,11 @@ const TONE: Record<SiteOrderStatus, string> = {
 async function createInProgram(order: SiteOrder): Promise<string> {
   const { payload } = siteOrderToProgramOrder(order)
   if (!payload.items.length) throw new Error('У цьому замовленні немає товарів із каталогу програми (лише шини сайту) — у програмі створювати нічого.')
-  const operationId = isUuid(order.id) ? order.id : crypto.randomUUID()
+  // 27.11.2026: сервер уже зберіг це замовлення сайту у себе; номер його рядка — номер операції на касі, тож двічі не створиться.
+  const link = (await api.get<{ data: SiteOrderLink }>(`/api/v1/site-admin/orders/${encodeURIComponent(String(order.id))}/link`)).data
+  const refusal = siteOrderLinkProblem(link)
+  if (refusal) throw new Error(refusal)
+  const operationId = link.id
   const bridge = desktopBridge()
   if (isDesktopRuntime() && bridge?.catalog?.findById) {
     const [{ checkTillOrder, tillOrderToCreate }, { customerApi }, { orderApi }] = await Promise.all([
@@ -33,6 +46,7 @@ async function createInProgram(order: SiteOrder): Promise<string> {
     tillOrderToCreate(checked, null, operationId, cards as never)
     const customerId = checked.customer_phone ? (await customerApi.quickCreate(checked.customer_phone, checked.customer_name ?? '')).data.id : null
     const saved = await orderApi.create(tillOrderToCreate(checked, customerId, operationId, cards as never))
+    await api.post(`/api/v1/site-admin/orders/${encodeURIComponent(String(order.id))}/program-order`, { order_id: saved.data.id, order_number: String(saved.data.order_number ?? '') }, undefined, { silent: true }).catch(() => undefined)
     return 'Замовлення програми № ' + saved.data.order_number
   }
   await api.post('/api/v1/till-commands', { operation_id: operationId, command: 'order.save', payload }, undefined, { silent: true, timeoutMs: 15_000 })

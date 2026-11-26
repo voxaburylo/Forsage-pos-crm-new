@@ -168,6 +168,20 @@ siteAdminRouter.post('/catalog/offers/bulk', requireSiteSection, async (req, res
     res.json({ data: await bulkSupplierOffers(req.user!.tenant_id, parsed.data) })
   } catch (err) { next(err) }
 })
+// 27.11.2026: кнопка «Створити замовлення в програмі» — звʼязок замовлення сайту з рядком site_orders і замовленням каси.
+siteAdminRouter.get('/orders/:externalId/link', requireSiteSection, async (req, res, next) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store')
+    const { siteOrderLink } = await import('../services/siteOrderPull.js')
+    res.json({ data: await siteOrderLink(req.user!, String(req.params.externalId)) })
+  } catch (err) { next(err) }
+})
+siteAdminRouter.post('/orders/:externalId/program-order', requireSiteSection, async (req, res, next) => {
+  try {
+    const { markSiteOrderInProgram } = await import('../services/siteOrderPull.js')
+    res.json({ data: await markSiteOrderInProgram(req.user!.tenant_id, String(req.params.externalId), String(req.body?.order_id ?? ''), String(req.body?.order_number ?? '')) })
+  } catch (err) { next(err) }
+})
 siteAdminRouter.get('/orders', ownerOnly, async (req, res, next) => {
   try { res.setHeader('Cache-Control', 'no-store'); res.json({ data: await listSiteOrders(req.user!.tenant_id) }) } catch (err) { next(err) }
 })

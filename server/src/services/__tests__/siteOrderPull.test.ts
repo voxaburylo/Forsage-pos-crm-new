@@ -11,7 +11,7 @@ vi.mock('../../db/pg.js', () => {
       db.known.set(params[1], { id, canceled: params[9], site_status: params[8] })
       return { rows: [{ id }] }
     }
-    if (/SELECT id, canceled, site_status FROM site_orders/.test(text)) { const row = db.known.get(params[1]); return { rows: row ? [{ ...row }] : [] } }
+    if (/SELECT id, canceled, site_status, program_order_id/.test(text)) { const row = db.known.get(params[1]); return { rows: row ? [{ ...row }] : [] } }
     if (/UPDATE site_orders SET site_status/.test(text)) { const row = db.known.get(params[1])!; row.site_status = params[2]; row.canceled = params[3]; return { rows: [] } }
     return { rows: [], rowCount: 0 }
   }
@@ -62,44 +62,50 @@ describe('a site order becomes a row of the program', () => {
 describe('pulling orders from the site', () => {
   beforeEach(() => { db.calls.length = 0; db.known.clear(); db.seq = 0 })
   const run = (list: unknown[]) => pullSiteOrders('shop', 'owner', { gateway: async (action, params) => { expect(action).toBe('orders.list'); expect(params).toEqual({ limit: 50, offset: 0 }); return list }, wake: async () => undefined })
+  const anyCommand = () => db.calls.filter(call => /INSERT INTO till_commands/.test(call.text))
 
-  it('a new order is saved once and handed to the till once; the second pass writes nothing', async () => {
+  // Рішення власника: «навіщо плутати замовлення інтернет-магазину з касою?» — на касу саме нічого не йде.
+  it('a new order is saved once and NOTHING is sent to the till; the second pass writes nothing', async () => {
     expect(await run([order15])).toEqual({ seen: 1, saved: 1, canceled: 0 })
-    expect(commands('order.save')).toHaveLength(1)
-    expect(commands('order.save')[0].params[1]).toBe('row-1')              // номер операції = рядок site_orders: дубля на касі не буде
-    expect(JSON.parse(commands('order.save')[0].params[2]).source).toBe('site')
+    const insert = db.calls.find(call => /INSERT INTO site_orders/.test(call.text))!
+    expect([insert.params[0], insert.params[1], insert.params[7]]).toEqual(['shop', '15', 115550])
+    expect(anyCommand()).toHaveLength(0)
     db.calls.length = 0
     expect(await run([order15])).toEqual({ seen: 1, saved: 0, canceled: 0 })
-    expect(commands('order.save')).toHaveLength(0)
-    expect(db.calls.some(call => /UPDATE site_orders/.test(call.text))).toBe(false)
+    expect(db.calls.some(call => /UPDATE site_orders SET site_status/.test(call.text))).toBe(false)
+    expect(anyCommand()).toHaveLength(0)
   })
 
   it('an order already canceled on the site is saved too — with the mark', async () => {
     expect(await run([{ ...order15, id: 16, status: 'canceled' }])).toEqual({ seen: 1, saved: 1, canceled: 1 })
     const insert = db.calls.find(call => /INSERT INTO site_orders/.test(call.text))!
     expect([insert.params[1], insert.params[8], insert.params[9]]).toEqual(['16', 'canceled', true])
-    expect(JSON.parse(commands('order.save')[0].params[2]).canceled).toBe(true)
+    expect(anyCommand()).toHaveLength(0)
   })
 
-  it('canceled later: the row is marked and the till is told once', async () => {
+  it('canceled later: the row is marked; the till is told only when a program order was made by the button', async () => {
     await run([order15])
     db.calls.length = 0
     expect(await run([{ ...order15, status: 'canceled' }])).toEqual({ seen: 1, saved: 0, canceled: 1 })
     expect(db.known.get('15')).toMatchObject({ canceled: true, site_status: 'canceled' })
-    expect(commands('order.site_cancel')).toHaveLength(1)
+    expect(commands('order.site_cancel')).toHaveLength(0)
+
+    await run([{ ...order15, id: 18 }])
+    ;(db.known.get('18') as any).program_order_id = '99999999-2222-4333-8444-555555555555'
     db.calls.length = 0
-    expect(await run([{ ...order15, status: 'canceled' }])).toEqual({ seen: 1, saved: 0, canceled: 0 })
+    expect(await run([{ ...order15, id: 18, status: 'canceled' }])).toMatchObject({ canceled: 1 })
+    expect(commands('order.site_cancel')).toHaveLength(1)
+    expect(commands('order.site_cancel')[0].params.slice(1, 3)).toEqual(['18', '99999999-2222-4333-8444-555555555555'])
+    db.calls.length = 0
+    await run([{ ...order15, id: 18, status: 'canceled' }])
     expect(commands('order.site_cancel')).toHaveLength(0)
   })
 
-  it('a status change that is not a cancel only updates the row; an order without items is saved but not sent to the till', async () => {
+  it('a status change that is not a cancel only updates the row; an order without items is saved as well', async () => {
     await run([order15])
-    db.calls.length = 0
     await run([{ ...order15, status: 'shipped' }])
     expect(db.known.get('15')).toMatchObject({ canceled: false, site_status: 'shipped' })
-    expect(commands('order.site_cancel')).toHaveLength(0)
-    db.calls.length = 0
     expect(await run([{ ...order15, id: 17, items: [] }])).toMatchObject({ saved: 1 })
-    expect(commands('order.save')).toHaveLength(0)
+    expect(anyCommand()).toHaveLength(0)
   })
 })

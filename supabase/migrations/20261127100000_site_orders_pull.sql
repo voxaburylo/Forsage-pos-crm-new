@@ -1,6 +1,7 @@
 -- 27.11.2026: замовлення із сайту зберігаються в програмі. Сервер раз на хвилину забирає їх у сайту через шлюз
 -- (orders.list), пише в site_orders (external_id = номер замовлення на сайті) і ставить касі команду створити звичайне
--- замовлення з джерелом 'site'. Скасовані на сайті теж зберігаються — з позначкою. Двічі те саме не записується
+-- замовлення з джерелом 'site' — ЛИШЕ коли менеджер натисне «Створити замовлення в програмі» (рішення власника: сайт і
+-- касу не змішувати автоматично). Скасовані на сайті теж зберігаються — з позначкою. Двічі те саме не записується
 -- (UNIQUE (tenant_id, external_id) уже є).
 
 -- 1. Що сайт каже про замовлення: статус, чи скасоване, коли створене на сайті, повна відповідь сайту.
@@ -9,6 +10,8 @@ ALTER TABLE public.site_orders
   ADD COLUMN IF NOT EXISTS canceled        boolean NOT NULL DEFAULT false,
   ADD COLUMN IF NOT EXISTS site_created_at timestamptz,
   ADD COLUMN IF NOT EXISTS raw             jsonb,
+  ADD COLUMN IF NOT EXISTS program_order_id     uuid,
+  ADD COLUMN IF NOT EXISTS program_order_number text CHECK (program_order_number IS NULL OR char_length(program_order_number) <= 40),
   ADD COLUMN IF NOT EXISTS updated_at      timestamptz NOT NULL DEFAULT now();
 
 -- Покупець на сайті міг лишити телефон у довільному вигляді або не лишити взагалі — замовлення все одно зберігаємо.
