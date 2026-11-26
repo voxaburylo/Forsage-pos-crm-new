@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { Camera, CameraOff } from 'lucide-react'
+import { Camera, CameraOff, Flashlight, FlashlightOff } from 'lucide-react'
 import {
   CAMERA_FORMATS, LIVE_CAMERA_STATE_EVENT, LIVE_CAMERA_STORAGE_KEY, LIVE_CAMERA_TOGGLE_EVENT,
-  createScanGate, deliverCameraScan, liveCameraStoredOn,
+  createScanGate, deliverCameraScan, liveCameraStoredOn, pickBackCamera,
 } from '@/lib/cameraScan'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
@@ -10,58 +10,96 @@ import { useAuthStore } from '@/stores/authStore'
 type Found = Array<{ rawValue: string }>
 type NativeDetector = { detect(source: CanvasImageSource): Promise<Found> }
 type DetectorCtor = { new(options: { formats: string[] }): NativeDetector; getSupportedFormats?: () => Promise<string[]> }
+/** Можливості камери, яких ще немає в типах браузера: ліхтарик, наближення, режим фокуса. */
+type CameraAbilities = MediaTrackCapabilities & { torch?: boolean; zoom?: { min: number; max: number }; focusMode?: string[] }
 
-const SCAN_EVERY_MS = 70
+const SCAN_EVERY_MS = 50
+const TORCH_KEY = 'forsage:live-camera:torch'
+const FLASH_MS = 700
 
-function beep() {
-  try { navigator.vibrate?.(40) } catch { /* optional */ }
+/**
+ * Один звуковий пристрій на весь час роботи. 26.11.2026: на iPhone звук, створений не під час натискання, мовчить —
+ * тому пристрій створюється й «будиться» в момент натискання кнопки камери, а сигнал лише грає через нього.
+ */
+let audio: AudioContext | null = null
+function wakeAudio() {
   try {
     const Audio = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
     if (!Audio) return
-    const context = new Audio(), tone = context.createOscillator(), gain = context.createGain()
-    tone.frequency.value = 1320; gain.gain.value = 0.08
-    tone.connect(gain); gain.connect(context.destination)
-    tone.start(); tone.stop(context.currentTime + 0.08)
-    tone.onended = () => { void context.close() }
+    audio ??= new Audio()
+    if (audio.state === 'suspended') void audio.resume().catch(() => undefined)
+  } catch { /* звук необов'язковий */ }
+}
+function beep() {
+  try { navigator.vibrate?.(40) } catch { /* optional */ }
+  try {
+    wakeAudio()
+    if (!audio) return
+    const tone = audio.createOscillator(), gain = audio.createGain()
+    tone.frequency.value = 1320; gain.gain.value = 0.12
+    tone.connect(gain); gain.connect(audio.destination)
+    tone.start(); tone.stop(audio.currentTime + 0.09)
   } catch { /* звук необов'язковий */ }
 }
 
 /**
- * Постійний сканер камерою для вебу (план B1, 23.11.2026). Не вікно поверх екрана: без картинки камери (26.11.2026 — смужку прибрано)
- * (згортається до значка), курсор лишається в полі. Вмикається один раз і працює на всіх екранах, доки не вимкнуть.
+ * Постійний сканер камерою для вебу (план B1, 23.11.2026). Не вікно поверх екрана: без картинки камери
+ * (26.11.2026 — смужку прибрано), курсор лишається в полі. Вмикається один раз і працює на всіх екранах, доки не вимкнуть.
  * Вмикається кнопкою внизу ліворуч або значком камери біля поля пошуку (LiveCameraButton, 25.11.2026).
  * Читає вбудованим розпізнавачем телефона (BarcodeDetector), а де його немає (iPhone) — zxing у WebAssembly
  * (25.11.2026); стара бібліотека — лише запасний шлях.
+ *
+ * 26.11.2026, слово власника: «зчитує через раз, дуже погано розпізнає; на сканері щоразу загоряється ліхтарик — може,
+ * і тут додати; хочу швидкість, як у сканера; на айфоні три камери — може, вона міняє фокус, вибрати одну».
+ *  — камера: «потрійна»/«подвійна ширококутна» задня (сама переходить на макро зблизька), а не одна ширококутна, яка
+ *    зблизька не фокусується; 1920×1080; постійний автофокус; на одиночній камері — наближення ×2 (тримати далі — різкіше);
+ *  — розпізнавання без зменшення кадру: по черзі середина кадру в повній різкості і весь кадр;
+ *  — кнопка ліхтарика (де телефон дозволяє) — запамʼятовується; зелений спалах кнопки й звук на кожне зчитування.
  */
 export function LiveCameraScanner() {
   const [enabled, setEnabled] = useState(liveCameraStoredOn)
   const [state, setState] = useState<'idle' | 'starting' | 'on' | 'error'>('idle')
   const [message, setMessage] = useState('')
+  const [flash, setFlash] = useState(false)
+  const [torchAble, setTorchAble] = useState(false)
+  const [torch, setTorch] = useState(() => { try { return localStorage.getItem(TORCH_KEY) === 'on' } catch { return false } })
   const videoRef = useRef<HTMLVideoElement>(null)
   const fallbackRef = useRef<HTMLDivElement>(null)
+  const trackRef = useRef<MediaStreamTrack | null>(null)
   const signedIn = useAuthStore(store => Boolean(store.session))
   // Телефон чи планшет (палець, а не миша). На ПК кнопка не потрібна: там USB-сканер.
   const touch = typeof window !== 'undefined' && Boolean(window.matchMedia?.('(pointer: coarse)').matches)
 
   useEffect(() => {
-    const toggle = () => setEnabled(value => !value)
+    const toggle = () => { wakeAudio(); setEnabled(value => !value) }
     window.addEventListener(LIVE_CAMERA_TOGGLE_EVENT, toggle)
     return () => window.removeEventListener(LIVE_CAMERA_TOGGLE_EVENT, toggle)
   }, [])
 
+  // Ліхтарик: вмикається на камері, що вже працює; вибір памʼятається.
+  useEffect(() => {
+    try { localStorage.setItem(TORCH_KEY, torch ? 'on' : 'off') } catch { /* optional */ }
+    const track = trackRef.current
+    if (track && torchAble) void track.applyConstraints({ advanced: [{ torch } as MediaTrackConstraintSet] }).catch(() => undefined)
+  }, [torch, torchAble, state])
+
   useEffect(() => {
     try { sessionStorage.setItem(LIVE_CAMERA_STORAGE_KEY, enabled ? 'on' : 'off') } catch { /* optional */ }
     window.dispatchEvent(new CustomEvent(LIVE_CAMERA_STATE_EVENT, { detail: { on: enabled } }))
-    if (!enabled) { setState('idle'); setMessage(''); return }
+    if (!enabled) { setState('idle'); setMessage(''); setTorchAble(false); return }
     let stopped = false
     let stream: MediaStream | null = null
     let timer: number | null = null
+    let flashTimer: number | null = null
     let library: { stop(): Promise<void>; clear(): void } | null = null
     const gate = createScanGate()
     const accept = (raw: string) => {
       const code = gate(raw)
       if (!code || stopped) return
       beep()
+      setFlash(true)
+      if (flashTimer !== null) window.clearTimeout(flashTimer)
+      flashTimer = window.setTimeout(() => setFlash(false), FLASH_MS)
       const outcome = deliverCameraScan(code)
       setMessage(outcome === 'nowhere' ? `${code} — поставте курсор у поле` : code)
     }
@@ -72,11 +110,36 @@ export function LiveCameraScanner() {
         ? 'Доступ до камери заборонено. Дозвольте камеру в налаштуваннях браузера.'
         : 'Камера недоступна на цьому пристрої.')
     }
-    const closeCamera = () => { stream?.getTracks().forEach(track => track.stop()); stream = null }
+    const closeCamera = () => { stream?.getTracks().forEach(track => track.stop()); stream = null; trackRef.current = null }
+    const size = { width: { ideal: 1920 }, height: { ideal: 1080 } }
 
     async function openCamera(): Promise<HTMLVideoElement | null> {
-      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false })
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, ...size }, audio: false })
       if (stopped) { closeCamera(); return null }
+      // Назви камер видно лише після дозволу. Якщо є «потрійна»/«подвійна ширококутна» задня — переходимо на неї.
+      let multi = false
+      try {
+        const better = pickBackCamera(await navigator.mediaDevices.enumerateDevices())
+        const current = stream.getVideoTracks()[0]?.getSettings().deviceId
+        if (better && better !== current) {
+          const next = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: better }, ...size }, audio: false })
+          stream.getTracks().forEach(track => track.stop())
+          stream = next
+        }
+        multi = Boolean(better)
+      } catch { /* лишаємось на камері за замовчуванням */ }
+      if (stopped) { closeCamera(); return null }
+      const track = stream.getVideoTracks()[0] ?? null
+      trackRef.current = track
+      try {
+        const abilities = (track?.getCapabilities?.() ?? {}) as CameraAbilities
+        const advanced: Array<Record<string, unknown>> = []
+        if (abilities.focusMode?.includes('continuous')) advanced.push({ focusMode: 'continuous' })
+        // Одна ширококутна камера зблизька не фокусується: наближення ×2 — телефон тримають далі, код різкий.
+        if (!multi && abilities.zoom && abilities.zoom.max >= 2) advanced.push({ zoom: Math.max(abilities.zoom.min, 2) })
+        if (advanced.length) await track?.applyConstraints({ advanced: advanced as MediaTrackConstraintSet[] }).catch(() => undefined)
+        setTorchAble(Boolean(abilities.torch))
+      } catch { setTorchAble(false) }
       const video = videoRef.current
       if (!video) return null
       video.srcObject = stream
@@ -108,7 +171,8 @@ export function LiveCameraScanner() {
 
     /**
      * Без вбудованого розпізнавача (iPhone): zxing у WebAssembly. Камера й розпізнавач готуються одночасно.
-     * Розпізнаємо лише смугу посередині кадру (там червона лінія) і зменшену до 960 точок — швидше відповідь.
+     * 26.11.2026: картинки камери на екрані немає, тож код може бути будь-де в кадрі. По черзі: середина кадру
+     * БЕЗ зменшення (дрібні штрихи лишаються різкими) і весь кадр — теж без зменшення (проба 26.11: зменшений до 1280 кадр не читав код біля краю).
      */
     async function startZxing(): Promise<boolean> {
       const [detector, video] = await Promise.all([
@@ -119,13 +183,20 @@ export function LiveCameraScanner() {
       const canvas = document.createElement('canvas')
       const context = canvas.getContext('2d', { willReadFrequently: true })
       if (!context) return false
+      let turn = 0
       scanLoop(video, source => {
         const width = source.videoWidth, height = source.videoHeight
         if (!width || !height) return Promise.resolve([])
-        const band = Math.round(height * 0.45)
-        const scale = Math.min(1, 960 / width)
-        canvas.width = Math.round(width * scale); canvas.height = Math.round(band * scale)
-        context.drawImage(source, 0, Math.round((height - band) / 2), width, band, 0, 0, canvas.width, canvas.height)
+        turn += 1
+        if (turn % 2) {
+          const cropWidth = Math.round(width * 0.8), cropHeight = Math.round(height * 0.5)
+          canvas.width = cropWidth; canvas.height = cropHeight
+          context.drawImage(source, Math.round((width - cropWidth) / 2), Math.round((height - cropHeight) / 2), cropWidth, cropHeight, 0, 0, cropWidth, cropHeight)
+        } else {
+          const scale = Math.min(1, 1920 / Math.max(width, height))
+          canvas.width = Math.round(width * scale); canvas.height = Math.round(height * scale)
+          context.drawImage(source, 0, 0, canvas.width, canvas.height)
+        }
         return detector.detect(canvas)
       })
       return true
@@ -161,6 +232,7 @@ export function LiveCameraScanner() {
     return () => {
       stopped = true
       if (timer !== null) window.clearInterval(timer)
+      if (flashTimer !== null) window.clearTimeout(flashTimer)
       closeCamera()
       if (library) { const scanner = library; void scanner.stop().catch(() => undefined).finally(() => { try { scanner.clear() } catch { /* already cleared */ } }) }
     }
@@ -182,14 +254,21 @@ export function LiveCameraScanner() {
           <div id="live-camera-fallback" ref={fallbackRef} className="absolute inset-0 [&_video]:h-full [&_video]:w-full [&_video]:object-cover" />
         </div>
       )}
-      <div className="fixed bottom-3 left-3 z-[90] flex max-w-[70vw] items-center gap-1 rounded-full bg-gray-900/90 px-1.5 py-1 text-xs text-white shadow" style={{ marginBottom: 'env(safe-area-inset-bottom)' }}>
-        <button type="button" onPointerDown={keepFocus(() => setEnabled(value => !value))}
+      <div data-live-camera-flash={flash ? 'on' : 'off'} style={{ marginBottom: 'env(safe-area-inset-bottom)' }}
+        className={`fixed bottom-3 left-3 z-[90] flex max-w-[78vw] items-center gap-1 rounded-full px-1.5 py-1 text-xs text-white shadow transition-colors duration-150 ${flash ? 'bg-emerald-600' : 'bg-gray-900/90'}`}>
+        <button type="button" onPointerDown={keepFocus(() => { wakeAudio(); setEnabled(value => !value) })}
           aria-label={enabled ? 'Вимкнути сканер камерою' : 'Увімкнути сканер камерою'} aria-pressed={enabled}
           className={`flex items-center gap-1 rounded-full px-2 py-1 ${enabled ? 'bg-yellow-400 text-black' : ''}`}>
           {enabled ? <Camera size={14} /> : <CameraOff size={14} />}
           {enabled && <span>Сканер</span>}
         </button>
         {enabled && <>
+          {torchAble && (
+            <button type="button" onPointerDown={keepFocus(() => setTorch(value => !value))} aria-label={torch ? 'Вимкнути ліхтарик' : 'Увімкнути ліхтарик'} aria-pressed={torch}
+              data-live-camera-torch={torch ? 'on' : 'off'} className={`rounded-full p-1.5 ${torch ? 'bg-white text-black' : ''}`}>
+              {torch ? <Flashlight size={14} /> : <FlashlightOff size={14} />}
+            </button>
+          )}
           <span role="status" className="max-w-[46vw] truncate px-1 font-mono">
             {state === 'starting' ? 'Підключаємо камеру…' : message || 'Наведіть на штрихкод'}
           </span>

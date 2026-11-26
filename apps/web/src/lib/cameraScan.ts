@@ -6,8 +6,12 @@
  *  2) інакше код лягає в поле, де стоїть курсор, і «натискається» Enter — як після USB-сканера.
  */
 export const CAMERA_SCAN_EVENT = 'forsage:camera-scan'
-/** Той самий код не зчитується двічі поспіль швидше за це (камера бачить його в кожному кадрі). */
-export const CAMERA_REPEAT_MS = 1500
+/**
+ * Той самий код зчитується знову лише після того, як камера НЕ бачила його стільки часу (як у ручного сканера:
+ * відвів — навів знову). 26.11.2026: раніше відлік ішов від першого зчитування, і код, що лишався в кадрі довше
+ * за 1,5 с, зчитувався вдруге сам.
+ */
+export const CAMERA_REPEAT_MS = 1200
 
 export function createScanGate(now: () => number = Date.now, repeatMs = CAMERA_REPEAT_MS) {
   let last = { code: '', at: 0 }
@@ -15,7 +19,7 @@ export function createScanGate(now: () => number = Date.now, repeatMs = CAMERA_R
     const code = String(raw ?? '').trim()
     if (!code || code.length > 200) return null
     const at = now()
-    if (code === last.code && at - last.at < repeatMs) { last = { code, at: last.at }; return null }
+    if (code === last.code && at - last.at < repeatMs) { last = { code, at }; return null }
     last = { code, at }
     return code
   }
@@ -70,4 +74,17 @@ export function toggleLiveCamera(target: Pick<Window, 'dispatchEvent'> = window)
 
 export function liveCameraStoredOn(storage: Pick<Storage, 'getItem'> | null = typeof sessionStorage === 'undefined' ? null : sessionStorage): boolean {
   try { return storage?.getItem(LIVE_CAMERA_STORAGE_KEY) === 'on' } catch { return false }
+}
+
+/**
+ * 26.11.2026, слово власника: «зчитує через раз; на айфоні камера хороша, але їх три — може, вона міняє фокус; вибрати
+ * одну, яка більше підходить». Камера «за замовчуванням» на iPhone — одна ширококутна: зблизька (ближче ~20 см) вона
+ * не фокусується, і штрихкод розмитий. «Потрійна» чи «подвійна ширококутна» — це та сама задня камера, яка сама
+ * переходить на макро зблизька; її й беремо. Назви камер телефон дає мовою системи.
+ */
+export function pickBackCamera(devices: ReadonlyArray<{ kind: string; deviceId: string; label: string }>): string | null {
+  const back = devices.filter(device => device.kind === 'videoinput' && device.deviceId && /back|rear|задн|основн|тилов/i.test(device.label))
+  const rank = (label: string) => /triple|тройн|потрійн/i.test(label) ? 3 : /dual wide|двойнS* широк|подвійнS* ширик|подвійнS* широк/i.test(label) ? 2 : /dual|двойн|подвійн/i.test(label) ? 1 : 0
+  const best = back.map(device => ({ device, rank: rank(device.label) })).filter(item => item.rank > 0).sort((a, b) => b.rank - a.rank)[0]
+  return best ? best.device.deviceId : null
 }
