@@ -81,6 +81,7 @@ import { loadPrintHtml } from './print/loadPrintHtml'
 import { getPrintSession, isPrintSession } from './print/printSession'
 import { assertPrintRuntimeFiles } from './print/printRuntime'
 import { isLanProxyChannel, LocalNetworkCoordinator, type LanSession } from './lan/localNetwork'
+import { rememberedManagerClient } from './lan/lanClientMemory'
 import { productPhotoThumbnails } from './lib/photoThumbnails'
 import { RealtimeWake } from './link/realtimeWake'
 import { OutboxPusher } from './link/outboxPush'
@@ -930,7 +931,8 @@ function getTillDeviceLink(): TillDeviceLink {
         schemaVersion: attempt(() => db.info().schemaVersion),
         startedAt: Date.now() - Math.round(process.uptime() * 1000),
         check: attempt(() => readNightlySummary(db)),
-        managerClient: localNetwork?.lastClientSeen() ?? null,
+        // 26.11.2026 (T7): остання побачена версія ПК менеджера переживає перезапуск каси.
+        managerClient: attempt(() => rememberedManagerClient(db, localNetwork?.lastClientSeen() ?? null)) ?? localNetwork?.lastClientSeen() ?? null,
       })
     },
     canRun: () => isMainTill() && !databaseMaintenance,
