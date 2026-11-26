@@ -73,9 +73,9 @@ describe('one page of the category sort', () => {
   const model = (answers: string[]): SortModel => { let turn = 0; return { complete: vi.fn(async () => ({ text: answers[turn++ % answers.length], truncated: false, promptTokens: 10, completionTokens: 5 })) } }
 
   it('a known kind is placed without asking; a new kind needs two agreeing answers; no kind — left without a category', async () => {
-    sql.offers = [offer('1', 'Фільтр повітряний WIX', 'Повітряні фільтри'), offer('2', 'Диск гальмівний (вир-во REMSA)'), offer('3', 'Диск гальмівний BREMBO'), offer('4', 'Свічка запалювання NGK'), offer('5', 'VALEO 700431')]
+    sql.offers = [offer('1', 'Фільтр повітряний WIX', 'Повітряні фільтри'), offer('2', 'Трубка гальмівна (вир-во REMSA)'), offer('3', 'Трубка гальмівна BREMBO'), offer('4', 'Свічка запалювання NGK'), offer('5', 'VALEO 700431')]
     sql.rules = [{ key: 'cat:повітряні фільтри', category_id: 'c-air', new_name: null }]
-    // Невідомі види за частотою: №1 «диск гальмівний» (2 товари), №2 «свічка запалювання». Про свічку відповіді розійшлись.
+    // Невідомі види за частотою: №1 «трубка гальмівна» (2 товари), №2 «свічка запалювання». Про свічку відповіді розійшлись.
     const first = JSON.stringify({ items: [{ n: 1, c: number('c-brakes') }, { n: 2, c: number('c-spark') }] })
     const second = JSON.stringify({ items: [{ n: 1, c: number('c-brakes') }, { n: 2, c: number('c-filters') }] })
     const sorter = model([first, second])
@@ -83,7 +83,7 @@ describe('one page of the category sort', () => {
     let page
     try { page = await sortPage('shop', options, sorter, budget) } finally { budget.dispose() }
     expect(sorter.complete).toHaveBeenCalledTimes(2)
-    expect(savedRules()).toEqual([{ key: 'name:диск гальмівний', category_id: 'c-brakes', new_name: null, sample: 'Диск гальмівний (вир-во REMSA)' }, { key: 'name:свічка запалювання', category_id: null, new_name: null, sample: 'Свічка запалювання NGK' }])
+    expect(savedRules()).toEqual([{ key: 'name:трубка гальмівна', category_id: 'c-brakes', new_name: null, sample: 'Трубка гальмівна (вир-во REMSA)' }, { key: 'name:свічка запалювання', category_id: null, new_name: null, sample: 'Свічка запалювання NGK' }])
     expect(Object.fromEntries(changes().map(change => [change.external_id, [change.category_id, change.source]]))).toEqual({
       1: ['c-air', 'ai'], 2: ['c-brakes', 'ai'], 3: ['c-brakes', 'ai'], 4: [null, 'ai_none'], 5: [null, 'ai_none'],
     })
@@ -92,7 +92,7 @@ describe('one page of the category sort', () => {
 
   // 26.11.2026: пара моделей — основна (Sonnet) і помічниця (Haiku) голосують окремо; категорія лише там, де зійшлись.
   it('two different models vote: each is asked once, with its own effort; a disagreement leaves the kind without a category', async () => {
-    sql.offers = [offer('2', 'Диск гальмівний s REMSA'), offer('4', 'Свічка запалювання NGK')]
+    sql.offers = [offer('2', 'Трубка гальмівна s REMSA'), offer('4', 'Свічка запалювання NGK')]
     sql.rules = []
     const main = model([JSON.stringify({ items: [{ n: 1, c: number('c-brakes') }, { n: 2, c: number('c-spark') }] })])
     const helper = model([JSON.stringify({ items: [{ n: 1, c: number('c-brakes') }, { n: 2, c: number('c-filters') }] })])
@@ -114,6 +114,20 @@ describe('one page of the category sort', () => {
     try { await sortPage('shop', options, model([answer]), budget) } finally { budget.dispose() }
     expect(savedRules()).toEqual([{ key: 'name:крило пер', category_id: null, new_name: 'Кузовні деталі', sample: 'Крило пер. лів. SK OCTAVIA' }, { key: 'name:свічка запалювання', category_id: 'c-spark', new_name: null, sample: 'Свічка запалювання NGK' }])
     expect(Object.fromEntries(changes().map(change => [change.external_id, [change.category_id, change.source]]))).toEqual({ 1: [null, 'ai_wait'], 2: [null, 'ai_wait'], 3: ['c-spark', 'ai'] })
+  })
+
+  // 26.11.2026: зрозумілу назву розкладає алгоритм — модель про неї не питають і грошей не витрачають.
+  it('a clear name is placed by the algorithm without asking the model', async () => {
+    sql.offers = [offer('1', 'Диск гальмівний MB VITO 96-03 задн. (RIDER)'), offer('2', 'Фільтр оливи WIX s'), offer('3', 'Р/к гальмівної колодки ЗІЛ')]
+    sql.rules = []
+    const sorter = model([JSON.stringify({ items: [{ n: 1, c: 0 }] })])
+    const budget = new AiExecutionBudget(10_000)
+    let page
+    try { page = await sortPage('shop', options, sorter, budget) } finally { budget.dispose() }
+    const placed = Object.fromEntries(changes().map(change => [change.external_id, change.category_id]))
+    expect(placed).toMatchObject({ 1: 'c-brakes', 2: 'c-filters' })
+    expect(placed[3]).toBeNull()                       // ремкомплект алгоритм не чіпає
+    expect(page).toMatchObject({ offers: 3, placed: 2, byRule: 2, asked: 0 })
   })
 
   it('nothing to sort — the model is not asked and nothing is written', async () => {
