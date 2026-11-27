@@ -37,6 +37,16 @@ describe('a paid site order on the till', () => {
     expect(sitePaidState(created.comment)).toEqual({ paid: true, conflict: null })
   })
 
+  // 27.11.2026, правило власника: без оплати товар не бронюється; менеджер натискає «Оплачено» — тоді бронь.
+  it('a payment confirmed by the manager is marked as such and still reserves', () => {
+    const manual = checkTillOrder({ ...blank, paid: { amount: 50000, paid_at: '2026-11-27T12:00:00Z', method: 'manual', confirmed_by: 'Ельдар s' } })
+    expect(manual.paid).toEqual({ amount: 50000, paid_at: '2026-11-27T12:00:00.000Z', method: 'manual', confirmed_by: 'Ельдар s' })
+    expect(sitePaidNote(manual.paid!)).toMatch(/^ОПЛАЧЕНО НА САЙТІ \(підтвердив менеджер Ельдар s\): /)
+    const created = tillOrderToCreate({ ...manual, items: [{ ...blank.items[0], qty: 1 }] }, null, '00000000-0000-4000-8000-000000000003', cards)
+    expect(sitePaidState(created.comment).paid).toBe(true)
+    expect(created.items[0]).toMatchObject({ source_type: 'warehouse' })
+  })
+
   it('the till uses the same mark to name a paid site order when it refuses to sell reserved stock', () => {
     const desktop = readFileSync(path.resolve(__dirname, '../../../../desktop/src/repositories/pos/reservedStock.ts'), 'utf8')
     expect(desktop).toContain(`export const SITE_PAID_MARK = '${SITE_PAID_MARK}'`)

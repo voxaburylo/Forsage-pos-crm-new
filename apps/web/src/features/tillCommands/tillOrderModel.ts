@@ -16,7 +16,8 @@ export interface TillOrderCard { id: string; name: string; sku: string; retail_p
 /** 27.11.2026: оплачено онлайн на сайті (LiqPay). Та сама мітка — у apps/desktop/src/repositories/pos/reservedStock.ts. */
 export const SITE_PAID_MARK = 'ОПЛАЧЕНО НА САЙТІ'
 export const STOCK_CONFLICT_MARK = 'КОНФЛІКТ: товару не вистачає'
-export interface TillOrderPaid { amount: number; paid_at: string | null }
+/** method: online — LiqPay на сайті; manual — менеджер натиснув «Оплачено» (переказ, готівка курʼєру тощо). */
+export interface TillOrderPaid { amount: number; paid_at: string | null; method?: 'online' | 'manual'; confirmed_by?: string | null }
 export interface TillOrderPayload {
   customer_phone?: string | null
   customer_name?: string | null
@@ -119,14 +120,16 @@ function checkPaid(raw: unknown): TillOrderPaid {
   const amount = Number(paid.amount)
   if (!Number.isSafeInteger(amount) || amount < 0 || amount > MAX_KOPECKS) throw new Error('Перевірте суму оплати на сайті.')
   const at = typeof paid.paid_at === 'string' && !Number.isNaN(Date.parse(paid.paid_at)) ? new Date(paid.paid_at).toISOString() : null
-  return { amount, paid_at: at }
+  if (paid.method !== 'manual') return { amount, paid_at: at }
+  return { amount, paid_at: at, method: 'manual', confirmed_by: clean(paid.confirmed_by, 120) || null }
 }
 
 const hryvnias = (kopecks: number) => (kopecks / 100).toLocaleString('uk-UA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' грн'
 /** «ОПЛАЧЕНО НА САЙТІ (онлайн): 1 155,00 грн, 27.11.2026, 12:30» — перший рядок примітки оплаченого замовлення. */
 export function sitePaidNote(paid: TillOrderPaid): string {
   const when = paid.paid_at ? ', ' + new Date(paid.paid_at).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''
-  return `${SITE_PAID_MARK} (онлайн): ${hryvnias(paid.amount)}${when}. Гроші не в касі — при видачі не брати оплату вдруге.`
+  const how = paid.method === 'manual' ? `підтвердив менеджер${paid.confirmed_by ? ' ' + paid.confirmed_by : ''}` : 'онлайн'
+  return `${SITE_PAID_MARK} (${how}): ${hryvnias(paid.amount)}${when}. Гроші не в касі — при видачі не брати оплату вдруге.`
 }
 
 /** Чого не вистачає на складі для цього замовлення (за вільним залишком каси). Порожньо — усе є. */

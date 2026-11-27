@@ -91,6 +91,10 @@ describe('shop site', () => {
     const command = clientQuery.mock.calls.find(call => /INSERT INTO till_commands/.test(String(call[0])))!
     const payload = JSON.parse(command[1][2])
     expect(orderSavePayload.safeParse(payload).success).toBe(true)
+    // 27.11.2026: кнопка «Оплачено» з розділу «Сайт» у вебі — джерело «сайт» і оплата, яку підтвердив менеджер.
+    expect(orderSavePayload.safeParse({ ...payload, source: 'site', paid: { amount: 39000, paid_at: '2026-11-27T12:00:00.000Z', method: 'manual', confirmed_by: 'Ельдар s' } }).success).toBe(true)
+    expect(orderSavePayload.safeParse({ ...payload, paid: { amount: -1, paid_at: null } }).success).toBe(false)
+    expect(orderSavePayload.safeParse({ ...payload, source: 'messenger' }).success).toBe(false)
     expect(payload).toMatchObject({ author: SITE_ORDER_AUTHOR, customer_phone: '380501234567' })
     // Щітка: 100 грн −5% = 95 грн, це якраз закупка; дві штуки одним рядком. Фільтр: 200 −5% = 190 грн.
     expect(payload.items).toEqual([{ name: 'Щітка', sku: 'WB-1065', qty: 2, sell_price: 9500, product_id: P1 }, { name: 'Фільтр', sku: null, qty: 1, sell_price: 19000, product_id: P2 }])
