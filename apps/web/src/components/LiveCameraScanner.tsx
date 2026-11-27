@@ -5,7 +5,7 @@ import {
 } from '@/lib/cameraScan'
 import { cameraFrameReader } from '@/lib/cameraReader'
 import { isNativeApp, nativeScanOnce, ScannerNotReady } from '@/lib/nativeScan'
-import { CameraDenied, startCameraScan } from '@/lib/nativeCamera'
+import { CameraDenied, startCameraScan, startHiddenScan } from '@/lib/nativeCamera'
 import { toast } from '@/components/ui/Toast'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
@@ -183,8 +183,13 @@ function runNativeScan(onEnd: () => void): { stop: (why: ScanStop) => void } {
     end('error')
   }
   publish('starting')
-  // Спершу швидкий шлях — камера всередині застосунку; не вийшло — сканер Google на окремому екрані (як у першій збірці).
-  void startCameraScan().then(scan => {
+  // 27.11.2026 (слово власника «камера не потрібна, треба прямо в рядку»): спершу — невидима камера з ліхтариком, екран
+  // програми лишається, код іде в рядок. Не вийшло — камера на весь екран, далі — сканер Google на окремому екрані.
+  let hidden = false
+  void startHiddenScan().then(
+    scan => { hidden = true; return scan },
+    error => { if (error instanceof CameraDenied) throw error; return startCameraScan() },
+  ).then(scan => {
     if (ended) { scan.cancel(); return }
     cancelCamera = scan.cancel
     publish('scanning')
@@ -196,8 +201,8 @@ function runNativeScan(onEnd: () => void): { stop: (why: ScanStop) => void } {
     publish('scanning')
     void nativeScanOnce().then(read).catch(failed)
   })
-  // Екран програми на час сканування сховано, тож «відпустив курок» сюди не доходить; зупиняє код, «Скасувати» або час.
-  return { stop: why => { if (why === 'cancel' || why === 'error') end(why) } }
+  // Невидимий режим — як у вебі: «відпустив курок», повторне натискання, код або час. На весь екран «відпустив» не доходить.
+  return { stop: why => { if (hidden || why === 'cancel' || why === 'error') end(why) } }
 }
 
 export function LiveCameraScanner() {
