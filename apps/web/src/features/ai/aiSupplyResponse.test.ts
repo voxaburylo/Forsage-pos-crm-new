@@ -16,8 +16,15 @@ describe('Printed total at the client response boundary', () => {
     expect(result.metadata.total_note).toContain('Підсумок накладної')
     expect(result.metadata.total_note?.includes('можлива знижка')).toBe(total===90)
   })
-  it('does not choose between contradictory totals', () => {
-    expect(()=>collectSupplyResponse([response(totalAction(250)),response(totalAction(251,150))],2)).toThrow('різні підсумки')
+  // 27.11.2026, PDF власника (колонки «Сума, грн» і «Сума, $»): різні підсумки частин — не відмова й не «перший-ліпший».
+  it('different part totals: uses the one equal to the goods, otherwise a visible note', () => {
+    const twoCurrencies=collectSupplyResponse([response(totalAction(250)),response(totalAction(5.34,150))],2)
+    expect(twoCurrencies.products).toHaveLength(2)
+    expect(twoCurrencies.metadata.total_note).toContain('різні підсумки накладної: 250,00 грн, 5,34 грн')
+    expect(twoCurrencies.metadata.total_note).toContain('збігається з одним із них')
+    const neither=collectSupplyResponse([response(totalAction(260)),response(totalAction(240,150))],2)
+    expect(neither.products).toHaveLength(2)
+    expect(neither.metadata.total_note).toContain('Перевірте рядки й закупівлю')
   })
   it.each([{},true,'100 грн/шт',1.234,-1])('rejects malformed total %j', total => {
     expect(()=>collectSupplyResponse([response(totalAction(total))],1)).toThrow()
