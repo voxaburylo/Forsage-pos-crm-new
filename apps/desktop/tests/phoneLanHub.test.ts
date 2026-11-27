@@ -5,7 +5,11 @@ import path from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import { LocalNetworkCoordinator, type LanSession } from '../src/lan/localNetwork'
 import { PhoneLanAccess } from '../src/lan/phoneAccess'
-import { secureCall } from '../../web/src/lib/phoneLan/phoneLan'
+// Код телефона — з вебу; підвантажуємо під час тесту (vitest), щоб перевірка типів десктопу не тягнула файли вебу.
+const webPhoneLan = 'phoneLan'
+const { secureCall } = await import(/* @vite-ignore */ `../../web/src/lib/phoneLan/${webPhoneLan}.ts`) as {
+  secureCall: (pairing: { hosts: string[]; port: number; key: string }, payload: Record<string, unknown>) => Promise<unknown>
+}
 
 // 27.11.2026: телефон (код застосунку з WebCrypto) говорить із справжнім мережевим сервером головного ПК — по HTTP,
 // через посередника, який записує все, що йде мережею. Код ПК менеджера при цьому працює як і раніше.

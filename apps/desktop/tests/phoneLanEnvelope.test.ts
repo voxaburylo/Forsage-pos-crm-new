@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { lanRequestContext, openLanEnvelope, sealLanEnvelope, secureNonce } from '../src/lan/secureTransport'
-import { newRequestId, openEnvelope, sealEnvelope } from '../../web/src/lib/phoneLan/envelope'
+// Код телефона — з вебу; підвантажуємо під час тесту (vitest), щоб перевірка типів десктопу не тягнула файли вебу.
+type Ctx = { hubNonce: string; requestId: string; deadline: number }
+const webEnvelope = 'envelope'
+const { newRequestId, openEnvelope, sealEnvelope } = await import(/* @vite-ignore */ `../../web/src/lib/phoneLan/${webEnvelope}.ts`) as {
+  newRequestId: () => string
+  sealEnvelope: (value: unknown, code: string, direction: 'request' | 'response', context: Ctx) => Promise<unknown>
+  openEnvelope: (value: unknown, code: string, direction: 'request' | 'response', context: Ctx) => Promise<unknown>
+}
 
 // 27.11.2026: телефон шифрує вбудованою криптографією браузера, головний ПК — криптографією Node. Конверти мають
 // відкриватися в обидва боки, інакше телефон через Wi-Fi не зможе працювати. Дані з літерою «s».
