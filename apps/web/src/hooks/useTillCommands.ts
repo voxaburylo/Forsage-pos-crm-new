@@ -38,7 +38,15 @@ export async function claimTillCommands({ bridge, deviceId }: TillLinkContext): 
         const saved = await orderApi.create(tillOrderToCreate(order, customerId, command.operation_id, cards))
         // 27.11.2026: замовлення, яке на сайті вже скасували, зберігаємо й одразу скасовуємо — грошей у ньому ще немає.
         if (order.canceled) await orderApi.cancel(saved.data.id, false, SITE_CANCEL_REASON)
-        return { status: 'done', result: { order_id: saved.data.id, order_number: saved.data.order_number, total_amount: saved.data.total_amount, ...(order.canceled ? { canceled: true } : {}) } }
+        // 27.11.2026: оплачене на сайті, а товару не вистачає — замовлення є (і бронь), а власник отримає повідомлення.
+        const { stockShortages } = await import('@/features/tillCommands/tillOrderModel')
+        const shortages = order.paid && !order.canceled ? stockShortages(order, cards) : []
+        if (shortages.length) {
+          const { toast } = await import('@/components/ui/Toast')
+          toast.warning(`Оплачене замовлення із сайту № ${saved.data.order_number}: товару не вистачає — ${shortages.join('; ')}`)
+        }
+        return { status: 'done', result: { order_id: saved.data.id, order_number: saved.data.order_number, total_amount: saved.data.total_amount, ...(order.canceled ? { canceled: true } : {}),
+          ...(shortages.length ? { conflict: true, conflict_note: shortages.join('; ').slice(0, 500) } : {}) } }
       }
       // 27.11.2026: покупець скасував замовлення на сайті вже після того, як каса його створила.
       if (command.command === 'order.site_cancel') {

@@ -25,6 +25,7 @@ import { allowedOrderStatusTransitions } from './orderWorkflow'
 import { canUseOrderCash, orderEditPath } from './orderUx'
 import { useAuthStore } from '@/stores/authStore'
 import { OrderLanBadge, OrderLanNotice } from './OrderLanNotice'
+import { SitePaidOrderNotice } from './SitePaidOrderNotice'
 import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
 import { HandOverOrderButton } from './HandOverOrderButton'
 
@@ -498,6 +499,7 @@ export default function OrderDetailPage() {
     >
       <div className="mx-auto max-w-[1400px] space-y-5">
         <OrderLanNotice />
+        <SitePaidOrderNotice comment={order.comment} />
         {order.lan_sync && <Card className="space-y-2 border-amber-200 bg-amber-50">
           <OrderLanBadge order={order} />
           <p className="text-sm">{order.lan_sync.message}</p>

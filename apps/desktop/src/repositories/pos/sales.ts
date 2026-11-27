@@ -14,6 +14,7 @@ import { lineTotal, money, nowIso, operationId, payloadHash, paymentMethod } fro
 import { randomUUID } from 'node:crypto'
 import { LocalPosCustomers } from './customers'
 import { assertCheckoutPayload, assertSaleMoney } from './checkoutValidation'
+import { reserveHolders, reservedStockProblem } from './reservedStock'
 import { productHistoryTextMatch, saleHistoryFilters, type SaleHistoryFilters } from './saleHistorySearch'
 
 export class LocalPosSales extends LocalPosCustomers {
@@ -632,7 +633,8 @@ export class LocalPosSales extends LocalPosCustomers {
   }
 
   protected assertSaleStockAvailable(items: LocalSaleCheckoutInput['items'], tenantId: string): void {
-    if (this.allowsNegativeStock()) return
+    // 27.11.2026: навіть із «Продажем при відсутності товару» заброньоване під замовлення не продається (reservedStock.ts).
+    const allowNegative = this.allowsNegativeStock()
     const requestedByProduct = new Map<string, number>()
     for (const item of items) {
       if (!item.product_id) continue
@@ -657,17 +659,9 @@ export class LocalPosSales extends LocalPosCustomers {
       if (!product) throw new Error('LOCAL_PRODUCT_NOT_FOUND')
       if (product.is_service === 1) continue
 
-      const reserve = this.db.prepare(`
-        SELECT COALESCE(SUM(qty), 0) AS qty
-        FROM stock_reserves
-        WHERE tenant_id = ? AND product_id = ?
-          AND released_at IS NULL AND deleted_at IS NULL
-          AND (expires_at IS NULL OR unixepoch(expires_at) > unixepoch('now'))
-      `).get(tenantId, productId) as { qty: number } | undefined
-      const available = subtractStockQuantity(Number(product.qty_on_hand ?? 0), Number(reserve?.qty ?? 0))
-      if (requestedQty > available) {
-        throw new Error(`Недостатньо товару «${product.name}». Доступно: ${available}, потрібно: ${requestedQty}. Щоб продавати в мінус, увімкніть «Продаж при відсутності товару» в Налаштуваннях.`)
-      }
+      const problem = reservedStockProblem({ name: product.name, qtyOnHand: Number(product.qty_on_hand ?? 0), requested: requestedQty, allowNegative,
+        holders: reserveHolders(this.db, tenantId, productId) })
+      if (problem) throw problem
     }
   }
 
