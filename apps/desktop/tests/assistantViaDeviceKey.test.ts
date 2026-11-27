@@ -26,6 +26,16 @@ describe('assistant requests go with the main PC key', () => {
     }
   })
 
+  // 27.11.2026: «Пошук фото з ШІ» живе під /ai/photo-ai й ходить тим самим ключем — без змін у касі. Каса не пропускає
+  // PUT на адреси помічника, тому ключі й налаштування цієї функції зберігаються через POST.
+  it('the photo search with AI passes with the main PC key', () => {
+    for (const [method, path] of [['GET', '/ai/photo-ai/status'], ['GET', '/ai/photo-ai/status?check=1'], ['POST', '/ai/photo-ai/search'], ['POST', '/ai/photo-ai/save'],
+      ['POST', '/ai/photo-ai/settings'], ['POST', '/ai/photo-ai/keys'], ['POST', '/ai/photo-ai/eligible'], ['POST', '/ai/photo-ai/jobs'],
+      ['POST', '/ai/photo-ai/jobs/7b1f0c2e-1a2b-4c3d-8e4f-5a6b7c8d9e0f/stop'], ['GET', '/ai/photo-ai/review'], ['POST', '/ai/photo-ai/decide'],
+      ['GET', '/ai/photo-ai/unapplied'], ['POST', '/ai/photo-ai/applied']]) expect(isAssistantRequest(method, path), method + ' ' + path).toBe(true)
+    expect(isAssistantRequest('PUT', '/ai/photo-ai/keys')).toBe(false)
+  })
+
   // 24.11.2026: розділ «Сайт» власника ходить тим самим ключем; сама адреса сайту (/site/…) — ні.
   it('the owner site section passes, the site address itself does not', () => {
     for (const [method, path] of [['GET', '/site-admin'], ['PUT', '/site-admin'], ['POST', '/site-admin/key'], ['DELETE', '/site-admin/key'], ['GET', '/site-admin/orders']])

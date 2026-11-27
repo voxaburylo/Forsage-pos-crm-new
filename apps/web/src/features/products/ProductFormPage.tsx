@@ -18,6 +18,7 @@ import { toast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/stores/authStore'
 import { createdProductReference, productEditorPayload, productHasNegativeMargin, productMoneyInput, findSameNameCard, sameNameQuestion, suggestedRetailText } from './productFormModel'
 import { ProductReferenceField } from './ProductReferenceField'
+import { PhotoAiCardButton } from '@/features/photoAi/PhotoAiCardButton'
 
 const EMPTY: ProductFormData = {
   sku: '', name: '', barcode: '', brand_id: '', category_id: '',
@@ -329,6 +330,14 @@ export function ProductEditor({ embedded = false, disabled = false, onSaved, onB
                 onBusyChange={(pending) => { photoPendingRef.current = pending; setPhotoPending(pending) }}
                 successMessage="Фото додано. Натисніть «Зберегти зміни» або «Створити товар»."
               />
+              {/* 27.11.2026: пошук фото в інтернеті з перевіркою ШІ — для вже збереженої картки, власнику й адміністратору. */}
+              {isEdit && id && ['owner', 'admin'].includes(role) && (
+                <PhotoAiCardButton
+                  product={{ id, name: form.name, sku: form.sku || null, brand: brands.find(brand => brand.id === form.brand_id)?.name ?? null }}
+                  hasPhoto={Boolean(form.photo_url)} disabled={saving || !form.name.trim()}
+                  onSaved={(url) => setForm((f) => ({ ...f, photo_url: url }))}
+                />
+              )}
             </div>
 
             <Input

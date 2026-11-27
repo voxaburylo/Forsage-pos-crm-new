@@ -29,7 +29,9 @@ const WEB_AI_MEMORY_PATH = '/api/v1/ai/memory'
 const SERVER_ONLY_DATA_PREFIXES = ['/api/v1/waitlist/', '/api/v1/notifications/', '/api/v1/channels', '/api/v1/chats/', '/api/v1/settings/owner-alerts',
   '/api/v1/price-links', '/api/v1/customer-groups', '/api/v1/settings/telegram-connect', '/api/v1/site-admin', '/api/v1/supplier-api',
   // 26.11.2026: фонові задачі помічника й спільний чат (лише на сервері).
-  '/api/v1/ai/jobs', '/api/v1/ai/chat-state', '/api/v1/ai/supplier-offers']
+  '/api/v1/ai/jobs', '/api/v1/ai/chat-state', '/api/v1/ai/supplier-offers',
+  // 27.11.2026: «Пошук фото з ШІ» (лише на сервері; у картку фото ставить головний ПК).
+  '/api/v1/ai/photo-ai']
 
 export function isWebReadOnlyRequest(path: string, method: string | undefined): boolean {
   if (isDesktopRuntime() || SAFE_API_METHODS.has((method ?? 'GET').toUpperCase())) return false

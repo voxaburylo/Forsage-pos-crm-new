@@ -26,7 +26,7 @@ export function pickConnections(all: Connection[], wanted: unknown): Connection[
 
 export async function listSupplierOffersForAi(tenantId: string, args: Record<string, unknown>) {
   const chosen = pickConnections(await connections(tenantId), args?.supplier)
-  if (!chosen.length) return { error: 'Постачальника за API не знайдено. Підключення — Налаштування → «API-ключі».' }
+  if (!chosen.length) return { error: 'Постачальника за API не знайдено. Підключення — Сайт → Налаштування → «Ключі API».' }
   const perPage = Math.min(Math.max(Number(args?.per_page) || SUPPLIER_PAGE_MAX, 1), SUPPLIER_PAGE_MAX)
   const page = Math.max(Number(args?.page) || 1, 1)
   const filter = String(args?.filter ?? 'all')

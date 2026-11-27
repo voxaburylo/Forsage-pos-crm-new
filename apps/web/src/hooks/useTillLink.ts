@@ -109,6 +109,22 @@ export function useTillLink(serverOnline: boolean) {
     return () => { stopped = true; window.clearTimeout(first); window.clearInterval(timer) }
   }, [link.mode, serverOnline, offlineMode, user?.id])
 
+  // 2б. 27.11.2026: «Пошук фото з ШІ» — готові фото головний ПК ставить у картки без фото раз на 10 хвилин
+  // (один короткий запит до сервера; картку з власним фото не чіпає).
+  useEffect(() => {
+    if (link.mode !== 'device' || !serverOnline || offlineMode || !user) return
+    let stopped = false, busy = false
+    const run = async () => {
+      if (stopped || busy || isDesktopAccessLocked()) return
+      busy = true
+      try { await (await import('@/features/photoAi/photoAiApply')).runApplyApproved() } catch { /* наступний раз повторить */ }
+      finally { busy = false }
+    }
+    const first = window.setTimeout(() => { void run() }, 4 * 60_000)
+    const timer = window.setInterval(() => { void run() }, 10 * 60_000)
+    return () => { stopped = true; window.clearTimeout(first); window.clearInterval(timer) }
+  }, [link.mode, serverOnline, offlineMode, user?.id])
+
   // 3. Ключа ПК немає: зв'язок тримає вікно програми під сесією того, хто увійшов (як до 22.11.2026).
   useEffect(() => {
     const bridge = desktopBridge()

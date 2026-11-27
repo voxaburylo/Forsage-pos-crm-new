@@ -11,6 +11,7 @@ import { LiveCameraButton } from '@/components/LiveCameraButton'
 import { ClearFieldButton } from '@/components/ClearFieldButton'
 import { PriceLinkModal } from '@/features/priceLinks/PriceLinkModal'
 import { ProductPhotoSearchModal } from '@/features/ai/ProductPhotoSearchModal'
+import { PhotoAiBulkButton } from '@/features/photoAi/PhotoAiCardButton'
 import { MergeModal } from './MergeModal'
 import { CrossNumberBadge } from './CrossNumberBadge'
 import { AnalogsButton } from './StockAnalogs'
@@ -575,6 +576,8 @@ export default function ProductsPage() {
             <Button variant="secondary" size="sm" icon={<Download size={13} />} onClick={handleExportExcel}>Експорт Excel</Button>
             <Button variant="secondary" size="sm" icon={<Download size={13} />} onClick={handleExportCsv}>Експорт CSV</Button>
           </span>
+          {/* 27.11.2026: масовий «Пошук фото з ШІ» для товарів без фото. */}
+          {['owner', 'admin'].includes(role) && <PhotoAiBulkButton onChanged={load} />}
           {/* План B4 (23.11.2026): категорії, бренди й номенклатура постачальників — тут, а не серед налаштувань магазину. */}
           {['owner', 'admin'].includes(role) && (
             <Button variant="secondary" size="sm" icon={<FileText size={13} />} onClick={() => navigate('/settings?tab=catalog')} title="Категорії, бренди, номенклатура постачальників, очищення дублів">

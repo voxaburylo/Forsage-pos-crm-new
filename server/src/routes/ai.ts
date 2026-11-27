@@ -4,6 +4,7 @@ import { catalogReviewSchema, reviewCatalog } from '../services/catalogAgentServ
 import { duplicateReviewSchema, reviewCatalogDuplicates } from '../services/catalogDuplicateReviewService.js'
 import { duplicateDecisionsSchema, saveDistinctPairs } from '../services/aiDuplicateDecisions.js'
 import { z } from 'zod'
+import { photoAiRouter } from './photoAi.js'
 import { requireAuth, requireRole } from '../middleware/auth.js'
 import { AppError } from '../middleware/errorHandler.js'
 import {
@@ -19,6 +20,8 @@ import { applyOfferItems, changeJobStatus, createJob, createJobSchema, getJob, l
 
 const router = Router()
 router.use(requireAuth)
+// 27.11.2026: «Пошук фото з ШІ» (Serper.dev + Gemini) — окремий файл маршрутів.
+router.use('/photo-ai', photoAiRouter)
 
 // GET /api/v1/ai/status — чи налаштовано, модель, витрати за місяць
 router.get('/status', requireRole('owner', 'admin', 'manager', 'cashier'), async (req, res, next) => {
