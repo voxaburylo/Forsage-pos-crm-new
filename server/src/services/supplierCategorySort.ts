@@ -26,7 +26,7 @@ type Rule = { category_id: string | null; wait: boolean }
 
 export async function sortStatus(tenantId: string) {
   const [state, counts] = await Promise.all([
-    pool.query('SELECT enabled, cost_usd, last_error, updated_at FROM supplier_category_sort WHERE tenant_id = $1', [tenantId]),
+    pool.query('SELECT enabled, undo_pending, cost_usd, last_error, updated_at FROM supplier_category_sort WHERE tenant_id = $1', [tenantId]),
     pool.query(`SELECT count(*) FILTER (WHERE category_id IS NULL AND category_source IS NULL)::int AS waiting,
                        count(*) FILTER (WHERE category_source = 'ai')::int AS sorted, count(*) FILTER (WHERE category_source = 'ai_none')::int AS unsure, count(*) FILTER (WHERE category_source = 'ai_wait')::int AS waiting_new,
                        count(*) FILTER (WHERE category_id IS NOT NULL)::int AS with_category, count(*)::int AS total
@@ -34,7 +34,7 @@ export async function sortStatus(tenantId: string) {
   ])
   const row = state.rows[0]
   const fresh = await (await import('./supplierCategoryNew.js')).newCategoryStatus(tenantId)
-  return { ...fresh, enabled: Boolean(row?.enabled), cost_usd: Number(row?.cost_usd ?? 0), last_error: (row?.last_error as string | null) ?? null, ...(counts.rows[0] as { waiting: number; sorted: number; unsure: number; waiting_new: number; with_category: number; total: number }) }
+  return { ...fresh, enabled: Boolean(row?.enabled), undoing: Boolean(row?.undo_pending), cost_usd: Number(row?.cost_usd ?? 0), last_error: (row?.last_error as string | null) ?? null, ...(counts.rows[0] as { waiting: number; sorted: number; unsure: number; waiting_new: number; with_category: number; total: number }) }
 }
 
 export async function setSortEnabled(tenantId: string, userId: string, enabled: boolean) {
@@ -43,13 +43,29 @@ export async function setSortEnabled(tenantId: string, userId: string, enabled: 
   return sortStatus(tenantId)
 }
 
-/** «Повернути як було»: зняти все, що поставив помічник, і забути його правила. Ручні й старі автоматичні категорії лишаються. */
+/**
+ * «Повернути як було»: зняти все, що поставив помічник, і забути його правила. Ручні й старі автоматичні категорії лишаються.
+ * 27.11.2026: раніше це був ОДИН запит на всі розкладені товари (десятки тисяч рядків, кожен — 11 індексів) — саме такі сплески
+ * вичерпали запас диска бази. Тепер кнопка лише ставить позначку, а знімає категорії будильник: UNDO_PAGE товарів за хвилину
+ * і тільки коли база не зайнята. Поки знімається — розкладка для цього магазину стоїть.
+ */
+export const UNDO_PAGE = 2000
 export async function undoSort(tenantId: string, userId: string) {
-  await pool.query(`INSERT INTO supplier_category_sort (tenant_id, enabled, started_by) VALUES ($1, false, $2)
-    ON CONFLICT (tenant_id) DO UPDATE SET enabled = false, last_error = NULL, updated_at = now()`, [tenantId, userId])
-  await pool.query("UPDATE supplier_offers SET category_id = NULL, category_source = NULL, updated_at = now() WHERE tenant_id = $1 AND category_source IN ('ai', 'ai_none', 'ai_wait')", [tenantId])
+  await pool.query(`INSERT INTO supplier_category_sort (tenant_id, enabled, started_by, undo_pending) VALUES ($1, false, $2, true)
+    ON CONFLICT (tenant_id) DO UPDATE SET enabled = false, undo_pending = true, last_error = NULL, updated_at = now()`, [tenantId, userId])
   await pool.query('DELETE FROM supplier_category_rules WHERE tenant_id = $1', [tenantId])
   return sortStatus(tenantId)
+}
+
+/** Одна порція «повернути як було». Нема чого знімати — позначка гаситься. Повертає, скільки товарів знято. */
+export async function undoStep(tenantId: string): Promise<number> {
+  const { rowCount } = await pool.query(
+    `WITH picked AS (SELECT connection_id, external_id FROM supplier_offers WHERE tenant_id = $1 AND category_source IN ('ai', 'ai_none', 'ai_wait') LIMIT $2)
+     UPDATE supplier_offers o SET category_id = NULL, category_source = NULL, updated_at = now() FROM picked p
+      WHERE o.connection_id = p.connection_id AND o.external_id = p.external_id`, [tenantId, UNDO_PAGE])
+  const cleared = rowCount ?? 0
+  if (!cleared) await pool.query('UPDATE supplier_category_sort SET undo_pending = false, updated_at = now() WHERE tenant_id = $1', [tenantId])
+  return cleared
 }
 
 /** Одна сторінка: відомі види — у категорії одразу; для невідомих — запит до помічника (двома голосами), правила зберігаються. */
@@ -123,9 +139,11 @@ export async function sortPage(tenantId: string, options: readonly CategoryOptio
 /** Пробудження від планувальника (те саме, що будить фонові задачі). Нічого не ввімкнено чи нема чого розкладати — повертається одразу. */
 export async function runCategorySortStep(deps: { model?: (apiKey: string, model: string) => SortModel; now?: () => number } = {}): Promise<{ shops: number; placed: number; errors: number }> {
   const now = deps.now ?? Date.now, deadline = now() + SORT_RUN_MS
-  const { rows: shops } = await pool.query('SELECT tenant_id::text AS tenant_id, started_by FROM supplier_category_sort WHERE enabled LIMIT 3')
+  const { rows: shops } = await pool.query('SELECT tenant_id::text AS tenant_id, started_by, undo_pending FROM supplier_category_sort WHERE enabled OR undo_pending LIMIT 3')
   let placed = 0, errors = 0
-  for (const shop of shops as Array<{ tenant_id: string; started_by: string | null }>) {
+  for (const shop of shops as Array<{ tenant_id: string; started_by: string | null; undo_pending?: boolean }>) {
+    // «Повернути як було» ще не закінчено — знімаємо порцію; розкладати заново почнемо, коли знято все.
+    if (shop.undo_pending) { try { await undoStep(shop.tenant_id) } catch { errors += 1 } continue }
     const { getAiConfig, recordAiUsage } = await import('./aiService.js')
     const config = await getAiConfig(shop.tenant_id).catch(() => null)
     if (!config?.enabled || !config.apiKey) {
