@@ -309,6 +309,9 @@ export async function launchPortableUpdateAfterQuit(input: {
  * «перевіряє»: фактичний файл програми за контрольною сумою — це або нова версія (установлено), або попередня (не
  * встановлено). Лише тоді записує підсумок і знімає замки ЦЬОГО завдання. Інший вміст файлу — нічого не чіпає.
  */
+/** Підсумок завдання, коли програму замінили вручну (флешкою); екран показує його як звичайний стан, а не помилку. */
+export const MANUAL_REPLACE_MESSAGE = 'Програму замінено вручну (флешкою) — попереднє оновлення закрито, наступні йдуть як звичайно'
+
 export async function settleInterruptedPortableUpdate(localAppData: string, now = Date.now()): Promise<PortableUpdateOutcome['state'] | null> {
   const directory = updateRoot(localAppData), lastFile = path.join(directory, 'last-job.json')
   if (!optionalStat(lastFile)) return null
@@ -328,17 +331,22 @@ export async function settleInterruptedPortableUpdate(localAppData: string, now 
   let state: 'installed' | 'failed'
   if (!optionalStat(resultFile)) {
     const executable = localAbsolute(destination)
-    if (!optionalStat(executable)) return null
-    assertExecutable(executable)
-    const actual = await fileHash(executable)
-    if (actual === last.sha256) state = 'installed'
-    else if (actual === last.previousHash) state = 'failed'
+    // 27.11.2026 (фото власника: «поставив новий EXE флешкою — оновлень немає», на екрані «установка перервалась»):
+    // після ручної заміни програми файл не дорівнює ні старій, ні новій версії — і замок висів назавжди, хоча сам
+    // напис радить оновити флешкою. Через годину після строку завдання помічника вже точно немає: ручну заміну
+    // (або файл, який перенесли) записуємо як закрите завдання й знімаємо його замки. Файл програми не чіпаємо.
+    const manualAfter = deadline + 60 * 60_000
+    let actual: string | null = null
+    if (optionalStat(executable)) { assertExecutable(executable); actual = await fileHash(executable) }
+    let message: string
+    if (actual === last.sha256) { state = 'installed'; message = 'Установку завершено (перевірено за контрольною сумою після перерви)' }
+    else if (actual === last.previousHash) { state = 'failed'; message = 'Установку перервано (ПК вимкнули або помічник не запустився) — програма спробує ще раз' }
+    else if (now >= manualAfter) { state = 'failed'; message = MANUAL_REPLACE_MESSAGE }
     else return null
     const result = await open(resultFile, 'wx')
     try {
-      await result.writeFile(JSON.stringify({ protocol: 1, jobId, releaseId: last.releaseId, state,
-        message: state === 'installed' ? 'Установку завершено (перевірено за контрольною сумою після перерви)' : 'Установку перервано (ПК вимкнули або помічник не запустився) — програма спробує ще раз',
-        sha256: actual, previousHash: last.previousHash, finishedAt: new Date(now).toISOString() }))
+      await result.writeFile(JSON.stringify({ protocol: 1, jobId, releaseId: last.releaseId, state, message,
+        ...(actual ? { sha256: actual } : {}), previousHash: last.previousHash, finishedAt: new Date(now).toISOString() }))
       await result.sync()
     } finally { await result.close() }
   } else {

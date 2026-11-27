@@ -10,7 +10,9 @@ export function lanUpdateLines(report: LanUpdateReport): Array<{ tone: 'ok' | 'w
   if (!report.portable) lines.push({ tone: 'bad', text: 'Програму запущено не з файлу Forsage.exe з архіву — автооновлення не працює. Запускайте Forsage.exe з теки «Forsage-Manager».' })
   const state = report.outcome?.state
   if (state === 'installed') lines.push({ tone: 'ok', text: `Остання установка оновлення пройшла${report.outcome?.finishedAt ? ' ' + when(report.outcome.finishedAt) : ''}.` })
-  if (state === 'failed' || state === 'rolled-back') lines.push({ tone: 'bad', text: `Остання установка оновлення не вдалася${report.outcome?.message ? ': ' + report.outcome.message : ''}. Програма повторить при наступному закритті.` })
+  // 27.11.2026: програму замінили флешкою — це не помилка (текст — MANUAL_REPLACE_MESSAGE у portableUpdate.ts).
+  if (state === 'failed' && report.outcome?.message?.startsWith('Програму замінено вручну')) lines.push({ tone: 'ok', text: report.outcome.message + '.' })
+  else if (state === 'failed' || state === 'rolled-back') lines.push({ tone: 'bad', text: `Остання установка оновлення не вдалася${report.outcome?.message ? ': ' + report.outcome.message : ''}. Програма повторить при наступному закритті.` })
   if (state === 'waiting') lines.push({ tone: 'warn', text: 'Оновлення встановлюється (після закриття програми). Зачекайте кілька хвилин і відкрийте програму знову.' })
   if (state === 'unknown') lines.push({ tone: 'bad', text: `Попередня установка оновлення перервалась${report.outcome?.message ? ' (' + report.outcome.message + ')' : ''} — нові оновлення заблоковано до перевірки. Оновіть програму флешкою з архіву «Форсаж — ПК менеджера».` })
   if (report.staged) lines.push({ tone: 'ok', text: 'Нову версію завантажено — встановиться, коли ви повністю закриєте програму.' })

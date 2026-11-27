@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { readPortableUpdateOutcome, settleInterruptedPortableUpdate } from '../src/updates/portableUpdate'
+import { MANUAL_REPLACE_MESSAGE, readPortableUpdateOutcome, settleInterruptedPortableUpdate } from '../src/updates/portableUpdate'
 
 // 25.11.2026 (власник: «на втором ПК программа не обновляется»): установку перервали (вимкнули ПК) —
 // стан «невідомо» блокував усі наступні оновлення назавжди. Тепер програма сама перевіряє файл за контрольною сумою.
@@ -47,9 +47,25 @@ describe('an interrupted LAN update no longer blocks updates forever', () => {
     expect(existsSync(path.join(early.updates, 'install.lock'))).toBe(true)
     const foreign = interrupted('MZ-old', { foreignLock: true })
     expect(await settleInterruptedPortableUpdate(foreign.root)).toBeNull()
-    const strange = interrupted('MZ-something-else')
+    // Чужий файл, але година після строку ще не минула — помічник теоретично ще може працювати.
+    const strange = interrupted('MZ-something-else', { minutesAgo: 30 })
     expect(await settleInterruptedPortableUpdate(strange.root)).toBeNull()
     expect(readPortableUpdateOutcome(strange.root)?.state).toBe('unknown')
+  })
+  // 27.11.2026, фото власника: «поставив новий EXE флешкою — оновлень немає», на екрані «установка перервалась».
+  it('the program was replaced by hand from a flash drive: the job is closed, locks released, the file is untouched', async () => {
+    const f = interrupted('MZ-flash-drive-s-build', { minutesAgo: 120 })
+    expect(readPortableUpdateOutcome(f.root)?.state).toBe('unknown')
+    expect(await settleInterruptedPortableUpdate(f.root)).toBe('failed')
+    expect(existsSync(path.join(f.updates, 'install.lock'))).toBe(false)
+    expect(existsSync(f.destination + '.update-lock')).toBe(false)
+    expect(readPortableUpdateOutcome(f.root)?.message).toBe(MANUAL_REPLACE_MESSAGE)
+    expect(readFileSync(f.destination, 'utf8')).toBe('MZ-flash-drive-s-build')
+    // Програму перенесли в іншу теку (старого файлу немає) — так само закрито.
+    const moved = interrupted('MZ-old', { minutesAgo: 120 })
+    rmSync(moved.destination)
+    expect(await settleInterruptedPortableUpdate(moved.root)).toBe('failed')
+    expect(readPortableUpdateOutcome(moved.root)?.message).toBe(MANUAL_REPLACE_MESSAGE)
   })
   it('nothing to do without a previous job', async () => {
     const root = mkdtempSync(path.join(tmpdir(), 'forsage-settle-')); roots.push(root)
