@@ -3,6 +3,8 @@ import { pool } from '../db/pg.js'
 import { db } from '../db/supabase.js'
 import { logger } from '../lib/logger.js'
 import { BACKUP_BUCKET, MAX_CHUNKED_BACKUP_BYTES, VERIFIED_BACKUP_NAME } from './backupPolicy.js'
+import { dbLoad, type DbLoad } from './dbLoad.js'
+import { databaseSlowAlert } from './ownerAlertDatabase.js'
 
 /**
  * Тривоги власнику в Telegram (етап 11 плану, рішення власника 22.11.2026: «усі»).
@@ -46,6 +48,8 @@ export interface OwnerAlertFacts {
   outbox?: { waiting: number; oldest_at: string | null; error: string | null; reported_at: string } | null
   /** 26.11.2026 (власник: «можна попередження в тг»): версії програми на касі й на ПК менеджера зі звіту каси. */
   versions?: { till_release_id: string | null; manager_release_id: string | null; manager_seen_at: string | null } | null
+  /** 27.11.2026: як швидко хмарна база відповіла на просте питання; немає — виміряти не вдалося (тривоги немає). */
+  database_load?: DbLoad | null
 }
 /** Скільки днів тому ПК менеджера мав звертатися, щоб про його версію ще варто було попереджати. */
 export const MANAGER_VERSION_FRESH_DAYS = 3
@@ -198,6 +202,10 @@ export function planOwnerAlerts(facts: OwnerAlertFacts, now: Date, settings: Own
       + `\nОстанній зв’язок ПК менеджера: ${kyivTime(versions.manager_seen_at)}.`
       + '\nНова версія сама встановиться, коли на ПК менеджера закриють програму. Якщо за день не оновилась — оновіть флешкою з архіву «Форсаж — ПК менеджера».',
   })
+
+  // 10. Хмарна база гальмує (27.11.2026: шість годин про це ніхто не знав, першим написав сайт).
+  const slow = databaseSlowAlert(facts.database_load, today, hour)
+  if (slow) alerts.push(slow)
   return alerts
 }
 
@@ -278,6 +286,8 @@ function readSummary(row: Record<string, unknown>): ShiftCloseSummary | null {
   return { revenue: n(sales.revenue), receipts: n(sales.receipts), cash: n(sales.cash), card: n(sales.card), transfer: n(sales.transfer), debt: n(sales.debt), handed: n(row.handed) }
 }
 async function collectFacts(tenantId: string): Promise<OwnerAlertFacts> {
+  // Першим і окремо: замір має показати базу до того, як її навантажать наші ж запити нижче.
+  const load = await dbLoad()
   const [presence, open, closed, negative, backup] = await Promise.all([
     pool.query('SELECT seen_at FROM till_presence WHERE tenant_id = $1', [tenantId]),
     pool.query(`SELECT s.id, s.opened_at, ${CASHIER_NAME_SQL} AS cashier_name FROM shifts s WHERE s.tenant_id = $1 AND s.status = 'open' ORDER BY s.opened_at LIMIT 20`, [tenantId]),
@@ -312,6 +322,7 @@ async function collectFacts(tenantId: string): Promise<OwnerAlertFacts> {
     outbox: outbox?.outbox_reported_at ? { waiting: Number(outbox.outbox_waiting ?? 0), oldest_at: outbox.outbox_oldest_at ? new Date(outbox.outbox_oldest_at).toISOString() : null,
       error: outbox.outbox_error ? String(outbox.outbox_error) : null, reported_at: new Date(outbox.outbox_reported_at).toISOString() } : null,
     versions: report ? { till_release_id: textOf(report.release_id), manager_release_id: textOf(report.manager_release_id), manager_seen_at: textOf(report.manager_seen_at) } : null,
+    database_load: load,
   }
 }
 
