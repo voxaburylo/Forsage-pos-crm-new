@@ -47,6 +47,8 @@ export interface SiteOrder {
   customer_name?: string | null; customer_phone?: string | null; customer_email?: string | null
   delivery_method?: string | null; city?: string | null; warehouse?: string | null; comment?: string | null
   total: number; tracking_number?: string | null; manager_comment?: string | null
+  /** 27.11.2026: оплачено онлайн (LiqPay) — таке замовлення програма забирає сама (sitePaidOrders на сервері). */
+  paid?: boolean; paid_at?: string | null; paid_amount?: number | null
   items: SiteOrderItem[]
 }
 

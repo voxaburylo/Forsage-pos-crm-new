@@ -90,6 +90,10 @@ export const orderSavePayload = z.object({
   vin: z.string().regex(/^[A-HJ-NPR-Z0-9]{17}$/).nullable().optional(),
   comment: text(1000).nullable().optional(),
   author: text(120).nullable().optional(),
+  // 27.11.2026: замовлення сайту з вебу (кнопка в розділі «Сайт») — джерело «сайт» і «оплачено» (підтвердив менеджер).
+  source: z.literal('site').nullable().optional(),
+  paid: z.object({ amount: z.number().int().min(0).max(100_000_000), paid_at: z.string().max(40).nullable(), method: z.enum(['online', 'manual']).optional(),
+    confirmed_by: text(120).nullable().optional() }).strict().optional(),
   items: z.array(orderItem).min(1).max(60),
 }).strict().refine(order => Boolean(order.customer_phone || order.customer_name), 'Потрібен телефон або ім’я клієнта')
 

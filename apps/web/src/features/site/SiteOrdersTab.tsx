@@ -4,6 +4,7 @@ import { Button, Card, Input, Modal } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { api } from '@/lib/api'
 import { desktopBridge, isDesktopRuntime } from '@/lib/desktopBridge'
+import { useAuthStore } from '@/stores/authStore'
 import {
   ORDER_STATUSES, ORDER_STATUS_TEXT, errorText, isUuid, siteCall, siteOrderToProgramOrder, uah, useSiteData,
   type SiteOrder, type SiteOrderStatus,
@@ -27,8 +28,11 @@ const TONE: Record<SiteOrderStatus, string> = {
  * Створює замовлення в програмі тим самим шляхом, що бланк із телефона: на касі — одразу у своїй базі,
  * у вебі — командою на касу. Гроші тут не рухаються. Повертає текст для коментаря менеджера на сайті.
  */
-async function createInProgram(order: SiteOrder): Promise<string> {
-  const { payload } = siteOrderToProgramOrder(order)
+async function createInProgram(order: SiteOrder, confirmedBy: string): Promise<string> {
+  // 27.11.2026, правило власника: без оплати товар не бронюється. Менеджер натискає «Оплачено» — лише тоді замовлення
+  // зʼявляється в програмі й бронює товар (з позначкою «ОПЛАЧЕНО НА САЙТІ (підтвердив менеджер)»).
+  const base = siteOrderToProgramOrder(order).payload
+  const payload = { ...base, paid: { amount: Math.round((Number(order.total) || 0) * 100), paid_at: new Date().toISOString(), method: 'manual' as const, confirmed_by: confirmedBy || null } }
   if (!payload.items.length) throw new Error('У цьому замовленні немає товарів із каталогу програми (лише шини сайту) — у програмі створювати нічого.')
   // 27.11.2026: сервер уже зберіг це замовлення сайту у себе; номер його рядка — номер операції на касі, тож двічі не створиться.
   const link = (await api.get<{ data: SiteOrderLink }>(`/api/v1/site-admin/orders/${encodeURIComponent(String(order.id))}/link`)).data
@@ -59,6 +63,8 @@ function OrderCard({ order, onClose, onChanged }: { order: SiteOrder; onClose: (
   const [note, setNote] = useState(order.manager_comment ?? '')
   const [busy, setBusy] = useState(false)
   const { textOnly, payload } = siteOrderToProgramOrder(order)
+  const confirmedBy = useAuthStore(store => String(store.session?.user?.user_metadata?.full_name ?? '').trim())
+  const paidOnline = order.paid === true
 
   async function save() {
     setBusy(true)
@@ -69,10 +75,11 @@ function OrderCard({ order, onClose, onChanged }: { order: SiteOrder; onClose: (
   }
 
   async function toProgram() {
+    if (!window.confirm(`Гроші за замовлення № ${order.id} (${uah(order.total)}) отримано?\nПісля цього замовлення зʼявиться в програмі, а товар заброниться.`)) return
     if (/замовлення програми|передано на касу/i.test(note) && !window.confirm('Схоже, це замовлення вже передавали в програму. Передати ще раз?')) return
     setBusy(true)
     try {
-      const result = await createInProgram(order)
+      const result = await createInProgram(order, confirmedBy)
       const next = [note.trim(), result].filter(Boolean).join('. ')
       setNote(next)
       await siteCall('orders.update', { id: order.id, manager_comment: next })
@@ -111,12 +118,16 @@ function OrderCard({ order, onClose, onChanged }: { order: SiteOrder; onClose: (
           <Input label="ТТН (номер накладної)" value={tracking} maxLength={60} onChange={event => setTracking(event.target.value)} />
         </div>
         <Input label="Коментар менеджера" value={note} maxLength={500} onChange={event => setNote(event.target.value)} />
-        <p className="text-xs text-gray-500">
-          «Створити в програмі» додає замовлення в «Замовлення» програми: товари з каталогу програми — позиціями ({payload.items.length}),
-          {textOnly.length ? ` решта (${textOnly.length}) — текстом у примітці` : ' усі позиції з каталогу'}. Оплату приймає лише каса.
-        </p>
+        {paidOnline ? (
+          <p className="rounded-lg bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-900">💳 Оплачено онлайн — замовлення в програмі створиться само (за хвилину), товар заброниться.</p>
+        ) : (
+          <p className="text-xs text-gray-500">
+            Без оплати товар не бронюється. Коли гроші отримано — «Оплачено»: замовлення зʼявиться в «Замовленнях» програми з позначкою «оплачено», товари з каталогу ({payload.items.length}) заброняться
+            {textOnly.length ? `, решта (${textOnly.length}) — текстом у примітці` : ''}.
+          </p>
+        )}
         <div className="flex flex-wrap justify-end gap-2">
-          <Button variant="secondary" icon={<PackagePlus size={14} />} loading={busy} onClick={() => void toProgram()} data-site-order-to-program>Створити замовлення в програмі</Button>
+          {!paidOnline && <Button variant="secondary" icon={<PackagePlus size={14} />} loading={busy} onClick={() => void toProgram()} data-site-order-to-program>Оплачено — створити й забронювати</Button>}
           <Button icon={<Save size={14} />} loading={busy} onClick={() => void save()}>Зберегти</Button>
         </div>
       </div>
