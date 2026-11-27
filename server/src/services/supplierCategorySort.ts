@@ -16,7 +16,10 @@ import { agreedCategory, categoryKey, categoryOptions, parseSortReply, sortLine,
 // 27.11.2026: сторінка 3000 і цикл «скільки встигну за хвилину» перевантажили базу (кожен товар — це оновлення 11 індексів,
 // серед них пошуковий): веб і застосунок чекали по 3–10 с, сама розкладка падала з «повтор за хвилину». Тепер — не більше
 // SORT_PAGES_PER_RUN сторінок по SORT_PAGE товарів за хвилину: повільніше, зате програмою можна користуватись.
-export const SORT_PAGE = 800, SORT_PAGES_PER_RUN = 2, SORT_KINDS = 60, SORT_CHUNKS = 4, SORT_RUN_MS = 50_000
+// 27.11.2026 (ранок): і 800 × 2 разом із прайсами вичерпали запас дискових операцій бази — сайт не міг забрати каталог,
+// каса чекала по хвилині. Слово власника: «щоб розкладка більше не виносила сервер». Тепер 300 товарів за хвилину
+// (60 тис. товарів — близько 3,5 год) і лише коли база не зайнята (dbBusy у будильнику).
+export const SORT_PAGE = 300, SORT_PAGES_PER_RUN = 1, SORT_KINDS = 60, SORT_CHUNKS = 4, SORT_RUN_MS = 50_000
 export type SortModel = { complete: (budget: AiExecutionBudget, input: { system: string; text: string; maxTokens?: number; effort?: 'low' | 'medium' | 'high' }) => Promise<ClaudeUsage & { text: string; truncated: boolean }> }
 type Offer = { connection_id: string; external_id: string; name: string; category_name: string | null }
 type Rule = { category_id: string | null; wait: boolean }
