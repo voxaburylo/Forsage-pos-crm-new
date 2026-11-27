@@ -25,6 +25,7 @@ import { LanSettingsCard } from './LanSettingsCard'
 import { LiteModeCard } from './LiteModeCard'
 import { OutboxJournalCard } from './OutboxJournalCard'
 import { SupplierApiCard } from './SupplierApiCard'
+import { PhotoAiSettingsCard } from '@/features/photoAi/PhotoAiSettingsCard'
 import { LabelPrinterCard } from './LabelPrinterCard'
 import { SettingsLinksCard } from './SettingsLinksCard'
 import { CatalogDictionaries } from '@/features/admin/AdminPage'
@@ -1116,6 +1117,12 @@ export default function SettingsPage() {
           hint="Товари постачальника для замовлень: ціна, склад, залишок. На склад магазину не додаються.">
         {currentRole === 'owner' ? <SupplierApiCard /> : <p className="text-sm text-gray-500">Підключення постачальників налаштовує власник.</p>}
         </SettingsSection>
+        {(currentRole === 'owner' || currentRole === 'admin') && (
+        <SettingsSection tab="api" title="Фото ШІ пошук фото товарів Serper Gemini ключі білий фон"
+          hint="Пошук фото товарів в інтернеті з перевіркою ШІ: ключі сервісів і правила. Сам пошук — у картці товару й кнопкою «Фото ШІ» в «Товарах».">
+        <PhotoAiSettingsCard />
+        </SettingsSection>
+        )}
       </div>
 
 

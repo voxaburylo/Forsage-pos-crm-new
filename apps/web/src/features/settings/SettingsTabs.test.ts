@@ -23,8 +23,8 @@ describe('settings layout: six tabs by meaning', () => {
   })
 
   it('every block is on a real tab and says in one line what it is for', () => {
-    expect(sections).toHaveLength(27)
-    expect(page.match(/<SettingsSection /g)).toHaveLength(27)
+    expect(sections).toHaveLength(28)
+    expect(page.match(/<SettingsSection /g)).toHaveLength(28)
     const known = new Set<string>([...SETTINGS_TABS.map(tab => tab.id), 'catalog', 'audit'])
     for (const section of sections) {
       expect(known.has(section.tab), section.title).toBe(true)

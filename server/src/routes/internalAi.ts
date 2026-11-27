@@ -102,14 +102,17 @@ router.get('/ai-jobs', async (req, res, next) => {
     // 27.11.2026: масові тексти й розкладка по категоріях — лише коли база не зайнята; замовлення сайту й задачі з чату йдуть завжди.
     const busy = await dbBusy()
     const skipped = { skipped: 'db_busy' as const }
-    const [names, texts, sorting, orders] = await Promise.allSettled([runAiJobsStep(),
+    const [names, texts, sorting, orders, photos] = await Promise.allSettled([runAiJobsStep(),
       busy ? Promise.resolve(skipped) : import('../services/siteTextJobService.js').then(module => module.runSiteTextStep()),
       busy ? Promise.resolve(skipped) : import('../services/supplierCategorySort.js').then(module => module.runCategorySortStep()),
       // 27.11.2026: замовлення із сайту — у програму, щохвилини.
-      import('../services/siteOrderPull.js').then(module => module.runSiteOrderPullStep())])
+      import('../services/siteOrderPull.js').then(module => module.runSiteOrderPullStep()),
+      // 27.11.2026: масовий «Пошук фото з ШІ» — теж лише коли база не зайнята.
+      busy ? Promise.resolve(skipped) : import('../services/photoAi/photoQueue.js').then(module => module.runPhotoAiStep())])
     if (names.status === 'rejected' && texts.status === 'rejected') throw names.reason
     res.json({ data: { ...(names.status === 'fulfilled' ? names.value : { error: true }), site_texts: texts.status === 'fulfilled' ? texts.value : { error: true },
-      category_sort: sorting.status === 'fulfilled' ? sorting.value : { error: true }, site_orders: orders.status === 'fulfilled' ? orders.value : { error: true } } })
+      category_sort: sorting.status === 'fulfilled' ? sorting.value : { error: true }, site_orders: orders.status === 'fulfilled' ? orders.value : { error: true },
+      photo_ai: photos.status === 'fulfilled' ? photos.value : { error: true } } })
   } catch (error) {
     next(error)
   }

@@ -76,7 +76,9 @@ const SERVER_ONLY_DATA_PREFIXES = ['/api/v1/waitlist/', '/api/v1/notifications/'
   '/api/v1/supplier-api',
   // 26.11.2026: фонові задачі помічника й спільний чат — лише на сервері (у касі цих таблиць немає). Наші картки
   // задача сама не змінює: застосування йде через головний ПК.
-  '/api/v1/ai/jobs', '/api/v1/ai/chat-state', '/api/v1/ai/supplier-offers']
+  '/api/v1/ai/jobs', '/api/v1/ai/chat-state', '/api/v1/ai/supplier-offers',
+  // 27.11.2026: «Пошук фото з ШІ» — знахідки, черга й ключі живуть лише на сервері; у картку фото ставить головний ПК.
+  '/api/v1/ai/photo-ai']
 
 export function isStaffSecretChange(method: string, path: string): boolean {
   return (method === 'POST' && path === '/api/v1/auth/set-pin') || (method === 'PUT' && /^\/api\/v1\/admin\/users\/[0-9a-f-]{36}\/password$/.test(path))
