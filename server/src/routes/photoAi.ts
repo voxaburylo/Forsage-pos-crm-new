@@ -30,6 +30,17 @@ photoAiRouter.get('/status', staff, async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+// Чи працює стиснення фото на цьому сервері. Самоперевірка сервера після кожної публікації відкриває всі адреси GET:
+// якщо бібліотека картинок не завантажилась, тут буде 500 — і власник дізнається одразу, а не коли фото не збережеться.
+photoAiRouter.get('/compressor', staff, async (_req, res, next) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store')
+    const { compressorWorks } = await import('../services/photoAi/photoStore.js')
+    if (!await compressorWorks()) throw new AppError('PHOTO_AI_COMPRESSOR', 'На сервері не працює стиснення фото', 500)
+    res.json({ data: { ok: true } })
+  } catch (err) { next(err) }
+})
+
 photoAiRouter.post('/settings', staff, async (req, res, next) => {
   try {
     const parsed = settingsSchema.safeParse(req.body)
