@@ -19,8 +19,17 @@ describe('printed photo invoice totals and page completeness', () => {
     expect(result.total_note).toContain('Підсумок накладної 250,00 грн, сума рядків 100,00 грн (різниця 150,00 грн)')
     expect(mergeAiInvoicePages([page(100,{invoice_total:90})]).total_note).toContain('можлива знижка постачальника')
   })
-  it('rejects different document totals instead of summing or choosing the first', () => {
-    expect(()=>mergeAiInvoicePages([page(100,{invoice_total:250}),page(150,{invoice_total:240})])).toThrow('різні підсумки')
+  // 27.11.2026, PDF власника (HOCO/Baseus, колонки «Сума, грн» і «Сума, $»): різні підсумки на сторінках більше не
+  // скасовують розбір. Не підсумовуються і не беруться «перший-ліпший»: лише той, що дорівнює сумі рядків, або примітка.
+  it('different document totals: the one equal to the goods is used, otherwise a visible note instead of a refusal', () => {
+    const twoCurrencies = mergeAiInvoicePages([page(100,{invoice_total:250}),page(150,{invoice_total:5.34})])
+    expect(twoCurrencies.products).toHaveLength(2)
+    expect(twoCurrencies).toHaveProperty('invoice_total',250)
+    expect(twoCurrencies.total_note).toContain('різні підсумки накладної: 250,00 грн, 5,34 грн')
+    const neither = mergeAiInvoicePages([page(100,{invoice_total:260}),page(150,{invoice_total:240})])
+    expect(neither.products).toHaveLength(2)
+    expect(neither).not.toHaveProperty('invoice_total')
+    expect(neither.total_note).toContain('Перевірте рядки й закупівлю')
   })
   it('checks page subtotals separately from the invoice total', () => {
     expect(mergeAiInvoicePages([page(100,{page_total:99}),page(150,{invoice_total:250})]).total_note).toContain('Фото 1: підсумок сторінки 99,00 грн')

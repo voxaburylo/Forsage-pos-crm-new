@@ -67,12 +67,12 @@ export function hasAiInvoicePhotoContent(value: unknown): boolean {
  */
 function checkPrintedTotals(controls: PageControl[]): { total?: number; notes: string[] } {
   const notes: string[] = []
-  let invoice: bigint | undefined
+  const invoices: bigint[] = []
   let count: number | undefined
   let sum = 0n
   const groups = new Map<string, PageControl>()
   for (const [index, control] of controls.entries()) {
-    invoice = samePrintedTotal(invoice, control.invoice, 'Загальний підсумок накладної')
+    if (control.invoice !== undefined && !invoices.includes(control.invoice)) invoices.push(control.invoice)
     sum += control.sum
     if (control.count !== undefined) {
       if (count !== undefined && count !== control.count) return invalidInvoice('На фото різна кількість сторінок накладної.')
@@ -116,6 +116,16 @@ function checkPrintedTotals(controls: PageControl[]): { total?: number; notes: s
     cumulative += page.sum
     if (page.carried !== undefined && page.carried !== cumulative)
       return invalidInvoice(page.location + ': перенесена сума на наступну сторінку не збігається.')
+  }
+  // 27.11.2026 (PDF власника HOCO/Baseus: ціни й суми в двох колонках — грн і $): ШІ на одній сторінці брав підсумок
+  // у гривнях, на іншій — у доларах, і вся накладна відхилялась («на фото різні підсумки»). Тепер різні підсумки не
+  // скасовують розбір: береться той, що дорівнює сумі рядків; жоден не дорівнює — помітна примітка, людина перевіряє.
+  const invoice = invoices.length > 1 ? invoices.find(total => total === sum) : invoices[0]
+  if (invoices.length > 1) {
+    notes.push('На сторінках різні підсумки накладної: ' + invoices.map(uah).join(', ') + (invoice !== undefined
+      ? '. Сума рядків ' + uah(sum) + ' збігається з одним із них (інший, імовірно, в іншій валюті).'
+      : ', а сума рядків ' + uah(sum) + '. Перевірте рядки й закупівлю перед проведенням.'))
+    if (invoice === undefined) return { notes }
   }
   if (invoice !== undefined && invoice !== sum) {
     const diff = sum - invoice

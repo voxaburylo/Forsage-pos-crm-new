@@ -27,7 +27,7 @@ export function collectSupplyResponse(responses: readonly unknown[], expectedPar
     throw new AiSupplyResponseError('Отримано не всі частини накладної. Неповну накладну не створено.', 'invalid-part')
   const products: AiSupplyRow[] = []
   const metadata: Metadata = {}
-  let invoiceTotal: bigint | undefined
+  const invoiceTotals: bigint[] = []
   for (const [partIndex, response] of responses.entries()) {
     const part = 'Частина ' + (partIndex + 1)
     if (!record(response) || !Array.isArray(response.actions) || !response.actions.length)
@@ -40,9 +40,7 @@ export function collectSupplyResponse(responses: readonly unknown[], expectedPar
       const rawTotal = action.payload.invoice_total
       if (rawTotal !== undefined && rawTotal !== null && rawTotal !== '') {
         const total = BigInt(Math.round(validateFields(() => readSupplyNumber(rawTotal, 'price', part + ': підсумок накладної')) * 100))
-        if (invoiceTotal !== undefined && invoiceTotal !== total)
-          throw new AiSupplyResponseError('У частинах різні підсумки накладної. Повторіть розбір усіх сторінок.', 'conflict')
-        invoiceTotal = total
+        if (!invoiceTotals.includes(total)) invoiceTotals.push(total)
       }
       // 25.11.2026: розбіжність сум сервер описує приміткою (знижка постачальника) — переносимо її в чернетку.
       const serverNote = action.payload.total_note
@@ -67,6 +65,15 @@ export function collectSupplyResponse(responses: readonly unknown[], expectedPar
     }
   }
   const sum = products.reduce((total, row) => total + (BigInt(Math.round(row.qty * 1000)) * BigInt(Math.round(row.purchase_price_uah * 100)) + 500n) / 1000n, 0n)
+  // 27.11.2026 (PDF власника з колонками «грн» і «$»): частини назвали різні підсумки — не відмова. Береться той, що
+  // дорівнює сумі рядків; жоден — помітна примітка (як і для знижки), накладну перевіряє людина.
+  const invoiceTotal = invoiceTotals.length > 1 ? invoiceTotals.find(total => total === sum) : invoiceTotals[0]
+  if (invoiceTotals.length > 1) {
+    const note = 'У частинах різні підсумки накладної: ' + invoiceTotals.map(uah).join(', ') + (invoiceTotal !== undefined
+      ? '. Сума рядків ' + uah(sum) + ' збігається з одним із них (інший, імовірно, в іншій валюті).'
+      : ', а сума рядків ' + uah(sum) + '. Перевірте рядки й закупівлю перед проведенням.')
+    metadata.total_note = [metadata.total_note, note].filter(Boolean).join(' ')
+  }
   // 25.11.2026 (власник: «деякі постачальники роблять суму зі знижкою»): не скасовуємо, а пишемо помітну примітку.
   if (invoiceTotal !== undefined && invoiceTotal !== sum) {
     const diff = sum - invoiceTotal
