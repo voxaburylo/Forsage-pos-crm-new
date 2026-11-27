@@ -7,6 +7,7 @@ import { runOwnerAlerts } from '../services/ownerAlertService.js'
 import { runDailyDigestTick } from '../services/dailyDigestService.js'
 import { runSelfCheckIfDue } from '../services/selfCheckService.js'
 import { runSupplierSync } from '../services/supplierApiService.js'
+import { dbBusy } from '../services/dbLoad.js'
 
 const router = Router()
 
@@ -81,6 +82,8 @@ router.get('/supplier-sync', async (req, res, next) => {
     const allowed = hasValidCronSecret(req.get('authorization')) || await hasValidJobKey(req.get('x-forsage-job-key'), 'supplier-sync')
     if (!allowed) throw new AppError('UNAUTHORIZED', 'Невірний ключ фонового завдання', 401)
     res.setHeader('Cache-Control', 'no-store')
+    // 27.11.2026: база зайнята — прайси почекають наступних 5 хвилин (вони не термінові, а база потрібна касі й сайту).
+    if (await dbBusy()) { res.json({ data: { skipped: 'db_busy' } }); return }
     res.json({ data: await runSupplierSync() })
   } catch (error) {
     next(error)
@@ -96,8 +99,12 @@ router.get('/ai-jobs', async (req, res, next) => {
     res.setHeader('Cache-Control', 'no-store')
     const { runAiJobsStep } = await import('../services/aiJobService.js')
     // 26.11.2026: той самий будильник веде й масову роботу над текстами товарів для сайту (окрема помилка одну одній не заважає).
-    const [names, texts, sorting, orders] = await Promise.allSettled([runAiJobsStep(), import('../services/siteTextJobService.js').then(module => module.runSiteTextStep()),
-      import('../services/supplierCategorySort.js').then(module => module.runCategorySortStep()),
+    // 27.11.2026: масові тексти й розкладка по категоріях — лише коли база не зайнята; замовлення сайту й задачі з чату йдуть завжди.
+    const busy = await dbBusy()
+    const skipped = { skipped: 'db_busy' as const }
+    const [names, texts, sorting, orders] = await Promise.allSettled([runAiJobsStep(),
+      busy ? Promise.resolve(skipped) : import('../services/siteTextJobService.js').then(module => module.runSiteTextStep()),
+      busy ? Promise.resolve(skipped) : import('../services/supplierCategorySort.js').then(module => module.runCategorySortStep()),
       // 27.11.2026: замовлення із сайту — у програму, щохвилини.
       import('../services/siteOrderPull.js').then(module => module.runSiteOrderPullStep())])
     if (names.status === 'rejected' && texts.status === 'rejected') throw names.reason

@@ -285,6 +285,19 @@ export function pricedOffers(offers: readonly OfferRow[], retail: (purchase: num
     .map(offer => ({ ...offer, retail_price: Math.max(offer.purchase_price, Math.round(retail(offer.purchase_price)) || 0) }))
 }
 
+/**
+ * 27.11.2026: рядок товару постачальника переписується лише коли щось справді змінилось. Раніше кожен прохід прайсу
+ * переписував усі рядки заради позначки seen_at (Омега — 80 тис. рядків кожні 3 год, на таблиці 11 індексів): це вичерпало
+ * запас дискових операцій бази, і сайт, веб та каса чекали хвилинами. Позначка «бачили» тепер у supplier_offer_seen.
+ */
+export const OFFER_CHANGED_ONLY = `WHERE supplier_offers.number IS DISTINCT FROM EXCLUDED.number OR supplier_offers.number_code IS DISTINCT FROM EXCLUDED.number_code
+        OR supplier_offers.brand IS DISTINCT FROM EXCLUDED.brand OR supplier_offers.name IS DISTINCT FROM EXCLUDED.name OR supplier_offers.barcode IS DISTINCT FROM EXCLUDED.barcode
+        OR supplier_offers.purchase_price IS DISTINCT FROM EXCLUDED.purchase_price OR supplier_offers.retail_price IS DISTINCT FROM EXCLUDED.retail_price
+        OR supplier_offers.stock IS DISTINCT FROM EXCLUDED.stock OR supplier_offers.total_qty IS DISTINCT FROM EXCLUDED.total_qty
+        OR (supplier_offers.photo_saved_at IS NULL AND EXCLUDED.image_url IS NOT NULL AND supplier_offers.image_url IS DISTINCT FROM EXCLUDED.image_url)
+        OR (EXCLUDED.description IS NOT NULL AND supplier_offers.description IS DISTINCT FROM EXCLUDED.description)
+        OR (EXCLUDED.category_name IS NOT NULL AND supplier_offers.category_name IS DISTINCT FROM EXCLUDED.category_name)`
+
 async function writeOffers(tenantId: string, connectionId: string, rawOffers: OfferRow[], retail: (purchase: number) => number) {
   const offers = pricedOffers(rawOffers, retail)
   if (!offers.length) return
@@ -300,9 +313,15 @@ async function writeOffers(tenantId: string, connectionId: string, rawOffers: Of
        description = COALESCE(EXCLUDED.description, supplier_offers.description), category_name = COALESCE(EXCLUDED.category_name, supplier_offers.category_name),
        -- Час змінюємо лише коли змінилось те, що бачить сайт: так сайт забирає справжні зміни, а не весь прайс щогодини.
        updated_at = CASE WHEN supplier_offers.retail_price IS DISTINCT FROM EXCLUDED.retail_price OR supplier_offers.stock IS DISTINCT FROM EXCLUDED.stock
-                           OR supplier_offers.name IS DISTINCT FROM EXCLUDED.name THEN now() ELSE supplier_offers.updated_at END`,
+                           OR supplier_offers.name IS DISTINCT FROM EXCLUDED.name THEN now() ELSE supplier_offers.updated_at END
+     ${OFFER_CHANGED_ONLY}`,
     [tenantId, connectionId, JSON.stringify(offers)],
   )
+  // «Бачили в цьому проході» — у вузькій таблиці: за цим у кінці проходу видно, чого в постачальника вже немає.
+  await pool.query(
+    `INSERT INTO supplier_offer_seen (connection_id, external_id, seen_at) SELECT $1, x, now() FROM (SELECT DISTINCT unnest($2::text[]) AS x) ids
+     ON CONFLICT (connection_id, external_id) DO UPDATE SET seen_at = now()`,
+    [connectionId, offers.map(offer => offer.external_id)])
   const warehouses = [...new Set(offers.flatMap(offer => offer.stock.map(rest => rest.w)))]
   if (warehouses.length) await pool.query(
     `INSERT INTO supplier_warehouses (tenant_id, connection_id, code, name, city)
@@ -540,7 +559,9 @@ export async function syncConnectionStep(connection: { id: string; tenant_id: st
     [connection.id, JSON.stringify([...priceNames].slice(0, 20)), purchaseName])
   if (done) {
     // Чого в цьому проході не було — того в постачальника вже немає: залишок 0 (рядок лишається для історії й сайту).
-    await pool.query(`UPDATE supplier_offers SET stock = '[]'::jsonb, total_qty = 0, updated_at = now() WHERE connection_id = $1 AND seen_at < $2 AND total_qty > 0`, [connection.id, passStarted.toISOString()])
+    // «Бачили» — це або сам рядок записано в цьому проході (новий чи змінений), або позначка у supplier_offer_seen.
+    await pool.query(`UPDATE supplier_offers o SET stock = '[]'::jsonb, total_qty = 0, updated_at = now() WHERE o.connection_id = $1 AND o.seen_at < $2 AND o.total_qty > 0
+        AND NOT EXISTS (SELECT 1 FROM supplier_offer_seen s WHERE s.connection_id = o.connection_id AND s.external_id = o.external_id AND s.seen_at >= $2)`, [connection.id, passStarted.toISOString()])
     // Привʼязка й категорії — доповнення: їх збій не має лишати прохід прайсу незавершеним (причина — в last_error).
     let afterError: string | null = null
     try { await linkOffers(connection.tenant_id, connection.id) } catch (error) { afterError = 'Привʼязка до карток: ' + (error instanceof Error ? error.message : 'помилка') }
