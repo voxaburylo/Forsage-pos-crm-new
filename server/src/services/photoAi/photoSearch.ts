@@ -1,7 +1,7 @@
 /**
  * «Пошук фото з ШІ» (27.11.2026, слово власника: функцію перенесено із сайту в програму).
  * Крок 1 — пошук картинок Google через Serper.dev і відбір кандидатів. Тут лише запит, відсів і оцінка;
- * чи на фото саме цей товар, вирішує перевірка ШІ (photoVerdict.ts).
+ * чи на фото саме цей товар, вирішує перевірка ШІ — помічник програми, Claude Sonnet (photoVerdict.ts).
  */
 export interface PhotoProduct { id: string; name: string; sku?: string | null; brand?: string | null }
 export interface PhotoCandidate { imageUrl: string; title: string; link: string; domain: string; width: number; height: number; thumbnailUrl: string }
@@ -19,16 +19,17 @@ export const BLOCKED_SITES = ['pinterest', 'pinimg', 'aliexpress', 'alicdn', 'ol
   'tiktok', 'tiktokcdn', 'vk', 'userapi', 'ok.ru', 'shutterstock', 'depositphotos', 'istockphoto', 'dreamstime', '123rf', 'freepik']
 
 /** Причини, з яких чергу треба зупинити (потрібна дія власника), і «спробувати пізніше» (сервіс зайнятий). */
-export type PhotoStopReason = 'serper_credits' | 'serper_key' | 'gemini_key' | 'gemini_model' | 'gemini_busy'
+export type PhotoStopReason = 'serper_credits' | 'serper_key' | 'ai_key' | 'ai_off' | 'ai_credits' | 'ai_busy'
 export class PhotoAiStop extends Error { constructor(public readonly reason: PhotoStopReason, message: string) { super(message) } }
 export class PhotoAiLater extends Error { constructor(message: string) { super(message) } }
 
 export const STOP_TEXT: Record<PhotoStopReason, string> = {
   serper_credits: 'На рахунку Serper.dev закінчились кредити. Поповніть рахунок на serper.dev і натисніть «Продовжити».',
   serper_key: 'Serper.dev не прийняв ключ. Перевірте ключ у налаштуваннях «Фото ШІ».',
-  gemini_key: 'Gemini не прийняв ключ. Перевірте ключ у налаштуваннях «Фото ШІ».',
-  gemini_model: 'Модель Gemini недоступна для цього ключа. Напишіть розробнику програми.',
-  gemini_busy: 'Gemini довго відповідає «забагато запитів» — схоже, вичерпано денний ліміт ключа. Спробуйте «Продовжити» пізніше.',
+  ai_key: 'Anthropic не прийняв ключ помічника. Перевірте його в Налаштування → ШІ.',
+  ai_off: 'Помічник ШІ вимкнений або немає ключа Anthropic (Налаштування → ШІ). Фото перевіряє саме він.',
+  ai_credits: 'На рахунку Anthropic закінчилися кошти. Поповніть баланс на console.anthropic.com і натисніть «Продовжити».',
+  ai_busy: 'Помічник довго відповідає «забагато запитів» — схоже, вичерпано ліміт ключа Anthropic. Спробуйте «Продовжити» пізніше.',
 }
 
 /** Запит: бренд + назва; дужки з самими цифрами «(57235)» прибираємо, «/» — пробіл. */

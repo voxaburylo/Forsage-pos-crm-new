@@ -95,7 +95,7 @@ export function PhotoAiBulkModal({ open, onClose, onChanged }: { open: boolean; 
   }
 
   const job = status?.job ?? null
-  const ready = Boolean(status?.keys.serper && status.keys.gemini)
+  const ready = Boolean(status?.keys.serper && status.keys.ai)
   const worst = worstCaseCalls(size)
   return (
     <Modal open={open} onClose={onClose} title="Фото ШІ — товари без фото" size="xl">
@@ -104,7 +104,9 @@ export function PhotoAiBulkModal({ open, onClose, onChanged }: { open: boolean; 
         {!status && !error && <p className="text-sm text-gray-500">Завантаження…</p>}
         {status && !ready && (
           <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-            Спершу власник має вставити ключі Serper.dev і Gemini: Налаштування → «API-ключі» → «Фото ШІ». Обидва сервіси платні, без ключів нічого не шукається.
+            {!status.keys.serper
+              ? 'Спершу власник має вставити ключ Serper.dev: Налаштування → «API-ключі» → «Фото ШІ». Без нього нічого не шукається.'
+              : 'Помічник ШІ вимкнений або немає ключа Anthropic (Налаштування → ШІ). Фото перевіряє саме він.'}
           </p>
         )}
         {status && (
@@ -116,8 +118,8 @@ export function PhotoAiBulkModal({ open, onClose, onChanged }: { open: boolean; 
                   <div className="h-full bg-blue-600 transition-all" style={{ width: `${job.total ? Math.round(job.done / job.total * 100) : 0}%` }} />
                 </div>
                 <p className="text-xs text-gray-500">
-                  Режим: {job.mode === 'auto' ? 'автоматично' : 'на перевірку'} · витрачено запитів у цій партії: пошук {job.serper_calls}, ШІ {job.gemini_calls}
-                  {' '}· за сьогодні: пошук {status.usage.serper_today}, ШІ {status.usage.gemini_today} · за 30 днів: пошук {status.usage.serper_month}, ШІ {status.usage.gemini_month}
+                  Режим: {job.mode === 'auto' ? 'автоматично' : 'на перевірку'} · витрачено в цій партії: пошук {job.serper_calls}, перевірок фото {job.ai_calls} (≈ ${job.ai_usd.toFixed(2)})
+                  {' '}· за сьогодні: пошук {status.usage.serper_today}, перевірок {status.usage.ai_today} · за 30 днів: пошук {status.usage.serper_month}, перевірок {status.usage.ai_month} (≈ ${status.usage.usd_month.toFixed(2)})
                 </p>
               </>
             )}
@@ -155,7 +157,7 @@ export function PhotoAiBulkModal({ open, onClose, onChanged }: { open: boolean; 
                   ? <Button type="button" size="sm" onClick={() => setConfirming(true)}>Запустити партію…</Button>
                   : (
                     <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm">
-                      <p>Це платно: щонайбільше {worst.serper} запитів пошуку (Serper.dev) і {worst.gemini} перевірок фото (Gemini). Запустити?</p>
+                      <p>Це платно: щонайбільше {worst.serper} запитів пошуку (Serper.dev) і {worst.ai} перевірок фото помічником (≈ до ${worst.usd.toFixed(2)} з рахунку Anthropic). Запустити?</p>
                       <div className="mt-2 flex gap-2">
                         <Button type="button" size="sm" loading={busy === 'start'} onClick={() => void start()}>Так, запустити</Button>
                         <Button type="button" size="sm" variant="secondary" disabled={busy === 'start'} onClick={() => setConfirming(false)}>Ні</Button>

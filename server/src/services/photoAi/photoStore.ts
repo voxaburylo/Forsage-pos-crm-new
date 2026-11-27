@@ -42,6 +42,20 @@ export async function compressPhoto(bytes: Buffer): Promise<Compressed> {
   return { full: full.data, thumb, width: full.info.width, height: full.info.height }
 }
 
+/**
+ * Зменшена копія для перевірки помічником: до 768 px, JPEG. Менша картинка — у кілька разів дешевший запит, а товар,
+ * бренд і фон на ній видно так само. Не вдалося зменшити — іде оригінал.
+ */
+export const CHECK_SIDE = 768
+export async function shrinkForCheck(image: Downloaded): Promise<Downloaded> {
+  try {
+    const sharp = (await import('sharp')).default
+    const bytes = await sharp(image.bytes, { limitInputPixels: MAX_PIXELS }).rotate().flatten({ background: '#ffffff' })
+      .resize({ width: CHECK_SIDE, height: CHECK_SIDE, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 80 }).toBuffer()
+    return { bytes, mime: 'image/jpeg' }
+  } catch { return image }
+}
+
 /** Чи працює стиснення на цьому сервері (видно в стані функції без жодного платного запиту). */
 export async function compressorWorks(): Promise<boolean> {
   try {

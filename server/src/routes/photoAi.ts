@@ -8,7 +8,7 @@ import { changeBatch, createBatch, createBatchSchema, eligibleIds, eligibleSchem
 
 /**
  * «Пошук фото з ШІ» (27.11.2026): /api/v1/ai/photo-ai/…  Шукати й зберігати фото можуть власник і адміністратор;
- * ключі Serper.dev і Gemini вставляє лише власник. Вхід перевіряє батьківський маршрут /ai.
+ * ключ Serper.dev вставляє лише власник (фото перевіряє помічник програми — його ключ Anthropic у Налаштування → ШІ). Вхід перевіряє батьківський маршрут /ai.
  */
 export const photoAiRouter = Router()
 const staff = requireRole('owner', 'admin')

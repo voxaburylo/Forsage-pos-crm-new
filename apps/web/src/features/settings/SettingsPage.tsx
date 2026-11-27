@@ -1118,8 +1118,8 @@ export default function SettingsPage() {
         {currentRole === 'owner' ? <SupplierApiCard /> : <p className="text-sm text-gray-500">Підключення постачальників налаштовує власник.</p>}
         </SettingsSection>
         {(currentRole === 'owner' || currentRole === 'admin') && (
-        <SettingsSection tab="api" title="Фото ШІ пошук фото товарів Serper Gemini ключі білий фон"
-          hint="Пошук фото товарів в інтернеті з перевіркою ШІ: ключі сервісів і правила. Сам пошук — у картці товару й кнопкою «Фото ШІ» в «Товарах».">
+        <SettingsSection tab="api" title="Фото ШІ пошук фото товарів Serper ключ білий фон"
+          hint="Пошук фото товарів в інтернеті з перевіркою ШІ: ключ пошуку і правила. Сам пошук — у картці товару й кнопкою «Фото ШІ» в «Товарах».">
         <PhotoAiSettingsCard />
         </SettingsSection>
         )}

@@ -9,7 +9,7 @@ import { productSchema, rememberSearch, SEARCH_AGAIN_DAYS, type FindDeps } from 
 
 /**
  * «Фото ШІ», масовий режим: партія товарів без фото, черга у фоні.
- * Гроші: кожен товар — 1 запит Serper і до 6 запитів Gemini, тому партії малі (до 50 товарів), лічильник видно на
+ * Гроші: кожен товар — 1 запит Serper і до 6 перевірок фото помічником (Claude Sonnet), тому партії малі (до 50 товарів), лічильник видно на
  * екрані, а «закінчились кредити» чи поганий ключ зупиняють чергу з поясненням.
  * Навантаження: будильник бази стукає щохвилини; за одне пробудження — кілька товарів, кожен запис у базу — окремий
  * короткий запит, без довгих блокувань. Коли база зайнята, крок пропускається (routes/internalAi.ts).
@@ -25,13 +25,13 @@ export const createBatchSchema = z.object({ mode: z.enum(['review', 'auto']).def
 export const eligibleSchema = z.object({ ids: z.array(z.string().uuid()).min(1).max(ELIGIBLE_MAX) })
 
 interface JobRow { id: string; tenant_id: string; mode: 'review' | 'auto'; status: string; stop_reason: string | null; total: number; done: number; found: number
-  serper_calls: number; gemini_calls: number; retry_at: Date | null; retries: number; created_at: Date; finished_at: Date | null }
+  serper_calls: number; ai_calls: number; ai_usd: number | string; retry_at: Date | null; retries: number; created_at: Date; finished_at: Date | null }
 interface ItemRow { job_id: string; product_id: string; name: string; sku: string | null; brand: string | null }
 
 const stopText = (reason: string | null) => !reason || reason === 'user' ? null : STOP_TEXT[reason as PhotoStopReason] ?? null
 export function publicJob(row: JobRow) {
   return { id: row.id, mode: row.mode, status: row.status, stop_reason: row.stop_reason, stop_text: stopText(row.stop_reason), total: row.total, done: row.done, found: row.found,
-    serper_calls: row.serper_calls, gemini_calls: row.gemini_calls, waiting_until: row.retry_at && row.status === 'running' ? new Date(row.retry_at).toISOString() : null,
+    serper_calls: row.serper_calls, ai_calls: row.ai_calls, ai_usd: Math.round((Number(row.ai_usd) || 0) * 100) / 100, waiting_until: row.retry_at && row.status === 'running' ? new Date(row.retry_at).toISOString() : null,
     created_at: new Date(row.created_at).toISOString(), finished_at: row.finished_at ? new Date(row.finished_at).toISOString() : null }
 }
 
@@ -58,7 +58,8 @@ export async function latestJob(tenantId: string) {
 
 export async function createBatch(tenantId: string, userId: string | null, input: z.infer<typeof createBatchSchema>) {
   const keys = await readKeys(tenantId)
-  if (!keys.serper || !keys.gemini) throw new AppError('PHOTO_AI_NOT_READY', 'Спершу власник має вставити ключі Serper.dev і Gemini в налаштуваннях «Фото ШІ».', 400)
+  if (!keys.serper) throw new AppError('PHOTO_AI_NOT_READY', 'Спершу власник має вставити ключ Serper.dev: Налаштування → «API-ключі» → «Фото ШІ».', 400)
+  if (!keys.ai) throw new AppError('PHOTO_AI_NOT_READY', STOP_TEXT.ai_off, 400)
   const active = (await pool.query("SELECT id FROM photo_ai_jobs WHERE tenant_id = $1 AND status = 'running' LIMIT 1", [tenantId])).rows[0]
   if (active) throw new AppError('PHOTO_AI_RUNNING', 'Попередня партія ще працює. Дочекайтесь її або натисніть «Стоп».', 409)
   const allowed = new Set(await eligibleIds(tenantId, input.products.map(product => product.id)))
@@ -105,7 +106,7 @@ type ItemOutcome = { kind: 'done'; found: number } | { kind: 'stop'; reason: Pho
 
 /** Один товар партії: пошук → перевірка → стиснення й сховище → знахідки. Лічильники пишуться за будь-якого кінця. */
 export async function processItem(job: Pick<JobRow, 'id' | 'tenant_id' | 'mode'>, item: ItemRow, settings: PhotoAiSettings, keys: PhotoAiKeys, deps: FindDeps = {}): Promise<ItemOutcome> {
-  const calls: PhotoCalls = { serper: 0, gemini: 0 }
+  const calls: PhotoCalls = { serper: 0, ai: 0, usd: 0 }
   const product = { id: item.product_id, name: item.name, sku: item.sku, brand: item.brand }
   let outcome: ItemOutcome, note: string | null = null, state: 'found' | 'none' | 'failed' | null = null
   try {
@@ -135,12 +136,12 @@ export async function processItem(job: Pick<JobRow, 'id' | 'tenant_id' | 'mode'>
   await addUsage(job.tenant_id, calls).catch(() => undefined)
   if (state) {
     await pool.query('UPDATE photo_ai_items SET state = $3, note = $4, done_at = now() WHERE job_id = $1 AND product_id = $2', [job.id, item.product_id, state, note])
-    await pool.query('UPDATE photo_ai_jobs SET done = done + 1, found = found + $2, serper_calls = serper_calls + $3, gemini_calls = gemini_calls + $4, retries = 0, retry_at = NULL, updated_at = now() WHERE id = $1',
-      [job.id, state === 'found' ? 1 : 0, calls.serper, calls.gemini])
+    await pool.query('UPDATE photo_ai_jobs SET done = done + 1, found = found + $2, serper_calls = serper_calls + $3, ai_calls = ai_calls + $4, ai_usd = ai_usd + $5, retries = 0, retry_at = NULL, updated_at = now() WHERE id = $1',
+      [job.id, state === 'found' ? 1 : 0, calls.serper, calls.ai, calls.usd])
   } else {
     // Товар повертається в чергу; витрачені запити все одно рахуємо.
     await pool.query('UPDATE photo_ai_items SET claimed_at = NULL WHERE job_id = $1 AND product_id = $2', [job.id, item.product_id])
-    await pool.query('UPDATE photo_ai_jobs SET serper_calls = serper_calls + $2, gemini_calls = gemini_calls + $3, updated_at = now() WHERE id = $1', [job.id, calls.serper, calls.gemini])
+    await pool.query('UPDATE photo_ai_jobs SET serper_calls = serper_calls + $2, ai_calls = ai_calls + $3, ai_usd = ai_usd + $4, updated_at = now() WHERE id = $1', [job.id, calls.serper, calls.ai, calls.usd])
   }
   return outcome
 }
@@ -166,7 +167,7 @@ export async function runPhotoAiStep(deps: FindDeps & { now?: () => number } = {
         running = false
       } else if (outcomes.some(outcome => outcome.kind === 'later')) {
         const retries = job.retries + 1
-        if (retries >= RETRY_LIMIT) await pool.query("UPDATE photo_ai_jobs SET status = 'stopped', stop_reason = 'gemini_busy', retries = $2, updated_at = now() WHERE id = $1 AND status = 'running'", [job.id, retries])
+        if (retries >= RETRY_LIMIT) await pool.query("UPDATE photo_ai_jobs SET status = 'stopped', stop_reason = 'ai_busy', retries = $2, updated_at = now() WHERE id = $1 AND status = 'running'", [job.id, retries])
         else await pool.query("UPDATE photo_ai_jobs SET retries = $2, retry_at = now() + make_interval(mins => $3), updated_at = now() WHERE id = $1 AND status = 'running'",
           [job.id, retries, RETRY_MINUTES[Math.min(retries - 1, RETRY_MINUTES.length - 1)]])
         running = false

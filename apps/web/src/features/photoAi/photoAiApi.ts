@@ -8,11 +8,12 @@ import { api } from '@/lib/api'
 const BASE = '/api/v1/ai/photo-ai'
 
 export interface PhotoAiSettings { photos_per_product: number; require_white: boolean; forbid_text: boolean; min_size: number; night_only: boolean }
-export interface PhotoAiKeys { serper: boolean; serper_hint: string; gemini: boolean; gemini_hint: string }
-export interface PhotoAiUsage { serper_today: number; gemini_today: number; serper_month: number; gemini_month: number }
+/** ai — чи готовий помічник програми (Claude Sonnet): саме він перевіряє фото, окремого ключа не потрібно. */
+export interface PhotoAiKeys { serper: boolean; serper_hint: string; ai: boolean }
+export interface PhotoAiUsage { serper_today: number; ai_today: number; serper_month: number; ai_month: number; usd_month: number }
 export interface PhotoAiJob {
   id: string; mode: 'review' | 'auto'; status: 'running' | 'stopped' | 'done'; stop_reason: string | null; stop_text: string | null
-  total: number; done: number; found: number; serper_calls: number; gemini_calls: number; waiting_until: string | null; created_at: string; finished_at: string | null
+  total: number; done: number; found: number; serper_calls: number; ai_calls: number; ai_usd: number; waiting_until: string | null; created_at: string; finished_at: string | null
 }
 export interface PhotoAiStatus {
   keys: PhotoAiKeys; settings: PhotoAiSettings; usage: PhotoAiUsage; job: PhotoAiJob | null
@@ -26,8 +27,8 @@ const quiet = { silent: true, timeoutMs: 20_000 }
 export const photoAiApi = {
   status: (check = false) => api.get<{ data: PhotoAiStatus }>(BASE + '/status' + (check ? '?check=1' : ''), quiet).then(answer => answer.data),
   saveSettings: (settings: PhotoAiSettings) => api.post<{ data: PhotoAiSettings }>(BASE + '/settings', settings, undefined, quiet).then(answer => answer.data),
-  saveKeys: (keys: { serper_key?: string; gemini_key?: string }) => api.post<{ data: PhotoAiKeys }>(BASE + '/keys', keys, undefined, quiet).then(answer => answer.data),
-  search: (product: PhotoAiProduct) => api.post<{ data: { photos: CheckedPhoto[]; calls: { serper: number; gemini: number }; per_product: number } }>(
+  saveKeys: (keys: { serper_key?: string }) => api.post<{ data: PhotoAiKeys }>(BASE + '/keys', keys, undefined, quiet).then(answer => answer.data),
+  search: (product: PhotoAiProduct) => api.post<{ data: { photos: CheckedPhoto[]; calls: { serper: number; ai: number; usd: number }; per_product: number } }>(
     BASE + '/search', { product }, undefined, { silent: true, timeoutMs: 70_000 }).then(answer => answer.data),
   save: (product: PhotoAiProduct, urls: string[]) => api.post<{ data: { main_url: string; saved: number; asked: number } }>(
     BASE + '/save', { product, urls }, undefined, { silent: true, timeoutMs: 90_000 }).then(answer => answer.data),
@@ -42,8 +43,10 @@ export const photoAiApi = {
 
 export const BATCH_SIZES = [10, 20, 50] as const
 export const DEFAULT_BATCH = 20
-/** Найбільше платних запитів на партію: 1 пошук і до 6 перевірок ШІ на товар. */
-export const worstCaseCalls = (products: number) => ({ serper: products, gemini: products * 6 })
+/** Приблизна ціна однієї перевірки фото помічником (Claude Sonnet, зменшена до 768 px картинка), $. */
+export const CHECK_USD = 0.004
+/** Найбільше платних запитів на партію: 1 пошук і до 6 перевірок фото на товар. */
+export const worstCaseCalls = (products: number) => ({ serper: products, ai: products * 6, usd: Math.round(products * 6 * CHECK_USD * 100) / 100 })
 
 /** Вибір у картці: відмічені за порядком кліків, перше — головне; не більше дозволеного на товар. */
 export function togglePick(picked: string[], url: string, max: number): string[] {

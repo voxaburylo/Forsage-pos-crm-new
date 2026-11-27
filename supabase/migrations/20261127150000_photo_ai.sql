@@ -3,12 +3,11 @@
 -- у картку товару адресу фото ставить головний ПК звичайним шляхом, і вона їде на сайт звичайним обміном.
 -- Таблиці малі, запис — по кілька рядків на товар: базу це не навантажує.
 
--- Налаштування й ключі. Ключі Serper.dev і Gemini лежать зашифрованими (той самий спосіб, що й ключ помічника),
--- назовні не віддаються ніколи; вставляє їх власник.
+-- Налаштування й ключ пошуку. Ключ Serper.dev лежить зашифрованим (той самий спосіб, що й ключ помічника),
+-- назовні не віддається ніколи; вставляє його власник. Фото перевіряє помічник програми (Claude Sonnet) своїм ключем.
 CREATE TABLE IF NOT EXISTS public.photo_ai_settings (
   tenant_id            uuid PRIMARY KEY,
   serper_key_encrypted text CHECK (serper_key_encrypted IS NULL OR char_length(serper_key_encrypted) <= 1000),
-  gemini_key_encrypted text CHECK (gemini_key_encrypted IS NULL OR char_length(gemini_key_encrypted) <= 1000),
   photos_per_product   integer NOT NULL DEFAULT 3 CHECK (photos_per_product BETWEEN 1 AND 5),
   require_white        boolean NOT NULL DEFAULT true,
   forbid_text          boolean NOT NULL DEFAULT true,
@@ -30,7 +29,8 @@ CREATE TABLE IF NOT EXISTS public.photo_ai_jobs (
   done         integer NOT NULL DEFAULT 0,
   found        integer NOT NULL DEFAULT 0,
   serper_calls integer NOT NULL DEFAULT 0,
-  gemini_calls integer NOT NULL DEFAULT 0,
+  ai_calls     integer NOT NULL DEFAULT 0,
+  ai_usd       numeric(12,4) NOT NULL DEFAULT 0,
   retry_at     timestamptz,
   retries      integer NOT NULL DEFAULT 0,
   created_at   timestamptz NOT NULL DEFAULT now(),
@@ -89,7 +89,8 @@ CREATE TABLE IF NOT EXISTS public.photo_ai_usage (
   tenant_id    uuid NOT NULL,
   day          date NOT NULL,
   serper_calls integer NOT NULL DEFAULT 0,
-  gemini_calls integer NOT NULL DEFAULT 0,
+  ai_calls     integer NOT NULL DEFAULT 0,
+  ai_usd       numeric(12,4) NOT NULL DEFAULT 0,
   PRIMARY KEY (tenant_id, day)
 );
 

@@ -40,8 +40,8 @@ describe('the bulk batch', () => {
   })
 
   it('shows the worst case in paid requests and the progress', () => {
-    expect(worstCaseCalls(20)).toEqual({ serper: 20, gemini: 120 })
-    const job: PhotoAiJob = { id: id(1), mode: 'review', status: 'running', stop_reason: null, stop_text: null, total: 20, done: 7, found: 4, serper_calls: 7, gemini_calls: 30, waiting_until: null, created_at: '', finished_at: null }
+    expect(worstCaseCalls(20)).toEqual({ serper: 20, ai: 120, usd: 0.48 })
+    const job: PhotoAiJob = { id: id(1), mode: 'review', status: 'running', stop_reason: null, stop_text: null, total: 20, done: 7, found: 4, serper_calls: 7, ai_calls: 30, ai_usd: 0.11, waiting_until: null, created_at: '', finished_at: null }
     expect(jobText(job)).toBe('Шукаю: готово 7 з 20, з фото — 4. Екран можна закрити.')
     expect(jobText({ ...job, waiting_until: '2026-11-27T10:00:00Z' })).toContain('продовжу сам')
     expect(jobText({ ...job, status: 'stopped', stop_reason: 'serper_credits', stop_text: 'На рахунку Serper.dev закінчились кредити.' })).toBe('На рахунку Serper.dev закінчились кредити. (готово 7 з 20, з фото — 4)')

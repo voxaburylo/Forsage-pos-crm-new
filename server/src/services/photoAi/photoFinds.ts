@@ -41,7 +41,7 @@ export async function rememberSearch(tenantId: string, productId: string, found:
 /** Кнопка «Знайти фото (ШІ)» у картці: до 8 варіантів з відміткою ШІ. Нічого не зберігає. */
 export async function searchForCard(tenantId: string, product: PhotoProduct, deps: FindDeps = {}) {
   const [settings, keys] = await Promise.all([readSettings(tenantId), readKeys(tenantId)])
-  const calls: PhotoCalls = { serper: 0, gemini: 0 }
+  const calls: PhotoCalls = { serper: 0, ai: 0, usd: 0 }
   try {
     const checked = await findPhotos(product, settings, keys, calls, { top: CARD_TOP, need: null }, deps, AbortSignal.timeout(50_000))
     await rememberSearch(tenantId, product.id, checked.some(photo => photo.ok))

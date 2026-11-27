@@ -19,7 +19,7 @@ export function PhotoAiCardModal({ open, product, hasPhoto, onClose, onSaved }: 
 }) {
   const [photos, setPhotos] = useState<CheckedPhoto[] | null>(null)
   const [max, setMax] = useState(3)
-  const [calls, setCalls] = useState<{ serper: number; gemini: number } | null>(null)
+  const [calls, setCalls] = useState<{ serper: number; ai: number; usd: number } | null>(null)
   const [error, setError] = useState('')
   const [picked, setPicked] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
@@ -72,7 +72,7 @@ export function PhotoAiCardModal({ open, product, hasPhoto, onClose, onSaved }: 
               {photos.length ? `Знайдено варіантів: ${photos.length}, на думку ШІ підходить: ${good}.` : 'Підхожих картинок пошук не дав.'}
               {' '}Відмітьте потрібні — до {max}; перше відмічене стане головним фото.
               {hasPhoto && ' У картці вже є фото — його буде замінено головним із вибраних.'}
-              {calls && ` Витрачено запитів: пошук ${calls.serper}, ШІ ${calls.gemini}.`}
+              {calls && ` Витрачено: пошук ${calls.serper}, перевірок фото ${calls.ai} (≈ $${calls.usd.toFixed(3)}).`}
             </p>
             <ul className="grid grid-cols-2 gap-2 sm:grid-cols-4 max-h-[60vh] overflow-y-auto">
               {photos.map(photo => {
