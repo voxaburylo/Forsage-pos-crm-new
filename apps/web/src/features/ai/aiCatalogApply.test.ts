@@ -91,3 +91,34 @@ describe('assistant chat catalog updates on the till', () => {
     ])
   })
 })
+
+// 27.11.2026, фото власника: «Підтвердити (86)» → «Товар з таким артикулом вже існує» — і жодна з 86 назв не записалась.
+describe('one taken article does not lose the whole batch of names', () => {
+  it('the till refused the batch because of an article: it is sent again without articles, the names are written', async () => {
+    const { applyAgentItems, isArticleClash, NAME_SAVED_NOTE } = await import('./aiCatalogApply')
+    const items = [
+      { product_id: 'a', fingerprint: 'fa', changes: { name: 'Ремінь клиновидний CONTITECH 13X1100 s', sku: '13X1100' }, cleanup: true as const },
+      { product_id: 'b', fingerprint: 'fb', changes: { name: 'Фільтр оливи BOSCH' }, cleanup: true as const },
+      { product_id: 'c', fingerprint: 'fc', changes: { sku: 'W712' } },
+    ]
+    const calls: Array<{ operation_id: string; items: typeof items }> = []
+    const bridge = { agentFingerprints: vi.fn(), agentApply: vi.fn(async (input: any) => {
+      calls.push(input)
+      if (input.items.some((item: any) => item.changes.sku)) throw new Error('UNIQUE constraint failed: products.tenant_id, products.sku')
+      return { updated: input.items.length, skipped: [] }
+    }) }
+    const result = await applyAgentItems(bridge as never, items, async attempt => 'op-' + attempt)
+    expect(calls.map(call => call.operation_id)).toEqual(['op-0', 'op-1'])
+    expect(calls[1].items.map(item => [item.product_id, item.changes])).toEqual([['a', { name: 'Ремінь клиновидний CONTITECH 13X1100 s' }], ['b', { name: 'Фільтр оливи BOSCH' }]])
+    expect(result.updated).toBe(2)
+    expect(result.skipped!.map(row => [row.product_id, row.error.split(':')[0]])).toEqual([['a', NAME_SAVED_NOTE], ['c', 'Артикул не поставлено']])
+    expect(isArticleClash(new Error('Товар з таким артикулом вже існує'))).toBe(true)
+  })
+
+  it('any other failure is not hidden', async () => {
+    const { applyAgentItems } = await import('./aiCatalogApply')
+    const bridge = { agentFingerprints: vi.fn(), agentApply: vi.fn(async () => { throw new Error('Головний ПК не на звʼязку') }) }
+    await expect(applyAgentItems(bridge as never, [{ product_id: 'a', fingerprint: 'f', changes: { name: 'N', sku: 'W712' } }], async () => 'op')).rejects.toThrow('не на звʼязку')
+    expect(bridge.agentApply).toHaveBeenCalledTimes(1)
+  })
+})

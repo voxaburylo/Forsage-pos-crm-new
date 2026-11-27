@@ -28,14 +28,18 @@ it('a web request runs with the web employee rights through the manager-PC path,
   expect(mainTill).toContain('hasLanIdentity(')
 })
 
-// 23.11.2026: «гроші в касі — лише на касі» стереже не лише відсутність кнопок у вебі, а й канал: головний ПК і сервер
-// відхиляють грошові дії з вебу, навіть складені вручну. Списки на обох боках — однакові.
-it('money at the till never runs from the web, on both sides of the link', async () => {
+// 23.11.2026 було: «гроші в касі — лише на касі». 27.11.2026, рішення власника «повна версія на телефоні, фіскалізація
+// поки не працює»: продаж, повернення, рух коштів, зміни й оплата замовлень ідуть через веб на головний ПК.
+// Закритими лишились лише виплати зарплати. Списки на обох боках — однакові.
+it('sales and till money run from the web through the main PC; salary payouts still do not — on both sides of the link', async () => {
   const { WEB_MONEY_CHANNELS } = await import('../src/lan/webRpcChannels')
   for (const channel of WEB_MONEY_CHANNELS) expect(webRpcChannelAllowed(channel), channel).toBe(false)
+  expect([...WEB_MONEY_CHANNELS].sort()).toEqual(['desktop:staff:create-salary', 'desktop:staff:daily-payout', 'desktop:staff:delete-salary', 'desktop:staff:tire-cash-handover'])
   for (const channel of ['desktop:pos:checkout', 'desktop:pos:create-return', 'desktop:pos:create-cash-operation', 'desktop:pos:pay-debt',
-    'desktop:orders:add-payment', 'desktop:orders:complete', 'desktop:staff:create-salary', 'desktop:staff:daily-payout'])
-    expect(WEB_MONEY_CHANNELS).toContain(channel)
+    'desktop:pos:open-shift', 'desktop:pos:close-shift', 'desktop:orders:add-payment', 'desktop:orders:complete', 'desktop:orders:hand-over'])
+    expect(webRpcChannelAllowed(channel), channel).toBe(true)
+  // Друк і фіскалізація з вебу не запускаються: це пристрої самої каси.
+  for (const channel of ['desktop:print:html', 'desktop:fiscal:receipt']) expect(webRpcChannelAllowed(channel), channel).toBe(false)
   // Робота з товаром і документами через веб лишається.
   for (const channel of ['desktop:supply:create-invoice', 'desktop:supply:post-invoice', 'desktop:inventory:complete', 'desktop:orders:save',
     'desktop:orders:cancel', 'desktop:catalog:change-cross-numbers', 'desktop:pos:get-sale', 'desktop:pos:list-sales'])

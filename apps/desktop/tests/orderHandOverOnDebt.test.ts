@@ -175,11 +175,11 @@ describe('order hand-over with the unpaid rest on the customer debt', () => {
     expect(db.prepare('SELECT COUNT(*) n FROM customer_order_items WHERE order_id = ?').get(pending.orderId)).toEqual({ n: 2 })
   })
 
-  it('the manager may hand over without the sale permission; the web may not', () => {
+  it('the manager may hand over without the sale permission; from 27.11.2026 the web may too (through the main PC)', () => {
     expect(isDesktopChannelAllowed('desktop:orders:hand-over', 'manager')).toBe(true)
     expect(isDesktopChannelAllowed('desktop:orders:hand-over', 'cashier')).toBe(true)
     expect(isDesktopChannelAllowed('desktop:orders:hand-over', 'storekeeper')).toBe(false)
     expect(isManagerSaleChannel('desktop:orders:hand-over')).toBe(false)
-    expect(WEB_MONEY_CHANNELS).toContain('desktop:orders:hand-over')
+    expect(WEB_MONEY_CHANNELS).not.toContain('desktop:orders:hand-over')
   })
 })

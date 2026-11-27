@@ -145,4 +145,28 @@ describe('catalog agent safety',()=>{
     expect(db.prepare('SELECT name, sku, qty_on_hand, purchase_price, retail_price FROM products WHERE id=?').get(a.id)).toEqual({ name, sku: 'FAF-10740', qty_on_hand: 0, purchase_price: 10000, retail_price: 11000 })
     expect(agent.fingerprints([a.id])[0]).toMatchObject({ sku: 'FAF-10740', name })
   })
+  // 27.11.2026, фото власника: «Підтвердити (86)» → «Товар з таким артикулом вже існує», і жодна з 86 назв не записалась.
+  // Причина: артикул, знятий із назви, стояв у ВИДАЛЕНІЙ картці — база його не прийняла й відкотила всю пачку.
+  it('an article that belongs to a deleted card does not fail the batch: the name is tidied, the article is left out, the rest is written', () => {
+    const gone = product('Стара картка s', 'FAF-10740')
+    db.prepare("UPDATE products SET deleted_at = '2026-01-01T00:00:00.000Z' WHERE id = ?").run(gone.id)
+    const junk = 'KAVO KV FAF-10740 372 87 Фільтр повітряний FORD MONDEO V Знайдено за: OP-FAF10359 - OPTIMAL'
+    const a = product(junk, 'AUTO-A'), b = product('BOSCH KV 0986AF1234 55 Фільтр оливи AUDI A4', 'AUTO-B')
+    const result = agent.apply({ operation_id: randomUUID(), skip_invalid: true, items: [
+      { ...patch(a, { name: 'Фільтр повітряний FORD MONDEO V KAVO FAF-10740', sku: 'FAF-10740' }), cleanup: true },
+      { ...patch(b, { name: 'Фільтр оливи AUDI A4 BOSCH 0986AF1234', sku: '0986AF1234' }), cleanup: true },
+    ] }, 'owner')
+    expect(result.updated).toBe(2)
+    expect(result.skipped).toEqual([{ product_id: a.id, name: junk, error: 'Назву змінено, артикул не поставлено: Такий артикул стоїть у видаленій картці — артикул не поставлено' }])
+    expect(db.prepare('SELECT name, sku FROM products WHERE id=?').get(a.id)).toEqual({ name: 'Фільтр повітряний FORD MONDEO V KAVO FAF-10740', sku: 'AUTO-A' })
+    expect(db.prepare('SELECT name, sku FROM products WHERE id=?').get(b.id)).toEqual({ name: 'Фільтр оливи AUDI A4 BOSCH 0986AF1234', sku: '0986AF1234' })
+  })
+
+  it('a size or a barcode is not an article', () => {
+    expect(catalogCodeFromName('CONTITECH CI 13X1100 4913 478 38 Ремінь клиновидний', '13X1100')).toBe(false)
+    expect(catalogCodeFromName('Шина 205x55x16 s', '205X55X16')).toBe(false)
+    expect(catalogCodeFromName('Свічка 2800011252280 NGK', '2800011252280')).toBe(false)
+    expect(catalogCodeFromName('Ремінь 6PK1198 Gates', '6PK1198')).toBe(true)
+    expect(catalogCodeFromName('KAVO FAF-10740 Фільтр', 'FAF-10740')).toBe(true)
+  })
 })

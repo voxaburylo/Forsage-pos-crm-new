@@ -5,6 +5,7 @@ import {
 } from '@/lib/cameraScan'
 import { cameraFrameReader } from '@/lib/cameraReader'
 import { isNativeApp, nativeScanOnce, ScannerNotReady } from '@/lib/nativeScan'
+import { CameraDenied, startCameraScan } from '@/lib/nativeCamera'
 import { toast } from '@/components/ui/Toast'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
@@ -158,21 +159,44 @@ function runScanSession(video: HTMLVideoElement, onEnd: () => void): { stop: (wh
  */
 function runNativeScan(onEnd: () => void): { stop: (why: ScanStop) => void } {
   let ended = false
-  const end = (why: ScanStop) => { if (ended) return; ended = true; publish('idle', why); onEnd() }
-  publish('scanning')
-  void nativeScanOnce().then(code => {
+  let cancelCamera: (() => void) | null = null
+  let deadline: number | null = null
+  const end = (why: ScanStop) => {
+    if (ended) return
+    ended = true
+    if (deadline !== null) window.clearTimeout(deadline)
+    cancelCamera?.()
+    if (why === 'timeout') toast.warning('Штрихкод не зчитано. Піднесіть телефон ближче до коду й натисніть сканер ще раз.')
+    publish('idle', why); onEnd()
+  }
+  const read = (code: string | null) => {
     if (ended) return
     if (!code) { end('cancel'); return }
     beep()
     const outcome = deliverCameraScan(code)
     window.dispatchEvent(new CustomEvent(SCAN_TRIGGER_READ_EVENT, { detail: { code, outcome } }))
     end('read')
-  }).catch(error => {
+  }
+  const failed = (error: unknown) => {
     if (error instanceof ScannerNotReady) toast.warning(error.message)
     else toast.error('Сканер телефона не запустився. Перевірте дозвіл на камеру в налаштуваннях застосунку й спробуйте ще раз.')
     end('error')
+  }
+  publish('starting')
+  // Спершу швидкий шлях — камера всередині застосунку; не вийшло — сканер Google на окремому екрані (як у першій збірці).
+  void startCameraScan().then(scan => {
+    if (ended) { scan.cancel(); return }
+    cancelCamera = scan.cancel
+    publish('scanning')
+    deadline = window.setTimeout(() => end('timeout'), SCAN_SESSION_MS * 2)
+    void scan.done.then(read)
+  }).catch(error => {
+    if (ended) return
+    if (error instanceof CameraDenied) { toast.error('Немає дозволу на камеру. Дозвольте камеру для «Форсаж» у налаштуваннях телефона.'); end('error'); return }
+    publish('scanning')
+    void nativeScanOnce().then(read).catch(failed)
   })
-  // Сканер телефона закривається сам; «відпустив курок» його не обриває — інакше коротке натискання нічого б не зчитало.
+  // Екран програми на час сканування сховано, тож «відпустив курок» сюди не доходить; зупиняє код, «Скасувати» або час.
   return { stop: why => { if (why === 'cancel' || why === 'error') end(why) } }
 }
 

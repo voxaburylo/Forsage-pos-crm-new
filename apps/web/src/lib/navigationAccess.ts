@@ -1,9 +1,10 @@
 const WEB_ROUTES = new Set(['/products', '/customers', '/analytics', '/analytics/statistics', '/analytics/sales', '/analytics/payroll', '/analytics/control', '/reports', '/dashboard', '/sales', '/abc', '/staff-analytics', '/orders', '/invoice-photo', '/system', '/site'])
 /**
  * 22.11.2026, рішення власника «веб повний, але тільки через головний ПК»: ці розділи у вебі відкриваються,
- * коли головний ПК на звʼязку (див. TillOnly), і кожна дія виконується на ньому. Каса (продаж) і друк — лише на касі.
+ * коли головний ПК на звʼязку (див. TillOnly), і кожна дія виконується на ньому. Друк — лише на касі.
+ * 27.11.2026 (рішення власника «повна версія»): каса, повернення, рух коштів і зміни — теж через головний ПК.
  */
-export const WEB_VIA_MAIN_PC_ROUTES = new Set(['/suppliers/invoices', '/inventory', '/suppliers', '/auto-purchase', '/internal',
+export const WEB_VIA_MAIN_PC_ROUTES = new Set(['/pos', '/returns', '/cashflow', '/shifts', '/inventory/writeoffs', '/suppliers/invoices', '/inventory', '/suppliers', '/auto-purchase', '/internal',
   '/inventory/picking', '/waitlist', '/supplier-order', '/ai-assistant', '/ai-agent', '/staff', '/settings'])
 export function navigationAllowed(path: string, desktop: boolean): boolean {
   return desktop || WEB_ROUTES.has(path) || WEB_VIA_MAIN_PC_ROUTES.has(path)

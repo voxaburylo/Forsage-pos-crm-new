@@ -49,6 +49,10 @@ export const PUBLIC_DESKTOP_CHANNELS = new Set([
 
 const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   ['desktop:warehouse:writeoffs-summary', ['owner', 'admin', 'manager']],
+  // 27.11.2026: касир зі «Списує товар» (перемикач перевіряє main.ts) — створити списання й бачити свої акти.
+  ['desktop:warehouse:create-writeoff', ['owner', 'admin', 'manager', 'storekeeper', 'cashier']],
+  ['desktop:warehouse:list-writeoffs', ['owner', 'admin', 'manager', 'storekeeper', 'cashier']],
+  ['desktop:warehouse:get-writeoff', ['owner', 'admin', 'manager', 'storekeeper', 'cashier']],
   ['desktop:pos:sales-period-report', ['owner', 'admin', 'manager']],
   ['desktop:auth:save-server-session', ALL_ROLES],
   ['desktop:auth:restore-server-session', ALL_ROLES],

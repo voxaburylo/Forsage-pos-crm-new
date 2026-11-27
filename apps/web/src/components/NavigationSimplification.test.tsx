@@ -39,9 +39,12 @@ describe('one destination per navigation choice', () => {
     expect(anchor(html, '/analytics')).toContain('href="/analytics"')
     expect(html.match(/Аналітика/g)).toHaveLength(1)
   })
-  it('hides desktop-only finance tabs on the read-only web view', () => {
+  // 27.11.2026, рішення власника «повна версія»: повернення й рух коштів у вебі відкриті — через головний ПК.
+  it('shows the finance tabs in the web too: they work through the main PC', () => {
     state.desktop = false
-    expect(tabs(FINANCE_TABS)).toBe('')
+    const html = tabs(FINANCE_TABS)
+    expect(html).toContain('href="/returns"')
+    expect(html).toContain('href="/cashflow"')
   })
   it('keeps all three local financial destinations with a precise journal label', () => {
     const html = tabs(FINANCE_TABS)

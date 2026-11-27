@@ -23,8 +23,9 @@ export const SWITCHABLE_RIGHTS: Record<StaffRight, readonly string[]> = {
   orders: ['cashier', 'storekeeper'],
   purchase_prices: ['cashier', 'manager'],
   reports: ['cashier'],
-  // 26.11.2026: «Склад → Списання» менеджеру — перемикачем у картці.
-  writeoffs: ['manager'],
+  // 26.11.2026: «Склад → Списання» менеджеру — перемикачем у картці. 27.11.2026 (власник: «щоб працівники могли списати
+  // на потреби магазину з коментарем») — і касиру.
+  writeoffs: ['manager', 'cashier'],
 }
 
 export function defaultStaffRights(role: string): StaffRights {

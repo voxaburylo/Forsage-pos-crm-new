@@ -63,16 +63,16 @@ describe('staff rights switched on by the owner', () => {
   })
 
   // 26.11.2026, власник: «зробити доступ до списання в картці менеджера».
-  it('write-off: the owner switches it on for the manager only; the main PC refuses a manager write-off without it', () => {
+  it('write-off: the owner switches it on for a manager or a cashier (27.11.2026); the main PC refuses a write-off without it', () => {
     expect(effectiveStaffRights(db, 'manager-1', 'manager').writeoffs).toBe(false)
     expect(setStaffRight(db, 'manager-1', 'writeoffs', true).writeoffs).toBe(true)
     expect(effectiveStaffRights(db, 'manager-1', 'manager').writeoffs).toBe(true)
-    expect(() => setStaffRight(db, 'cashier-1', 'writeoffs', true)).toThrow('не вмикається')
+    expect(effectiveStaffRights(db, 'cashier-1', 'cashier').writeoffs).toBe(false)
+    expect(setStaffRight(db, 'cashier-1', 'writeoffs', true).writeoffs).toBe(true)
     expect(() => setStaffRight(db, 'store-1', 'writeoffs', true)).toThrow('уже має за своєю роллю')
     expect(WRITEOFF_CREATE_CHANNELS.has('desktop:warehouse:create-writeoff')).toBe(true)
     const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8')
-    expect(main).toContain("session.role === 'manager' && WRITEOFF_CREATE_CHANNELS.has(channel)")
-    expect(main).toContain('.writeoffs) {')
+    expect(main).toContain("if (WRITEOFF_CREATE_CHANNELS.has(channel) && localNetwork?.getStatus().mode !== 'client') {")
   })
 
   it('damaged stored data never grants anything', () => {
@@ -93,5 +93,26 @@ describe('staff rights switched on by the owner', () => {
     const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
     // Свої права — лише того, хто увійшов: ідентифікатор не береться з аргументів.
     expect(main).toContain("handleDesktopIpc('desktop:staff:my-rights', () => {\n    const session = requireDesktopSession()\n    return effectiveStaffRights(requireLocalDatabase(), session.id, session.role)")
+  })
+})
+
+// 27.11.2026, слово власника: «у правах працівникам додай пункт "списати", щоб на потреби магазину могли списати з коментарем».
+describe('write-off by switch: the cashier too, and always with a comment', () => {
+  it('who needs the switch and the comment', async () => {
+    const { writeoffRefusal } = await import('../src/security/staffRights')
+    expect(writeoffRefusal('owner', true, {})).toBe('')
+    expect(writeoffRefusal('storekeeper', true, { notes: '' })).toBe('')
+    expect(writeoffRefusal('cashier', false, { notes: 'На миття підлоги s' })).toMatch(/вмикає власник/)
+    expect(writeoffRefusal('cashier', true, { notes: '  ' })).toBe('Напишіть коментар: на що списано товар')
+    expect(writeoffRefusal('cashier', true, { notes: 'На потреби магазину: ганчірки s' })).toBe('')
+    expect(writeoffRefusal('manager', true, null)).toBe('Напишіть коментар: на що списано товар')
+  })
+
+  it('the till lets a cashier reach the write-off actions; the switch itself is checked in main.ts', () => {
+    for (const channel of ['desktop:warehouse:create-writeoff', 'desktop:warehouse:list-writeoffs', 'desktop:warehouse:get-writeoff'])
+      expect(isDesktopChannelAllowed(channel, 'cashier'), channel).toBe(true)
+    expect(isDesktopChannelAllowed('desktop:warehouse:create-consumption', 'cashier')).toBe(false)
+    const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8')
+    expect(main).toContain('writeoffRefusal(session.role, effectiveStaffRights(requireLocalDatabase(), session.id, session.role).writeoffs, args[0])')
   })
 })

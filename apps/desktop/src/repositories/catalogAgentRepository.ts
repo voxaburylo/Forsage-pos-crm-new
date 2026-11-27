@@ -10,6 +10,9 @@ export const missingAgentSku = (sku: unknown) => !String(sku ?? '').trim() || /^
 export function catalogCodeFromName(name: string, sku: string): boolean {
   const code = sku.toUpperCase().replace(/[^A-ZА-ЯІЇЄҐ0-9]/g, '')
   if (code.length < 4 || !/\d/.test(code) || /^(?:\d+(?:W\d+|ML|L|KG|MM|CM|V|W|AH|A|H)|(?:VAZ|ВАЗ|GAZ|ГАЗ|ЗАЗ|ЗИЛ)\d+)$/i.test(code)) return false
+  // 27.11.2026 (фото власника: помічник запропонував артикулом «13X1100» і «2800011252280»): розмір (13×1100, 205×55×16)
+  // і штрихкод (12–14 цифр) — не каталожний номер; такий «артикул» однаковий у десятків товарів.
+  if (/^\d+[XХ]\d+(?:[XХ]\d+)?$/i.test(code) || /^\d{12,14}$/.test(code)) return false
   const pattern = [...code].join('[\\s./-]*')
   return new RegExp('(^|[^\\p{L}\\p{N}])' + pattern + '($|[^\\p{L}\\p{N}])', 'iu').test(name)
 }
@@ -196,6 +199,7 @@ export class CatalogAgentRepository {
     if (skipInvalid && input.items.some(x => x.primary_id)) throw new Error('Видалення дублів підтверджуйте в «Помічнику каталогу»')
     return idempotentMutation(this.db, 'catalog-agent:' + DEFAULT_TENANT_ID, input.operation_id, input, () => {
       const skipped: Array<{ product_id: string; name: string; error: string }> = []
+      let failed = 0
       for (const action of input.items) {
         let before: any
         if (skipInvalid) {
@@ -204,8 +208,15 @@ export class CatalogAgentRepository {
             if (agentFingerprint(before) !== action.fingerprint) throw new Error('Картку вже змінено після пропозиції')
             this.validateEdit(before, action.changes ?? {}, action.cleanup === true)
           } catch (error) {
-            skipped.push({ product_id: action.product_id, name: before?.name ?? action.product_id, error: error instanceof Error ? error.message : String(error) })
-            continue
+            // 27.11.2026: не підійшов лише артикул — назву й категорію все одно записуємо, а про артикул кажемо окремо.
+            const { sku: _sku, ...rest } = (action.changes ?? {}) as Record<string, unknown>
+            let saved = false
+            if (before && (action.changes as { sku?: unknown } | undefined)?.sku !== undefined && Object.keys(rest).length && agentFingerprint(before) === action.fingerprint) {
+              try { this.validateEdit(before, rest, action.cleanup === true); action.changes = rest as typeof action.changes; saved = true } catch { /* назва теж не годиться — пропускаємо картку */ }
+            }
+            skipped.push({ product_id: action.product_id, name: before?.name ?? action.product_id,
+              error: (saved ? 'Назву змінено, артикул не поставлено: ' : '') + (error instanceof Error ? error.message : String(error)) })
+            if (!saved) { failed += 1; continue }
           }
         } else {
           before = this.product(action.product_id)
@@ -224,7 +235,7 @@ export class CatalogAgentRepository {
         }
         this.db.prepare(`INSERT INTO audit_log (event_id,tenant_id,device_id,user_id,action,entity_type,entity_id,after_json,created_at) VALUES (?,?,?,?,?,'product',?,?,?)`).run(randomUUID(), DEFAULT_TENANT_ID, this.db.deviceId, userId, 'catalog_agent.' + (action.primary_id ? 'archive' : 'update'), before.id, JSON.stringify({ before, changes: action.changes ?? null, primary_id: action.primary_id ?? null }), new Date().toISOString())
       }
-      return skipInvalid ? { updated: input.items.length - skipped.length, skipped } : { updated: input.items.length }
+      return skipInvalid ? { updated: input.items.length - failed, skipped } : { updated: input.items.length }
     })
   }
 
@@ -245,6 +256,11 @@ export class CatalogAgentRepository {
             if (!missingAgentSku(before.sku) || typeof changes.sku !== 'string' || !code || changes.sku.length > 80 || !catalogCodeFromName(before.name, changes.sku)) throw new Error('Артикул можна взяти лише з назви та лише замість порожнього/службового')
             const other = (this.db.prepare('SELECT id,sku FROM products WHERE tenant_id=? AND deleted_at IS NULL AND id<>?').all(DEFAULT_TENANT_ID, before.id) as any[]).find(p => normalizeAgentCode(p.sku) === code)
             if (other) throw new Error('Артикул уже належить іншому товару. Перевірте дубль.')
+            // 27.11.2026: артикул унікальний у базі разом із ВИДАЛЕНИМИ картками (їх понад 13 тисяч). Раніше така картка
+            // не перевірялась, запис падав на рівні бази — і вся пачка з 86 назв відкочувалась із «Товар з таким артикулом вже існує».
+            const taken = this.db.prepare('SELECT 1 FROM products WHERE tenant_id=? AND id<>? AND sku=? COLLATE NOCASE LIMIT 1').get(DEFAULT_TENANT_ID, before.id, changes.sku.trim())
+              ?? (this.db.prepare('SELECT sku FROM products WHERE tenant_id=? AND deleted_at IS NOT NULL AND id<>?').all(DEFAULT_TENANT_ID, before.id) as any[]).find(p => normalizeAgentCode(p.sku) === code)
+            if (taken) throw new Error('Такий артикул стоїть у видаленій картці — артикул не поставлено')
           }
           if (changes.category_id !== undefined && !this.db.prepare('SELECT 1 FROM categories WHERE id=? AND tenant_id=? AND deleted_at IS NULL').get(String(changes.category_id), DEFAULT_TENANT_ID)) throw new Error('Категорію не знайдено')
           if (changes.retail_price !== undefined && (typeof changes.retail_price !== 'number' || !Number.isSafeInteger(changes.retail_price) || changes.retail_price <= 0 || changes.retail_price !== gridAgentPrice(before.purchase_price, this.settings()))) throw new Error('Ціна має відповідати поточній таблиці націнки')

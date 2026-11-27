@@ -25,7 +25,9 @@ describe('staff rights on the screen', () => {
     const till = read('../../../desktop/src/security/staffRights.ts')
     expect(till).toContain("orders: ['cashier', 'storekeeper'],\n  purchase_prices: ['cashier', 'manager'],\n  reports: ['cashier'],")
     expect(till).toContain("orders: ['owner', 'admin', 'manager'],\n  purchase_prices: ['owner', 'admin', 'storekeeper'],\n  reports: ['owner', 'admin', 'manager'],")
-    expect(SWITCHABLE_RIGHTS).toEqual({ orders: ['cashier', 'storekeeper'], purchase_prices: ['cashier', 'manager'], reports: ['cashier'], writeoffs: ['manager'] })
+    expect(SWITCHABLE_RIGHTS).toEqual({ orders: ['cashier', 'storekeeper'], purchase_prices: ['cashier', 'manager'], reports: ['cashier'], writeoffs: ['manager', 'cashier'] })
+    // 27.11.2026: «Списує товар» можна ввімкнути й касиру — на потреби магазину, з коментарем.
+    expect(till).toContain("writeoffs: ['manager', 'cashier'],")
   })
 
   it('the rights open exactly these places: orders section, statistics, purchase price in the product card', () => {

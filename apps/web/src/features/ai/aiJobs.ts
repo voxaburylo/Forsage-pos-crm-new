@@ -1,7 +1,7 @@
 import { api } from '@/lib/api'
 import type { LoadProgress } from '@/features/settings/LoadRing'
 import { aiActionOperationId } from './aiActionOperation'
-import { planChatCatalogUpdates, type ChatCatalogBridge, type ChatCatalogUpdate } from './aiCatalogApply'
+import { applyAgentItems, NAME_SAVED_NOTE, planChatCatalogUpdates, type ChatCatalogBridge, type ChatCatalogUpdate } from './aiCatalogApply'
 
 /**
  * 26.11.2026, слово власника: «по 200 за раз дуже довго; товарів мільйони; хай працює на сервері у фоні».
@@ -49,12 +49,13 @@ export async function applyProductChunk(job: Pick<AiJob, 'id' | 'task'>, items: 
   // Назва вже така сама — вважаємо застосованим.
   const applied = items.filter(item => known.has(item.item_key) && !planned.has(item.item_key)).map(item => item.item_key)
   if (plan.items.length) {
-    const operation = toUuid(await aiActionOperationId('ai-job:' + job.id, plan.items.map(item => item.product_id).sort().join(',')))
-    const result = await bridge.agentApply({ operation_id: operation, items: plan.items, skip_invalid: true })
+    const ids = plan.items.map(item => item.product_id).sort().join(',')
+    const result = await applyAgentItems(bridge, plan.items, async attempt => toUuid(await aiActionOperationId('ai-job:' + job.id, ids + (attempt ? ':names-only' : ''))))
     const skipped = new Map((result.skipped ?? []).map(row => [row.product_id, row.error]))
     for (const id of planned) {
       const reason = skipped.get(id)
-      if (reason) failed.push({ key: id, error: reason }); else applied.push(id)
+      // «Назву змінено, артикул не поставлено» — назва записана: це застосовано, а не відмова.
+      if (reason && !reason.startsWith(NAME_SAVED_NOTE)) failed.push({ key: id, error: reason }); else applied.push(id)
     }
   }
   return { applied, failed }
