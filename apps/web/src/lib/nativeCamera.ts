@@ -33,6 +33,44 @@ export function scanOverlay(doc: Document, onCancel: () => void): HTMLElement {
 }
 
 /**
+ * Сканер «як справжній» (27.11.2026, слово власника: «камера мені не потрібна — треба, щоб прямо в рядку зловило
+ * й ввело штрихкод»). Камера працює невидимо за екраном програми: екран не ховається, нічого не відкривається,
+ * світить лише ліхтарик — він показує, куди дивиться камера. Зчитаний код одразу йде в рядок пошуку.
+ */
+export async function startHiddenScan(): Promise<CameraScan> {
+  const { BarcodeScanner } = await import('@capacitor-mlkit/barcode-scanning')
+  let permission = (await BarcodeScanner.checkPermissions()).camera
+  if (permission !== 'granted' && permission !== 'limited') permission = (await BarcodeScanner.requestPermissions()).camera
+  if (permission !== 'granted' && permission !== 'limited') throw new CameraDenied('Немає дозволу на камеру')
+
+  let finished = false
+  let finish: (code: string | null) => void = () => undefined
+  const done = new Promise<string | null>(resolve => { finish = resolve })
+  let listener: { remove: () => Promise<void> } | null = null
+  const end = (code: string | null) => {
+    if (finished) return
+    finished = true
+    void listener?.remove().catch(() => undefined)
+    void BarcodeScanner.disableTorch().catch(() => undefined)
+    void BarcodeScanner.stopScan().catch(() => undefined)
+    finish(code)
+  }
+  try {
+    listener = await BarcodeScanner.addListener('barcodesScanned', event => {
+      const code = firstCode(event.barcodes)
+      if (code) end(code)
+    })
+    await BarcodeScanner.startScan({ formats: nativeFormats() as never })
+    // Ліхтарик — необовʼязковий: немає його в телефоні — сканує й так.
+    try { if ((await BarcodeScanner.isTorchAvailable()).available && !finished) await BarcodeScanner.enableTorch() } catch { /* optional */ }
+  } catch (error) {
+    end(null)
+    throw error
+  }
+  return { done, cancel: () => end(null) }
+}
+
+/**
  * Одне сканування камерою всередині застосунку. done → код або null (скасовано). Після завершення камера зупинена,
  * екран програми знову видно — що б не сталося.
  */
