@@ -22,7 +22,7 @@ export function gplCredentials(stored: string): GplCredentials {
     const value = JSON.parse(stored) as Partial<GplCredentials>
     if (typeof value.login === 'string' && typeof value.password === 'string' && value.login && value.password) return { login: value.login, password: value.password }
   } catch { /* нижче — помилка */ }
-  throw new AppError('SUPPLIER_CONFIG', 'Логін і пароль GPL не збережено — введіть їх у Налаштування → API-ключі', 422)
+  throw new AppError('SUPPLIER_CONFIG', 'Логін і пароль GPL не збережено — введіть їх у Сайт → Налаштування → «Ключі API»', 422)
 }
 
 async function gplFetch<T>(path: string, init: RequestInit, deps: OmegaDeps = {}, timeoutMs = 60_000): Promise<T> {

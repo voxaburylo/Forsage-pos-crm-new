@@ -13,6 +13,7 @@ import { SiteCatalogAccess } from './SiteCatalogAccess'
 import { SiteAccessTab, useSiteSection } from './siteAccess'
 import { SiteSeoAssistantTab } from './SiteSeoAssistantTab'
 import { SiteForumTab } from './SiteForumTab'
+import { SiteKeysTab } from './SiteKeysTab'
 
 /**
  * 26.11.2026, слово власника: «навести порядок у вкладках сайту — там товар, тут товар, там категорія; чітка зрозуміла
@@ -20,7 +21,7 @@ import { SiteForumTab } from './SiteForumTab'
  * Чотири розділи; у кожному — свої вкладки. Окремої «Товари на сайті» більше немає: фото й опис нашого товару —
  * у його картці («Товари → Усі товари», натиснути рядок).
  */
-type TabId = 'seo' | 'forum' | 'all' | 'photos' | 'categories' | 'promos' | 'orders' | 'customers' | 'reviews' | 'home' | 'banners' | 'pages' | 'settings' | 'catalog' | 'access'
+type TabId = 'seo' | 'forum' | 'all' | 'photos' | 'categories' | 'promos' | 'orders' | 'customers' | 'reviews' | 'home' | 'banners' | 'pages' | 'settings' | 'keys' | 'catalog' | 'access'
 type SectionId = 'goods' | 'sales' | 'showcase' | 'promo' | 'setup'
 interface SiteTab { id: TabId; label: string; ownerOnly?: boolean }
 export const SITE_SECTIONS: ReadonlyArray<{ id: SectionId; label: string; tabs: readonly SiteTab[] }> = [
@@ -39,7 +40,8 @@ export const SITE_SECTIONS: ReadonlyArray<{ id: SectionId; label: string; tabs: 
   // 27.11.2026: форум сайту — теми, відповіді від магазину, розділи («Доповнення 5» контракту сайту).
   { id: 'promo', label: 'Просування', tabs: [{ id: 'seo', label: 'ШІ-помічник' }, { id: 'forum', label: 'Форум' }] },
   { id: 'setup', label: 'Налаштування', tabs: [
-    { id: 'settings', label: 'Налаштування сайту' }, { id: 'catalog', label: 'Каталог для сайту', ownerOnly: true }, { id: 'access', label: 'Доступ', ownerOnly: true },
+    // 27.11.2026, слово власника: усі ключі, які він вставляє сам (постачальники з API, Serper для фото), — тут.
+    { id: 'settings', label: 'Налаштування сайту' }, { id: 'keys', label: 'Ключі API', ownerOnly: true }, { id: 'catalog', label: 'Каталог для сайту', ownerOnly: true }, { id: 'access', label: 'Доступ', ownerOnly: true },
   ] },
 ]
 export const SITE_TABS: readonly SiteTab[] = SITE_SECTIONS.flatMap(section => section.tabs)
@@ -60,6 +62,7 @@ export const SITE_TAB_INTRO: Record<TabId, string> = {
   banners: 'Великі картинки-слайди вгорі головної сторінки сайту: акція, сезон, новинка. Додайте банер, виберіть картинку й дати показу — програма сама обріже й стисне картинку.',
   pages: 'Тексти сайту: «Доставка», «Гарантія», «Про нас», «Контакти», «Питання» — їх можна лише редагувати; і статті — їх можна додавати й видаляти.',
   settings: 'Контакти, реквізити продавця й службові коди сайту (заголовок для пошуковиків, лічильники). Порожнє поле — сайт нічого не показує.',
+  keys: 'Усі ключі, які вставляєте ви: постачальники з API (Омега, GPL) і пошук фото товарів (Serper.dev) з його правилами. Ключі зберігає лише сервер, назад видно тільки кінець ключа.',
   catalog: 'Запасний, безпечний спосіб для сайту читати каталог через сервер програми — без закупівельних цін. Потрібен лише якщо сайт не читає базу напряму.',
   access: 'Кому з працівників, крім вас, відкрито розділ «Сайт».',
 }
@@ -158,6 +161,7 @@ export default function SitePage() {
         {current === 'banners' && <SiteCrudTab config={BANNERS} />}
         {current === 'pages' && <SiteCrudTab config={PAGES} />}
         {current === 'settings' && <SiteSettingsTab />}
+        {current === 'keys' && owner && <SiteKeysTab />}
         {current === 'catalog' && owner && <SiteCatalogAccess />}
         {current === 'access' && owner && <SiteAccessTab />}
       </div>

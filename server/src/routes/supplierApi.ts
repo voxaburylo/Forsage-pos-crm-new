@@ -5,7 +5,7 @@ import {
   connectionSchema, listConnections, removeConnection, requestSyncNow, saveConnection, saveWarehouse, searchOffers, warehouseSchema,
 } from '../services/supplierApiService.js'
 
-/** Налаштування → «API-ключі»: лише власник. Ключ постачальника назовні не віддається. */
+/** Сайт → Налаштування → «Ключі API»: лише власник. Ключ постачальника назовні не віддається. */
 export const supplierApiRouter = Router()
 supplierApiRouter.use(requireAuth, requireRole('owner'))
 supplierApiRouter.get('/', async (req, res, next) => {

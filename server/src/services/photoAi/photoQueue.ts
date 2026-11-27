@@ -58,7 +58,7 @@ export async function latestJob(tenantId: string) {
 
 export async function createBatch(tenantId: string, userId: string | null, input: z.infer<typeof createBatchSchema>) {
   const keys = await readKeys(tenantId)
-  if (!keys.serper) throw new AppError('PHOTO_AI_NOT_READY', 'Спершу власник має вставити ключ Serper.dev: Налаштування → «API-ключі» → «Фото ШІ».', 400)
+  if (!keys.serper) throw new AppError('PHOTO_AI_NOT_READY', 'Спершу власник має вставити ключ Serper.dev: Сайт → Налаштування → «Ключі API» → «Фото ШІ».', 400)
   if (!keys.ai) throw new AppError('PHOTO_AI_NOT_READY', STOP_TEXT.ai_off, 400)
   const active = (await pool.query("SELECT id FROM photo_ai_jobs WHERE tenant_id = $1 AND status = 'running' LIMIT 1", [tenantId])).rows[0]
   if (active) throw new AppError('PHOTO_AI_RUNNING', 'Попередня партія ще працює. Дочекайтесь її або натисніть «Стоп».', 409)

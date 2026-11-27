@@ -24,8 +24,6 @@ import { FiscalSettingsCard } from './FiscalSettingsCard'
 import { LanSettingsCard } from './LanSettingsCard'
 import { LiteModeCard } from './LiteModeCard'
 import { OutboxJournalCard } from './OutboxJournalCard'
-import { SupplierApiCard } from './SupplierApiCard'
-import { PhotoAiSettingsCard } from '@/features/photoAi/PhotoAiSettingsCard'
 import { LabelPrinterCard } from './LabelPrinterCard'
 import { SettingsLinksCard } from './SettingsLinksCard'
 import { CatalogDictionaries } from '@/features/admin/AdminPage'
@@ -1113,16 +1111,13 @@ export default function SettingsPage() {
         <OutboxJournalCard />
         </SettingsSection>
         )}
-        <SettingsSection tab="api" title="Постачальники з API ключем Омега товари під замовлення"
-          hint="Товари постачальника для замовлень: ціна, склад, залишок. На склад магазину не додаються.">
-        {currentRole === 'owner' ? <SupplierApiCard /> : <p className="text-sm text-gray-500">Підключення постачальників налаштовує власник.</p>}
+        {/* 27.11.2026, слово власника: ключі API (постачальники, Serper для фото) — у «Сайт → Налаштування → Ключі API». */}
+        <SettingsSection tab="api" title="Ключі API постачальники Омега GPL Serper Фото ШІ переїхали в Сайт"
+          hint="Ключі постачальників з API і пошуку фото тепер в одному місці: «Сайт → Налаштування → Ключі API».">
+        {currentRole === 'owner'
+          ? <Button type="button" variant="secondary" onClick={() => { try { localStorage.setItem('forsage.site.tab', 'keys') } catch { /* без памʼяті */ } navigate('/site') }}>Відкрити «Сайт → Налаштування → Ключі API»</Button>
+          : <p className="text-sm text-gray-500">Ключі вставляє власник у розділі «Сайт».</p>}
         </SettingsSection>
-        {(currentRole === 'owner' || currentRole === 'admin') && (
-        <SettingsSection tab="api" title="Фото ШІ пошук фото товарів Serper ключ білий фон"
-          hint="Пошук фото товарів в інтернеті з перевіркою ШІ: ключ пошуку і правила. Сам пошук — у картці товару й кнопкою «Фото ШІ» в «Товарах».">
-        <PhotoAiSettingsCard />
-        </SettingsSection>
-        )}
       </div>
 
 

@@ -105,7 +105,7 @@ export function PhotoAiBulkModal({ open, onClose, onChanged }: { open: boolean; 
         {status && !ready && (
           <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
             {!status.keys.serper
-              ? 'Спершу власник має вставити ключ Serper.dev: Налаштування → «API-ключі» → «Фото ШІ». Без нього нічого не шукається.'
+              ? 'Спершу власник має вставити ключ Serper.dev: Сайт → Налаштування → «Ключі API» → «Фото ШІ». Без нього нічого не шукається.'
               : 'Помічник ШІ вимкнений або немає ключа Anthropic (Налаштування → ШІ). Фото перевіряє саме він.'}
           </p>
         )}
