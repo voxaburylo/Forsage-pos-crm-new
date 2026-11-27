@@ -10,6 +10,10 @@ const isMobileBuild = process.env.VITE_MOBILE_BUILD === '1'
 
 export default defineConfig({
   base: isDesktopBuild ? './' : '/',
+  // 27.11.2026: застосунок на телефоні бере екрани з сервера, а без інтернету Capacitor віддає з самого застосунку лише
+  // ОДНУ сторінку (errorPath). Тому запасна копія екранів — один файл: увесь код і стилі всередині index.html
+  // (apps/mobile/scripts/inline-offline-app.cjs вбудовує їх після збірки).
+  ...(isMobileBuild ? { build: { cssCodeSplit: false, assetsInlineLimit: 100_000_000, rollupOptions: { output: { inlineDynamicImports: true } } } } : {}),
   // 22.11.2026 (прохання власника): номер збірки видно вгорі екрана — щоб бачити, чи оновився ПК менеджера чи веб.
   define: {
     __WEB_BUILT_AT__: JSON.stringify(new Date().toISOString()),

@@ -4,6 +4,7 @@ import { Button, Card } from '@/components/ui'
 import { toast } from '@/components/ui/Toast'
 import { desktopBridge, type DesktopLanMode, type DesktopLanStatus } from '@/lib/desktopBridge'
 import { LanReadinessPanel } from './LanReadinessPanel'
+import { PhoneWifiCard } from './PhoneWifiCard'
 
 function modeDescription(mode: DesktopLanMode): string {
   if (mode === 'hub') return 'Головна база магазину. Компʼютер менеджера працює з нею напряму через локальну мережу.'
@@ -179,6 +180,7 @@ export function LanSettingsCard() {
       )}
 
       {status && status.mode !== 'standalone' && status.mode === mode && <LanReadinessPanel lan={lan} />}
+      {status?.mode === 'hub' && mode === 'hub' && <PhoneWifiCard />}
 
       <div className="flex items-center justify-between gap-3">
         <label className="flex items-center gap-2 text-xs text-gray-500">

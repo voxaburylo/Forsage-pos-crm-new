@@ -81,6 +81,7 @@ import { loadPrintHtml } from './print/loadPrintHtml'
 import { getPrintSession, isPrintSession } from './print/printSession'
 import { assertPrintRuntimeFiles } from './print/printRuntime'
 import { isLanProxyChannel, LocalNetworkCoordinator, type LanSession } from './lan/localNetwork'
+import { changePhoneAccess, PhoneLanAccess, phoneAccessStatus } from './lan/phoneAccess'
 import { rememberedManagerClient } from './lan/lanClientMemory'
 import { isWebMergeChannel, runWebCatalogMerge } from './repositories/webCatalogMerge'
 import { productPhotoThumbnails } from './lib/photoThumbnails'
@@ -1533,20 +1534,26 @@ app.whenReady().then(async () => {
     // Optional update delivery must never prevent the shop from opening.
     writeDesktopDiagnostic('lan-update-source-unavailable', error)
   }
+  // 27.11.2026: телефони через Wi-Fi без інтернету — ті самі права, що й веб через сервер (executeWebRequest).
+  const phoneAccess = new PhoneLanAccess(dataRoot, { authenticate: (phone, password) => lanAuthenticate(phone, password), resolveSession: resolveLanSession, execute: executeWebRequest })
+  handleDesktopIpc('desktop:lan:phone-access', () => phoneAccessStatus(phoneAccess, localNetwork?.getStatus()))
+  handleDesktopIpc('desktop:lan:phone-access-set', (_event, action) => { changePhoneAccess(phoneAccess, action); return phoneAccessStatus(phoneAccess, localNetwork?.getStatus()) })
+  const lanAuthenticate = async (phone: string, password: string) => {
+    // Без номера телефону — вхід лише паролем (23.11.2026): працівника визначає сам пароль.
+    if (!phone) return requireLocalStaff().loginWithPasswordOnly(password)
+    try {
+      return requireLocalStaff().loginWithPassword(phone, password)
+    } catch (error) {
+      // 21.11.2026: працівника створено на сервері, а на головному ПК він ще не входив —
+      // пароля тут немає. Один раз перевіряємо його через сервер входу і зберігаємо лише хеш;
+      // токени сервера не використовуються, вхід на головному ПК не змінюється.
+      if (!(error instanceof Error) || !error.message.includes('[LOCAL_AUTH_MISSING]')) throw error
+      return (await loginOnlineAndProvisionLocal(phone, password, null)).user
+    }
+  }
   localNetwork = new LocalNetworkCoordinator(dataRoot, executeLanCommand, resolveLanSession, {
-    authenticate: async (phone, password) => {
-      // Без номера телефону — вхід лише паролем (23.11.2026): працівника визначає сам пароль.
-      if (!phone) return requireLocalStaff().loginWithPasswordOnly(password)
-      try {
-        return requireLocalStaff().loginWithPassword(phone, password)
-      } catch (error) {
-        // 21.11.2026: працівника створено на сервері, а на головному ПК він ще не входив —
-        // пароля тут немає. Один раз перевіряємо його через сервер входу і зберігаємо лише хеш;
-        // токени сервера не використовуються, вхід на головному ПК не змінюється.
-        if (!(error instanceof Error) || !error.message.includes('[LOCAL_AUTH_MISSING]')) throw error
-        return (await loginOnlineAndProvisionLocal(phone, password, null)).user
-      }
-    },
+    phone: phoneAccess,
+    authenticate: lanAuthenticate,
     clientBuild: desktopBuildInfo?.releaseId ?? null,
     ...(releaseSource ? { updateMetadata: () => releaseSource.describe(), updateChunk: input => releaseSource.chunk(input) } : {}),
   })

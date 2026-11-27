@@ -4,6 +4,7 @@ import { desktopBridge, isDesktopRuntime } from './desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
 import { restoreDesktopServerSession } from './desktopServerSession'
 import { lanNeedsSetup, readLanFirstRunStatus } from './lanFirstRun'
+import { phoneLanActive, phoneLanLogout } from './phoneLan/phoneLan'
 
 function phoneToEmail(phone: string): string {
   const digits = phone.replace(/\D/g, '')
@@ -109,7 +110,7 @@ function startDesktopServerConnection(email: string, password: string, generatio
   void connectDesktopToServer(email, password, 0, generation)
 }
 
-function createDesktopSession(user: { id: string; email: string; phone?: string | null; full_name?: string | null; role?: string | null; tenant_id?: string | null }): Session {
+export function createDesktopSession(user: { id: string; email: string; phone?: string | null; full_name?: string | null; role?: string | null; tenant_id?: string | null }): Session {
   const now = Math.floor(Date.now() / 1000)
   return {
     access_token: `local-desktop-${user.id}-${now}`,
@@ -366,6 +367,8 @@ export async function signOut() {
     } finally { if (timeout) clearTimeout(timeout) }
     return
   }
+  // 27.11.2026: вхід телефона через Wi-Fi головного ПК — закриваємо й його сеанс.
+  if (phoneLanActive()) { await phoneLanLogout(); useAuthStore.getState().setSession(null); return }
   await supabase.auth.signOut({ scope: 'local' })
   useAuthStore.getState().setSession(null)
 }

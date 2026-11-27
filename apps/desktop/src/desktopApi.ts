@@ -38,6 +38,9 @@ export function createDesktopApi(ipcRenderer: DesktopInvoker) {
       test: () => ipcRenderer.invoke('desktop:lan:test'),
       diagnose: () => ipcRenderer.invoke('desktop:lan:diagnose'),
       allowFirewall: () => ipcRenderer.invoke('desktop:lan:allow-firewall'),
+      /** 27.11.2026: код і адреса для телефонів через Wi-Fi (QR-код у налаштуваннях головного ПК). */
+      phoneAccess: () => ipcRenderer.invoke('desktop:lan:phone-access'),
+      setPhoneAccess: (action: 'enable' | 'rotate' | 'disable') => ipcRenderer.invoke('desktop:lan:phone-access-set', action),
     },
     problems: {
       list: (options?: { includeResolved?: boolean; limit?: number }) =>

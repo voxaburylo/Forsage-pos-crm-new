@@ -11,6 +11,7 @@ import { LanFirstRun } from '@/features/lan/LanFirstRun'
 import { PinQuickLogin } from './PinQuickLogin'
 import { BrandLogo } from '@/components/BrandLogo'
 import { BuildBadge } from '@/components/BuildBadge'
+import { PhoneWifiLogin } from '@/features/phoneLan/PhoneWifiLogin'
 const PHONE_REGEX = /^\+?380\d{9}$/
 function normalizePhone(value: string): string {
   const digits = value.replace(/\D/g, '')
@@ -163,6 +164,8 @@ function LoginForm({ onUnlocked }: { onUnlocked?: () => void }) {
           </button>
           {onUnlocked && <button type="button" disabled={loading} onClick={()=>{void leave()}} className="w-full text-sm text-gray-500">Вийти</button>}
         </form>}
+        {/* 27.11.2026: застосунок на телефоні — вхід через Wi-Fi головного ПК без інтернету. */}
+        {!onUnlocked && !isDesktopRuntime() && <PhoneWifiLogin />}
       </div>
     </div>
   )

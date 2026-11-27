@@ -22,6 +22,10 @@ if ('serviceWorker' in navigator) {
     .catch(() => { /* not critical */ })
 }
 
+// 27.11.2026: копія екранів у застосунку на телефоні (без інтернету) відкривається за адресою /index.html — для
+// розділів програми це «сторінка не знайдена». Переходимо на «/» без перезавантаження.
+if (window.location.pathname === '/index.html') window.history.replaceState(null, '', '/' + window.location.search + window.location.hash)
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />

@@ -38,6 +38,8 @@ export interface LanBootstrapServices {
   discovery?: LanDiscoveryOptions | false
   /** 23.11.2026 (план T7): збірка цього ПК — ПК менеджера надсилає її головному з кожною командою. */
   clientBuild?: string | null
+  /** 27.11.2026: телефони через Wi-Fi — окремий код і власні дії (lan/phoneAccess.ts). */
+  phone?: { key(): string | null; dispatch(payload: unknown): Promise<unknown> }
 }
 
 /** Що головний ПК знає про ПК менеджера: яка в нього збірка і коли він востаннє звертався. */
@@ -560,21 +562,31 @@ export class LocalNetworkCoordinator {
       if (request.method === 'POST' && request.url === '/forsage-lan/secure') {
         let envelope: SecureEnvelope | undefined
         let claimed = false
+        let replyKey = this.config.accessKey
+        let fromPhone = false
         try {
           if (this.secureFlights >= 8) throw new Error('LAN_BUSY')
           this.secureFlights++; claimed = true
           const body = await this.readBody(request, SECURE_MAX_WIRE_BYTES)
-          const opened = openLanEnvelope(JSON.parse(body), this.config.accessKey, 'request', { hubNonce: this.hubNonce })
+          const wire = JSON.parse(body) as unknown
+          // 27.11.2026: спершу код ПК менеджера; не підійшов — код для телефонів (якщо власник його ввімкнув).
+          let opened: ReturnType<typeof openLanEnvelope>
+          try { opened = openLanEnvelope(wire, this.config.accessKey, 'request', { hubNonce: this.hubNonce }); replyKey = this.config.accessKey }
+          catch (error) {
+            const phoneKey = this.services.phone?.key()
+            if (!phoneKey) throw error
+            opened = openLanEnvelope(wire, phoneKey, 'request', { hubNonce: this.hubNonce }); replyKey = phoneKey; fromPhone = true
+          }
           this.replayGuard.claim(opened.envelope.requestId, opened.envelope.deadline)
           envelope = opened.envelope
-          const result = await this.dispatchSecure(decodeTransport(opened.value))
-          response.writeHead(200).end(JSON.stringify(sealLanEnvelope(encodeTransport({ ok: true, result }), this.config.accessKey, 'response', envelope)))
+          const result = fromPhone ? await this.services.phone!.dispatch(decodeTransport(opened.value)) : await this.dispatchSecure(decodeTransport(opened.value))
+          response.writeHead(200).end(JSON.stringify(sealLanEnvelope(encodeTransport({ ok: true, result }), replyKey, 'response', envelope)))
         } catch (error) {
           // Unauthenticated failures do not disclose parsing, key, account or crypto details.
           if (!envelope) response.writeHead(401).end(JSON.stringify({ ok: false, error: 'LAN_SECURE_REJECTED' }))
           else {
             const message = error instanceof Error ? error.message.slice(0, 500) : 'Помилка локальної мережі'
-            response.writeHead(200).end(JSON.stringify(sealLanEnvelope({ ok: false, error: message }, this.config.accessKey, 'response', envelope)))
+            response.writeHead(200).end(JSON.stringify(sealLanEnvelope({ ok: false, error: message }, replyKey, 'response', envelope)))
           }
         } finally { if (claimed) this.secureFlights-- }
         return
