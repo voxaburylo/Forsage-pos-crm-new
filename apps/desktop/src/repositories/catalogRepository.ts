@@ -6,6 +6,7 @@ import type { LocalDatabase } from '../db/localDatabase'
 import { catalogStockFilterClause, type CatalogStockFilter } from './catalogStockFilter'
 import { DEFAULT_TENANT_ID, type LocalProduct, type LocalProductUpsert } from '../db/localTypes'
 import { readProductCatalogSnapshot } from './productCatalogSnapshot'
+import { codeSearchClauses } from './catalogCodeSearch'
 
 function nowIso(): string {
   return new Date().toISOString()
@@ -1072,6 +1073,7 @@ export class LocalCatalogRepository {
         indexedClauses.push(`(${[...tokens.map(() => 'p.search_text LIKE ?'), ...shortWords.map(() => "(' ' || p.search_text || ' ') LIKE ?")].join(' AND ')})`)
         indexedParams.push(...tokens.map(token => `%${token}%`), ...shortWords.map(word => `% ${word} %`))
       }
+      const looseCodes = codeSearchClauses(raw, tenantId)
       const searchClauses = [
         ...indexedClauses,
         'p.sku = ?',
@@ -1098,6 +1100,8 @@ export class LocalCatalogRepository {
             AND x.deleted_at IS NULL
             AND (x.cross_number = ? OR x.cross_number = ? OR x.cross_number LIKE ?)
         )`,
+        // 27.11.2026: артикул і крос-номер — без огляду на дефіси, пробіли, крапки й слеші.
+        ...looseCodes.clauses,
       ]
       const searchParams: Array<string | number> = [
         ...indexedParams,
@@ -1118,6 +1122,7 @@ export class LocalCatalogRepository {
         raw,
         compact,
         `%${raw}%`,
+        ...looseCodes.params,
       ]
       where.push(`(${searchClauses.join(' OR ')})`)
       params.push(...searchParams)

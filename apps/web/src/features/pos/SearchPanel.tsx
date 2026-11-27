@@ -83,6 +83,9 @@ export interface SearchPanelHandle {
   scanBarcode: (code: string) => void
 }
 
+/** Пошук на касі: порція результатів і стеля (далі простіше уточнити запит, ніж гортати). */
+export const SEARCH_PAGE = 30, SEARCH_MAX = 300
+
 const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
   const serverOnline = useServerStatus()
   const desktopRuntime = Boolean(desktopBridge())
@@ -91,6 +94,11 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
   const scopeKey = useAuthStore((state) => state.session?.user?.id ?? '')
   const [query, setQuery]       = useState('')
   const [results, setResults]   = useState<Product[]>([])
+  // 27.11.2026, слово власника: «пишу фільтр — видає кілька десятків, а їх дуже багато». Скільки знайдено всього й скільки
+  // показано; «Показати ще» додає наступну порцію.
+  const [foundTotal, setFoundTotal] = useState(0)
+  const [shownLimit, setShownLimit] = useState(SEARCH_PAGE)
+  useEffect(() => { setShownLimit(SEARCH_PAGE) }, [query])
   const [supplierResults, setSupplierResults] = useState<any[]>([])
   const [loading, setLoading]   = useState(false)
   const [importingId, setImportingId] = useState<string | null>(null)
@@ -181,15 +189,16 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
           if (desktopCatalog.listProducts) {
             const localResult = await desktopCatalog.listProducts({
               query: query.trim() || undefined,
-              limit: query.trim() ? 30 : 50,
+              limit: query.trim() ? shownLimit : 50,
               offset: 0,
               sortField: query.trim() ? undefined : 'qty_on_hand',
               sortDir: query.trim() ? 'asc' : 'desc',
             })
             localProducts = localResult.data
+            setFoundTotal(query.trim() ? Number(localResult.total) || localResult.data.length : 0)
           } else {
             localProducts = query.trim()
-              ? await desktopCatalog.searchProducts(query.trim(), 30)
+              ? await desktopCatalog.searchProducts(query.trim(), shownLimit)
               : await desktopCatalog.listPopular(50)
           }
           if (epoch !== searchEpoch.current) return
@@ -235,7 +244,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
       }
     }, 200)
     return () => clearTimeout(timer.current)
-  }, [query, effectiveOnline, scopeKey, offlineStockVersion])
+  }, [query, effectiveOnline, scopeKey, offlineStockVersion, shownLimit])
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Escape') {
@@ -625,7 +634,7 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
           <div className="space-y-2">
             {query.trim() && (
               <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider px-1">
-                📦 На нашому складі ({results.length})
+                📦 На нашому складі ({foundTotal > results.length ? `${results.length} з ${foundTotal}` : results.length})
               </p>
             )}
             {results.map((p, idx) => {
@@ -710,6 +719,12 @@ const SearchPanelComponent = forwardRef<SearchPanelHandle>((_, ref) => {
                 </div>
               )
             })}
+            {query.trim() && foundTotal > results.length && (
+              <button type="button" data-pos-search-more onClick={() => setShownLimit(limit => Math.min(limit + SEARCH_PAGE, SEARCH_MAX))} disabled={loading || shownLimit >= SEARCH_MAX}
+                className="w-full rounded-xl border border-gray-700 bg-[#242424] py-3 text-sm text-gray-200 hover:border-yellow-400 disabled:opacity-50">
+                {shownLimit >= SEARCH_MAX ? `Показано ${results.length} з ${foundTotal} — уточніть запит` : `Показано ${results.length} з ${foundTotal} — показати ще ${Math.min(SEARCH_PAGE, foundTotal - results.length)}`}
+              </button>
+            )}
           </div>
         )}
 
