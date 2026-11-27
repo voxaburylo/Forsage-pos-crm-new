@@ -298,6 +298,14 @@ export const OFFER_CHANGED_ONLY = `WHERE supplier_offers.number IS DISTINCT FROM
         OR (EXCLUDED.description IS NOT NULL AND supplier_offers.description IS DISTINCT FROM EXCLUDED.description)
         OR (EXCLUDED.category_name IS NOT NULL AND supplier_offers.category_name IS DISTINCT FROM EXCLUDED.category_name)`
 
+/**
+ * 27.11.2026: скільки рядків за один раз міняють привʼязка до карток і авто-категорії наприкінці проходу прайсу. Було «усе,
+ * що змінилось, пачками по 5000» — після великого оновлення в постачальника це десятки тисяч записів поспіль. Решта
+ * доробляється наступного проходу (кожні 3 год) — це доповнення, а не термінова робота.
+ */
+export const AFTER_PASS_CHUNK = 1000
+export const AFTER_PASS_MAX = 3000
+
 async function writeOffers(tenantId: string, connectionId: string, rawOffers: OfferRow[], retail: (purchase: number) => number) {
   const offers = pricedOffers(rawOffers, retail)
   if (!offers.length) return
@@ -366,11 +374,12 @@ export async function linkOffers(tenantId: string, connectionId: string) {
   const links = matchOffers(ours, offers)
   const changes = offers.filter((offer: any) => (links.get(offer.external_id) ?? null) !== (offer.product_id ?? null))
     .map((offer: any) => ({ external_id: offer.external_id as string, product_id: links.get(offer.external_id) ?? null }))
-  for (let from = 0; from < changes.length; from += 5000) {
+  const now = changes.slice(0, AFTER_PASS_MAX)
+  for (let from = 0; from < now.length; from += AFTER_PASS_CHUNK) {
     await pool.query(`UPDATE supplier_offers o SET product_id = x.product_id FROM jsonb_to_recordset($2::jsonb) AS x(external_id text, product_id uuid)
-       WHERE o.connection_id = $1 AND o.external_id = x.external_id`, [connectionId, JSON.stringify(changes.slice(from, from + 5000))])
+       WHERE o.connection_id = $1 AND o.external_id = x.external_id`, [connectionId, JSON.stringify(now.slice(from, from + AFTER_PASS_CHUNK))])
   }
-  return { linked: links.size, changed: changes.length }
+  return { linked: links.size, changed: now.length, postponed: changes.length - now.length }
 }
 
 /**
@@ -381,16 +390,17 @@ export async function categorizeOffers(tenantId: string, connectionId: string) {
   const products = (await pool.query('SELECT name, category_id FROM products WHERE tenant_id = $1 AND deleted_at IS NULL AND is_active AND category_id IS NOT NULL', [tenantId])).rows
   const model = learnCategories(products)
   const offers = (await pool.query(`SELECT external_id, name, category_id FROM supplier_offers WHERE connection_id = $1 AND COALESCE(category_source, '') NOT IN ('manual', 'ai')`, [connectionId])).rows
-  const changes = offers.map((offer: any) => ({ external_id: offer.external_id as string, category_id: guessCategory(model, offer.name), before: offer.category_id as string | null }))
+  const allChanges = offers.map((offer: any) => ({ external_id: offer.external_id as string, category_id: guessCategory(model, offer.name), before: offer.category_id as string | null }))
     .filter(change => change.category_id !== change.before)
-  for (let start = 0; start < changes.length; start += 5000) {
+  const changes = allChanges.slice(0, AFTER_PASS_MAX)
+  for (let start = 0; start < changes.length; start += AFTER_PASS_CHUNK) {
     await pool.query(
       `UPDATE supplier_offers o SET category_id = x.category_id, category_source = CASE WHEN x.category_id IS NOT NULL THEN 'auto' WHEN o.category_source = 'ai_none' THEN 'ai_none' ELSE NULL END, updated_at = now()
          FROM jsonb_to_recordset($2::jsonb) AS x(external_id text, category_id uuid)
         WHERE o.connection_id = $1 AND o.external_id = x.external_id AND COALESCE(o.category_source, '') NOT IN ('manual', 'ai')`,
-      [connectionId, JSON.stringify(changes.slice(start, start + 5000).map(({ external_id, category_id }) => ({ external_id, category_id })))])
+      [connectionId, JSON.stringify(changes.slice(start, start + AFTER_PASS_CHUNK).map(({ external_id, category_id }) => ({ external_id, category_id })))])
   }
-  return { changed: changes.length, categorized: offers.length - changes.filter(change => !change.category_id).length }
+  return { changed: changes.length, postponed: allChanges.length - changes.length, categorized: offers.length - allChanges.filter(change => !change.category_id).length }
 }
 
 /**

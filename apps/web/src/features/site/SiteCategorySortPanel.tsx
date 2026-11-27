@@ -13,7 +13,11 @@ export interface SortState {
   enabled: boolean; waiting: number; sorted: number; unsure: number; with_category: number; total: number; cost_usd: number; last_error: string | null
   /** Товари, для яких потрібна нова категорія: чекають, поки головний ПК її створить. */
   waiting_new?: number; waiting_names?: string[]; till_error?: string | null
+  /** «Повернути як було» ще триває: сервер знімає категорії порціями, щоб не перевантажити базу. */
+  undoing?: boolean
 }
+
+export const UNDOING_TEXT = 'Знімаю категорії помічника — порціями по 2 000 товарів за хвилину, щоб не перевантажити базу. Екран можна закрити.'
 /** Нові категорії, які помічник замовив касі: що створюється і чого чекаємо. */
 export function newCategoriesText(state: SortState): string {
   const names = state.waiting_names ?? []
@@ -57,7 +61,7 @@ export function SiteCategorySortPanel({ refresh = 0 }: { refresh?: number }) {
     try { setState((await api.get<{ data: SortState }>('/api/v1/site-admin/category-sort', { silent: true })).data); setMissing(false) } catch { setMissing(true) }
   }, [])
   useEffect(() => { void load() }, [load, refresh])
-  const live = Boolean(state?.enabled && (state.waiting > 0 || (state.waiting_names?.length ?? 0) > 0))
+  const live = Boolean(state?.undoing || (state?.enabled && (state.waiting > 0 || (state.waiting_names?.length ?? 0) > 0)))
   useEffect(() => { if (!live) return; const timer = window.setInterval(() => void load(), 8000); return () => window.clearInterval(timer) }, [live, load])
 
   async function act(action: 'start' | 'stop' | 'undo', done?: string) {
@@ -80,14 +84,15 @@ export function SiteCategorySortPanel({ refresh = 0 }: { refresh?: number }) {
         {sortTiles(state).map(tile => <div key={tile.label} className="rounded-lg bg-gray-50 px-3 py-1.5"><p className="text-base font-semibold text-gray-900">{count(tile.value)}</p><p className="text-[11px] text-gray-500">{tile.label}</p></div>)}
       </div>
       {newCategoriesText(state) && <p className="mt-1 text-sm text-gray-700" data-site-sort-new>{newCategoriesText(state)}</p>}
+      {state.undoing && <p className="mt-1 text-sm text-gray-700" data-site-sort-undoing>{UNDOING_TEXT}</p>}
       {state.last_error && <p className="mt-1 text-xs text-gray-500">{state.last_error}</p>}
       {live && state.waiting > 0 && <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-gray-100"><div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${progress}%` }} /></div>}
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        {!state.enabled && <Button size="sm" loading={busy === 'start'} onClick={() => void act('start', 'Розкладаю. Екран можна закрити.')} data-site-sort-start>
+        {!state.enabled && !state.undoing && <Button size="sm" loading={busy === 'start'} onClick={() => void act('start', 'Розкладаю. Екран можна закрити.')} data-site-sort-start>
           {state.waiting > 0 ? 'Розкласти по категоріях — і надалі розкладати нові' : 'Розкладати нові надходження самому'}</Button>}
         {state.enabled && <Button size="sm" variant="secondary" loading={busy === 'stop'} onClick={() => void act('stop')}>Зупинити</Button>}
-        {(state.sorted > 0 || state.unsure > 0) && <Button size="sm" variant="ghost" loading={busy === 'undo'}
-          onClick={() => { if (window.confirm(`Зняти категорії, які поставив помічник (${state.sorted}), і забути його правила? Категорії, поставлені вручну, лишаться.`)) void act('undo', 'Повернув як було.') }}>Повернути як було</Button>}
+        {(state.sorted > 0 || state.unsure > 0) && !state.undoing && <Button size="sm" variant="ghost" loading={busy === 'undo'}
+          onClick={() => { if (window.confirm(`Зняти категорії, які поставив помічник (${state.sorted}), і забути його правила? Категорії, поставлені вручну, лишаться.`)) void act('undo', 'Знімаю категорії — це займе трохи часу.') }}>Повернути як було</Button>}
       </div>
       </div>
     </details>
