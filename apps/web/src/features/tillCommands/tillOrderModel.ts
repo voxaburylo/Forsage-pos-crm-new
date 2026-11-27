@@ -11,8 +11,12 @@ export interface TillOrderItem {
   /** Картка зі складу, вибрана у вебі. Каса бере назву, артикул і закупку зі СВОЄЇ картки, а не з вебу. */
   product_id?: string | null
 }
-/** Картка товару на касі — лише те, що потрібно замовленню. */
-export interface TillOrderCard { id: string; name: string; sku: string; retail_price: number; purchase_price: number; is_active?: number | boolean; is_service?: number | boolean }
+/** Картка товару на касі — лише те, що потрібно замовленню. qty_available — вільний залишок (склад мінус броні). */
+export interface TillOrderCard { id: string; name: string; sku: string; retail_price: number; purchase_price: number; is_active?: number | boolean; is_service?: number | boolean; qty_on_hand?: number; qty_available?: number }
+/** 27.11.2026: оплачено онлайн на сайті (LiqPay). Та сама мітка — у apps/desktop/src/repositories/pos/reservedStock.ts. */
+export const SITE_PAID_MARK = 'ОПЛАЧЕНО НА САЙТІ'
+export const STOCK_CONFLICT_MARK = 'КОНФЛІКТ: товару не вистачає'
+export interface TillOrderPaid { amount: number; paid_at: string | null }
 export interface TillOrderPayload {
   customer_phone?: string | null
   customer_name?: string | null
@@ -27,6 +31,8 @@ export interface TillOrderPayload {
   source?: 'site' | null
   /** Замовлення вже скасоване на сайті: каса зберігає його й одразу скасовує — з позначкою «скасовано на сайті». */
   canceled?: boolean
+  /** 27.11.2026: оплачено онлайн на сайті — лише для замовлень сайту. Гроші в касу не записуються (вони не в шухляді). */
+  paid?: TillOrderPaid
   items: TillOrderItem[]
 }
 
@@ -88,6 +94,7 @@ export function checkTillOrder(raw: unknown): TillOrderPayload {
     author: clean(input.author, 120) || null,
     ...(input.source === 'site' ? { source: 'site' as const } : {}),
     ...(input.canceled === true ? { canceled: true } : {}),
+    ...(input.source === 'site' && input.paid ? { paid: checkPaid(input.paid) } : {}),
     items: items.map((item, index) => {
       const row = (item ?? {}) as Partial<TillOrderItem>
       const itemName = clean(row.name, 300)
@@ -107,6 +114,35 @@ export function checkTillOrder(raw: unknown): TillOrderPayload {
   }
 }
 
+function checkPaid(raw: unknown): TillOrderPaid {
+  const paid = (raw ?? {}) as Partial<TillOrderPaid>
+  const amount = Number(paid.amount)
+  if (!Number.isSafeInteger(amount) || amount < 0 || amount > MAX_KOPECKS) throw new Error('Перевірте суму оплати на сайті.')
+  const at = typeof paid.paid_at === 'string' && !Number.isNaN(Date.parse(paid.paid_at)) ? new Date(paid.paid_at).toISOString() : null
+  return { amount, paid_at: at }
+}
+
+const hryvnias = (kopecks: number) => (kopecks / 100).toLocaleString('uk-UA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' грн'
+/** «ОПЛАЧЕНО НА САЙТІ (онлайн): 1 155,00 грн, 27.11.2026, 12:30» — перший рядок примітки оплаченого замовлення. */
+export function sitePaidNote(paid: TillOrderPaid): string {
+  const when = paid.paid_at ? ', ' + new Date(paid.paid_at).toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''
+  return `${SITE_PAID_MARK} (онлайн): ${hryvnias(paid.amount)}${when}. Гроші не в касі — при видачі не брати оплату вдруге.`
+}
+
+/** Чого не вистачає на складі для цього замовлення (за вільним залишком каси). Порожньо — усе є. */
+export function stockShortages(payload: TillOrderPayload, cards: ReadonlyMap<string, TillOrderCard | null>): string[] {
+  const wanted = new Map<string, number>()
+  for (const item of payload.items) if (item.product_id) wanted.set(item.product_id, Math.round(((wanted.get(item.product_id) ?? 0) + item.qty) * 1000) / 1000)
+  const out: string[] = []
+  for (const [productId, qty] of wanted) {
+    const card = cards.get(productId)
+    if (!card) continue
+    const free = Number(card.qty_available ?? card.qty_on_hand ?? 0)
+    if (qty > free) out.push(`«${card.name}» (вільно ${Math.max(free, 0)}, треба ${qty})`)
+  }
+  return out
+}
+
 /** Бланк із вебу → звичайне створення замовлення на касі. Статус і гроші каса ставить сама (нове, без оплат). */
 export function tillOrderToCreate(payload: TillOrderPayload, customerId: string | null, operationId: string, cards: ReadonlyMap<string, TillOrderCard | null> = new Map()): CreateOrderPayload {
   const order = checkTillOrder(payload)
@@ -123,7 +159,11 @@ export function tillOrderToCreate(payload: TillOrderPayload, customerId: string 
     return { name: card.name, sku: card.sku || null, product_id: card.id, qty: item.qty, sell_price: sell,
       buy_price: Number(card.purchase_price), source_type: 'warehouse' as const }
   })
+  // 27.11.2026: оплачене онлайн — помітно першим рядком; товару не вистачає — ще вище (вирішити: повернути чи привезти).
+  const shortages = order.paid ? stockShortages(order, cards) : []
   const notes = [
+    shortages.length ? `${STOCK_CONFLICT_MARK}: ${shortages.join('; ')}. Гроші вже сплачено — вирішіть: повернути чи привезти.` : '',
+    order.paid ? sitePaidNote(order.paid) : '',
     order.source === 'site' ? '' : order.author ? `Оформлено у вебі: ${order.author}` : 'Оформлено у вебі',
     !customerId && order.customer_name ? `Клієнт: ${order.customer_name}` : '',
     order.comment ?? '',

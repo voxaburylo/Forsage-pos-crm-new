@@ -3,6 +3,7 @@ import { usePOSStore } from '@/stores/posStore'
 import { shiftApi } from './shiftApi'
 import { saleApi } from './saleApi'
 import { toast } from '@/components/ui/Toast'
+import { showSaleError } from './reservedOrderToast'
 import { cacheCurrentShift, getCachedCurrentShift } from '@/lib/offlineDB'
 import { useAuthStore } from '@/stores/authStore'
 import { desktopBridge, desktopCheckoutToSale, type DesktopCheckoutInput } from '@/lib/desktopBridge'
@@ -278,7 +279,8 @@ export function usePOS() {
           setFiscalRecovery(recovery)
           toast.error('Не повторюйте оплату: спочатку перевірте цей чек у Cashalot')
         } else {
-          toast.error(error instanceof Error ? error.message : 'Помилка локального продажу')
+          // 27.11.2026: товар заброньований під замовлення — повідомлення з кнопкою «Відкрити замовлення».
+          showSaleError(error instanceof Error ? error.message : 'Помилка локального продажу')
         }
         return null
       }
@@ -331,7 +333,7 @@ export function usePOS() {
       // Мережева помилка не означає, що продаж не пройшов: POSPage збереже
       // той самий запит у чергу з тим самим idempotency key.
       if (!(e as any)?.status) throw e
-      toast.error(e instanceof Error ? e.message : 'Помилка оформлення продажу')
+      showSaleError(e instanceof Error ? e.message : 'Помилка оформлення продажу')
       return null
     }
   }, [store])

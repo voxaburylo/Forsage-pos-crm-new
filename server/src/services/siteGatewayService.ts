@@ -16,6 +16,8 @@ export const SITE_ACTIONS: Readonly<Record<string, boolean>> = {
   // Перевірка звʼязку: сайт відповідає { site, time, catalog_sync }.
   'ping': false,
   'orders.list': false, 'orders.update': true, 'orders.unseen_count': false,
+  // 27.11.2026: оплачене замовлення перенесено в програму (sitePaidOrders.ts) — щоб сайт не віддав його вдруге.
+  'orders.mark_synced': true,
   'customers.list': false,
   'reviews.list': false, 'reviews.moderate': true, 'reviews.delete': true,
   'products.site_fields.get': false, 'products.site_fields.set': true,

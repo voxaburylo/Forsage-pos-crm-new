@@ -6,6 +6,7 @@ import { LocalPosRepository } from './posRepository'
 import { LocalWarehouseRepository } from './warehouseRepository'
 import { LocalStaffRepository } from './staffRepository'
 import { addStockQuantity, stockQuantity, subtractStockQuantity } from './stockQuantity'
+import { reserveHolders, reservedStockProblem } from './pos/reservedStock'
 
 function nowIso(): string { return new Date().toISOString() }
 function dayStamp(date: Date): string {
@@ -1469,14 +1470,11 @@ export class LocalOrderRepository {
         subtotal += lineAmount
         const combinedQty = addStockQuantity(requested.get(product.id) ?? 0, qty)
         requested.set(product.id, combinedQty)
-        if (product.is_service !== 1 && !allowNegativeQty) {
-          const reserve = this.db.prepare(`SELECT COALESCE(SUM(qty), 0) qty FROM stock_reserves
-            WHERE tenant_id = ? AND product_id = ? AND (order_id IS NULL OR order_id <> ?)
-              AND released_at IS NULL AND deleted_at IS NULL
-              AND (expires_at IS NULL OR unixepoch(expires_at) > unixepoch('now'))
-          `).get(tenantId, product.id, orderId) as { qty: number }
-          const available = subtractStockQuantity(product.qty_on_hand, reserve.qty)
-          if (combinedQty > available) throw new Error(`Недостатньо залишку для «${product.name}»: доступно ${available}, потрібно ${combinedQty}`)
+        if (product.is_service !== 1) {
+          // 27.11.2026: власна бронь цього замовлення не заважає; чужу (інше замовлення, сайт) не віддаємо навіть у мінус.
+          const problem = reservedStockProblem({ name: product.name, qtyOnHand: Number(product.qty_on_hand), requested: combinedQty, allowNegative: allowNegativeQty,
+            holders: reserveHolders(this.db, tenantId, product.id, orderId) })
+          if (problem) throw problem
         }
 
         return {

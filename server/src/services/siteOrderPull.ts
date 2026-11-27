@@ -153,6 +153,10 @@ export async function runSiteOrderPullStep(deps: PullDeps = {}): Promise<{ shops
     try {
       const result = await pullSiteOrders(shop.tenant_id, shop.started_by, deps)
       saved += result.saved; canceled += result.canceled
+      // 27.11.2026: оплачені онлайн — самі стають замовленнями програми й бронюють товар (sitePaidOrders.ts).
+      // Сайт ще не вміє фільтр paid чи mark_synced — звичайне забирання замовлень від цього не ламається.
+      const { pullPaidSiteOrders } = await import('./sitePaidOrders.js')
+      await pullPaidSiteOrders(shop.tenant_id, shop.started_by, deps).catch(error => logger.warn({ code: (error as AppError)?.code }, '[site-paid] step failed'))
       await pool.query('UPDATE site_order_sync SET last_run_at = now(), last_error = NULL, updated_at = now() WHERE tenant_id = $1', [shop.tenant_id])
     } catch (error) {
       errors += 1
