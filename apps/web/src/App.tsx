@@ -124,6 +124,9 @@ function isRouteChunkError(error: unknown): boolean {
 }
 
 import { reportLocalError } from './lib/localDiagnostics'
+import { isNativeApp } from '@/lib/nativeScan'
+// 27.11.2026: перемикання інтернет ↔ Wi-Fi головного ПК — лише в застосунку на телефоні; у браузері й на касі не вантажиться.
+const PhoneWifiKeeper = lazy(() => import('@/features/phoneLan/PhoneWifiKeeper').then(module => ({ default: module.PhoneWifiKeeper })))
 
 // 24.11.2026 (план C1, «тяжкі модулі на вимогу»): глобальні вікна, потрібні не з першої секунди, вантажаться окремо —
 // стартовий файл менший, вхід і перша сторінка швидші. Подія чи клавіша, що їх відкриває, чекає мить на завантаження.
@@ -318,6 +321,8 @@ function Workspace() {
       </AppErrorBoundary>
       {/* 23.11.2026 (план B1): постійний сканер камерою для вебу на телефоні — один на весь застосунок. */}
       <Suspense fallback={null}><LiveCameraScanner /></Suspense>
+      {/* 27.11.2026: застосунок на телефоні сам перемикається між інтернетом і Wi-Fi головного ПК. */}
+      {isNativeApp() && <Suspense fallback={null}><PhoneWifiKeeper /></Suspense>}
       <ToastContainer />
       <Suspense fallback={null}><CommandPalette /></Suspense>
       </div>

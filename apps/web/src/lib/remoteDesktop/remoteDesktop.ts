@@ -4,6 +4,7 @@ import type { ForsageDesktopBridge } from '@/lib/desktopBridge'
 // Той самий перелік дій, що в програмі каси (preload): однакові назви й канали, екрани не дублюються.
 import { createDesktopApi } from '../../../../desktop/src/desktopApi'
 import { setRemoteBridgeSlot } from './slot'
+import { phoneLanCall, phoneWorksViaWifi } from '@/lib/phoneLan/phoneLan'
 import { waitForTillAnswer, type TillAnswerState } from './tillAnswer'
 
 /**
@@ -16,6 +17,8 @@ let active = 0
 const publish = () => setRemoteBridgeSlot(active > 0 ? bridge : null)
 
 async function invokeTill(channel: string, ...args: unknown[]): Promise<unknown> {
+  // 27.11.2026: телефон увійшов через Wi-Fi головного ПК — дія йде прямо туди, без сервера й без інтернету.
+  if (phoneWorksViaWifi()) return phoneLanCall(channel, args)
   // Сервер чекає касу до 55 с; якщо каса запит забрала, але ще виконує, він віддає номер запиту (pending),
   // і ми дочікуємося відповіді за цим номером — запит на касу вдруге не надсилається.
   const answer = await api.post<{ data?: unknown; pending?: { id: string } }>('/api/v1/till-rpc',

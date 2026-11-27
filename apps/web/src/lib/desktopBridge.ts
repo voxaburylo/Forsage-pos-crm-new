@@ -577,6 +577,9 @@ export interface ForsageDesktopBridge {
     test: () => Promise<DesktopLanStatus>
     diagnose?: () => Promise<DesktopLanDiagnosis>
     allowFirewall?: () => Promise<DesktopLanDiagnosis>
+    /** 27.11.2026: телефони через Wi-Fi — код і адреса для QR-коду (лише головний ПК, власник/адміністратор). */
+    phoneAccess?: () => Promise<DesktopPhoneAccess>
+    setPhoneAccess?: (action: 'enable' | 'rotate' | 'disable') => Promise<DesktopPhoneAccess>
   }
   problems?: {
     list: (options?: { includeResolved?: boolean; limit?: number }) => Promise<DesktopProblem[]>
@@ -968,6 +971,8 @@ declare global {
     forsageDesktop?: ForsageDesktopBridge
   }
 }
+
+export interface DesktopPhoneAccess { enabled: boolean; key: string | null; addresses: string[]; port: number; hub: boolean }
 
 export function isDesktopRuntime(): boolean {
   return typeof window !== 'undefined' && Boolean(window.forsageDesktop)

@@ -9,7 +9,10 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
         android:theme="@style/AppTheme">
+        <!-- 27.11.2026: головний ПК у мережі Wi-Fi відповідає по http (дані зашифровано самим застосунком, AES-GCM). -->
+        <!-- Сторінки застосунку й сервер — і далі https (allowMixedContent=false). -->
 
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density"

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, lazy, Suspense } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Eye, EyeOff } from 'lucide-react'
 import { signIn, signInByPassword, canSignInByPassword, restoreDesktopSession, signOut } from '@/lib/auth'
@@ -11,6 +11,9 @@ import { LanFirstRun } from '@/features/lan/LanFirstRun'
 import { PinQuickLogin } from './PinQuickLogin'
 import { BrandLogo } from '@/components/BrandLogo'
 import { BuildBadge } from '@/components/BuildBadge'
+import { isNativeApp } from '@/lib/nativeScan'
+// 27.11.2026: вхід через Wi-Fi головного ПК — лише в застосунку на телефоні; у браузері й на касі не вантажиться.
+const PhoneWifiLogin = lazy(() => import('@/features/phoneLan/PhoneWifiLogin').then(module => ({ default: module.PhoneWifiLogin })))
 const PHONE_REGEX = /^\+?380\d{9}$/
 function normalizePhone(value: string): string {
   const digits = value.replace(/\D/g, '')
@@ -163,6 +166,8 @@ function LoginForm({ onUnlocked }: { onUnlocked?: () => void }) {
           </button>
           {onUnlocked && <button type="button" disabled={loading} onClick={()=>{void leave()}} className="w-full text-sm text-gray-500">Вийти</button>}
         </form>}
+        {/* 27.11.2026: застосунок на телефоні — вхід через Wi-Fi головного ПК без інтернету. */}
+        {!onUnlocked && !isDesktopRuntime() && isNativeApp() && <Suspense fallback={null}><PhoneWifiLogin /></Suspense>}
       </div>
     </div>
   )

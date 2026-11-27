@@ -1,5 +1,6 @@
 import { useEffect, useSyncExternalStore } from 'react'
 import { api } from '@/lib/api'
+import { phoneLanCall, phoneWorksViaWifi } from '@/lib/phoneLan/phoneLan'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
 
@@ -72,7 +73,8 @@ export function useWebWorkAccess(): boolean {
   const granted = useSyncExternalStore(subscribe, () => probing && (known(userId, Date.now())?.allowed ?? false), () => false)
   useEffect(() => {
     if (!probing) return
-    void askWebWorkAccess(userId, async () => (await api.post<{ data?: unknown }>('/api/v1/till-rpc',
+    // 27.11.2026: телефон через Wi-Fi питає головний ПК напряму.
+    void askWebWorkAccess(userId, async () => phoneWorksViaWifi() ? phoneLanCall(WEB_ACCESS_PROBE, []) : (await api.post<{ data?: unknown }>('/api/v1/till-rpc',
       { channel: WEB_ACCESS_PROBE, args: [] }, undefined, { silent: true, timeoutMs: 60_000 })).data)
   }, [probing, userId])
   return byRole || granted

@@ -8,10 +8,11 @@ interface Props {
   onClose: () => void
   title: string
   children: React.ReactNode
-  size?: 'sm' | 'md' | 'lg' | 'xl'
+  size?: 'sm' | 'md' | 'lg' | 'xl' | 'full'
 }
 
-const SIZES = { sm: 'max-w-sm', md: 'max-w-lg', lg: 'max-w-2xl', xl: 'max-w-5xl' }
+// full — майже на весь екран (27.11.2026, фото власника: у «Порядку в назвах» праворуч не все влазить).
+const SIZES = { sm: 'max-w-sm', md: 'max-w-lg', lg: 'max-w-2xl', xl: 'max-w-5xl', full: 'max-w-[min(96vw,1600px)]' }
 
 export function Modal({ open, onClose, title, children, size = 'md' }: Props) {
   const titleId = useId()

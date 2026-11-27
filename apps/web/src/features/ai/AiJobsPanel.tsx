@@ -192,7 +192,7 @@ function JobReview({ job, onClose }: { job: AiJob; onClose: () => void }) {
   const counts = data?.counts ?? {}
   const pages = Math.max(1, Math.ceil((counts[state] ?? 0) / 100))
   return (
-    <Modal open onClose={busy === 'apply' ? () => undefined : onClose} title={job.title} size="xl">
+    <Modal open onClose={busy === 'apply' ? () => undefined : onClose} title={job.title} size="full">
       <div className="space-y-3" data-ai-job-review>
         <div className="flex flex-wrap gap-1.5" role="tablist">
           {TABS.map(tab => (
@@ -210,28 +210,27 @@ function JobReview({ job, onClose }: { job: AiJob; onClose: () => void }) {
           {progress && <span role="status" className="text-sm text-gray-600">{progress}</span>}
         </div>
         {state === 'suspicious' && <p className="text-xs text-gray-500">Тут назви, де програма побачила ризик: зʼявилось нове число, зник артикул чи (у перекладі) зникла цифра. Перегляньте й погодьте правильні — вони перейдуть у «Готові».</p>}
-        <div className="max-h-[60vh] overflow-auto rounded-lg border border-gray-100">
-          <table className="w-full text-sm">
-            <thead className="sticky top-0 bg-gray-50 text-left text-xs text-gray-500">
-              <tr>
-                <th className="w-8 px-2 py-1.5"><input type="checkbox" aria-label="Вибрати всі на сторінці" checked={Boolean(data?.items.length) && data!.items.every(item => picked.has(item.item_key))}
-                  onChange={event => setPicked(event.target.checked ? new Set(data?.items.map(item => item.item_key)) : new Set())} /></th>
-                <th className="px-2 py-1.5">Було</th><th className="px-2 py-1.5">Стане</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data?.items.map(item => (
-                <tr key={item.item_key} className="border-t border-gray-100 align-top">
-                  <td className="px-2 py-1.5"><input type="checkbox" aria-label={'Вибрати ' + item.old_name} checked={picked.has(item.item_key)}
-                    onChange={event => setPicked(current => { const next = new Set(current); if (event.target.checked) next.add(item.item_key); else next.delete(item.item_key); return next })} /></td>
-                  <td className="px-2 py-1.5 text-gray-500">{item.old_name}{item.sku ? <span className="block text-xs">арт. {item.sku}</span> : null}</td>
-                  <td className="px-2 py-1.5 text-gray-900">{item.new_name ?? '—'}{item.new_sku ? <span className="block text-xs text-gray-500">новий артикул {item.new_sku}</span> : null}
-                    {item.note && <span className={`block text-xs ${item.state === 'suspicious' || item.state === 'failed' ? 'text-amber-700' : 'text-gray-400'}`}>{item.note}</span>}</td>
-                </tr>
-              ))}
-              {data && !data.items.length && <tr><td colSpan={3} className="px-2 py-6 text-center text-gray-400">Порожньо</td></tr>}
-            </tbody>
-          </table>
+        {/* 27.11.2026 (фото власника: «праворуч не все влазить, у телефоні в такому вікні складно розібратися»):
+            на компʼютері — дві колонки на всю ширину вікна з переносом довгих назв; на телефоні — картка: «Було» над «Стане». */}
+        <div className="max-h-[65vh] overflow-auto rounded-lg border border-gray-100 text-sm" data-ai-job-rows>
+          <div className="sticky top-0 z-10 flex items-center gap-2 bg-gray-50 px-2 py-1.5 text-xs text-gray-500 sm:grid sm:grid-cols-[2rem_minmax(0,1fr)_minmax(0,1fr)]">
+            <input type="checkbox" aria-label="Вибрати всі на сторінці" checked={Boolean(data?.items.length) && data!.items.every(item => picked.has(item.item_key))}
+              onChange={event => setPicked(event.target.checked ? new Set(data?.items.map(item => item.item_key)) : new Set())} />
+            <span className="sm:hidden">Вибрати всі на сторінці</span>
+            <span className="hidden font-semibold sm:block">Було</span><span className="hidden font-semibold sm:block">Стане</span>
+          </div>
+          {data?.items.map(item => (
+            <label key={item.item_key} className="flex gap-2 border-t border-gray-100 px-2 py-2 sm:grid sm:grid-cols-[2rem_minmax(0,1fr)_minmax(0,1fr)]">
+              <input type="checkbox" className="mt-1 shrink-0" aria-label={'Вибрати ' + item.old_name} checked={picked.has(item.item_key)}
+                onChange={event => setPicked(current => { const next = new Set(current); if (event.target.checked) next.add(item.item_key); else next.delete(item.item_key); return next })} />
+              <span className="min-w-0 flex-1 space-y-1 sm:contents">
+                <span className="block min-w-0 break-words text-gray-500"><span className="text-[11px] font-semibold uppercase text-gray-400 sm:hidden">Було: </span>{item.old_name}{item.sku ? <span className="block text-xs">арт. {item.sku}</span> : null}</span>
+                <span className="block min-w-0 break-words text-gray-900"><span className="text-[11px] font-semibold uppercase text-emerald-700 sm:hidden">Стане: </span>{item.new_name ?? '—'}{item.new_sku ? <span className="block text-xs text-gray-500">новий артикул {item.new_sku}</span> : null}
+                  {item.note && <span className={`block text-xs ${item.state === 'suspicious' || item.state === 'failed' ? 'text-amber-700' : 'text-gray-400'}`}>{item.note}</span>}</span>
+              </span>
+            </label>
+          ))}
+          {data && !data.items.length && <p className="px-2 py-6 text-center text-gray-400">Порожньо</p>}
         </div>
         {pages > 1 && (
           <div className="flex items-center justify-end gap-2 text-sm">
