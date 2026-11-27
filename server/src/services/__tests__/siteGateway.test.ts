@@ -20,7 +20,9 @@ describe('site gateway proxy', () => {
     expect(() => checkSiteCall('settings.set', { values: { contact_phone1: '1', admin_password: 'x' } })).toThrow('Невідоме налаштування сайту: admin_password')
     expect(checkSiteCall('settings.set', { values: { contact_phone1: '1' } }).changes).toBe(true)
     // 27.11.2026, «Доповнення 5»: форум і просування. Читання — без журналу, кожна зміна — в журнал аудиту.
-    expect(Object.keys(SITE_ACTIONS)).toHaveLength(53)
+    // 27.11.2026: + orders.mark_synced (оплачене замовлення перенесено в програму) — зміна, іде в журнал.
+    expect(Object.keys(SITE_ACTIONS)).toHaveLength(54)
+    expect(checkSiteCall('orders.mark_synced', { id: '21', program_order_id: 's', program_order_number: '1042' }).changes).toBe(true)
     expect(checkSiteCall('forum.topics.list', { search: 's' }).changes).toBe(false)
     expect(checkSiteCall('forum.photos.upload_url', { count: 2 }).changes).toBe(false)
     for (const action of ['forum.topics.create', 'forum.topics.update', 'forum.topics.delete', 'forum.posts.create', 'forum.posts.update', 'forum.posts.delete', 'forum.sections.upsert', 'forum.sections.delete', 'seo.categories.set', 'seo.redirects.set'])
