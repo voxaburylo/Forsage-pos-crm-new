@@ -80,6 +80,19 @@ describe('phones over Wi-Fi on the main PC', () => {
     await expect(access.dispatch({ action: 'something-else' })).rejects.toThrow('не знайдено')
   })
 
+  // 27.11.2026, слово власника: «щоб нічого не сканувати». Сеанс видається тому, кого вже підтвердили сервер і головний ПК.
+  it('issues an automatic session only on the main PC and never to a tyre worker; stores only fingerprints', async () => {
+    const { access, root } = hub()
+    expect(() => access.issueFor({ id: 'cashier', tenant_id: 't', role: 'cashier' }, null, { mode: 'client', addresses: [], port: 3210 })).toThrow('не є головним')
+    expect(() => access.issueFor({ id: 'tires', tenant_id: 't', role: 'tire_worker' }, null, { mode: 'hub', addresses: ['192.168.1.5'], port: 3210 })).toThrow('заблокований')
+    const issued = access.issueFor({ id: 'cashier', tenant_id: 't', role: 'cashier' }, { full_name: 'Олексій s', phone: '+380' }, { mode: 'hub', addresses: ['192.168.1.5', '10.0.0.2'], port: 3210 })
+    expect(issued).toMatchObject({ hosts: ['192.168.1.5', '10.0.0.2'], port: 3210, user: { id: 'cashier', role: 'cashier', full_name: 'Олексій s' } })
+    expect(access.key()).toBe(issued.key)
+    const { readFileSync } = await import('node:fs')
+    expect(readFileSync(path.join(root, 'lan-phone.json'), 'utf8')).not.toContain(issued.token)
+    await expect(access.dispatch({ action: 'phone-rpc', token: issued.token, channel: 'desktop:catalog:list', args: [] })).resolves.toMatchObject({ ok: true })
+  })
+
   it('logout ends the phone session', async () => {
     const { access } = hub()
     access.enable()

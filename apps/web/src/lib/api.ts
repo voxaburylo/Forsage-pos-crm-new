@@ -1,6 +1,6 @@
 import { withRequestDeadline } from './requestDeadline'
 import { isDesktopRuntime } from './desktopBridge'
-import { phoneLanActive } from './phoneLan/phoneLan'
+import { phoneWorksViaWifi } from './phoneLan/phoneLan'
 import { API_BASE_URL } from './apiBaseUrl'
 import { apiValidationError } from './apiValidationError'
 
@@ -214,7 +214,7 @@ async function requestOnce<T>(path: string, options?: RequestOptions): Promise<T
         })
       }
       res = viaMainPc
-    } else if (phoneLanActive()) {
+    } else if (phoneWorksViaWifi()) {
       // 27.11.2026: телефон увійшов через Wi-Fi головного ПК (без сервера) — не виходимо з цього входу через відмову сервера.
       throw Object.assign(new Error('Ця частина працює лише через інтернет. Телефон зараз працює через Wi-Fi з головним ПК.'), { status: 401, code: 'PHONE_LAN_ONLY' })
     } else {

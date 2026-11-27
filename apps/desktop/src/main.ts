@@ -1538,6 +1538,12 @@ app.whenReady().then(async () => {
   const phoneAccess = new PhoneLanAccess(dataRoot, { authenticate: (phone, password) => lanAuthenticate(phone, password), resolveSession: resolveLanSession, execute: executeWebRequest })
   handleDesktopIpc('desktop:lan:phone-access', () => phoneAccessStatus(phoneAccess, localNetwork?.getStatus()))
   handleDesktopIpc('desktop:lan:phone-access-set', (_event, action) => { changePhoneAccess(phoneAccess, action); return phoneAccessStatus(phoneAccess, localNetwork?.getStatus()) })
+  // Автоматично, поки є інтернет: працівник, що вже увійшов на телефоні, отримує адресу, код і свій сеанс Wi-Fi.
+  handleDesktopIpc('desktop:phone:wifi-pairing', () => {
+    const session = requireDesktopSession()
+    const profile = requireLocalStaff().listUsers(session.tenant_id).find((user: { id: string }) => user.id === session.id) ?? null
+    return phoneAccess.issueFor(session, profile, localNetwork?.getStatus())
+  })
   const lanAuthenticate = async (phone: string, password: string) => {
     // Без номера телефону — вхід лише паролем (23.11.2026): працівника визначає сам пароль.
     if (!phone) return requireLocalStaff().loginWithPasswordOnly(password)

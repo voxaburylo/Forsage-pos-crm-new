@@ -124,6 +124,7 @@ function isRouteChunkError(error: unknown): boolean {
 }
 
 import { reportLocalError } from './lib/localDiagnostics'
+import { PhoneWifiKeeper } from '@/features/phoneLan/PhoneWifiKeeper'
 
 // 24.11.2026 (план C1, «тяжкі модулі на вимогу»): глобальні вікна, потрібні не з першої секунди, вантажаться окремо —
 // стартовий файл менший, вхід і перша сторінка швидші. Подія чи клавіша, що їх відкриває, чекає мить на завантаження.
@@ -318,6 +319,8 @@ function Workspace() {
       </AppErrorBoundary>
       {/* 23.11.2026 (план B1): постійний сканер камерою для вебу на телефоні — один на весь застосунок. */}
       <Suspense fallback={null}><LiveCameraScanner /></Suspense>
+      {/* 27.11.2026: застосунок на телефоні сам перемикається між інтернетом і Wi-Fi головного ПК. */}
+      <PhoneWifiKeeper />
       <ToastContainer />
       <Suspense fallback={null}><CommandPalette /></Suspense>
       </div>

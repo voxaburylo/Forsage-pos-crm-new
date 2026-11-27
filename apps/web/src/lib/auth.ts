@@ -4,7 +4,7 @@ import { desktopBridge, isDesktopRuntime } from './desktopBridge'
 import { useAuthStore } from '@/stores/authStore'
 import { restoreDesktopServerSession } from './desktopServerSession'
 import { lanNeedsSetup, readLanFirstRunStatus } from './lanFirstRun'
-import { phoneLanActive, phoneLanLogout } from './phoneLan/phoneLan'
+import { phoneLanActive, phoneLanLogout, phoneWorksViaWifi } from './phoneLan/phoneLan'
 
 function phoneToEmail(phone: string): string {
   const digits = phone.replace(/\D/g, '')
@@ -368,7 +368,9 @@ export async function signOut() {
     return
   }
   // 27.11.2026: вхід телефона через Wi-Fi головного ПК — закриваємо й його сеанс.
-  if (phoneLanActive()) { await phoneLanLogout(); useAuthStore.getState().setSession(null); return }
+  if (phoneWorksViaWifi()) { await phoneLanLogout(); useAuthStore.getState().setSession(null); return }
+  // Вийшли зі звичайної версії — сеанс Wi-Fi цього телефона теж закриваємо (наступний вхід видасть новий).
+  if (phoneLanActive()) await phoneLanLogout()
   await supabase.auth.signOut({ scope: 'local' })
   useAuthStore.getState().setSession(null)
 }

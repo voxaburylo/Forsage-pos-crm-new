@@ -42,6 +42,10 @@ export function createDesktopApi(ipcRenderer: DesktopInvoker) {
       phoneAccess: () => ipcRenderer.invoke('desktop:lan:phone-access'),
       setPhoneAccess: (action: 'enable' | 'rotate' | 'disable') => ipcRenderer.invoke('desktop:lan:phone-access-set', action),
     },
+    /** 27.11.2026: телефон (через сервер, від імені того, хто увійшов) отримує адресу, код і сеанс для роботи через Wi-Fi. */
+    phone: {
+      wifiPairing: () => ipcRenderer.invoke('desktop:phone:wifi-pairing'),
+    },
     problems: {
       list: (options?: { includeResolved?: boolean; limit?: number }) =>
         ipcRenderer.invoke('desktop:problems:list', options),

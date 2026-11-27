@@ -43,16 +43,22 @@ it('a phone pairs with its own code, logs in with a password and works; the mana
   servers.push(proxy); const proxyPort = await listen(proxy)
 
   // Телефони ще не ввімкнено — код телефона не відкриває головний ПК.
-  const guess = { host: '127.0.0.1', port: proxyPort, key: 'ffffffffffffffffffffffffffffffff' }
+  const guess = { hosts: ['127.0.0.1'], port: proxyPort, key: 'ffffffffffffffffffffffffffffffff' }
   await expect(secureCall(guess, { action: 'phone-probe' })).rejects.toThrow('не прийняв код телефона')
 
-  const pairing = { host: '127.0.0.1', port: proxyPort, key: phone.enable() }
+  // Перша адреса (інший адаптер ПК) не відповідає — телефон сам пробує наступну.
+  const pairing = { hosts: ['127.0.0.2', '127.0.0.1'], port: proxyPort, key: phone.enable() }
   await expect(secureCall(pairing, { action: 'phone-probe' })).resolves.toEqual({ service: 'forsage-lan', phone: 1 })
   await expect(secureCall(pairing, { action: 'phone-login', phone: '', password: 'wrong-s' })).rejects.toThrow('заблокований')
   const login = await secureCall(pairing, { action: 'phone-login', phone: '', password: 'pass-s-123' }) as { token: string; user: { id: string } }
   expect(login.user.id).toBe('cashier')
   await expect(secureCall(pairing, { action: 'phone-rpc', token: login.token, channel: 'desktop:catalog:list', args: [] })).resolves.toEqual({ items: ['фільтр s'] })
   expect(executed).toEqual([{ userId: 'cashier', channel: 'desktop:catalog:list' }])
+  // Автоматичний сеанс (виданий через сервер, поки був інтернет) працює без пароля і переживає перезапуск програми каси.
+  const auto = phone.issueFor({ id: 'cashier', tenant_id: 'shop', role: 'cashier' }, { full_name: 'Каса s' }, { mode: 'hub', addresses: ['192.168.1.5'], port: hubPort })
+  expect(auto).toMatchObject({ hosts: ['192.168.1.5'], port: hubPort, key: pairing.key, user: { id: 'cashier', full_name: 'Каса s' } })
+  const restarted = new PhoneLanAccess(dataRoot, { authenticate: () => null, resolveSession: () => ({ id: 'cashier', tenant_id: 'shop', role: 'cashier' }), execute: async () => 'after restart s' })
+  await expect(restarted.dispatch({ action: 'phone-rpc', token: auto.token, channel: 'desktop:catalog:list', args: [] })).resolves.toBe('after restart s')
   // Дії ПК менеджера телефону недоступні (інший код — інші дії).
   await expect(secureCall(pairing, { action: 'rpc', user_id: 'manager', tenant_id: 'shop', channel: 'desktop:orders:list', args: [] })).rejects.toThrow('не знайдено')
 

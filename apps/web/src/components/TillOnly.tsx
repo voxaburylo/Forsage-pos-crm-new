@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { Monitor, WifiOff } from 'lucide-react'
 import { isDesktopRuntime } from '@/lib/desktopBridge'
 import { api } from '@/lib/api'
-import { phoneLanActive, phoneLanReachable } from '@/lib/phoneLan/phoneLan'
+import { phoneLanReachable, phoneWorksViaWifi } from '@/lib/phoneLan/phoneLan'
 import { isUserWatching } from '@/lib/userActivity'
 import { useWebWorkAccess } from '@/lib/webWorkAccess'
 import { Layout } from '@/components/Layout'
@@ -56,7 +56,7 @@ function useMainPcLink(allowed: boolean): { state: State; ready: boolean } {
     async function check() {
       // 27.11.2026: телефон через Wi-Fi — питаємо сам головний ПК, а не сервер.
       // watch=0 — вкладка схована або людина давно нічого не натискала: тоді сервер не просить касу опитувати його часто.
-      const online = phoneLanActive() ? await phoneLanReachable() : await api.get<{ data: { online: boolean } }>('/api/v1/till-commands/status' + (isUserWatching() ? '' : '?watch=0'), { silent: true, timeoutMs: 10_000 })
+      const online = phoneWorksViaWifi() ? await phoneLanReachable() : await api.get<{ data: { online: boolean } }>('/api/v1/till-commands/status' + (isUserWatching() ? '' : '?watch=0'), { silent: true, timeoutMs: 10_000 })
         .then(result => Boolean(result.data?.online), () => false)
       rememberLink(online ? 'online' : 'offline')
       if (!stopped) setState(online ? 'online' : 'offline')

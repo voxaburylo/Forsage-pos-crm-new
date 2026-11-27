@@ -28,12 +28,12 @@ export function PhoneWifiLogin() {
   const [error, setError] = useState('')
   const native = isNativeApp()
 
-  // Після перезапуску застосунку сеанс через Wi-Fi ще дійсний — входимо одразу.
+  // Копія без інтернету: сеанс Wi-Fi ще дійсний — входимо одразу. З інтернетом — звичайний вхід через сервер.
   useEffect(() => {
-    if (!native) return
+    if (!native || !offlineCopy) return
     const session = restorePhoneLanSession()
     if (session) navigate(homePathForRole(session.user.app_metadata?.role as string | undefined), { replace: true })
-  }, [native, navigate])
+  }, [native, navigate, offlineCopy])
   if (!native) return null
 
   const run = async (work: () => Promise<void>) => {
@@ -71,7 +71,7 @@ export function PhoneWifiLogin() {
       <p className="flex items-center gap-2 text-sm font-semibold text-gray-800"><Wifi size={16} /> Через Wi-Fi з головним ПК</p>
       {!paired ? (
         <>
-          <p className="text-xs text-gray-600">Один раз: на головному ПК відкрийте «Налаштування» → мережа → «Телефони через Wi-Fi» і відскануйте QR-код.</p>
+          <p className="text-xs text-gray-600">Зазвичай нічого робити не треба: коли є інтернет і ви увійшли, телефон сам підключається до головного ПК. Якщо цього ще не було — відскануйте QR-код на головному ПК («Налаштування» → мережа → «Телефони через Wi-Fi»).</p>
           <Button type="button" className="w-full" loading={busy} onClick={() => void scan()}>Сканувати QR-код</Button>
           {!manual ? <button type="button" className="w-full text-xs text-gray-500 underline" onClick={() => setManual(true)}>Ввести адресу й код вручну</button> : (
             <div className="space-y-2">
@@ -84,7 +84,7 @@ export function PhoneWifiLogin() {
         </>
       ) : (
         <form onSubmit={signIn} className="space-y-2">
-          <p className="text-xs text-gray-600">Головний ПК: {paired.host}. Телефон має бути в тій самій мережі Wi-Fi, а програма на касі — відкрита.</p>
+          <p className="text-xs text-gray-600">Головний ПК: {paired.hosts[0]}. Телефон має бути в тій самій мережі Wi-Fi, а програма на касі — відкрита.</p>
           <input type="password" className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" placeholder="Ваш пароль" autoComplete="current-password"
             value={password} onChange={event => setPassword(event.target.value)} data-phone-wifi-password />
           <Button type="submit" className="w-full" loading={busy} disabled={!password}>Увійти через Wi-Fi</Button>

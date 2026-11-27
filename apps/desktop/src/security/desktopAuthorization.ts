@@ -111,6 +111,8 @@ const EXACT_RULES = new Map<string, readonly DesktopRole[]>([
   // 27.11.2026: код для телефонів через Wi-Fi — видає й змінює власник/адміністратор.
   ['desktop:lan:phone-access', OWNER_ROLES],
   ['desktop:lan:phone-access-set', OWNER_ROLES],
+  // Телефон сам отримує доступ через Wi-Fi для того, хто вже увійшов (ті самі ролі, що працюють через веб).
+  ['desktop:phone:wifi-pairing', TILL_ROLES],
   ['desktop:bootstrap:import-snapshot', OWNER_ROLES],
   ['desktop:catalog:update-settings', OWNER_ROLES],
   ['desktop:catalog:create-category', RECEIVING_ROLES],
