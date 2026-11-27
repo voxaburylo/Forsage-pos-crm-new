@@ -60,6 +60,9 @@ function getRecentItems(key: string): string[] {
 import { formatMoney } from '@/lib/utils'
 import type { Customer, CustomerVehicle } from '@/types/customer'
 
+/** Пошук товару в замовленні: порція результатів і стеля. */
+const ORDER_SEARCH_PAGE = 50, ORDER_SEARCH_MAX = 300
+
 // ─── Helpers ───
 const VIN_WMI: Record<string, string> = {
   WBA: 'BMW', WBS: 'BMW', WDB: 'Mercedes-Benz', WDD: 'Mercedes-Benz',
@@ -862,6 +865,8 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
   // Єдине поле пошуку товару в замовленні: шукаємо ЛИШЕ у власній базі.
   const [search, setSearch] = useState('')
   const [searchResults, setSearchResults] = useState<Product[]>([])
+  const [searchLimit, setSearchLimit] = useState(ORDER_SEARCH_PAGE)
+  useEffect(() => { setSearchLimit(ORDER_SEARCH_PAGE) }, [search])
   const [searchLoading, setSearchLoading] = useState(false)
   const [searchError, setSearchError] = useState('')
   const [replaceIndex, setReplaceIndex] = useState<number | null>(null)
@@ -883,7 +888,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
     let cancelled = false
     const t = window.setTimeout(async () => {
       try {
-        const r = await productApi.search(q, 50)
+        const r = await productApi.search(q, searchLimit)
         if (!cancelled) setSearchResults(stockFirst(r.data ?? []))
       } catch {
         if (!cancelled) {
@@ -895,7 +900,7 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
       }
     }, 180)
     return () => { cancelled = true; window.clearTimeout(t) }
-  }, [search])
+  }, [search, searchLimit])
 
   // Товар не знайдено в базі → одразу додаємо inline-рядок «під замовлення»
   // з підставленою назвою. Без окремого модального вікна — заповнюємо прямо тут.
@@ -1793,9 +1798,16 @@ function OrderFormEditor({ backupKey, onReset }: { backupKey: string; onReset: (
               )}
 
               {/* Знайдені товари та їх аналоги */}
-              {!searchLoading && searchResults.length > 0 && (
+              {!searchLoading && searchResults.length > 0 && (<>
                 <OrderProductResults products={searchResults} onSelect={addProductAsItem} replacing={replaceIndex !== null} />
-              )}
+                {/* 27.11.2026: пошук віддавав рівно 50 товарів і мовчав, що їх більше. */}
+                {searchResults.length >= searchLimit && searchLimit < ORDER_SEARCH_MAX && (
+                  <button type="button" data-order-search-more disabled={searchLoading} onClick={() => setSearchLimit(limit => Math.min(limit + ORDER_SEARCH_PAGE, ORDER_SEARCH_MAX))}
+                    className="w-full border-t border-gray-100 py-2 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50">
+                    Показано {searchResults.length} — показати ще {ORDER_SEARCH_PAGE}
+                  </button>
+                )}
+              </>)}
               {/* Довідник запчастин «під замовлення»: спершу склад (вище), потім те, що вже замовляли. */}
               {replaceIndex === null && <OrderPartSuggestions query={search} onPick={addSuggestedPart} />}
               {replaceIndex === null && <SupplierOfferSuggestions query={search} onPick={addSupplierOffer} showPurchase={canSeeSupplierPurchase} />}
